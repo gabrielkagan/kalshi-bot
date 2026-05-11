@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Source files to extract facts from
 SOURCE_FILES = [
     "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "models.py",
-    "bot/engines/spx_engine.py", "weather_engine.py", "sports_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11): spx_engine relocated
+    "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "sports_engine.py",  # Sprint 10.1b/c sibling-reorg (2026-05-11): spx_engine + weather_engine relocated
     "fifteenm_shadow.py", "hourly_alt_shadow.py",
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
     # changing SIGMA_WINSOR_ABS_CAP / GLOBAL_MIN_ENTRY_PRICE etc. without
@@ -211,8 +211,8 @@ def get_test_count() -> Optional[int]:
 
 
 def count_weather_cities() -> int:
-    """Count weather cities from weather_engine.py."""
-    we_path = REPO_ROOT / "weather_engine.py"
+    """Count weather cities from bot/engines/weather_engine.py."""
+    we_path = REPO_ROOT / "bot" / "engines" / "weather_engine.py"  # Sprint 10.1c (2026-05-11)
     if not we_path.exists():
         return 0
     with open(we_path) as f:

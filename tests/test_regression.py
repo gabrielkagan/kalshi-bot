@@ -558,7 +558,7 @@ class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
     CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
-                      "sports_engine.py", "bot/engines/spx_engine.py", "weather_engine.py",
+                      "sports_engine.py", "bot/engines/spx_engine.py", "bot/engines/weather_engine.py",  # Sprint 10.1c (2026-05-11)
                       "fifteenm_shadow.py"]  # Sprint 10.1b sibling-reorg (2026-05-11): spx_engine relocated
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
@@ -1096,7 +1096,7 @@ class TestWeatherAPIDefenses:
         Open-Meteo returns HTTP 200 + {"error": true} for wrong model names,
         so a typo here silently produces no data with no errors in logs.
         """
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
         tree = ast.parse(source)
 
         for node in ast.walk(tree):
@@ -1118,7 +1118,7 @@ class TestWeatherAPIDefenses:
         Open-Meteo returns HTTP 200 + {"error": true, "reason": "..."} for
         invalid parameters. Without this check, failures are invisible.
         """
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
 
         # Find all resp.json() calls and ensure each has a nearby error check
         json_calls = [i for i, line in enumerate(source.splitlines())
@@ -1139,7 +1139,7 @@ class TestWeatherAPIDefenses:
         DEBUG-level logs are invisible in production — a broken API integration
         would silently produce no data with no alerts.
         """
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
 
         # Find lines that mention API failure/error AND use logging.debug
         for i, line in enumerate(source.splitlines(), 1):
@@ -1155,7 +1155,7 @@ class TestWeatherAPIDefenses:
 
     def test_startup_self_test_exists(self):
         """WeatherEngine.start() must call _self_test_apis() to validate models."""
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
         assert "_self_test_apis" in source, (
             "weather_engine.py must have _self_test_apis() method for startup validation"
         )
@@ -1181,7 +1181,7 @@ class TestWeatherAPIDefenses:
 
     def test_ensemble_model_names_are_valid(self):
         """Verify GFS and ECMWF model names match Open-Meteo's API."""
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
 
         # These are the correct Open-Meteo model identifiers
         valid_ensemble_models = {"gfs_seamless", "ecmwf_ifs025"}
@@ -1267,7 +1267,7 @@ class TestWeatherBiasPersistence:
         """Bias saved by one model instance is loaded by a new instance."""
         from unittest.mock import MagicMock
         sys.modules.setdefault("requests", MagicMock())
-        from weather_engine import WeatherProbabilityModel
+        from bot.engines.weather_engine import WeatherProbabilityModel  # Sprint 10.1c (2026-05-11)
 
         db_path = str(tmp_path / "test_weather.db")
 
@@ -1286,7 +1286,7 @@ class TestWeatherBiasPersistence:
         """Same (city, date) pair must not update bias twice."""
         from unittest.mock import MagicMock
         sys.modules.setdefault("requests", MagicMock())
-        from weather_engine import WeatherProbabilityModel
+        from bot.engines.weather_engine import WeatherProbabilityModel  # Sprint 10.1c (2026-05-11)
 
         db_path = str(tmp_path / "test_weather.db")
         model = WeatherProbabilityModel(db_path=db_path)
@@ -1303,7 +1303,7 @@ class TestWeatherBiasPersistence:
         """Model without db_path still computes bias in-memory."""
         from unittest.mock import MagicMock
         sys.modules.setdefault("requests", MagicMock())
-        from weather_engine import WeatherProbabilityModel
+        from bot.engines.weather_engine import WeatherProbabilityModel  # Sprint 10.1c (2026-05-11)
 
         model = WeatherProbabilityModel(db_path=None)
         model.update_bias("DEN", 68.7, 66.5)
@@ -1311,7 +1311,7 @@ class TestWeatherBiasPersistence:
 
     def test_bias_table_uses_busy_timeout(self):
         """All SQLite connections in bias persistence must use busy_timeout."""
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
         # Find all sqlite3.connect calls in bias methods
         import re
         # Every sqlite3.connect in weather_engine must be followed by busy_timeout
@@ -1329,7 +1329,7 @@ class TestWeatherHRRR:
 
     def test_hrrr_has_rate_limit_sleep(self):
         """fetch_ensemble must sleep before HRRR call to avoid timeouts."""
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
         tree = ast.parse(source)
 
         for node in ast.walk(tree):
@@ -1349,7 +1349,7 @@ class TestWeatherHRRR:
 
     def test_hrrr_log_does_not_mask_none(self):
         """HRRR log must not use 'or 0.0' which masks None as 0.0F."""
-        source = open(os.path.join(PROJECT_ROOT, "weather_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")).read()  # Sprint 10.1c (2026-05-11)
         tree = ast.parse(source)
 
         for node in ast.walk(tree):

@@ -65,8 +65,8 @@ def count_leagues():
 
 
 def count_weather_cities():
-    """Count cities in weather_engine.py WEATHER_CITIES dict."""
-    weather_path = os.path.join(REPO_DIR, "weather_engine.py")
+    """Count cities in bot/engines/weather_engine.py WEATHER_CITIES dict."""
+    weather_path = os.path.join(REPO_DIR, "bot", "engines", "weather_engine.py")  # Sprint 10.1c (2026-05-11)
     if not os.path.exists(weather_path):
         return None
     with open(weather_path) as f:
@@ -305,7 +305,7 @@ def check_cross_file_values(path):
             if int(mention) != actual_cities:
                 issues.append(
                     f"Stale city count: found '{mention} cities' in doc, "
-                    f"weather_engine.py has {actual_cities}"
+                    f"bot/engines/weather_engine.py has {actual_cities}"
                 )
 
     # --- Sports LR scale ---

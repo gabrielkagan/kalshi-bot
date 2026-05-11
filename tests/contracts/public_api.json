@@ -4926,6 +4926,435 @@
       }
     }
   },
+  "bot.engines.weather_engine": {
+    "kind": "module"
+  },
+  "bot.engines.weather_engine.BIAS_EWMA_LAMBDA": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.BIAS_MIN_SIGNALS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.ECMWF_MEMBERS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.GFS_MEMBERS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.MAX_CITIES_PER_DAY": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.OPEN_METEO_ENSEMBLE_URL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.OPEN_METEO_FORECAST_URL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.TOTAL_ENSEMBLE_MEMBERS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_CITIES": {
+    "annotation": "Dict[str, Dict]",
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_ENSEMBLE_CACHE_FILE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_POLL_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_SHADOW_FOCUS_CITIES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_SHADOW_FOCUS_MARKET_TYPES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_STD_CORRECTION": {
+    "annotation": "Dict[str, float]",
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WEATHER_STD_CORRECTION_DEFAULT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.weather_engine.WeatherEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "get_active_windows": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_probability": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "city_code"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold_f"
+          },
+          {
+            "annotation": "str",
+            "default": "'above'",
+            "kind": "positional or keyword",
+            "name": "direction"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_type"
+          },
+          {
+            "annotation": "Optional[Tuple[float, float]]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "bracket_bounds"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_spot_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_vol_estimate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "stc"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "start": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "stop": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.engines.weather_engine.WeatherEnsembleFetcher": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "fetch_ensemble": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "city_code"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "target_date"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "fetch_observed_high": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "city_code"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "date_str"
+          }
+        ],
+        "returns": "Optional[float]"
+      }
+    }
+  },
+  "bot.engines.weather_engine.WeatherProbabilityModel": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "compute_probability": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ensemble_data"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold_f"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "city_code"
+          },
+          {
+            "annotation": "str",
+            "default": "'above'",
+            "kind": "positional or keyword",
+            "name": "direction"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_type"
+          },
+          {
+            "annotation": "Optional[Tuple[float, float]]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "bracket_bounds"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "update_bias": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "city_code"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "actual_high"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "forecast_mean"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_date"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.engines.weather_engine.WeatherWindowDiscovery": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "discover_windows": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "client"
+          },
+          {
+            "annotation": "Optional[List[str]]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "cities"
+          }
+        ],
+        "returns": "List[Dict]"
+      }
+    }
+  },
+  "bot.engines.weather_engine.tracked_write": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "name"
+      },
+      {
+        "annotation": "str",
+        "default": "'?'",
+        "kind": "positional or keyword",
+        "name": "sql_kind"
+      }
+    ],
+    "returns": null
+  },
   "bot.executor": {
     "kind": "module"
   },

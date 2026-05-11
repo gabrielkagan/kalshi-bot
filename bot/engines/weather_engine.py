@@ -795,10 +795,16 @@ class WeatherEngine:
         self._last_ensemble: Dict[str, Dict] = {}  # city_code -> latest ensemble data
         self._last_ensemble_saved_at: float = 0.0  # unix time of last cache save
         self._started = False
-        self._cache_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            WEATHER_ENSEMBLE_CACHE_FILE,
-        )
+        # Cache lives at REPO ROOT (NOT next to __file__) — pre-Sprint-10.1c
+        # weather_engine.py was at repo root so `__file__` resolved there. The
+        # 10.1c relocation to bot/engines/weather_engine.py would have silently
+        # moved this path to bot/engines/weather_ensemble_cache.json, orphaning
+        # the existing 21KB warm cache and cold-starting weather data on first
+        # deploy restart. Anchor explicitly to the repo root (2 levels up from
+        # bot/engines/) so the cache file location is invariant under the move.
+        # Pinned by tests/test_sprint_10_1c_weather_engine_move.py::test_weather_ensemble_cache_path_is_repo_root.
+        _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self._cache_path = os.path.join(_REPO_ROOT, WEATHER_ENSEMBLE_CACHE_FILE)
         # Warm-start from on-disk cache (weather changes slowly, stale OK)
         self._load_ensemble_cache()
 

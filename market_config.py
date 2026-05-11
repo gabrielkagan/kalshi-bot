@@ -413,7 +413,7 @@ def validate_market_configs() -> None:
 
     # Weather subtypes must match WEATHER_CITIES
     if MARKET_CONFIGS["weather"].cal_subtypes:
-        from weather_engine import WEATHER_CITIES
+        from bot.engines.weather_engine import WEATHER_CITIES  # Sprint 10.1c sibling-reorg (2026-05-11)
         for sub in MARKET_CONFIGS["weather"].cal_subtypes:
             assert sub in WEATHER_CITIES, f"FATAL: weather subtype '{sub}' not in WEATHER_CITIES"
 

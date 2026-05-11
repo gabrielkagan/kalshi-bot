@@ -52,7 +52,7 @@ PRODUCTION_FILES = [
     "spx_harrv_shadow.py",
     "supabase_sync.py",
     "watchdog.py",
-    "weather_engine.py",
+    "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
 ]
 
 # Lightweight stability fence: if MARKET_CONFIGS gains or drops a key,

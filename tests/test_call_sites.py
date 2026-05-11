@@ -30,7 +30,7 @@ BOT_IMPORTERS = [
 # Engine files that may wire into CalEngine pipeline
 ENGINE_FILES = [
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
-    "weather_engine.py",
+    "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
     "sports_engine.py",
 ]
 
@@ -146,10 +146,10 @@ class TestCalEnginePipelineTripleShip:
             "sports_engine.py does not reference raw_prob — CalEngine pipeline broken")
 
     def test_weather_engine_inserts_raw_prob(self):
-        """weather_engine.py must handle raw_prob for CalEngine pipeline."""
-        filepath = os.path.join(PROJECT_ROOT, "weather_engine.py")
+        """bot/engines/weather_engine.py must handle raw_prob for CalEngine pipeline."""
+        filepath = os.path.join(PROJECT_ROOT, "bot", "engines", "weather_engine.py")  # Sprint 10.1c (2026-05-11)
         if not os.path.exists(filepath):
-            pytest.skip("weather_engine.py not found")
+            pytest.skip("bot/engines/weather_engine.py not found")
         with open(filepath) as f:
             source = f.read()
         # Weather may pass raw_prob via the evaluated_opportunity insert

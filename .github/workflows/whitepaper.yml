@@ -15,7 +15,7 @@ on:
       - 'scripts/check_docs_freshness.py'
       - 'bot/engines/sports_data.py'
       - 'bot/engines/spx_engine.py'
-      - 'weather_engine.py'
+      - 'bot/engines/weather_engine.py'
       - 'templates/**'
       - '.github/workflows/whitepaper.yml'
 

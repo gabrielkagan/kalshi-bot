@@ -4,7 +4,7 @@
 Outputs JSON that can feed into doc templates, ensuring docs always
 reflect the actual code. No imports of bot/_impl.py — pure static analysis.
 
-Also parses weather_engine.py and bot/engines/sports_data.py for cross-file data.
+Also parses bot/engines/weather_engine.py and bot/engines/sports_data.py for cross-file data.
 
 Usage:
     python3 scripts/extract_config.py > config.json
@@ -22,7 +22,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.join(SCRIPT_DIR, "..")
 BOT_PATH = os.path.join(REPO_DIR, "bot/_impl.py")
 CONSTANTS_PATH = os.path.join(REPO_DIR, "bot/constants.py")
-WEATHER_PATH = os.path.join(REPO_DIR, "weather_engine.py")
+WEATHER_PATH = os.path.join(REPO_DIR, "bot", "engines", "weather_engine.py")  # Sprint 10.1c (2026-05-11)
 SPORTS_PATH = os.path.join(REPO_DIR, "bot", "engines", "sports_data.py")  # Sprint 10.1a (2026-05-11)
 
 # Constants to extract (name -> human-readable description)
@@ -229,7 +229,7 @@ def extract_exchange_feeds(source: str) -> list:
 
 
 def extract_weather_cities() -> dict:
-    """Parse weather_engine.py for WEATHER_CITIES dict via regex.
+    """Parse bot/engines/weather_engine.py for WEATHER_CITIES dict via regex.
 
     Returns dict with city_count, city_codes, city_names, city_tickers.
     Uses regex instead of AST because WEATHER_CITIES uses typed Dict annotation.

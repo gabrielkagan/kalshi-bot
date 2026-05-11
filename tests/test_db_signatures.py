@@ -42,7 +42,7 @@ PRODUCTION_FILES = [
     "sports_engine.py",
     "supabase_sync.py",
     "watchdog.py",
-    "weather_engine.py",
+    "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
     "capital_allocator.py",
 ]
 
@@ -308,7 +308,7 @@ class TestSyntaxCheck:
         "analyst.py",
         "supabase_sync.py",
         "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
-        "weather_engine.py",
+        "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
         "sports_engine.py",
         "fifteenm_shadow.py",
         "hourly_alt_shadow.py",

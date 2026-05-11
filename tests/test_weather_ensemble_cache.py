@@ -32,8 +32,8 @@ for _mod in ["websockets", "websocket", "requests",
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
 
-import weather_engine
-from weather_engine import WeatherEngine, WEATHER_ENSEMBLE_CACHE_FILE
+import bot.engines.weather_engine as weather_engine  # Sprint 10.1c sibling-reorg (2026-05-11); alias preserves `weather_engine.X` access pattern below
+from bot.engines.weather_engine import WeatherEngine, WEATHER_ENSEMBLE_CACHE_FILE
 
 
 def _make_fake_ensemble(mean_f: float = 72.0) -> dict:

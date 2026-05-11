@@ -5159,7 +5159,7 @@ class OpportunityScanner:
                 # (price_out_of_range, insufficient_edge, timing_restricted) but don't
                 # reach the observation gate for shadow trade simulation.
                 if _pt == "weather":
-                    from weather_engine import WEATHER_SHADOW_FOCUS_MARKET_TYPES, WEATHER_SHADOW_FOCUS_CITIES
+                    from bot.engines.weather_engine import WEATHER_SHADOW_FOCUS_MARKET_TYPES, WEATHER_SHADOW_FOCUS_CITIES  # Sprint 10.1c sibling-reorg (2026-05-11)
                     _wx_mtype_here = _shadow_extra.get("wx_market_type")
                     _wx_city_here = asset.replace("_TEMP", "") if asset else ""
                     _wx_excluded_reason = None

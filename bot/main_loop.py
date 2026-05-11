@@ -360,7 +360,7 @@ class MainLoop:
         self.weather_engine = None
         if WEATHER_ENABLED:
             try:
-                from weather_engine import WeatherEngine
+                from bot.engines.weather_engine import WeatherEngine  # Sprint 10.1c sibling-reorg (2026-05-11)
                 self.weather_engine = WeatherEngine(db_path=DB_PATH)
                 logging.info("Weather engine initialized")
             except Exception as e:
