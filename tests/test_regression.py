@@ -350,7 +350,7 @@ class TestBusyTimeout:
     # Production files that write to state.db and MUST set WAL mode
     WAL_REQUIRED_FILES = [
         "bot/_impl.py", "supabase_sync.py", "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
-        "fifteenm_shadow.py", "hourly_alt_shadow.py", "spx_harrv_shadow.py",
+        "bot/shadows/fifteenm_shadow.py", "bot/shadows/hourly_alt_shadow.py", "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     ]
 
     def test_production_writers_have_wal_mode(self):
@@ -438,7 +438,7 @@ class TestCheckSameThread:
 
     # Files that may have their connection used from a different thread
     CROSS_THREAD_FILES = [
-        "fifteenm_shadow.py",
+        "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     ]
 
     def test_cross_thread_files_have_check_same_thread(self):
@@ -469,9 +469,9 @@ class TestCheckSameThread:
         """fifteenm_shadow.py must accept product_type='15m', not just NULL.
         Bug: queries used 'product_type IS NULL' but 15M evals have product_type='15m'.
         Result: 0 training rows despite hundreds of settled evals."""
-        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "shadows", "fifteenm_shadow.py")  # Sprint 10.2 (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("fifteenm_shadow.py not found")
+            pytest.skip("bot/shadows/fifteenm_shadow.py not found")
         with open(fpath) as f:
             content = f.read()
         # Must NOT have bare "product_type IS NULL" without the OR clause
@@ -488,9 +488,9 @@ class TestCheckSameThread:
 
     def test_fifteenm_shadow_has_busy_timeout(self):
         """fifteenm_shadow.py must also have busy_timeout (shares state.db)."""
-        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "shadows", "fifteenm_shadow.py")  # Sprint 10.2 (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("fifteenm_shadow.py not found")
+            pytest.skip("bot/shadows/fifteenm_shadow.py not found")
         with open(fpath) as f:
             content = f.read()
         assert "busy_timeout" in content, (
@@ -500,9 +500,9 @@ class TestCheckSameThread:
 
     def test_fifteenm_shadow_a3_gating_exists(self):
         """fifteenm_shadow.py must have EGARCHGatingApproach (Approach 3)."""
-        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "shadows", "fifteenm_shadow.py")  # Sprint 10.2 (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("fifteenm_shadow.py not found")
+            pytest.skip("bot/shadows/fifteenm_shadow.py not found")
         with open(fpath) as f:
             content = f.read()
         assert "EGARCHGatingApproach" in content, (
@@ -517,9 +517,9 @@ class TestCheckSameThread:
 
     def test_fifteenm_shadow_a3_both_sides(self):
         """A3 gating must evaluate both YES and NO sides."""
-        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "shadows", "fifteenm_shadow.py")  # Sprint 10.2 (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("fifteenm_shadow.py not found")
+            pytest.skip("bot/shadows/fifteenm_shadow.py not found")
         with open(fpath) as f:
             content = f.read()
         assert "no_a3_gate_prob" in content, (
@@ -531,9 +531,9 @@ class TestCheckSameThread:
 
     def test_fifteenm_shadow_a3_db_columns_match_insert(self):
         """A3 columns in CREATE/ALTER must match INSERT statement."""
-        fpath = os.path.join(PROJECT_ROOT, "fifteenm_shadow.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "shadows", "fifteenm_shadow.py")  # Sprint 10.2 (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("fifteenm_shadow.py not found")
+            pytest.skip("bot/shadows/fifteenm_shadow.py not found")
         with open(fpath) as f:
             content = f.read()
         # Must have both the column definition and the insert
@@ -559,7 +559,7 @@ class TestSyntaxCheck:
 
     CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
                       "bot/engines/sports_engine.py", "bot/engines/spx_engine.py", "bot/engines/weather_engine.py",  # Sprint 10.1c/d (2026-05-11)
-                      "fifteenm_shadow.py"]  # Sprint 10.1b sibling-reorg (2026-05-11): spx_engine relocated
+                      "bot/shadows/fifteenm_shadow.py"]  # Sprint 10.2 (2026-05-11)
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
     def test_file_parses(self, filename):
@@ -1624,9 +1624,9 @@ class TestNoSideOrderbookPricing:
         NO ask is its own price from the NBBO, not derived from YES prices.
         """
         engines = [
-            ("fifteenm_shadow.py", "evaluate_strike"),
-            ("spx_harrv_shadow.py", "evaluate"),
-            ("hourly_alt_shadow.py", "evaluate_strike"),
+            ("bot/shadows/fifteenm_shadow.py", "evaluate_strike"),  # Sprint 10.2 (2026-05-11)
+            ("bot/shadows/spx_harrv_shadow.py", "evaluate"),  # Sprint 10.2 (2026-05-11)
+            ("bot/shadows/hourly_alt_shadow.py", "evaluate_strike"),  # Sprint 10.2 (2026-05-11)
         ]
         for fname, method in engines:
             fpath = os.path.join(PROJECT_ROOT, fname)

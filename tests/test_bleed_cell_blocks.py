@@ -464,7 +464,7 @@ def test_sol_bleed_v2_filter_stage_value_consistency_across_files():
     """
     bot = _import_bot()
     target_files = (
-        REPO / 'fifteenm_shadow.py',
+        REPO / 'bot' / 'shadows' / 'fifteenm_shadow.py',
         REPO / 'scripts' / 'backtest.py',
         REPO / 'scripts' / 'generate_whitepaper_stats.py',
     )
@@ -537,7 +537,7 @@ def test_fifteenm_shadow_temperature_query_includes_sol_bleed_v2_stage():
     """fifteenm_shadow.py temperature recalibration uses a hardcoded
     filter_stage IN list. Without the new tag, per-asset T grid-search
     post-activation loses the high-signal SOL_BLEED_V2 predictions."""
-    shadow_path = REPO / 'fifteenm_shadow.py'
+    shadow_path = REPO / 'bot' / 'shadows' / 'fifteenm_shadow.py'
     src = shadow_path.read_text()
     assert 'SOL_BLEED_V2_88_93C_2_5MIN' in src, (
         "fifteenm_shadow.py temperature query must include "
@@ -823,7 +823,7 @@ def test_filter_stage_value_consistency_across_files():
         'SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE': bot.SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE,
     }
     target_files = (
-        REPO / 'fifteenm_shadow.py',
+        REPO / 'bot' / 'shadows' / 'fifteenm_shadow.py',
         REPO / 'scripts' / 'backtest.py',
         REPO / 'scripts' / 'generate_whitepaper_stats.py',
     )
@@ -848,7 +848,7 @@ def test_fifteenm_shadow_temperature_query_includes_bleed_stages():
     bleed-cell predictions (where calibrator overconfidence shows up
     most clearly).
     """
-    shadow_path = REPO / 'fifteenm_shadow.py'
+    shadow_path = REPO / 'bot' / 'shadows' / 'fifteenm_shadow.py'
     src = shadow_path.read_text()
     # Each bleed filter_stage VALUE (string literal) must appear in the source.
     for stage_value in (

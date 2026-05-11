@@ -103,12 +103,12 @@ PRODUCTION_FILES = [
     "auditor.py",
     "capital_allocator.py",
     "dashboard_snapshot.py",
-    "fifteenm_shadow.py",
-    "hourly_alt_shadow.py",
+    "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
+    "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     "researcher.py",
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "bot/engines/sports_engine.py",  # Sprint 10.1d sibling-reorg (2026-05-11; replaces root-level entry)
-    "spx_harrv_shadow.py",
+    "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     "supabase_sync.py",
     "watchdog.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)

@@ -369,7 +369,7 @@ class MainLoop:
         # ── 15M Shadow Engine (recalibrated EGARCH + LightGBM) ─────────
         self.fifteenm_shadow = None
         try:
-            from fifteenm_shadow import FifteenMShadowEngine, FIFTEENM_SHADOW_ENABLED
+            from bot.shadows.fifteenm_shadow import FifteenMShadowEngine, FIFTEENM_SHADOW_ENABLED  # Sprint 10.2 sibling-reorg (2026-05-11)
             if FIFTEENM_SHADOW_ENABLED:
                 self.fifteenm_shadow = FifteenMShadowEngine(db_path=DB_PATH)
                 logging.info("15M shadow engine initialized (recalibrated EGARCH + LightGBM)")
@@ -379,7 +379,7 @@ class MainLoop:
         # ── Hourly Alt Shadow Engine (ETH/SOL/XRP shadow strategies) ──────
         self.hourly_alt_shadow = None
         try:
-            from hourly_alt_shadow import HourlyAltShadowEngine, HOURLY_ALT_SHADOW_ENABLED
+            from bot.shadows.hourly_alt_shadow import HourlyAltShadowEngine, HOURLY_ALT_SHADOW_ENABLED  # Sprint 10.2 sibling-reorg (2026-05-11)
             if HOURLY_ALT_SHADOW_ENABLED and HOURLY_OBSERVATION_ENABLED:
                 self.hourly_alt_shadow = HourlyAltShadowEngine(db_path=DB_PATH)
                 logging.info("Hourly alt shadow engine initialized (MM + HAR-RV)")
@@ -437,7 +437,7 @@ class MainLoop:
         self.spx_harrv_shadow = None
         if SPX_HOURLY_ENABLED:
             try:
-                from spx_harrv_shadow import SPXHARRVShadowEngine, SPX_HARRV_SHADOW_ENABLED
+                from bot.shadows.spx_harrv_shadow import SPXHARRVShadowEngine, SPX_HARRV_SHADOW_ENABLED  # Sprint 10.2 sibling-reorg (2026-05-11)
                 if SPX_HARRV_SHADOW_ENABLED:
                     self.spx_harrv_shadow = SPXHARRVShadowEngine(db_path=DB_PATH)
                     logging.info("SPX HAR-RV shadow engine initialized")

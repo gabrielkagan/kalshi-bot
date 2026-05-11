@@ -1181,7 +1181,7 @@ def check_spx_pipeline_health(db: sqlite3.Connection, verbose: bool) -> list[tup
                 "⚠️ *AUDITOR ALERT: SPX HAR-RV All Zero RV*\n\n"
                 f"All {cnt} signals in the last 4h have rv_1h=0 or NULL.\n"
                 "Likely cause: Finnhub WS delivering identical prices (zero returns).\n"
-                "The zero-return filter should prevent this — check spx_harrv_shadow.py.",
+                "The zero-return filter should prevent this — check bot/shadows/spx_harrv_shadow.py.",
             ))
 
     return alerts

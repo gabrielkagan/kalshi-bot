@@ -120,6 +120,7 @@ forbidden_modules =
     bot.order_flow
     bot.orphan_db_watchdog
     bot.scanner
+    bot.shadows
     bot.clients
     bot.kalshi_client
     bot.logger

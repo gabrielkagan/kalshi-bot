@@ -37542,6 +37542,2280 @@
     ],
     "returns": "int"
   },
+  "bot.shadows": {
+    "kind": "module"
+  },
+  "bot.shadows.fifteenm_shadow": {
+    "kind": "module"
+  },
+  "bot.shadows.fifteenm_shadow.A4_MAX_ASK": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.A4_MAX_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.A4_MIN_ASK": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.A4_MIN_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.A4_TAKER_FEE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.DB_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.DEFAULT_BLEND_W": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.DEFAULT_DEBIAS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.DEFAULT_EDGE_BLACKLIST": {
+    "annotation": "Dict[str, List[Tuple[float, float]]]",
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.DEFAULT_TEMPERATURES": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.EGARCHGatingApproach": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "FEATURE_NAMES": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "blended_rv"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_prob"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_sigma"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_weight"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kelly_f"
+          },
+          {
+            "annotation": "str",
+            "default": "'yes'",
+            "kind": "positional or keyword",
+            "name": "side"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      }
+    }
+  },
+  "bot.shadows.fifteenm_shadow.FEE_MULTIPLIER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.FIFTEENM_SHADOW_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.FifteenMShadowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_expired": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "set",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate_strike": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "blended_rv"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "egarch_sigma"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_edge"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_fee_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_blend_weight"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kelly_f"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask"
+          }
+        ],
+        "returns": null
+      },
+      "get_dashboard_data": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "settle_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_result"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.fifteenm_shadow.GATING_MIN_TRAINING_ROWS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.GATING_RETRAIN_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.GATING_THRESHOLDS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.LGBM_MIN_TRAINING_ROWS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.LGBM_RETRAIN_INTERVAL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.LateWindowApproach": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_prob"
+          }
+        ],
+        "returns": "Dict"
+      }
+    }
+  },
+  "bot.shadows.fifteenm_shadow.LightGBMApproach": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "blended_rv"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_prob"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      }
+    }
+  },
+  "bot.shadows.fifteenm_shadow.MAX_KELLY_FRACTION": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.MAX_RISK_CAP": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.MIN_DEBIASED_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.RecalibratedEGARCHApproach": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "blend_weights": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "debias": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "edge_blacklist": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "blended_rv"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "egarch_sigma"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "z_score"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "live_prob"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "temperatures": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.shadows.fifteenm_shadow.SHADOW_BANKROLL": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.SHADOW_MIN_ENTRY_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.SHADOW_NO_SIDE_MIN_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.fifteenm_shadow.tracked_write": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "name"
+      },
+      {
+        "annotation": "str",
+        "default": "'?'",
+        "kind": "positional or keyword",
+        "name": "sql_kind"
+      }
+    ],
+    "returns": null
+  },
+  "bot.shadows.hourly_alt_shadow": {
+    "kind": "module"
+  },
+  "bot.shadows.hourly_alt_shadow.ALT_SHADOW_ASSETS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.DB_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.FEE_MULT_MAKER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.FEE_MULT_TAKER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRVShadow": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "apply_market_blend": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "model_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price_cents"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "float"
+      },
+      "check_gates": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "final_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "edge"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[Dict]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_components"
+          }
+        ],
+        "returns": "Tuple[bool, List[str]]"
+      },
+      "compute_probability": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_remaining"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "sigma"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "compute_rv_components": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[Dict[str, float]]"
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_edge"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "forecast_rv": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "Dict[str, float]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_components"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "ingest_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "timestamp"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_KELLY_FRACTION": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MARKET_BLEND": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MAX_CONFIDENCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MAX_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MAX_POSITION_PCT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MAX_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MIN_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MIN_OLS_OBS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MIN_RETURNS_1D": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MIN_RETURNS_1H": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_MIN_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_OLS_WINDOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_PRICE_BLACKLIST": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_PRIORS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_SHADOW_BANKROLL_CENTS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_TEMPERATURE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HARRV_VOL_SPIKE_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HOURLY_ALT_SHADOW_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.HourlyAltShadowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "check_mm_fills": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_expired": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "set",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate_strike": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[Dict]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "ob_data"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_edge"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask"
+          }
+        ],
+        "returns": "List[Dict]"
+      },
+      "get_dashboard_data": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "harrv": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "ingest_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "timestamp"
+          }
+        ],
+        "returns": null
+      },
+      "mm": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "settle_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_result"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.hourly_alt_shadow.MM_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_KELLY_FRACTION": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MAX_POSITION_PCT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MAX_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MAX_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MIN_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MIN_SPREAD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_MIN_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_SHADOW_BANKROLL_CENTS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MM_SPREAD_BUFFER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.MarketMakingShadow": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "check_fills": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "current_ask"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "current_bid"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "cleanup_expired": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "set",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[Dict]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ob_data"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "record_shadow_order": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "signal"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.hourly_alt_shadow.SHADOW_JOURNAL_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.hourly_alt_shadow.calculate_shadow_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "contracts"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": "True",
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.shadows.spx_harrv_shadow": {
+    "kind": "module"
+  },
+  "bot.shadows.spx_harrv_shadow.DB_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.FEE_MULT_MAKER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.FEE_MULT_TAKER": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.HAR_PRIORS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.KELLY_FRACTION": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MARKET_BLEND_W": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MARKET_CLOSE_HOUR_ET": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MARKET_CLOSE_MINUTE_ET": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MARKET_OPEN_HOUR_ET": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MARKET_OPEN_MINUTE_ET": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MAX_CONFIDENCE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MAX_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MAX_POSITION_PCT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MAX_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MAX_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_EDGE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_PRICE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_RETURNS_1D": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_RETURNS_1H": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_RETURNS_1W": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.MIN_STC": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.OLS_MIN_OBS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.OLS_WINDOW": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.OPENING_RUSH_GATE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.RETURN_BUFFER_SIZE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.SHADOW_BANKROLL_CENTS": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.SHADOW_JOURNAL_PATH": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.SPXHARRVModel": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "add_rv_observation": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_1h"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_1d"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_1w"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "realized_next_1h"
+          }
+        ],
+        "returns": null
+      },
+      "apply_market_blend": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "model_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price_cents"
+          }
+        ],
+        "returns": "float"
+      },
+      "check_gates": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "final_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "edge"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[Dict]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_components"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "timestamp"
+          }
+        ],
+        "returns": "Tuple[bool, List[str]]"
+      },
+      "compute_probability": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_remaining"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "sigma"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "compute_rv_components": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_edge"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "forecast_rv": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "Dict",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rv_components"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_metrics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "ingest_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "timestamp"
+          }
+        ],
+        "returns": null
+      },
+      "maybe_fit_ols": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.spx_harrv_shadow.SPXHARRVShadowEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": "DB_PATH",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "cleanup_expired": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "set",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "active_tickers"
+          }
+        ],
+        "returns": null
+      },
+      "evaluate_strike": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "spot_price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "threshold"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "seconds_to_close"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_bid"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "best_ask"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "market_price"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_prob"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "egarch_edge"
+          },
+          {
+            "annotation": "Optional[int]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "no_ask"
+          }
+        ],
+        "returns": null
+      },
+      "get_dashboard_data": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "ingest_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "timestamp"
+          }
+        ],
+        "returns": null
+      },
+      "model": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "settle_signals": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "market_result"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.shadows.spx_harrv_shadow.SPX_HARRV_SHADOW_ENABLED": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.TEMPERATURE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.TRADING_SECONDS_PER_DAY": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.VOL_SPIKE_THRESHOLD": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.shadows.spx_harrv_shadow.tracked_write": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "name"
+      },
+      {
+        "annotation": "str",
+        "default": "'?'",
+        "kind": "positional or keyword",
+        "name": "sql_kind"
+      }
+    ],
+    "returns": null
+  },
   "bot.state": {
     "kind": "module"
   },

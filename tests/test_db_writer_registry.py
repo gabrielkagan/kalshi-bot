@@ -318,11 +318,11 @@ import ast
 # READER (writes go to Supabase HTTP), so it's not tracked here.
 WRITER_MODULES = [
     "bot/_impl.py",
-    "fifteenm_shadow.py",
+    "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     "market_observations_snapshotter.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
     "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
-    "spx_harrv_shadow.py",
+    "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
 ]
 
 

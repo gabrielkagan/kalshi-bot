@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_FILES = [
     "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "models.py",
     "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "bot/engines/sports_engine.py",  # Sprint 10.1b/c/d sibling-reorg (2026-05-11): all 3 main engines relocated
-    "fifteenm_shadow.py", "hourly_alt_shadow.py",
+    "bot/shadows/fifteenm_shadow.py", "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
     # changing SIGMA_WINSOR_ABS_CAP / GLOBAL_MIN_ENTRY_PRICE etc. without
     # updating agent_docs/config_reference.md passes drift-check silently.

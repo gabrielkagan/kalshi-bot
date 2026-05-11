@@ -156,9 +156,9 @@ Engines (separate threads/processes):
 - `bot/engines/sports_data.py` — sports data fetcher (relocated from repo root in Sprint 10.1a, 2026-05-11; first sub-move of the Sprint 10 engines/ sibling-reorg)
 
 Shadows (observation-only):
-- `fifteenm_shadow.py` — 15M variants A1/A2/A3/A4
-- `hourly_alt_shadow.py` — hourly alternate sims
-- `spx_harrv_shadow.py` — SPX HAR-RV shadow
+- `bot/shadows/fifteenm_shadow.py` — 15M variants A1/A2/A3/A4 (relocated Sprint 10.2, 2026-05-11)
+- `bot/shadows/hourly_alt_shadow.py` — hourly alternate sims (relocated Sprint 10.2, 2026-05-11)
+- `bot/shadows/spx_harrv_shadow.py` — SPX HAR-RV shadow (relocated Sprint 10.2, 2026-05-11)
 
 AI helpers:
 - `analyst.py`, `auditor.py`, `researcher.py` — Telegram-driven analysis

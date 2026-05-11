@@ -218,7 +218,7 @@ config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_ED
 models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
-fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
+bot/shadows/fifteenm_shadow.py -- 15M shadow engine (recalibrated EGARCH + LightGBM research)  (Sprint 10.2 relocation, 2026-05-11)
 bot/engines/spx_engine.py      -- S&P 500 intraday engine (EGARCH + VIX, observation mode)  (Sprint 10.1b relocation, 2026-05-11)
 bot/engines/weather_engine.py  -- weather temperature engine (NWP ensemble, NO-side live + observation)  (Sprint 10.1c relocation, 2026-05-11)
 bot/engines/sports_engine.py   -- sports comeback engine (Bayesian LR, observation mode)  (Sprint 10.1d relocation, 2026-05-11)

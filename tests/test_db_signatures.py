@@ -23,9 +23,9 @@ sys.path.insert(0, PROJECT_ROOT)
 # Files that are called from multiple threads and MUST use check_same_thread=False
 MULTI_THREAD_FILES = [
     "bot/_impl.py",
-    "fifteenm_shadow.py",
-    "hourly_alt_shadow.py",
-    "spx_harrv_shadow.py",
+    "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
+    "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
+    "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     "supabase_sync.py",
 ]
 
@@ -34,11 +34,11 @@ PRODUCTION_FILES = [
     "bot/_impl.py",
     "analyst.py",
     "dashboard_snapshot.py",
-    "fifteenm_shadow.py",
-    "hourly_alt_shadow.py",
+    "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
+    "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     "market_config.py",
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
-    "spx_harrv_shadow.py",
+    "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "supabase_sync.py",
     "watchdog.py",
@@ -310,9 +310,9 @@ class TestSyntaxCheck:
         "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
         "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
         "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
-        "fifteenm_shadow.py",
-        "hourly_alt_shadow.py",
-        "spx_harrv_shadow.py",
+        "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
+        "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
+        "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
         "capital_allocator.py",
     ]
 

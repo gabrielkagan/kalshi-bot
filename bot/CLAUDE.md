@@ -2,7 +2,7 @@
 
 These rules apply to `bot/_impl.py` and the engine modules
 (`bot/engines/spx_engine.py`, `bot/engines/weather_engine.py`, `bot/engines/sports_engine.py`,
-`fifteenm_shadow.py`, `analyst.py`). The first seven sections
+`bot/shadows/fifteenm_shadow.py`, `analyst.py`). The first seven sections
 (Threading, cal_mlp four-site, Cell-block, SQLite, `_shadow_diag`,
 Engine→CalEngine, `discover_active_windows()`) are
 **implementation-specific** — they only matter when editing the
