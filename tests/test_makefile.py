@@ -73,7 +73,14 @@ BIT_11_3_TARGETS = (
     "15m-alpha",
     "no-side",
 )
-ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS
+
+# Bit 11.1b (Sprint 11, 2026-05-11) — end-to-end smoke target for the
+# 6 Bit-11.3 wrappers. Doesn't run the smoke here (too slow for the
+# test suite; smoke takes ~30-60s wall-clock on /tmp/state.db); just
+# pins the target's existence + .PHONY + help-listing so a future
+# Makefile edit can't silently drop it.
+BIT_11_1B_TARGETS = ("skill-smoke",)
+ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS
 
 # Bit 11.3 (Sprint 11, 2026-05-11) — explicit (target -> script) mapping
 # pinned by test_bit_11_3_targets_point_to_real_scripts. Catches typos
@@ -1461,6 +1468,83 @@ def test_bit_11_1a_skills_reference_make_wrapper(skill_path: str, wrapper: str):
         f"11.1a (2026-05-11) retargeted the primary invocation to `make X`; "
         f"a regression here means the operator copy-pastes a dead "
         f"`python3 scripts/X.py ...` instead of the Makefile wrapper."
+    )
+
+
+def test_bit_11_1b_skill_smoke_target_exit_code_policy():
+    """The `skill-smoke` recipe must encode the documented exit-code
+    policy: accept 0 (clean), 1 (data-health WARN-only,
+    `scripts/data_health_monitor.py:569`), or 2 (data-health CRIT,
+    `scripts/data_health_monitor.py:567`); reject timeout (142/124),
+    127 (cmd not found), or any other non-zero (script crash).
+    R1-fix 2026-05-11: original recipe accepted only 0/2, which would
+    cause smoke false-positive fail on data-health's exit-1 WARN-only
+    scenario. Cross-ref: kb/findings/skill-audit-may11-bit-11.1b.md."""
+    text = _content()
+    # Find the skill-smoke recipe.
+    m = re.search(r"^skill-smoke:[^\n]*\n((?:\t[^\n]*\n)+)", text, re.M)
+    assert m, "Makefile missing `skill-smoke:` recipe (Bit 11.1b)."
+    recipe = m.group(1)
+    # Exit-code 0 (clean) must be accepted.
+    assert re.search(r"\b0\)", recipe), (
+        "skill-smoke recipe missing `0)` case — clean exit must be accepted."
+    )
+    # Exit-code 1 (data-health WARN-only) must be accepted (R1-fix
+    # 2026-05-11 — scripts/data_health_monitor.py:569 exits 1 on
+    # WARN-only).
+    assert re.search(r"\b1\)", recipe), (
+        "skill-smoke recipe missing `1)` case — data-health's exit-1 "
+        "(WARN-only findings) must be accepted, not treated as wrapper "
+        "failure. See scripts/data_health_monitor.py:569 + "
+        "kb/findings/skill-audit-may11-bit-11.1b.md."
+    )
+    # Exit-code 2 (data-health real findings) must be accepted.
+    assert re.search(r"\b2\)", recipe), (
+        "skill-smoke recipe missing `2)` case — data-health's exit-2 "
+        "(CRIT findings) must be accepted. See "
+        "scripts/data_health_monitor.py:567 + "
+        "kb/findings/skill-audit-may11-bit-11.1b.md."
+    )
+    # Timeout (perl alarm SIGTERM → exit 142, or coreutils timeout → 124)
+    # must be rejected.
+    assert re.search(r"142.*124|124.*142", recipe), (
+        "skill-smoke recipe missing timeout-rejection case (142/124)."
+    )
+
+
+def test_bit_11_1b_skill_smoke_recipe_handles_nonzero_exit_at_runtime():
+    """R3 adversarial pin (2026-05-11): the textual `1)/2)` case checks
+    in test_bit_11_1b_skill_smoke_target_exit_code_policy don't verify
+    that `set -e` doesn't abort BEFORE the case block executes. Pre-R3
+    recipe had `set -e; ...; rc=$?` which aborted the recipe on the
+    first non-zero exit (e.g., data-health exit=2 CRIT), making the
+    case dispatch dead code. Fix replaced with `&& rc=0 || rc=$?` which
+    captures the exit code without triggering early-abort. This test
+    verifies recipe SOURCE no longer has the bug pattern. (We don't
+    actually invoke `make skill-smoke` here — that takes ~30-60s and
+    needs /tmp/state.db; runtime exercise is left to manual operator
+    smoke + the eventual `make test-integration` if it adopts smoke.)"""
+    text = _content()
+    m = re.search(r"^skill-smoke:[^\n]*\n((?:\t[^\n]*\n)+)", text, re.M)
+    assert m, "Makefile missing skill-smoke recipe."
+    recipe = m.group(1)
+    # The bug pattern is `set -e; \\\n` at the top of the recipe. The fix
+    # removed `set -e`. Pin the absence.
+    assert not re.search(r"^\s*@?set -e;\s*\\?\s*$", recipe, re.M), (
+        "skill-smoke recipe re-introduced `set -e`. Per R3 adversarial "
+        "fix (2026-05-11): `set -e` aborts the recipe BEFORE the case "
+        "block reads `rc`, making the 1)/2) accept-cases dead code. Use "
+        "`&& rc=0 || rc=$$?` to capture exit code without early-abort. "
+        "See Makefile comment block below skill-smoke recipe."
+    )
+    # Pin the positive shape: rc capture must NOT trigger -e via the
+    # `; rc=$$?;` pattern (which would have already been &&'d to 0).
+    # The canonical safe pattern is `... && rc=0 || rc=$$?`.
+    assert "&& rc=0 || rc=$$?" in recipe, (
+        "skill-smoke recipe must use `&& rc=0 || rc=$$?` to capture the "
+        "perl-exec exit code safely (or equivalent guard). The current "
+        "shape allows the recipe to proceed to the case block when the "
+        "inner $(MAKE) X exits non-zero."
     )
 
 

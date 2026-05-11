@@ -179,8 +179,69 @@ def check_stale_data(conn: sqlite3.Connection, now_utc: datetime) -> list:
     return results
 
 
+# Bit 11.1b (Sprint 11, 2026-05-11) — per-column NULL-rate eligibility.
+# Pre-Bit-11.1b, check_null_rates() computed `null_count / total` against
+# the FULL per-product-type population. This produced false-positive WARN
+# / CRIT for conditionally-written columns:
+#   - position_size / entry_price: only written for sizing-eligible
+#     filter_stages. Rejection-pre-sizing rows (~30 distinct filter_stages
+#     across `price_out_of_range`, `floor_raise_shadow`, the dc_shadow_*
+#     family, `silent_loss_cooldown`, `tm96_calmlp_gate_blocked`,
+#     `weather_timing_restricted`, etc.) correctly have NULL — they were
+#     rejected BEFORE the sizing engine ran. Counting them in the
+#     denominator inflated the NULL rate to ~38% even though sizing-
+#     eligible rows had 0% NULL.
+#   - egarch_sigma / egarch_blend_sigma: crypto-only features. Weather +
+#     sports product_types correctly have 100% NULL by design.
+#   - volatility: not written for sports (different model family).
+# Per Bit 11.1b RCA (kb/findings/skill-audit-may11-bit-11.1b.md), the
+# fix is two-pronged:
+#   1. PRODUCT_TYPE_SKIP — for a given column, skip the check entirely
+#      when the current product_type doesn't write that column.
+#   2. SIZING_ELIGIBLE_ONLY — for position_size + entry_price, restrict
+#      the denominator + numerator to the CANDIDATE filter_stage only.
+#      The R1 adversarial review caught that any deny-list shape would
+#      drift as new rejection stages get added (~30 exist on 7d window,
+#      growing); the allow-list shape with `{candidate}` is the minimal
+#      robust set. Trade-off: shadow-stage writer bugs are not caught by
+#      this signal (acceptable — `candidate` is the canonical actual-
+#      trade path; downstream signals catch shadow regressions).
+# Columns NOT in either map are checked unconditionally against the
+# full per-product-type population (always-write: calibrated_prob,
+# edge, market_price, seconds_to_close, spot_price, raw_prob).
+# Contract pin: tests/test_data_health_null_rate_eligibility.py.
+PRODUCT_TYPE_SKIP = {
+    "egarch_sigma": ("sports", "weather"),
+    "egarch_blend_sigma": ("sports", "weather"),
+    "volatility": ("sports",),
+}
+# R2 adversarial fix 2026-05-11: removed `spx_hourly` from egarch skip
+# tuples — VPS 7d evidence shows spx_hourly writes egarch_sigma +
+# egarch_blend_sigma at 0% NULL (n=726). Skipping it would mask a real
+# writer-path regression. spx_hourly uses HAR-RV as PRIMARY (per
+# bot/CLAUDE.md), but ALSO writes egarch as a secondary signal.
+SIZING_ELIGIBLE_ONLY = {"position_size", "entry_price"}
+# R1 adversarial fix 2026-05-11: switched from deny-list to allow-list.
+# Deny-list shape (excluding price_out_of_range / floor_raise_shadow /
+# eth_low_floor_shadow / insufficient_edge) missed ~30 other rejection-
+# stage families (`dc_shadow_*`, `*_timing_restricted`, `silent_*`,
+# `tm96_*_blocked`, `*_asset_excluded`, `*_edge_cap`, ...) that drift in
+# as the bot adds new filters. Allow-list = "definitely-sized" — only
+# `candidate` for now (the canonical actual-trade filter_stage).
+SIZING_ELIGIBLE_FILTER_STAGES = frozenset({"candidate"})
+SIZING_ELIGIBLE_FILTER_STAGE_PREDICATE = (
+    "filter_stage IN ('"
+    + "', '".join(sorted(SIZING_ELIGIBLE_FILTER_STAGES))
+    + "')"
+)
+
+
 def check_null_rates(conn: sqlite3.Connection, now_utc: datetime) -> list:
-    """Check NULL rates for key columns per product_type in last 24h."""
+    """Check NULL rates for key columns per product_type in last 24h.
+
+    Bit 11.1b (2026-05-11): per-column eligibility filters applied —
+    see PRODUCT_TYPE_SKIP + SIZING_ELIGIBLE_ONLY constants above and
+    RCA in kb/findings/skill-audit-may11-bit-11.1b.md."""
     results = []
 
     if not table_exists(conn, "evaluated_opportunities"):
@@ -206,14 +267,28 @@ def check_null_rates(conn: sqlite3.Connection, now_utc: datetime) -> list:
         results.append((INFO, "NULL rates: No monitored columns found"))
         return results
 
-    product_types = ["15m", "hourly", "spx_hourly", "weather"] if has_product_type else [None]
+    # Bit 11.1b R1 fix 2026-05-11: data-driven product_types via DISTINCT
+    # query — the prior hardcoded `["15m", "hourly", "spx_hourly",
+    # "weather"]` silently dropped `sports` + `dip_addon_shadow` (which
+    # exist on prod). Now any product_type with rows in the 24h window
+    # gets checked. Empty result → fall back to `[None]` (un-typed mode).
+    if has_product_type:
+        rows = conn.execute(
+            "SELECT DISTINCT product_type FROM evaluated_opportunities "
+            "WHERE evaluation_time > ? AND product_type IS NOT NULL "
+            "ORDER BY product_type",
+            (cutoff,),
+        ).fetchall()
+        product_types = [r[0] for r in rows] or [None]
+    else:
+        product_types = [None]
     NULL_THRESHOLD = 0.20  # Flag if >20% NULL
 
     for pt in product_types:
         if has_product_type and pt:
             where = "WHERE product_type = ? AND evaluation_time > ?"
             params = (pt, cutoff)
-            label = {"15m": "15M", "hourly": "Hourly", "spx_hourly": "SPX", "weather": "Wx"}.get(pt, pt)
+            label = {"15m": "15M", "hourly": "Hourly", "spx_hourly": "SPX", "weather": "Wx", "sports": "Sports"}.get(pt, pt)
         else:
             where = "WHERE evaluation_time > ?"
             params = (cutoff,)
@@ -230,12 +305,38 @@ def check_null_rates(conn: sqlite3.Connection, now_utc: datetime) -> list:
 
         flagged = []
         for col in sorted(existing_columns):
-            null_row = conn.execute(
-                f"SELECT COUNT(*) FROM evaluated_opportunities {where} AND {col} IS NULL",
-                params,
-            ).fetchone()
+            # Bit 11.1b eligibility — skip columns the current product_type
+            # doesn't write at all (crypto-only features on weather/sports).
+            if pt in PRODUCT_TYPE_SKIP.get(col, ()):
+                continue
+
+            # Bit 11.1b eligibility — scope sizing-conditional columns to
+            # sizing-eligible filter_stages for both numerator AND
+            # denominator. Otherwise rejection-pre-sizing rows inflate
+            # the NULL rate.
+            if col in SIZING_ELIGIBLE_ONLY:
+                scoped_where = f"{where} AND {SIZING_ELIGIBLE_FILTER_STAGE_PREDICATE}"
+                scoped_total_row = conn.execute(
+                    f"SELECT COUNT(*) FROM evaluated_opportunities {scoped_where}",
+                    params,
+                ).fetchone()
+                col_total = scoped_total_row[0] if scoped_total_row else 0
+                if col_total == 0:
+                    continue
+                null_row = conn.execute(
+                    f"SELECT COUNT(*) FROM evaluated_opportunities {scoped_where} "
+                    f"AND {col} IS NULL",
+                    params,
+                ).fetchone()
+            else:
+                col_total = total
+                null_row = conn.execute(
+                    f"SELECT COUNT(*) FROM evaluated_opportunities {where} "
+                    f"AND {col} IS NULL",
+                    params,
+                ).fetchone()
             null_count = null_row[0] if null_row else 0
-            null_rate = null_count / total if total > 0 else 0
+            null_rate = null_count / col_total if col_total > 0 else 0
 
             if null_rate > NULL_THRESHOLD:
                 flagged.append(f"{col} {null_rate:.0%} NULL")

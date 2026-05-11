@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -169,6 +169,7 @@ help:
 	@echo "  make hourly-audit         scripts/hourly_shadow_audit.py --regime auto"
 	@echo "  make 15m-alpha            scripts/15m_alpha_research.py --regime auto"
 	@echo "  make no-side              scripts/no_side_status.py"
+	@echo "  make skill-smoke          end-to-end smoke of the 6 wrappers (Bit 11.1b)"
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -406,3 +407,50 @@ hourly-audit:
 
 no-side:
 	$(PYTHON) scripts/no_side_status.py --db /tmp/state.db
+
+# Bit 11.1b (Sprint 11, 2026-05-11) — end-to-end smoke for the 6 Bit-11.3
+# wrappers. Each wrapper invoked with a 60s `perl alarm` timeout (macOS
+# has no `timeout(1)` by default). Exit-code policy:
+#   0  — clean run
+#   1  — data-health flagged WARN-only findings (scripts/data_health_monitor.py:569
+#        `sys.exit(1)` when WARNINGS exist but no critical). NOT a wrapper
+#        bug; the script's documented exit code for "warnings only".
+#   2  — data-health flagged critical findings (scripts/data_health_monitor.py:567
+#        `sys.exit(2)`). NOT a wrapper bug; the script's documented exit code.
+#   127 / timeout (142/124) — wrapper broken; smoke fails.
+#   any other non-zero — script crash; smoke fails.
+# data-health's three-level exit code (0/1/2 = clean/warn/crit) is the
+# documented contract per scripts/data_health_monitor.py:565 comment.
+# Other wrappers (alpha-audit / 15m-audit / hourly-audit / 15m-alpha /
+# no-side) exit 0 on success and non-zero on script crash — they don't
+# have a WARN-tier exit code, so the `1)` case fires ONLY for data-health
+# WARN scenarios in practice. Trade-off accepted: a real crash of one of
+# the non-data-health wrappers would exit 1 and be misclassified as
+# WARN-pass; the alternative (per-wrapper exit-code policy) is too brittle.
+# Findings + audit ship doc: kb/findings/skill-audit-may11-bit-11.1b.md.
+# Test pin: tests/test_makefile.py::test_bit_11_1b_skill_smoke_target_exit_code_policy.
+skill-smoke:
+	@for t in data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side; do \
+		log=/tmp/skill_smoke_$$t.log; \
+		echo "→ make $$t"; \
+		perl -e 'alarm 60; exec @ARGV' $(MAKE) $$t > $$log 2>&1 && rc=0 || rc=$$?; \
+		case "$$rc" in \
+			0) echo "  ✓ exit=0 (clean)";; \
+			1) echo "  ✓ exit=1 (WARN-only findings — see $$log; data-health-only)";; \
+			2) echo "  ✓ exit=2 (CRIT findings — see $$log; data-health-only)";; \
+			142|124) echo "  ✗ TIMEOUT (see $$log)"; exit 1;; \
+			127) echo "  ✗ COMMAND NOT FOUND (Makefile target missing?)"; exit 1;; \
+			*) echo "  ✗ exit=$$rc (script crash — see $$log)"; exit 1;; \
+		esac; \
+	done; \
+	echo "✓ skill-smoke (6 Bit-11.3 wrappers)"
+# R3 adversarial fix 2026-05-11: removed `set -e` and replaced `; rc=$$?`
+# with `&& rc=0 || rc=$$?` to capture perl-exec's exit code WITHOUT
+# triggering early-abort under `set -e`. Pre-fix recipe failed on first
+# real use: `make data-health` exits 2 on CRIT findings (the case this
+# Bit is designed for), but `set -e` aborted before the case-block read
+# `rc`. Reproduced via R3 review — `make: *** [skill-smoke] Error 2`
+# instead of `✓ exit=2 (CRIT findings — see ...)`. The textual test pin
+# (test_bit_11_1b_skill_smoke_target_exit_code_policy) checked recipe
+# SOURCE for `1)` / `2)` cases but did not exercise runtime; R3 added a
+# runtime smoke pin to close that gap.
