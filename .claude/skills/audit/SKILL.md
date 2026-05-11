@@ -17,29 +17,43 @@ Run a specific audit script for a single system. Takes a system argument.
 /audit all
 ```
 
+## Preflight
+
+Before running this skill, verify:
+- `/tmp/state.db` exists (operator must have synced via `.claude/skills/references/db-sync.md`).
+- The Makefile target (if one exists, see dispatch table) parses: `make -n <target>` exits 0.
+- The fallback `scripts/<script>.py` file exists if no Makefile target.
+
+If any check fails, surface the missing path to the operator with a clear remedy ("Run `.claude/skills/references/db-sync.md` first" or "Sprint 11 Bit 11.3 wrapper missing — fall back to `python3 scripts/X.py`").
+
 ## Steps
 
-1. **Parse the argument** to determine which system:
-   | Argument | Script | Default args |
-   |----------|--------|-------------|
-   | `15m` | `scripts/15m_live_audit.py` | `--regime auto` |
-   | `hourly` | `scripts/hourly_shadow_audit.py` | `--regime auto` |
-   | `spx` | `scripts/spx_shadow_audit.py` | `--regime auto` |
-   | `weather` | `scripts/weather_shadow_audit.py` | `--regime auto` |
-   | `sports` | `scripts/sports_shadow_audit.py` | `--regime auto` |
-   | `no_side` | `scripts/no_side_status.py` | `--db /tmp/state.db` |
-   | `all` | Run all 6 scripts sequentially | see above for each |
+1. **Parse the argument** to determine which system. The dispatch table below names the Makefile wrapper where one exists (Bit 11.3 / 11.1c); rows without a `Make wrapper` entry must use the direct `python3 scripts/X.py` form:
+
+   | Argument | Make wrapper | Script | Default args |
+   |----------|--------------|--------|-------------|
+   | `15m` | `make 15m-audit` | `scripts/15m_live_audit.py` | `--regime auto` |
+   | `hourly` | `make hourly-audit` | `scripts/hourly_shadow_audit.py` | `--regime auto` |
+   | `spx` | — | `scripts/spx_shadow_audit.py` | `--regime auto` |
+   | `weather` | — | `scripts/weather_shadow_audit.py` | `--regime auto` |
+   | `sports` | — | `scripts/sports_shadow_audit.py` | `--regime auto` |
+   | `no_side` | `make no-side` | `scripts/no_side_status.py` | `--db /tmp/state.db` |
+   | `all` | partial (15m + hourly + no_side via `make`) | Run all 6 scripts sequentially | see above for each |
 
    If no argument provided, ask the user which system.
-   If an additional date argument is provided (e.g., `/audit hourly 2026-03-01`), use `--since <date>` instead of `--regime auto`.
+   If an additional date argument is provided (e.g., `/audit hourly 2026-03-01`), use `--since <date>` instead of `--regime auto` — note that this requires the direct `python3 scripts/X.py` form (Makefile wrappers don't accept custom args).
 
 2. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.
 
-3. **Run the audit script**:
+3. **Run the audit**. Prefer the `make` wrapper if the dispatch table lists one (Bit 11.3 / 11.1c) — it pre-bakes `--db /tmp/state.db --regime auto`. Otherwise use the direct script invocation:
    ```bash
+   # When a `make` wrapper exists (15m / hourly / no_side):
+   make <wrapper> 2>&1
+
+   # Otherwise (spx / weather / sports), or when passing custom args:
    python3 scripts/<script> --db /tmp/state.db --regime auto 2>&1
    ```
-   If user provided a date, use `--since "<date>"` instead of `--regime auto`.
+   If user provided a date, use `--since "<date>"` instead of `--regime auto` (always via direct invocation — wrappers don't pass through).
 
    **WHY `--regime auto`?** This flag makes the script detect the last git commit that changed relevant trading constants (via `git log --diff-filter`), then filters data to only include rows after that commit. This prevents mixing data from old configs (different sizing, edge thresholds, calibration) with current config — which would produce misleading WR and PnL numbers.
 

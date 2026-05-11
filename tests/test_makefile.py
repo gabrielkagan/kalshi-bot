@@ -1447,6 +1447,19 @@ BIT_11_1A_SKILL_WRAPPER_MAP = {
     ".claude/skills/status/SKILL.md": "make no-side",
 }
 
+# Bit 11.1c (Sprint 11, 2026-05-11) — audit/SKILL.md dispatch-table
+# retarget. The /audit skill is a meta-skill that dispatches to
+# multiple scripts; this Bit added a "Make wrapper" column to the
+# dispatch table for the 3 rows that map to Bit 11.3 wrappers (15m,
+# hourly, no_side). The spx/weather/sports rows stay as direct script
+# invocations (no wrappers exist for those). Also added a Preflight
+# section pinning the path-existence checks.
+BIT_11_1C_AUDIT_SKILL_WRAPPER_REFS = (
+    "make 15m-audit",
+    "make hourly-audit",
+    "make no-side",
+)
+
 
 @pytest.mark.parametrize(
     "skill_path,wrapper",
@@ -1509,6 +1522,40 @@ def test_bit_11_1b_skill_smoke_target_exit_code_policy():
     # must be rejected.
     assert re.search(r"142.*124|124.*142", recipe), (
         "skill-smoke recipe missing timeout-rejection case (142/124)."
+    )
+
+
+@pytest.mark.parametrize("wrapper", BIT_11_1C_AUDIT_SKILL_WRAPPER_REFS)
+def test_bit_11_1c_audit_skill_dispatch_references_make_wrappers(wrapper: str):
+    """audit/SKILL.md is the /audit dispatcher; its table maps argument
+    → script. Bit 11.1c (2026-05-11) added a `Make wrapper` column so
+    the agent prefers the Bit 11.3 wrapper for the 3 mappable rows
+    (15m, hourly, no_side). The spx/weather/sports rows stay as direct
+    `python3 scripts/X.py` invocations (no wrappers exist yet —
+    deferred to a follow-up Bit when wider script-set wrappers ship).
+    Regression-test catches a future revert of the dispatch table back
+    to a wrapper-less form."""
+    skill_file = REPO_ROOT / ".claude/skills/audit/SKILL.md"
+    assert skill_file.exists(), "audit/SKILL.md missing"
+    content = skill_file.read_text()
+    assert wrapper in content, (
+        f"audit/SKILL.md missing dispatch reference to {wrapper!r}. "
+        f"Bit 11.1c retargeted the dispatch table for 15m / hourly / "
+        f"no_side rows to prefer Bit 11.3 wrappers."
+    )
+
+
+def test_bit_11_1c_audit_skill_has_preflight_section():
+    """audit/SKILL.md must have a `## Preflight` section per Bit 11.1c
+    (master plan §Bit 11.1: 'Add Preflight section that exits with
+    error if path missing'). Pins the section header so a future edit
+    can't silently drop it."""
+    skill_file = REPO_ROOT / ".claude/skills/audit/SKILL.md"
+    content = skill_file.read_text()
+    assert re.search(r"^##\s+Preflight\b", content, re.M), (
+        "audit/SKILL.md missing `## Preflight` section. Bit 11.1c "
+        "requires this section to instruct the agent to verify "
+        "/tmp/state.db + Makefile target / script path BEFORE running."
     )
 
 
