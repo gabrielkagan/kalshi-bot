@@ -1690,6 +1690,37 @@ def test_bit_13_6_onboarding_md_exists():
         )
 
 
+@pytest.mark.parametrize("template,required_sections", [
+    (".claude/templates/new-shadow.md",
+     ("## Decision doc", "## Constants", "## Writer wiring",
+      "## DB schema", "## Dashboard", "## Tests",
+      "## Promotion checklist (NOT auto)")),
+    (".claude/templates/new-agent.md",
+     ("## Purpose", "## Invocation", "## Capabilities",
+      "## Tools (declared)", "## Prompt template",
+      "## When NOT to dispatch")),
+    (".claude/templates/new-audit.md",
+     ("argparse", "PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=10000",
+      "Wilson CI", "regime", "pnl_cents")),
+])
+def test_bit_13_2_rest_templates_exist(template: str, required_sections):
+    """Bit 13.2-rest (2026-05-11) — the 3 remaining templates per master
+    plan §Bit 13.2 (new-shadow + new-agent + new-audit). Pins file
+    existence + canonical sections per template type."""
+    tpl = REPO_ROOT / template
+    assert tpl.is_file(), (
+        f"Bit 13.2-rest template {template!r} missing. Master plan §13.2 "
+        f"lists 4 templates (new-skill from Bit 13.2-narrow, plus these 3)."
+    )
+    content = tpl.read_text()
+    for section in required_sections:
+        assert section in content, (
+            f"{template!r} missing canonical content {section!r}. Bit "
+            f"13.2-rest pins these so a future edit can't silently drop "
+            f"the canonical structure."
+        )
+
+
 def test_bit_13_2_new_skill_template_exists():
     """Bit 13.2 (2026-05-11) — `.claude/templates/new-skill.md`
     scaffolds new operator SKILL.md files with the canonical shape
