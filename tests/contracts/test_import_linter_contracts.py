@@ -121,6 +121,17 @@ def _enumerate_top_level_bot_modules() -> set[str]:
     (dirs with __init__.py). Returns dotted names like 'bot._impl',
     'bot.engines'. Excludes proxy/entrypoint __init__/__main__ and
     the allowed leaf deps.
+
+    Sprint 10 fu (ticket 86b9vr5hu, 2026-05-10): defensive iCloud-conflict
+    filter per L93. macOS+iCloud creates `bot/X 2.py` (or `bot/X 3.py`,
+    `bot/X 4.py`, ...) when iCloud syncs a file from another device while
+    the local file is also modified. These conflict files have spaces
+    in their stems and are NOT real Python modules. Without the filter,
+    a stale conflict file would silently land in walker output as
+    `bot.X 2` (invalid module name), breaking the helpers-leaf coverage
+    test with a confusing "missing module" error. Same `if " " in name:
+    continue` filter applied to both file stems and subpackage names —
+    iCloud creates conflict subdirectories too (`bot/scanner 2/`).
     """
     bot_dir = REPO_ROOT / "bot"
     modules: set[str] = set()
@@ -129,9 +140,13 @@ def _enumerate_top_level_bot_modules() -> set[str]:
             stem = entry.stem
             if stem in NON_MODULE_NAMES:
                 continue
+            if " " in stem:  # L93 iCloud conflict filter (Sprint 10 fu 86b9vr5hu)
+                continue
             modules.add(f"bot.{stem}")
         elif entry.is_dir() and (entry / "__init__.py").exists():
             # __pycache__ has no __init__.py so it won't pass this gate.
+            if " " in entry.name:  # L93 iCloud conflict filter (Sprint 10 fu 86b9vr5hu)
+                continue
             modules.add(f"bot.{entry.name}")
     return modules - LEAF_ALLOWED_DEPS
 
