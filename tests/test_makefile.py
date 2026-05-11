@@ -1642,6 +1642,33 @@ def test_bit_11_1c_audit_skill_has_preflight_section():
     )
 
 
+def test_bit_13_2_new_skill_template_exists():
+    """Bit 13.2 (2026-05-11) — `.claude/templates/new-skill.md`
+    scaffolds new operator SKILL.md files with the canonical shape
+    (frontmatter → When to use → Usage → Preflight → Steps → Error
+    Handling → IMPORTANT). Pin existence + canonical sections."""
+    tpl = REPO_ROOT / ".claude/templates/new-skill.md"
+    assert tpl.is_file(), (
+        "Bit 13.2 template `.claude/templates/new-skill.md` missing — "
+        "new SKILL.md files have no canonical scaffold to copy."
+    )
+    content = tpl.read_text()
+    # Pin the canonical sections + the Preflight shared-reference link
+    # (Bit 11.1d pattern) so a future template edit can't silently
+    # drop the discipline.
+    for section in ("## When to use", "## Usage", "## Preflight",
+                    "## Steps", "## Error Handling", "## IMPORTANT"):
+        assert section in content, (
+            f"new-skill.md template missing canonical section {section!r}. "
+            f"Bit 13.2 ships the full shape; future skills depend on it."
+        )
+    assert ".claude/skills/references/preflight.md" in content, (
+        "new-skill.md template missing reference to the shared Preflight "
+        "checklist at `.claude/skills/references/preflight.md` (Bit 11.1d). "
+        "Without it, new skills would roll their own preflight prose."
+    )
+
+
 def test_bit_13_3_refresh_map_target():
     """Bit 13.3: `make refresh-map` must invoke
     `scripts/refresh_repo_map.py`. The script exists and writes
