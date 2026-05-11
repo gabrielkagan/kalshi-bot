@@ -694,11 +694,12 @@ def test_no_settlement_no_impl_toplevel_contract_added():
         "Unexpected `settlement-no-impl-toplevel` contract added — SettlementTracker is a "
         "clean leaf (no late-binding required); the contract should NOT exist."
     )
-    # Sanity: 5 contracts total (engines-no-impl, fetchers-no-engines, feeds-no-engines,
-    # helpers-leaf, state-no-impl-toplevel)
-    assert len(contracts) == 5, (
-        f".importlinter has {len(contracts)} contracts; expected 5 post-Bit-9.2 (no change). "
-        f"Contracts present: {sorted(contract_names)}"
+    # Sanity: 7 contracts total post-Bit-12.3 (Sprint 12, 2026-05-11):
+    # engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
+    # state-no-impl-toplevel, bot-no-torch, bot-no-pandas.
+    assert len(contracts) == 7, (
+        f".importlinter has {len(contracts)} contracts; expected 7 "
+        f"post-Bit-12.3. Contracts present: {sorted(contract_names)}"
     )
 
 

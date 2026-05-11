@@ -763,10 +763,11 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     assert "main_loop-no-impl-toplevel" not in contract_names, (
         "Unexpected `main_loop-no-impl-toplevel` contract added"
     )
-    # Sanity: 5 contracts (engines-no-impl, fetchers-no-engines, feeds-no-engines,
-    # helpers-leaf, state-no-impl-toplevel) — same as post-Bit-9.2.
-    assert len(contracts) == 5, (
-        f"Expected 5 .importlinter contracts post-Bit-9.3; found {len(contracts)}: {contract_names}"
+    # Sanity: 7 contracts post-Bit-12.3 (Sprint 12, 2026-05-11): 5 pre-existing
+    # (engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
+    # state-no-impl-toplevel) + 2 new (bot-no-torch, bot-no-pandas).
+    assert len(contracts) == 7, (
+        f"Expected 7 .importlinter contracts post-Bit-12.3; found {len(contracts)}: {contract_names}"
     )
 
 

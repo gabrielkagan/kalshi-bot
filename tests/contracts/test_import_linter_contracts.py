@@ -71,6 +71,17 @@ EXPECTED_CONTRACTS = (
     "feeds-no-engines",
     "helpers-leaf",
     "state-no-impl-toplevel",
+    # Bit 12.3 (Sprint 12, 2026-05-11) — heavyweight numerical libs.
+    # CLAUDE.md sacred rule: cal_mlp/integration.py is the SINGLE
+    # torch entry point because numpy/scipy/torch C-extensions cache
+    # OpenBLAS thread count at load time. bot.* importing torch /
+    # pandas directly routes around the bot._thread_env-pinned chain
+    # and reproduces the 2026-04-29 cal_mlp_torch_thread_contention
+    # incident class. The existing AST regression in
+    # tests/test_cal_mlp_invariants.py guards bot/_impl.py
+    # specifically; these contracts generalize to ALL bot.* modules.
+    "bot-no-torch",
+    "bot-no-pandas",
 )
 
 # bot.constants is the only allowed internal dep for the helpers leaf.
