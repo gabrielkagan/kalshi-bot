@@ -88,7 +88,7 @@ This document describes an automated trading platform for **Kalshi**, the first 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
 \begin{metricbox}
-\textbf{Live trading results (auto-updated; last refresh 2026-05-11T09:52:57Z):}
+\textbf{Live trading results (auto-updated; last refresh 2026-05-11T10:14:27Z):}
 \begin{itemize}
 \item \textbf{3,866} settled trades with a \textbf{92.6\%} win rate (3,579W / 285L / 2 breakeven)
 \item Live trading with real capital since February 22, 2026
@@ -428,4 +428,4 @@ For readers interested in the mathematical foundations, the full technical white
 
 ---
 
-*Last updated: 2026-05-11T09:52:57Z*
+*Last updated: 2026-05-11T10:14:27Z*
