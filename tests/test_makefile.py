@@ -1690,6 +1690,61 @@ def test_bit_13_6_onboarding_md_exists():
         )
 
 
+def test_bit_13_4_scenarios_directory_exists():
+    """Bit 13.4-narrow (2026-05-11) — `tests/fixtures/scenarios/`
+    directory with README + 1 seed scenario (typical 15M trade
+    lifecycle). Pin existence + README convention + scenario
+    loadability."""
+    scenarios = REPO_ROOT / "tests/fixtures/scenarios"
+    assert scenarios.is_dir(), (
+        "Bit 13.4-narrow directory tests/fixtures/scenarios/ missing."
+    )
+    readme = scenarios / "README.md"
+    assert readme.is_file(), (
+        "tests/fixtures/scenarios/README.md missing — operators need "
+        "the convention reference."
+    )
+    readme_content = readme.read_text()
+    # Pin canonical sections per Bit 13.4-narrow plan.
+    for section in ("## Convention", "## Existing scenarios",
+                    "## Why .sql instead of .json or .parquet",
+                    "## Adding a new scenario", "## Caveats"):
+        assert section in readme_content, (
+            f"scenarios/README.md missing canonical section {section!r}."
+        )
+    # Pin the seed scenario exists.
+    seed = scenarios / "typical-15m-trade.sql"
+    assert seed.is_file(), (
+        "tests/fixtures/scenarios/typical-15m-trade.sql missing — Bit "
+        "13.4-narrow ships this as the first reproducible scenario."
+    )
+
+
+def test_bit_13_4_typical_15m_trade_loads_cleanly():
+    """The seed scenario must `executescript` cleanly into an empty
+    sqlite3 DB. Catches SQL syntax errors / schema-DDL drift."""
+    import sqlite3
+    import tempfile
+    seed = REPO_ROOT / "tests/fixtures/scenarios/typical-15m-trade.sql"
+    sql = seed.read_text()
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
+        conn = sqlite3.connect(tmp.name)
+        try:
+            conn.executescript(sql)
+            # Verify the lifecycle rows are present (1 eval, 5 obs, 1 settled).
+            n_eval = conn.execute(
+                "SELECT COUNT(*) FROM evaluated_opportunities").fetchone()[0]
+            n_obs = conn.execute(
+                "SELECT COUNT(*) FROM market_observations_continuous").fetchone()[0]
+            n_settled = conn.execute(
+                "SELECT COUNT(*) FROM settled_trades").fetchone()[0]
+            assert n_eval == 1, f"expected 1 evaluated_opportunity, got {n_eval}"
+            assert n_obs == 5, f"expected 5 market_observations, got {n_obs}"
+            assert n_settled == 1, f"expected 1 settled_trade, got {n_settled}"
+        finally:
+            conn.close()
+
+
 @pytest.mark.parametrize("agent_name,required_sections", [
     ("rca-investigator",
      ("## Purpose", "## Invocation", "## Capabilities",
