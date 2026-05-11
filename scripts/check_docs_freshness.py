@@ -55,8 +55,8 @@ def check_unreplaced_placeholders(path):
 
 
 def count_leagues():
-    """Count leagues in sports_data.py LEAGUES dict."""
-    sports_data_path = os.path.join(REPO_DIR, "sports_data.py")
+    """Count leagues in bot/engines/sports_data.py LEAGUES dict."""
+    sports_data_path = os.path.join(REPO_DIR, "bot", "engines", "sports_data.py")  # Sprint 10.1a (2026-05-11)
     if not os.path.exists(sports_data_path):
         return None
     with open(sports_data_path) as f:
@@ -75,8 +75,8 @@ def count_weather_cities():
 
 
 def get_sports_config():
-    """Extract key sports config values from sports_data.py."""
-    sports_data_path = os.path.join(REPO_DIR, "sports_data.py")
+    """Extract key sports config values from bot/engines/sports_data.py."""
+    sports_data_path = os.path.join(REPO_DIR, "bot", "engines", "sports_data.py")  # Sprint 10.1a (2026-05-11)
     if not os.path.exists(sports_data_path):
         return {}
     with open(sports_data_path) as f:
@@ -294,7 +294,7 @@ def check_cross_file_values(path):
             if int(mention) != actual_leagues:
                 issues.append(
                     f"Stale league count: found '{mention} leagues' in doc, "
-                    f"sports_data.py has {actual_leagues}"
+                    f"bot/engines/sports_data.py has {actual_leagues}"
                 )
 
     # --- Weather city count ---
@@ -330,7 +330,7 @@ def check_cross_file_values(path):
             if int(mention) != gap_pp:
                 issues.append(
                     f"Stale MAX_MODEL_MARKET_GAP: found '{mention}pp' in doc, "
-                    f"sports_data.py has {gap_pp}pp"
+                    f"bot/engines/sports_data.py has {gap_pp}pp"
                 )
 
     # --- Exchange feed list ---

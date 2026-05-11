@@ -42,7 +42,7 @@ class TestNoHardcodedDisabledSeries(unittest.TestCase):
     to add another hardcoded `enabled=False`."""
 
     def test_no_league_has_hardcoded_enabled_false(self):
-        from sports_data import LEAGUES
+        from bot.engines.sports_data import LEAGUES
         disabled = [
             k for k, cfg in LEAGUES.items() if not cfg.enabled
         ]

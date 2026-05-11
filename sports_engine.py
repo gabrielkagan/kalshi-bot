@@ -26,7 +26,7 @@ import requests
 
 from bot.db_writer_registry import tracked_write  # ops: db-locked RCA instrumentation 2026-05-08
 
-from sports_data import (
+from bot.engines.sports_data import (  # Sprint 10.1a sibling-reorg (2026-05-11): sports_data.py relocated from repo root to bot/engines/sports_data.py
     BINARY_ENTRY_CRITERIA,
     BINARY_LR_TABLE,
     CONSERVATIVE_LR_SCALE,

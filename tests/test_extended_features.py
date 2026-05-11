@@ -339,7 +339,7 @@ class TestSportsInsertTierCoverage(unittest.TestCase):
 
     def _make_game_signal(self):
         from sports_engine import GameState, ComebackSignal
-        from sports_data import LeagueConfig
+        from bot.engines.sports_data import LeagueConfig
         game = GameState(
             game_id="test-g-1", league="KXNBAGAME",
             home_team="Lakers", away_team="Celtics",

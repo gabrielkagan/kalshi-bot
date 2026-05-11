@@ -419,7 +419,7 @@ def validate_market_configs() -> None:
 
     # Sports subtypes must match SPORT_GROUPS
     if MARKET_CONFIGS["sports"].cal_subtypes:
-        from sports_data import SPORT_GROUPS
+        from bot.engines.sports_data import SPORT_GROUPS  # Sprint 10.1a sibling-reorg (2026-05-11)
         for sub in MARKET_CONFIGS["sports"].cal_subtypes:
             assert sub in SPORT_GROUPS, f"FATAL: sports subtype '{sub}' not in SPORT_GROUPS"
 

@@ -4,7 +4,7 @@
 Outputs JSON that can feed into doc templates, ensuring docs always
 reflect the actual code. No imports of bot/_impl.py — pure static analysis.
 
-Also parses weather_engine.py and sports_data.py for cross-file data.
+Also parses weather_engine.py and bot/engines/sports_data.py for cross-file data.
 
 Usage:
     python3 scripts/extract_config.py > config.json
@@ -23,7 +23,7 @@ REPO_DIR = os.path.join(SCRIPT_DIR, "..")
 BOT_PATH = os.path.join(REPO_DIR, "bot/_impl.py")
 CONSTANTS_PATH = os.path.join(REPO_DIR, "bot/constants.py")
 WEATHER_PATH = os.path.join(REPO_DIR, "weather_engine.py")
-SPORTS_PATH = os.path.join(REPO_DIR, "sports_data.py")
+SPORTS_PATH = os.path.join(REPO_DIR, "bot", "engines", "sports_data.py")  # Sprint 10.1a (2026-05-11)
 
 # Constants to extract (name -> human-readable description)
 TRACKED_CONSTANTS = {
@@ -264,7 +264,7 @@ def extract_weather_cities() -> dict:
 
 
 def extract_sports_leagues() -> dict:
-    """Parse sports_data.py for LEAGUES dict via regex.
+    """Parse bot/engines/sports_data.py for LEAGUES dict via regex.
 
     Returns dict with league_count, league_tickers, league_names.
     Uses regex instead of AST because LEAGUES uses LeagueConfig() calls.

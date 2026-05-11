@@ -1160,7 +1160,7 @@ def _derive_subtype(product_type: str, asset: Optional[str]) -> Optional[str]:
         return asset.replace("_TEMP", "") if "_TEMP" in asset else None
     if product_type == "sports":
         try:
-            from sports_data import LEAGUES
+            from bot.engines.sports_data import LEAGUES  # Sprint 10.1a sibling-reorg (2026-05-11)
             for _lcfg in LEAGUES.values():
                 if _lcfg.display_name == asset:
                     return _lcfg.sport_group
@@ -1180,7 +1180,7 @@ def _derive_asset_filter(product_type: str, subtype_code: str):
         return f"{subtype_code}_TEMP"  # "NYC" → "NYC_TEMP"
     if product_type == "sports":
         try:
-            from sports_data import LEAGUES
+            from bot.engines.sports_data import LEAGUES  # Sprint 10.1a sibling-reorg (2026-05-11)
             return [lcfg.display_name for lcfg in LEAGUES.values()
                     if lcfg.sport_group == subtype_code]
         except ImportError:

@@ -153,7 +153,7 @@ Engines (separate threads/processes):
 - `spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX)
 - `weather_engine.py` — weather ensemble (Open-Meteo GFS/ECMWF)
 - `sports_engine.py` — sports comeback (ESPN, Bayesian posterior)
-- `sports_data.py` — sports data fetcher
+- `bot/engines/sports_data.py` — sports data fetcher (relocated from repo root in Sprint 10.1a, 2026-05-11; first sub-move of the Sprint 10 engines/ sibling-reorg)
 
 Shadows (observation-only):
 - `fifteenm_shadow.py` — 15M variants A1/A2/A3/A4

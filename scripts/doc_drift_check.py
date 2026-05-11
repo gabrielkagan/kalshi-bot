@@ -221,8 +221,12 @@ def count_weather_cities() -> int:
 
 
 def count_sports_leagues() -> int:
-    """Count sports leagues from sports_data.py or sports_engine.py."""
-    for fname in ("sports_data.py", "sports_engine.py"):
+    """Count sports leagues from bot/engines/sports_data.py or sports_engine.py.
+
+    Sprint 10.1a (2026-05-11): sports_data.py relocated from repo root to
+    bot/engines/sports_data.py per master plan L2225-2238 (Sprint 10 row
+    "engines/" 4 sub-moves). sports_engine.py move deferred to Sprint 10.1d."""
+    for fname in ("bot/engines/sports_data.py", "sports_engine.py"):
         path = REPO_ROOT / fname
         if not path.exists():
             continue

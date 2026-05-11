@@ -1840,7 +1840,7 @@ def detect_regime_start() -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",
-             "--", "sports_data.py", "sports_engine.py"],
+             "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both paths so pre-move history is preserved + post-move commits register; sports_data.py path stays in pathspec because git log -- follows renames via the rename detector by default and the old path covers commits before the move
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -1852,7 +1852,7 @@ def detect_regime_start() -> str:
             commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
             diff_result = subprocess.run(
                 ["git", "diff", f"{commit_hash}^..{commit_hash}",
-                 "--", "sports_data.py", "sports_engine.py"],
+                 "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both paths so pre-move history is preserved + post-move commits register; sports_data.py path stays in pathspec because git log -- follows renames via the rename detector by default and the old path covers commits before the move
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:
