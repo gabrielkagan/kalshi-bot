@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -170,6 +170,9 @@ help:
 	@echo "  make 15m-alpha            scripts/15m_alpha_research.py --regime auto"
 	@echo "  make no-side              scripts/no_side_status.py"
 	@echo "  make skill-smoke          end-to-end smoke of the 6 wrappers (Bit 11.1b)"
+	@echo
+	@echo "Pre-commit composite gate (Bit 12.4 — chains existing checks):"
+	@echo "  make pre-commit-checks    ast-check + lint + doc-drift + test-unit + test-contract (<30s)"
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -407,6 +410,34 @@ hourly-audit:
 
 no-side:
 	$(PYTHON) scripts/no_side_status.py --db /tmp/state.db
+
+# Bit 12.4 (Sprint 12, 2026-05-11) — composed pre-commit gate.
+# Per master plan §Bit 12.4: "ast-parse, doc-drift, iCloud-dup
+# detector, ruff, import-linter." All five checks exist as
+# Makefile / pytest targets:
+#   - ast-parse        → make ast-check (existing)
+#   - ruff             → make lint (existing)
+#   - doc-drift        → make doc-drift (existing,
+#                        scripts/doc_drift_check.py — walks
+#                        SOURCE_FILES × DOC_FILES for config-constant
+#                        ↔ README/whitepaper/CLAUDE.md consistency)
+#   - iCloud-dup       → tests/test_repo_hygiene.py::test_no_icloud_*
+#                        (collected by `make test-unit`)
+#   - import-linter    → make test-contract (lint-imports + AST guards)
+# This target chains the five cheap-tier checks (<30s wall-clock total)
+# so an operator can run a single command before `git commit`. The
+# Sprint PSC P5.3 git hook stays narrow-focused on parallel-session
+# coordination — operators who want the broader gate run this manually
+# (or wire it into their own `.git/hooks/pre-commit.local`).
+#
+# Order is significant: ast-check is fastest (~0.5s) and the most
+# common failure mode (syntax error in bot/_impl.py or bot/constants.py);
+# lint is next (~5s); doc-drift (~2s); test-unit is invariant tests
+# <10s; test-contract is AST + lint-imports <15s on Mac. Fail-fast on
+# the cheapest gate.
+# Contract pin: tests/test_makefile.py::test_bit_12_4_pre_commit_checks_*.
+pre-commit-checks: ast-check lint doc-drift test-unit test-contract
+	@echo "✓ pre-commit-checks (ast-check + lint + doc-drift + test-unit + test-contract)"
 
 # Bit 11.1b (Sprint 11, 2026-05-11) — end-to-end smoke for the 6 Bit-11.3
 # wrappers. Each wrapper invoked with a 60s `perl alarm` timeout (macOS

@@ -80,7 +80,16 @@ BIT_11_3_TARGETS = (
 # pins the target's existence + .PHONY + help-listing so a future
 # Makefile edit can't silently drop it.
 BIT_11_1B_TARGETS = ("skill-smoke",)
-ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS
+
+# Bit 12.4 (Sprint 12, 2026-05-11) — composed pre-commit gate. Chains
+# 5 existing cheap-tier checks (ast-check + lint + doc-drift +
+# test-unit + test-contract) so operators have a single command to
+# run before `git commit`. The Sprint PSC P5.3 hook stays narrow-
+# focused; operators wire this into `pre-commit.local` if they want
+# the broader gate. R1 adversarial caught doc-drift missing from the
+# initial 4-prereq chain; full 5-tier chain is the canonical form.
+BIT_12_4_TARGETS = ("pre-commit-checks",)
+ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS + BIT_12_4_TARGETS
 
 # Bit 11.3 (Sprint 11, 2026-05-11) — explicit (target -> script) mapping
 # pinned by test_bit_11_3_targets_point_to_real_scripts. Catches typos
@@ -1622,6 +1631,30 @@ def test_bit_11_1c_audit_skill_has_preflight_section():
         "audit/SKILL.md missing `## Preflight` section. Bit 11.1c "
         "requires this section to instruct the agent to verify "
         "/tmp/state.db + Makefile target / script path BEFORE running."
+    )
+
+
+def test_bit_12_4_pre_commit_checks_chains_tier_targets():
+    """The `pre-commit-checks` recipe must declare its 5 chained
+    prerequisites as `make` dependencies (ast-check + lint + doc-drift
+    + test-unit + test-contract) per Bit 12.4 master plan. Catches a
+    future edit that silently drops one of the gates. R1 adversarial
+    fix 2026-05-11 caught doc-drift missing from the initial 4-prereq
+    chain."""
+    text = _content()
+    # Recipe header has the 5 prerequisites in order.
+    m = re.search(r"^pre-commit-checks:\s*([^\n]+)", text, re.M)
+    assert m, "Makefile missing `pre-commit-checks:` recipe (Bit 12.4)."
+    prereqs = m.group(1).split()
+    expected = ["ast-check", "lint", "doc-drift", "test-unit", "test-contract"]
+    assert prereqs == expected, (
+        f"pre-commit-checks must chain {expected!r} in order; found "
+        f"{prereqs!r}. Order matters — ast-check is fastest fail mode "
+        f"(syntax error in bot/_impl.py); fail-fast on the cheapest "
+        f"gate. doc-drift covers config-constant ↔ README/whitepaper "
+        f"consistency per scripts/doc_drift_check.py SOURCE_FILES × "
+        f"DOC_FILES walk (R1 adversarial caught the master-plan "
+        f"coverage gap). See Makefile comment block."
     )
 
 
