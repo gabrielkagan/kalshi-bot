@@ -27280,6 +27280,27 @@
       }
     }
   },
+  "bot.orphan_db_watchdog": {
+    "kind": "module"
+  },
+  "bot.orphan_db_watchdog.detect_orphan_db_holders": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "db_path"
+      },
+      {
+        "annotation": "Optional[int]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "self_pid"
+      }
+    ],
+    "returns": "List[Dict[str, object]]"
+  },
   "bot.scanner": {
     "kind": "module"
   },

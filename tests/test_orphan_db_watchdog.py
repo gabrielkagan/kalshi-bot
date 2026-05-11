@@ -25,6 +25,27 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Bit 9.3-ii (2026-05-10): orphan-DB block extracted to bot/orphan_db_watchdog.py
+# (clean leaf). The 11 `monkeypatch.setattr(bot.orphan_db_watchdog, "X", ...)` sites
+# below target the new canonical location. The explicit `import bot.orphan_db_watchdog`
+# below registers the submodule in `sys.modules['bot'].__dict__` so attribute access
+# `bot.orphan_db_watchdog` resolves via the package's own __dict__ (bypassing
+# _BotProxy.__getattr__'s fallback to bot._impl — which doesn't have the submodule
+# as an attribute, only an explicit-name re-export at line ~120). Without this
+# import, `bot.orphan_db_watchdog.X` raises AttributeError because the proxy
+# falls through to `getattr(bot._impl, "orphan_db_watchdog")` which is missing.
+import bot  # noqa: F401
+import bot.orphan_db_watchdog  # noqa: F401 — registers submodule on bot package; required for monkeypatch.setattr(bot.orphan_db_watchdog, ...) to resolve post-Bit-9.3-ii
+# Pre-load bot._impl BEFORE any monkeypatch — bot._impl re-exports the orphan-DB
+# names via `from bot.orphan_db_watchdog import _run_lsof_for_db, ...` (captured-
+# by-value semantics per L83). If bot._impl loads DURING a test that has
+# monkeypatched bot.orphan_db_watchdog._run_lsof_for_db, the re-export captures
+# the monkeypatched lambda and the binding leaks across tests. Pre-loading
+# pre-binds the re-exports to the original function objects, restoring proper
+# isolation. See tests/test_orphan_db_watchdog_extraction.py::test_proxy_chain_*
+# for the related identity pins.
+import bot._impl  # noqa: F401 — pre-bind re-exports to original function objects pre-monkeypatch
+
 
 def test_orphan_watchdog_returns_no_offenders_when_db_is_held_by_self_only(
     monkeypatch, tmp_path,
@@ -38,12 +59,12 @@ def test_orphan_watchdog_returns_no_offenders_when_db_is_held_by_self_only(
     # lsof reports only the current PID. Watchdog should ignore it.
     self_pid = os.getpid()
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid] if path == str(db) else [],
     )
     sent = []
     monkeypatch.setattr(
-        bot, "_alert_orphan_db_holder",
+        bot.orphan_db_watchdog, "_alert_orphan_db_holder",
         lambda **kw: sent.append(kw),
     )
 
@@ -63,11 +84,11 @@ def test_orphan_watchdog_detects_non_bot_pid_holding_db(monkeypatch, tmp_path):
     self_pid = os.getpid()
     orphan_pid = self_pid + 1  # any PID != self
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid, orphan_pid] if path == str(db) else [],
     )
     monkeypatch.setattr(
-        bot, "_get_pid_cmdline",
+        bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: (
             "venv/bin/python3 scripts/cryptocompare_news_backfill.py "
             "--db state.db" if pid == orphan_pid else "bot/_impl.py"
@@ -108,18 +129,18 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
     self_pid = os.getpid()
     cron_pid = 7777  # not self, but a legitimate cron-spawned process
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid, cron_pid] if path == str(db) else [],
     )
     monkeypatch.setattr(
-        bot, "_get_pid_cmdline",
+        bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: "/home/botuser/kalshi-bot-repo/venv/bin/python3 watchdog.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
 
     sent = []
     monkeypatch.setattr(
-        bot, "_alert_orphan_db_holder",
+        bot.orphan_db_watchdog, "_alert_orphan_db_holder",
         lambda **kw: sent.append(kw),
     )
 
@@ -154,15 +175,15 @@ def test_orphan_watchdog_alerts_on_h4_backfill_pattern(monkeypatch, tmp_path):
         sent = []
         orphan_pid = 50000 + hash(script_name) % 10000
         monkeypatch.setattr(
-            bot, "_run_lsof_for_db",
+            bot.orphan_db_watchdog, "_run_lsof_for_db",
             lambda path, _o=orphan_pid: [self_pid, _o] if path == str(db) else [],
         )
         monkeypatch.setattr(
-            bot, "_get_pid_cmdline",
+            bot.orphan_db_watchdog, "_get_pid_cmdline",
             lambda pid, _s=script_name: f"venv/bin/python3 scripts/{_s}.py --db state.db",
         )
         monkeypatch.setattr(
-            bot, "_alert_orphan_db_holder",
+            bot.orphan_db_watchdog, "_alert_orphan_db_holder",
             lambda **kw: sent.append(kw),
         )
         bot.detect_orphan_db_holders(str(db), self_pid=self_pid)
@@ -188,11 +209,11 @@ def test_orphan_watchdog_skips_alert_when_pid_already_exited(
     orphan_pid = 88888
 
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid, orphan_pid] if path == str(db) else [],
     )
     monkeypatch.setattr(
-        bot, "_get_pid_cmdline",
+        bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
     )
 
@@ -203,7 +224,7 @@ def test_orphan_watchdog_skips_alert_when_pid_already_exited(
 
     sent = []
     monkeypatch.setattr(
-        bot, "_alert_orphan_db_holder",
+        bot.orphan_db_watchdog, "_alert_orphan_db_holder",
         lambda **kw: sent.append(kw),
     )
 
@@ -229,11 +250,11 @@ def test_orphan_watchdog_does_not_kill(monkeypatch, tmp_path):
     orphan_pid = 99999
     kills = []
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid, orphan_pid] if path == str(db) else [],
     )
     monkeypatch.setattr(
-        bot, "_get_pid_cmdline",
+        bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: kills.append((pid, sig)))
@@ -259,17 +280,17 @@ def test_orphan_watchdog_alerts_via_telegram(monkeypatch, tmp_path):
     self_pid = os.getpid()
     orphan_pid = 12345
     monkeypatch.setattr(
-        bot, "_run_lsof_for_db",
+        bot.orphan_db_watchdog, "_run_lsof_for_db",
         lambda path: [self_pid, orphan_pid] if path == str(db) else [],
     )
     monkeypatch.setattr(
-        bot, "_get_pid_cmdline",
+        bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
     sent = []
     monkeypatch.setattr(
-        bot, "_alert_orphan_db_holder",
+        bot.orphan_db_watchdog, "_alert_orphan_db_holder",
         lambda **kw: sent.append(kw),
     )
 
@@ -293,7 +314,7 @@ def test_orphan_watchdog_handles_lsof_failure_gracefully(
     def _lsof_fail(path):
         raise FileNotFoundError("lsof not installed")
 
-    monkeypatch.setattr(bot, "_run_lsof_for_db", _lsof_fail)
+    monkeypatch.setattr(bot.orphan_db_watchdog, "_run_lsof_for_db", _lsof_fail)
 
     # Must not raise.
     offenders = bot.detect_orphan_db_holders(str(db), self_pid=os.getpid())
@@ -307,12 +328,14 @@ def test_orphan_watchdog_invoked_on_main_loop_startup():
     EARLY in startup (before the 7-day soak begins on each new bot
     process). Verified via AST scan to avoid spinning up a real bot.
 
-    Bit 9.3 (2026-05-10): MainLoop class moved to bot/main_loop.py;
-    `detect_orphan_db_holders` stays in bot/_impl.py (orphan-DB Layer-3
-    helpers are not relocating). MainLoop.startup() reaches
+    Bit 9.3-ii (2026-05-10): the orphan-DB Layer-3 watchdog block (including
+    `detect_orphan_db_holders`) relocated from bot/_impl.py to
+    `bot/orphan_db_watchdog.py` clean leaf. MainLoop.startup() now reaches
     `detect_orphan_db_holders` via method-body late-binding
-    `from bot._impl import detect_orphan_db_holders` (per Path-A
-    architecture; see bot/main_loop.py module docstring)."""
+    `from bot.orphan_db_watchdog import detect_orphan_db_holders` (retarget
+    atomic with the extraction; previous Bit-9.3 form was
+    `from bot._impl import detect_orphan_db_holders`). This test walks
+    bot/main_loop.py for the CALL site, independent of import source."""
     import ast
     bot_py = (PROJECT_ROOT / "bot/main_loop.py").read_text()
     tree = ast.parse(bot_py)

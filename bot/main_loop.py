@@ -48,10 +48,11 @@ edge in the import graph. Net contracts stays at 5 (mirrors Bit 9.2 clean leaf).
 
   - `_telegram_state._TELEGRAM` (Bit 8.1 path-A++; ~11 read sites + 1 write
     at __init__ `_telegram_state._TELEGRAM = self.telegram`). Canonical alias
-    form `import bot.notifier as _telegram_state` per L84. The post-Bit-9.3
-    consumer count is FIVE (bot/_impl.py STAYS for the orphan-DB
-    `_alert_orphan_db_holder` helper at bot/_impl.py:431; this module ADDS
-    as the new MainLoop-host consumer).
+    form `import bot.notifier as _telegram_state` per L84. The post-Bit-9.3-ii
+    consumer count is FIVE (bot/orphan_db_watchdog.py for the orphan-DB
+    `_alert_orphan_db_holder` helper + the `detect_orphan_db_holders` lsof-
+    not-found branch — relocated atomically at Bit 9.3-ii REPLACING
+    bot/_impl.py in the slot; this module hosts MainLoop reads + WRITE).
   - `_cal_state._CALIBRATION_ENGINE` / `._CAL_REGISTRY` / `._resolve_cal_engine`
     (Bit 6.3 path-B; mutated at __init__ + read at the cal-registry assertion).
     Alias `from bot.engines import calibration as _cal_state`.
@@ -100,19 +101,18 @@ Bit 9.3-ii after bot/__main__.py swap).
 """
 from __future__ import annotations
 
-# NOTE — Bit 9.3 R4 MINOR-11 defense-in-depth `import bot._thread_env` at the
-# top of this module was attempted and reverted because it triggered a
-# RecursionError in griffe's expression walker (used by scripts/dump_public_api.py).
-# At Bit 9.3-i this module loads via the proxy chain (bot/__main__.py →
-# bot._impl → bot._thread_env at bot/_impl.py:11 → numpy at bot/_impl.py:37
-# → bot/main_loop import at bot/_impl.py:119), so OMP=1 is already set when
-# this module loads. At Bit 9.3-ii bot/__main__.py will switch to direct
-# `from bot.main_loop import MainLoop` — at that point bot._thread_env must
-# fire BEFORE this module's downstream `from models import ...` triggers
-# numpy. The defense-in-depth `import bot._thread_env` belongs in Bit 9.3-ii
-# alongside the bot/__main__.py swap, where griffe-snapshot impact can be
-# assessed and worked around (likely by extending the snapshot script's
-# recursion-handling). Not load-bearing for Bit 9.3-i.
+# NOTE — Bit 9.3-ii (2026-05-10): the bot/__main__.py swap is DONE; thread_env
+# fires there as the FIRST import (line 24 of bot/__main__.py, before stdlib
+# `logging` and `sys`). Defense-in-depth `import bot._thread_env` at the TOP of
+# this module DEFERRED to Bit 9.3-iii pending griffe RecursionError investigation
+# (Bit 9.3 R4 MINOR-11 known issue — `scripts/dump_public_api.py`'s griffe
+# expression walker hits stack overflow when bot._thread_env is at the top of
+# bot/main_loop.py). Production path is safe: bot/__main__.py → bot._thread_env
+# → from bot.main_loop import MainLoop → models → numpy. The only risk path is
+# tests that import bot.main_loop directly without going through __main__.py
+# (~3 sites — tests/test_scan_productive_watchdog.py + tests/test_position_obs_orderbook.py +
+# tests/test_main_loop_extraction.py); these run in pytest workers that don't
+# hit the production thread-contention regime. Filed as Bit 9.3-iii followup.
 
 import datetime
 import json
@@ -635,8 +635,15 @@ class MainLoop:
     # Three restarts on Mar 23 during 18-20 UTC cost an estimated 5-18 fills.
 
     def startup(self):
-        # Method-body late-binding (see __init__ note above; same rationale).
-        from bot._impl import detect_orphan_db_holders
+        # Bit 9.3-ii (2026-05-10): direct import from the bot.orphan_db_watchdog
+        # clean-leaf module. The previous `from bot._impl import detect_orphan_db_holders`
+        # late-binding form (Bit 9.3-i) was needed when the function lived in
+        # bot/_impl.py below the line-119 MainLoop re-export. Post-9.3-ii relocation,
+        # bot.orphan_db_watchdog is a clean leaf with zero edges into bot._impl or
+        # any other bot/ subpackage — top-level import here would work, but
+        # method-body import is used for parity with the original load-order
+        # defense and keeps the startup hot-path import cost cleanly deferred.
+        from bot.orphan_db_watchdog import detect_orphan_db_holders
 
         logging.info("Bot starting up...")
 

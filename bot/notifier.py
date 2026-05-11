@@ -8,16 +8,16 @@ Bit 8.1 path-A++ (2026-05-10): the module-level singleton `_TELEGRAM`
 relocated from `bot/_impl.py` to here, alongside the class it
 references. FIVE consumers reach it via `import bot.notifier as
 _telegram_state` plus `_telegram_state._TELEGRAM` module-attribute
-access (Bit 9.3 atomic update — `bot/main_loop.py` ADDS as the new
-MainLoop-host consumer; `bot/_impl.py` STAYS in the list for the
-orphan-DB Layer-3 helper `_alert_orphan_db_holder` at bot/_impl.py:431,
-which is the ONLY remaining `_telegram_state._TELEGRAM` site in
-bot/_impl.py post-MainLoop-extraction):
-  - `bot/_impl.py` — for the orphan-DB Layer-3 watchdog helpers
-    (`_alert_orphan_db_holder` + the `detect_orphan_db_holders`
-    lsof-not-found Telegram alert branch; transitively called from
-    `MainLoop.startup()` in bot/main_loop.py via
-    `detect_orphan_db_holders(DB_PATH)`)
+access (Bit 9.3-ii atomic update, 2026-05-10 — the orphan-DB Layer-3
+watchdog block relocated from bot/_impl.py to NEW bot/orphan_db_watchdog.py;
+that NEW module REPLACES bot/_impl.py as the 5th consumer — bot/_impl.py
+post-Bit-9.3-ii has zero `_telegram_state._TELEGRAM` consumers; net stays at 5):
+  - `bot/orphan_db_watchdog.py` (Bit 9.3-ii, 2026-05-10) — for the orphan-DB
+    Layer-3 watchdog helpers (`_alert_orphan_db_holder` + the
+    `detect_orphan_db_holders` lsof-not-found Telegram alert branch;
+    transitively called from `MainLoop.startup()` in bot/main_loop.py
+    via `from bot.orphan_db_watchdog import detect_orphan_db_holders`
+    + `detect_orphan_db_holders(DB_PATH)`)
   - `bot/main_loop.py` (search anchor: `import bot.notifier as _telegram_state`) — for MainLoop reads (Bit 9.3, 2026-05-10) + the singleton WRITE at `MainLoop.__init__` (`_telegram_state._TELEGRAM = self.telegram`)
   - `bot/scanner/__init__.py` (search anchor: ``import bot.notifier as _telegram_state``) — for OpportunityScanner reads
   - `bot/executor.py` (Bit 9.1, 2026-05-10) — for OrderExecutor reads
@@ -81,7 +81,7 @@ class TelegramNotifier:
 # Module-level singleton — populated by MainLoop.__init__ at runtime
 # (MainLoop now lives in bot/main_loop.py post-Bit-9.3, 2026-05-10).
 # Relocated from bot/_impl.py per Bit 8.1 path-A++ (2026-05-10).
-# Reach via `bot.notifier._TELEGRAM` (or alias-import in bot/_impl.py +
+# Reach via `bot.notifier._TELEGRAM` (or alias-import in bot/orphan_db_watchdog.py +
 # bot/main_loop.py + bot/scanner/__init__.py + bot/executor.py +
-# bot/settlement.py — 5 consumers post-Bit-9.3) to preserve mutation freshness.
+# bot/settlement.py — 5 consumers post-Bit-9.3-ii) to preserve mutation freshness.
 _TELEGRAM: Optional["TelegramNotifier"] = None

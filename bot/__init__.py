@@ -23,10 +23,10 @@ of `bot._BREAKER_REGISTRY` etc. work without per-caller updates. Note:
 the `bot.X` proxy. Note: `_TELEGRAM` lives in `bot.notifier` post-Bit-8.1
 path-A++ (2026-05-10), NOT in `bot._impl` — `bot._TELEGRAM` no longer
 resolves via the proxy. Reach via `bot.notifier._TELEGRAM` (or via the
-`_telegram_state._TELEGRAM` alias inside bot/_impl.py + bot/main_loop.py +
+`_telegram_state._TELEGRAM` alias inside bot/orphan_db_watchdog.py + bot/main_loop.py +
 bot/scanner/__init__.py + bot/executor.py + bot/settlement.py — 5 consumers
-post-Bit-9.3, with bot/_impl.py covering the orphan-DB watchdog helpers
-and bot/main_loop.py covering MainLoop reads + the singleton WRITE).
+post-Bit-9.3-ii, with bot/orphan_db_watchdog.py REPLACING bot/_impl.py as the
+5th consumer slot per the Bit-9.3-ii relocation).
 
 Also note: `StateManager` lives in `bot.state` post-Bit-7.1 (2026-05-10),
 NOT in `bot._impl`. Reach it via `bot.StateManager` (proxy chain:
@@ -124,13 +124,34 @@ post-extraction. Reach via `bot.OrderFlowEngine` /
 late-binding block collapsed to a top-level `from bot.order_flow import
 OrderFlowEngine, KalshiOrderFlowTracker` in bot/main_loop.py. Sister
 cleanup atomic in the same commit: bot/scanner/__init__.py forward-refs
-for both classes UNQUOTED (was `Optional["OrderFlowEngine"]`; now
-`Optional[OrderFlowEngine]` after a new top-level import). bot/_impl.py
-is now class-free; final deletion deferred to Bit 9.3-ii after the
-bot/__main__.py swap. The 5-consumer `_telegram_state._TELEGRAM`
-enumeration is UNCHANGED — OFE+KOFT do not emit Telegram alerts.
-.importlinter `helpers-leaf` `forbidden_modules` extended with
-`bot.order_flow`; net contracts stays at 5. Sprint 9 closes here.
+for both classes UNQUOTED. bot/_impl.py became class-free; final deletion
+deferred to Bit 9.3-iii.
+
+Bit 9.3-ii (clean leaf + bot/__main__.py swap, 2026-05-10): the orphan-DB
+Layer-3 watchdog block (5 functions + `_ORPHAN_DB_WATCHDOG_PATTERNS` list,
+~200 LOC, was bot/_impl.py:375-578 pre-9.3-ii) relocated to NEW
+`bot/orphan_db_watchdog.py` clean leaf (stdlib + bot.notifier alias only).
+Reach via `bot.detect_orphan_db_holders` etc. (proxy chain) or
+`bot.orphan_db_watchdog.X` (direct). The 5-consumer `_telegram_state._TELEGRAM`
+enumeration: bot/orphan_db_watchdog.py REPLACES bot/_impl.py as the 5th
+consumer — net stays at 5. MainLoop.startup() late-binding retargeted from
+`from bot._impl import detect_orphan_db_holders` to
+`from bot.orphan_db_watchdog import detect_orphan_db_holders`.
+**bot/__main__.py swap (master plan L2197)**: from `from bot._impl import
+MainLoop` to direct `from bot.main_loop import MainLoop`, with
+`import bot._thread_env` as the FIRST import (preserves the
+OMP_NUM_THREADS=1-before-numpy guarantee since the chain
+`bot/__main__.py → bot.main_loop → models → numpy` no longer routes
+through bot._impl's first non-stdlib import). `.importlinter` `helpers-leaf`
+`forbidden_modules` extended with `bot.orphan_db_watchdog`; net contracts
+stays at 5. bot/_impl.py: 767 → ~580 LOC. The `_BotProxy` shim stays
+operational for proxy-resolved reads/writes (used by tests/test_execution.py
+`@patch("bot.X")` × 94 + tests/test_ladder_escalation.py × 16 + production
+kill-switch self-mutation sites). Full _BotProxy retirement + DELETE
+bot/_impl.py deferred to Bit 9.3-iii (Sprint 10 lead). Sprint 9 main-class
+chunk closes here; only bot/__main__.py swap + orphan-DB extraction needed
+for the milestone — HPSB/compute_for_15m_main_path/cal_mlp boot relocations
+deferred to Bit 9.3-iii alongside proxy retirement.
 
 Caching the `bot._impl` module reference is safe: the module object itself
 is stable; mutations land on its `__dict__` which `getattr`/`setattr`

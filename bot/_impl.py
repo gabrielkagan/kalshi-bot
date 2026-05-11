@@ -105,7 +105,7 @@ from bot.helpers.breakers import (  # noqa: F401 — underscore-prefixed; star-i
 
 from bot.logger import Logger  # noqa: F401 — Bit 4.1 leaf extraction; re-export so MainLoop construction + type annotations on OpportunityScanner/OrderExecutor/SettlementTracker resolve
 from bot.notifier import TelegramNotifier  # noqa: F401 — Bit 4.2 leaf extraction; re-export so the runtime construction in MainLoop.__init__ resolves.
-import bot.notifier as _telegram_state  # Bit 8.1 path-A++ (2026-05-10) + Bit 9.3 atomic narrative update (2026-05-10): alias for `_telegram_state._TELEGRAM` module-attribute access. The singleton lives in bot/notifier.py alongside TelegramNotifier. **Post-Bit-9.3, the only remaining `_telegram_state._TELEGRAM` consumer block in bot/_impl.py is the orphan-DB watchdog helpers** (`_alert_orphan_db_holder` at bot/_impl.py:431 + the `detect_orphan_db_holders` lsof-not-found Telegram alert branch — search anchor: `def _alert_orphan_db_holder` and `def detect_orphan_db_holders`) — MainLoop reads MOVED with the class extraction to bot/main_loop.py. The module-attribute access pattern preserves mutation freshness across all five consumers post-Bit-9.3 (this module for `_alert_orphan_db_holder` + bot/main_loop.py for MainLoop reads + the singleton WRITE in `__init__` + bot/scanner/__init__.py + bot/executor.py + bot/settlement.py — verify counts with `grep -c '_telegram_state\._TELEGRAM' bot/_impl.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py bot/settlement.py`). Mirrors the Bit 6.3 path-B `_cal_state` pattern. NOTE: explicit `import bot.notifier as ...` (NOT `from bot import notifier as ...`) — the latter form goes through `_BotProxy.__getattr__` and triggers a partial-module ImportError of bot._impl from inside bot.scanner during its load.
+import bot.notifier as _telegram_state  # Bit 8.1 path-A++ (2026-05-10) + Bit 9.3-ii atomic narrative update (2026-05-10): alias for `_telegram_state._TELEGRAM` module-attribute access. The singleton lives in bot/notifier.py alongside TelegramNotifier. **Post-Bit-9.3-ii, bot/_impl.py has ZERO `_telegram_state._TELEGRAM` consumers** — the orphan-DB watchdog block (which was the last remaining consumer post-Bit-9.3) relocated to `bot/orphan_db_watchdog.py` clean leaf. This module retains the alias only to support the re-export `from bot.orphan_db_watchdog import (...)` proxy chain (post-9.3-ii the alias's only role here is documentation of the load-order convention for sister modules that DO consume it). The module-attribute access pattern preserves mutation freshness across all five consumers post-Bit-9.3-ii (bot/orphan_db_watchdog.py for `_alert_orphan_db_holder` + the `detect_orphan_db_holders` lsof-not-found alert branch + bot/main_loop.py for MainLoop reads + the singleton WRITE in `__init__` + bot/scanner/__init__.py + bot/executor.py + bot/settlement.py — verify counts with `grep -c '_telegram_state\._TELEGRAM' bot/orphan_db_watchdog.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py bot/settlement.py`). Mirrors the Bit 6.3 path-B `_cal_state` pattern. NOTE: explicit `import bot.notifier as ...` (NOT `from bot import notifier as ...`) — the latter form goes through `_BotProxy.__getattr__` and triggers a partial-module ImportError of bot._impl from inside bot.scanner during its load.
 from bot.kalshi_client import KalshiClient  # noqa: F401 — Bit 4.3 leaf extraction; re-export so MainLoop construction (search "self.client = KalshiClient") + type annotations on reconcile_with_api/_reconcile_positions/_reconcile_orders/OpportunityScanner/OrderExecutor/SettlementTracker/discover_active_windows resolve via bot._impl namespace.
 from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher  # noqa: F401 — Bit 4.4 leaf extraction; re-export so MainLoop construction (search "self.dvol_fetcher = DeribitDVOLFetcher" and "self.coinglass = CoinGlassFetcher") + the Optional[DeribitDVOLFetcher] type annotation on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) resolve via bot._impl namespace.
 from bot.feeds import CoinbaseFeed, CrossExchangeFeed, KalshiFeed, OrderbookSchemaError  # noqa: F401 — Bit 4.5a + 4.5b leaf extraction; re-export so MainLoop construction (search "self.feed = CoinbaseFeed", "self.cross_feed = CrossExchangeFeed", and "self.kalshi_feed = KalshiFeed") + the `feed: CoinbaseFeed` type annotations on VolatilityEngine.__init__ (now in bot/engines/volatility.py per Bit 6.1) and OpportunityScanner.__init__ + the OrderbookSchemaError raises inside KalshiFeed (now sibling-imported from bot.feeds.orderbook_schema) all resolve via bot._impl namespace.
@@ -117,7 +117,14 @@ from bot.executor import OrderExecutor  # noqa: F401 — Bit 9.1 leaf extraction
 from bot.settlement import SettlementTracker, discover_active_windows  # noqa: F401 — Bit 9.2 leaf extraction (2026-05-10, path-A++); re-export so MainLoop construction (search anchor: `self.tracker = SettlementTracker(`) + the single MainLoop call site (search anchor: `discover_active_windows(self.client)`) resolve via bot._impl namespace. **Path-A++ deviation**: the 2 SettlementTracker call sites that read the L81-aliased underscore-prefix name now use the public `append_raw_api_journal` directly (matches bot/executor.py:98 convention); the L81 alias-import at line ~282 RETIRED atomically (zero callers remain). Bundled atomic cleanup: bot/notifier.py docstring 3→4 consumers; bot/__init__.py extended; bot/CLAUDE.md Deploy step 3 catalog gains SettlementTracker paragraph; tests/test_state_extraction.py quadruple-walk extension (BOT_PY + SCANNER_PY + EXECUTOR_PY + SETTLEMENT_PY); test_low_price_shadow.py + test_stacking.py + test_tm_sweep_shadow.py + test_regression.py _read_bot()/_paths helpers extended to concat bot/settlement.py; test_tracker_tick_threaded.py BOT_PY → SETTLEMENT_PY; test_order_outcome_vocab.py SCANNED_PATHS extended; tests/test_executor_extraction.py L81 positive pin flipped to negative; agent_docs/bot_layout.md class table loses the `~1010–~2179 SettlementTracker 1179` row; discover_active_windows narrative flips from Bit 9.3 to Bit 9.2 across all parallel sites. Bundled bug fix (ticket 86b9vppn3): pre-existing UnboundLocalError 'best_ask' in OpportunityScanner.scan() low_probability_15m insert_rejection branch (predates Bit 8.1 per git blame) — initialize best_ask=None at iteration start.
 from bot.db_writer_registry import tracked_write, snapshot_active, recent_writes  # ops: db-locked RCA instrumentation 2026-05-08 — track every write across all 8 sqlite3 connections so the failure-path log can identify which OTHER writer was holding the writer lock at db-locked failure time. recent_writes() captures the JUST-FINISHED holder (FAST-fail path: BEGIN IMMEDIATE returns SQLITE_BUSY in <1ms when intra-process lock-holder releases right before our retry).
 from bot.main_loop import MainLoop  # noqa: F401 — Bit 9.3 leaf extraction (2026-05-10); re-export so bot/__main__.py `from bot._impl import MainLoop` continues to resolve at 9.3-i; bot/__main__.py swap to direct `from bot.main_loop import MainLoop` deferred to Bit 9.3-ii per master plan.
-from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker  # noqa: F401 — Bit 9.3.5 leaf extraction (2026-05-10); re-export so the proxy chain (bot.X → bot._impl.X → bot.order_flow.X) stays stable. Clean leaf — bot/order_flow.py imports only stdlib + bot.constants (zero bot._impl edge, zero _telegram_state, zero _cal_state). Sprint 9 closes here.
+from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker  # noqa: F401 — Bit 9.3.5 leaf extraction (2026-05-10); re-export so the proxy chain (bot.X → bot._impl.X → bot.order_flow.X) stays stable. Clean leaf — bot/order_flow.py imports only stdlib + bot.constants (zero bot._impl edge, zero _telegram_state, zero _cal_state).
+from bot.orphan_db_watchdog import (  # noqa: F401 — Bit 9.3-ii leaf extraction (2026-05-10); re-export so the proxy chain (bot.X → bot._impl.X → bot.orphan_db_watchdog.X) stays stable for the 11 `monkeypatch.setattr(bot, ...)` sites in tests/test_orphan_db_watchdog.py at Option A scope (full proxy retirement deferred to Bit 9.3-iii). Clean leaf — bot/orphan_db_watchdog.py imports only stdlib + bot.notifier alias (zero bot._impl edge, becomes the 5th _telegram_state._TELEGRAM consumer REPLACING this module in the count — net stays at 5). Sprint 9 closes here.
+    detect_orphan_db_holders,
+    _run_lsof_for_db,
+    _get_pid_cmdline,
+    _alert_orphan_db_holder,
+    _ORPHAN_DB_WATCHDOG_PATTERNS,
+)
 
 
 
@@ -188,14 +195,15 @@ from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker  # noqa: F401
 # near the top of this file. The relocation lifted ~86
 # `@patch("bot._TELEGRAM", ...)` patch-target retargets onto
 # `bot.notifier._TELEGRAM`, parallel to how Bit 6.3 path-B relocated
-# `_CALIBRATION_ENGINE` alongside its class. Reads inside THIS module are
-# now scoped to the orphan-DB watchdog block (`_alert_orphan_db_holder` +
-# the `detect_orphan_db_holders` lsof-not-found Telegram alert path) post-
-# Bit-9.3 (MainLoop reads moved to bot/main_loop.py with the class
-# extraction). Verify count with `grep -c '_telegram_state._TELEGRAM'
-# bot/_impl.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py
-# bot/settlement.py` — 5 consumers post-Bit-9.3 (mirrors the
-# `_cal_state._CALIBRATION_ENGINE` pattern). The plain
+# `_CALIBRATION_ENGINE` alongside its class. **Post-Bit-9.3-ii (2026-05-10),
+# bot/_impl.py has ZERO `_telegram_state._TELEGRAM` executable consumers —
+# the orphan-DB watchdog block (the last remaining consumer post-Bit-9.3)
+# relocated to `bot/orphan_db_watchdog.py` clean leaf alongside the
+# bot/__main__.py swap per master plan L2197.** Verify count with
+# `grep -c '_telegram_state._TELEGRAM' bot/orphan_db_watchdog.py
+# bot/main_loop.py bot/scanner/__init__.py bot/executor.py
+# bot/settlement.py` — 5 consumers post-Bit-9.3-ii (bot/orphan_db_watchdog.py
+# REPLACES bot/_impl.py in the slot). The plain
 # `from bot.notifier import _TELEGRAM` form would NOT propagate runtime
 # mutation because `from`-imports capture by value at import time.
 
@@ -372,210 +380,18 @@ _BLEED_BLOCK_MISSING_BLEEDERS = _validate_bleed_block_bleeder_strings()
 compute_for_15m_main_path = make_compute_for_15m_main_path()
 
 
-# ── Orphan-DB watchdog (Layer 3 of orphan prevention) ─────────────────
-#
-# May 3 2026 incident: a `cryptocompare_news_backfill.py` subprocess
-# orphaned itself and held state.db's writer lock for 2h42m, eventually
-# wedging the live bot through a 6-minute crash-loop on restart. Layers
-# 1+2 (wrapper signal-handling + script SIGALRM hard timeout) close the
-# orphan-creation paths from the H-4 cron infra. Layer 3 is detection
-# at bot startup: enumerate non-bot PIDs touching state.db and alert
-# the operator. Detection-only by design — auto-killing is too risky
-# (could kill legitimate manually-launched migrations or debug
-# sessions); the operator triages from the Telegram alert.
-#
-# Postmortem: kb/failures/shape-d-contention-explosion-may03.md.
-
-def _run_lsof_for_db(db_path: str) -> List[int]:
-    """Return PIDs that have `db_path` open. Implementation: shells
-    out to `lsof -t <db_path>`. Separated into its own function so
-    tests can stub it out without mocking subprocess globally."""
-    import subprocess as _sub
-    out = _sub.check_output(
-        ["lsof", "-t", db_path], timeout=10, text=True,
-    )
-    pids = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            pids.append(int(line))
-        except ValueError:
-            continue
-    return pids
-
-
-def _get_pid_cmdline(pid: int) -> str:
-    """Best-effort fetch of the command line for `pid`. Reads
-    `/proc/<pid>/cmdline` on Linux, falls back to `ps -p <pid> -o
-    command=` on other platforms. Returns empty string on failure
-    (the operator still has the PID even without cmdline)."""
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            raw = f.read()
-        return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
-    except (FileNotFoundError, PermissionError, OSError):
-        pass
-    try:
-        import subprocess as _sub
-        out = _sub.check_output(
-            ["ps", "-p", str(pid), "-o", "command="],
-            timeout=5, text=True,
-        )
-        return out.strip()
-    except Exception:
-        return ""
-
-
-def _alert_orphan_db_holder(*, pid: int, cmdline: str) -> None:
-    """Send a Telegram alert about an orphan PID holding state.db.
-    Best-effort — failure to send must not block bot startup."""
-    try:
-        if _telegram_state._TELEGRAM is None:
-            return
-        msg = (
-            f"⚠️ ORPHAN DB HOLDER detected at startup\n"
-            f"pid={pid}\n"
-            f"cmd: {cmdline[:300] or '(unknown)'}\n"
-            f"This process is holding state.db's lock from outside the "
-            f"bot. Investigate via `ssh kalshi-vps; ps -p {pid}` and kill "
-            f"if stale. May 3 2026 incident: an H-4c backfill orphan "
-            f"wedged the bot for 6 min via this exact pattern."
-        )
-        _telegram_state._TELEGRAM.send(msg, dedup_key=f"orphan_db_pid_{pid}")
-    except Exception:
-        logging.debug("orphan-DB Telegram alert failed", exc_info=True)
-
-
-# Positive-list of cmdline substrings that indicate an orphan we care
-# about. We deliberately do NOT alert on legitimate cron-spawned
-# cohabitants (watchdog.py, auditor.py, audit_cron.py,
-# dashboard_snapshot.py — see adversarial review C-1) because their
-# overlap with bot startup is routine and would habituate the operator
-# to ignore alerts. The May 3 2026 incident was an H-4 backfill orphan,
-# and that's the specific class we're guarding against.
-_ORPHAN_DB_WATCHDOG_PATTERNS: List[str] = [
-    "gdelt_backfill",
-    "cryptocompare_news_backfill",
-    "glassnode_backfill",
-]
-
-
-def detect_orphan_db_holders(
-    db_path: str, self_pid: Optional[int] = None,
-) -> List[Dict[str, object]]:
-    """Layer 3 orphan-prevention watchdog.
-
-    Enumerates PIDs holding `db_path` open via `lsof -t`. Filters out
-    `self_pid` (defaults to `os.getpid()`). For each remaining PID,
-    captures cmdline. Alerts ONLY on PIDs whose cmdline matches a
-    known H-4 backfill script (positive-list — see
-    `_ORPHAN_DB_WATCHDOG_PATTERNS`). Returns the list of offender
-    records `{"pid": int, "cmdline": str}` (the full filtered list,
-    pre-alert) for caller-side logging / tests.
-
-    Why positive-list and not "anything not bot/_impl.py": the live VPS has
-    several legitimate cron-spawned `state.db` openers (watchdog.py
-    every 2 min, auditor.py hourly, audit_cron.py every 30 min,
-    operator-run dashboard_snapshot.py). Any of them can collide
-    with the watchdog's lsof probe at bot startup. A negative-list
-    design would generate alerts on every overlap → alert fatigue →
-    the operator stops looking at the channel. Positive-list keeps
-    signal high.
-
-    Detection-only — does NOT call `os.kill`. The operator triages
-    from the alert.
-
-    Also probes `db_path` + `db_path-wal` so SQLite writers that have
-    only the WAL FD open (rare, possible during shutdown races) are
-    caught. Adversarial-review C-7."""
-    if self_pid is None:
-        self_pid = os.getpid()
-    try:
-        pids = _run_lsof_for_db(db_path)
-    except FileNotFoundError as e:
-        # Adversarial-review C-5: lsof binary not installed → watchdog
-        # is silently no-op for the entire deploy lifetime. Log loud
-        # AND emit a one-shot Telegram so the operator knows the
-        # safety net is off.
-        logging.warning(
-            "orphan_db_watchdog: lsof not found (%s); watchdog DISABLED. "
-            "Install lsof to re-enable.", e,
-        )
-        try:
-            if _telegram_state._TELEGRAM is not None:
-                _telegram_state._TELEGRAM.send(
-                    "⚠️ orphan-DB watchdog DISABLED: lsof not installed "
-                    "on VPS. May 3 2026 orphan-class incidents are "
-                    "undetected until lsof is available.",
-                    dedup_key="orphan_watchdog_disabled",
-                )
-        except Exception:
-            pass
-        return []
-    except Exception as e:
-        # Includes CalledProcessError (lsof exit 1 = "no holders found",
-        # which on macOS is exit 0 + empty stdout, and on Linux is
-        # exit 1) — both indicate "no PIDs," not a failure mode.
-        logging.warning(
-            "orphan_db_watchdog: lsof probe failed (%s); skipping check",
-            e,
-        )
-        return []
-    # Adversarial-review C-7: also probe the WAL sibling so a writer
-    # holding only the WAL FD is caught. Union with main probe.
-    try:
-        wal_pids = _run_lsof_for_db(db_path + "-wal")
-        for wp in wal_pids:
-            if wp not in pids:
-                pids.append(wp)
-    except Exception:
-        # WAL probe failure is non-fatal; we still have main-DB pids.
-        pass
-    # Adversarial-review C-4: dedup PIDs (lsof currently dedups for
-    # single-file probes but the WAL union above can re-introduce dupes).
-    pids = list(dict.fromkeys(pids))
-    offenders: List[Dict[str, object]] = []
-    for pid in pids:
-        if pid == self_pid:
-            continue
-        cmdline = _get_pid_cmdline(pid)
-        # Adversarial-review C-9: the PID may have exited between the
-        # lsof snapshot and now — `os.kill(pid, 0)` is a stat-cheap
-        # liveness probe; if it raises ProcessLookupError, the orphan
-        # is already gone and no alert is needed.
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            continue
-        except OSError:
-            # EPERM (different uid) — process is alive but we can't
-            # signal it. Continue with the alert flow.
-            pass
-        offenders.append({"pid": pid, "cmdline": cmdline})
-        # Adversarial-review C-1: only alert on PIDs that match the
-        # known orphan-creator patterns. Otherwise log debug-only and
-        # move on — legitimate cron processes (watchdog.py, auditor.py,
-        # audit_cron.py, dashboard_snapshot.py) routinely collide with
-        # bot startup.
-        is_orphan_class = any(
-            pat in cmdline for pat in _ORPHAN_DB_WATCHDOG_PATTERNS
-        )
-        if is_orphan_class:
-            logging.error(
-                "ORPHAN_DB_HOLDER: pid=%d cmd=%s holds state.db at "
-                "startup — investigate (May 3 2026 incident pattern)",
-                pid, cmdline[:300] or "(unknown)",
-            )
-            _alert_orphan_db_holder(pid=pid, cmdline=cmdline)
-        else:
-            logging.debug(
-                "orphan_db_watchdog: pid=%d cmd=%s holds state.db but "
-                "is NOT in the orphan-creator allow-list; skipping alert",
-                pid, cmdline[:200],
-            )
-    return offenders
+# Orphan-DB Layer-3 watchdog → bot/orphan_db_watchdog.py (Bit 9.3-ii, 2026-05-10).
+# Was bot/_impl.py:375-578 pre-9.3-ii (4 functions + _ORPHAN_DB_WATCHDOG_PATTERNS
+# list). Clean leaf — stdlib + bot.notifier alias only. The block became the
+# 5th `_telegram_state._TELEGRAM` consumer (REPLACING this module — net stays
+# at 5: bot/orphan_db_watchdog.py + bot/main_loop.py + bot/scanner/__init__.py
+# + bot/executor.py + bot/settlement.py). MainLoop.startup() late-binding
+# retargeted in the same atomic commit. Re-imported above via
+# `from bot.orphan_db_watchdog import (detect_orphan_db_holders, _run_lsof_for_db,
+# _get_pid_cmdline, _alert_orphan_db_holder, _ORPHAN_DB_WATCHDOG_PATTERNS)` so
+# the proxy chain `bot.X → bot._impl.X → bot.orphan_db_watchdog.X` resolves
+# (proxy retirement deferred to Bit 9.3-iii). Postmortem:
+# kb/failures/shape-d-contention-explosion-may03.md.
 
 
 # StateManager → bot/state.py (Bit 7.1, 2026-05-10).

@@ -204,7 +204,17 @@ MAIN_LOOP_BOT_IMPL_INIT_LATE_BOUND = (
     "_HPSB_VALIDATOR_UNAVAILABLE_REASON",
 )
 
-MAIN_LOOP_BOT_IMPL_STARTUP_LATE_BOUND = (
+# Bit 9.3-ii (2026-05-10) retargeted MainLoop.startup's late-binding for
+# `detect_orphan_db_holders` from `bot._impl` to `bot.orphan_db_watchdog` (the
+# function was relocated to the clean-leaf module in the same atomic commit).
+# The tuple is empty post-9.3-ii — startup() has zero remaining bot._impl
+# late-bindings. The retargeted import is pinned by
+# test_main_loop_startup_late_binds_orphan_db_watchdog_name below.
+MAIN_LOOP_BOT_IMPL_STARTUP_LATE_BOUND: tuple[str, ...] = ()
+
+# Bit 9.3-ii: startup() now late-binds detect_orphan_db_holders from
+# bot.orphan_db_watchdog (post-extraction location).
+MAIN_LOOP_ORPHAN_DB_WATCHDOG_STARTUP_LATE_BOUND = (
     "detect_orphan_db_holders",
 )
 
@@ -571,11 +581,37 @@ def test_main_loop_init_late_binds_bot_impl_name(late_bound_name: str):
 
 @pytest.mark.parametrize("late_bound_name", MAIN_LOOP_BOT_IMPL_STARTUP_LATE_BOUND)
 def test_main_loop_startup_late_binds_bot_impl_name(late_bound_name: str):
-    """Path-A: startup uses method-body `from bot._impl import detect_orphan_db_holders`."""
+    """Path-A: startup uses method-body `from bot._impl import (...)`.
+
+    Bit 9.3-ii (2026-05-10): the tuple is empty post-extraction — startup() has
+    zero bot._impl late-bindings after detect_orphan_db_holders was retargeted
+    to bot.orphan_db_watchdog. The parametrize will skip when tuple is empty."""
     startup_imports = _imports_inside_method("startup")
     assert late_bound_name in startup_imports, (
         f"MainLoop.startup missing method-body `from bot._impl import {late_bound_name}` — "
         f"top-level import would partial-module ImportError. Startup body imports observed: {startup_imports}"
+    )
+
+
+def _orphan_db_imports_inside_method(method_name: str) -> List[str]:
+    """Extract all `from bot.orphan_db_watchdog import ...` names inside the named method body."""
+    method = _main_loop_method(method_name)
+    names: List[str] = []
+    for node in ast.walk(method):
+        if isinstance(node, ast.ImportFrom) and node.module == "bot.orphan_db_watchdog":
+            for alias in node.names:
+                names.append(alias.name)
+    return names
+
+
+@pytest.mark.parametrize("late_bound_name", MAIN_LOOP_ORPHAN_DB_WATCHDOG_STARTUP_LATE_BOUND)
+def test_main_loop_startup_late_binds_orphan_db_watchdog_name(late_bound_name: str):
+    """Bit 9.3-ii: startup() retargets `detect_orphan_db_holders` late-binding
+    from `bot._impl` to the new clean-leaf location `bot.orphan_db_watchdog`."""
+    startup_imports = _orphan_db_imports_inside_method("startup")
+    assert late_bound_name in startup_imports, (
+        f"MainLoop.startup missing method-body `from bot.orphan_db_watchdog "
+        f"import {late_bound_name}` (Bit 9.3-ii retarget). Observed imports: {startup_imports}"
     )
 
 
@@ -754,25 +790,31 @@ def test_helpers_leaf_includes_main_loop_in_forbidden_modules():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Section 12 — bot/__main__.py UNCHANGED at 9.3-i (swap deferred to 9.3-ii)
+# Section 12 — bot/__main__.py SWAPPED at 9.3-ii (direct bot.main_loop import)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_bot_main_still_imports_main_loop_from_bot_impl_at_9_3_i():
-    """Bit 9.3-i: bot/__main__.py STILL imports MainLoop from bot._impl (via the proxy chain).
-    The swap to `from bot.main_loop import MainLoop` happens at Bit 9.3-ii after soak ≥7d
-    per master plan L2197-2215.
+def test_bot_main_imports_main_loop_from_bot_main_loop_at_9_3_ii():
+    """Bit 9.3-ii (2026-05-10): bot/__main__.py SWAPPED to direct `from bot.main_loop
+    import MainLoop` — per master plan L2197.
 
-    This pin REVERSES at Bit 9.3-ii — when 9.3-ii ships, this test must be inverted
-    or removed. Until 9.3-ii lands, the bot/__main__.py import target stays unchanged
-    so the proxy + MainLoop re-export are both exercised in production."""
+    INVERSION of the prior `test_bot_main_still_imports_main_loop_from_bot_impl_at_9_3_i`
+    pin (the prior test scheduled its own retirement in its docstring). The proxy chain
+    is no longer the entrypoint resolution path; the direct import is. Retirement of
+    the _BotProxy entirely is deferred to Bit 9.3-iii.
+
+    Defense-in-depth `import bot._thread_env` first-import is pinned separately by
+    test_bot_main_imports_thread_env_as_first_import in
+    test_orphan_db_watchdog_extraction.py."""
     if not MAIN_PY.exists():
         pytest.skip("bot/__main__.py missing")
     src = MAIN_PY.read_text()
-    assert "from bot._impl import MainLoop" in src, (
-        "bot/__main__.py was changed in 9.3-i — it must remain unchanged until 9.3-ii "
-        "(per master plan two-step atomic discipline). Swap target to bot.main_loop in "
-        "9.3-ii after the ≥7d soak window confirms scheduled+operator-on-demand callers "
-        "all exercise the bot.main_loop re-export cleanly."
+    assert "from bot.main_loop import MainLoop" in src, (
+        "bot/__main__.py must have `from bot.main_loop import MainLoop` post-Bit-9.3-ii "
+        "(direct import, no proxy chain) per master plan L2197."
+    )
+    assert "from bot._impl import MainLoop" not in src, (
+        "bot/__main__.py still has the pre-9.3-ii `from bot._impl import MainLoop` form. "
+        "Bit 9.3-ii swap incomplete — see master plan L2197."
     )
 
 
