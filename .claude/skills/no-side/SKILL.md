@@ -13,6 +13,10 @@ Comprehensive NO-side shadow data report. Shows data volume, pricing verificatio
 - When monitoring NO-side shadow signal quality
 - When the user asks "how is NO side going" or similar
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-side` and `<X>` = `no_side_status`. Verify `/tmp/state.db` exists, `make -n no-side` parses, and `scripts/no_side_status.py` exists (Bit 11.1d).
+
 ## Steps
 
 1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.

@@ -21,6 +21,10 @@ Check instrumentation quality, data gaps, NULL rates, and shadow coverage across
 /data-health weather
 ```
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `data-health` and `<X>` = `data_health_monitor`. Verify `/tmp/state.db` exists, `make -n data-health` parses, and `scripts/data_health_monitor.py` exists (Bit 11.1d).
+
 ## Steps
 
 1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.

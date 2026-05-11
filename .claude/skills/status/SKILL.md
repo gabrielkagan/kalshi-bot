@@ -24,6 +24,10 @@ Lightweight pulse check across all systems. Not a full audit — just "is data f
 /status variants
 ```
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-side` (the only Bit 11.3 wrapper /status references; other no_side path stays as direct query). Verify `/tmp/state.db` exists, `make -n no-side` parses, and the script files referenced inline (e.g., `scripts/no_side_status.py`) exist (Bit 11.1d).
+
 ## Steps
 
 1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.

@@ -43,6 +43,10 @@ python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --asset X
 python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03 2>&1
 ```
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `15m-alpha` and `<X>` = `15m_alpha_research`. Verify `/tmp/state.db` exists, `make -n 15m-alpha` parses, and `scripts/15m_alpha_research.py` exists (Bit 11.1d).
+
 ## Steps
 
 1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.

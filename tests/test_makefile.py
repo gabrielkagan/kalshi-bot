@@ -1460,6 +1460,21 @@ BIT_11_1C_AUDIT_SKILL_WRAPPER_REFS = (
     "make no-side",
 )
 
+# Bit 11.1d (Sprint 11, 2026-05-11) — Preflight section across the 6
+# Bit-11.1a-retargeted SKILL.md files. The shared reference at
+# `.claude/skills/references/preflight.md` documents the generic
+# checklist (DB exists, Makefile target parses, fallback script
+# exists). Each SKILL.md's Preflight section refers operators to that
+# file with per-skill `<wrapper>` and `<X>` substitutions.
+BIT_11_1D_PREFLIGHT_SKILLS = (
+    ".claude/skills/data-health/SKILL.md",
+    ".claude/skills/alpha-audit/SKILL.md",
+    ".claude/skills/15m-alpha/SKILL.md",
+    ".claude/skills/no-side/SKILL.md",
+    ".claude/skills/shadow/SKILL.md",
+    ".claude/skills/status/SKILL.md",
+)
+
 
 @pytest.mark.parametrize(
     "skill_path,wrapper",
@@ -1542,6 +1557,57 @@ def test_bit_11_1c_audit_skill_dispatch_references_make_wrappers(wrapper: str):
         f"audit/SKILL.md missing dispatch reference to {wrapper!r}. "
         f"Bit 11.1c retargeted the dispatch table for 15m / hourly / "
         f"no_side rows to prefer Bit 11.3 wrappers."
+    )
+
+
+@pytest.mark.parametrize("skill_path", BIT_11_1D_PREFLIGHT_SKILLS)
+def test_bit_11_1d_skill_has_preflight_section(skill_path: str):
+    """Each of the 6 Bit-11.1a-retargeted SKILL.md files must have a
+    `## Preflight` section (Bit 11.1d, 2026-05-11). The section
+    references the shared `.claude/skills/references/preflight.md`
+    checklist so future maintainers don't duplicate prose. Catches
+    a future edit that drops the Preflight header."""
+    skill_file = REPO_ROOT / skill_path
+    assert skill_file.exists(), f"{skill_path} missing"
+    content = skill_file.read_text()
+    assert re.search(r"^##\s+Preflight\b", content, re.M), (
+        f"{skill_path} missing `## Preflight` section. Bit 11.1d "
+        f"requires this section in every Bit-11.1a-retargeted SKILL.md."
+    )
+    # Pin reference to the shared preflight checklist — catches a
+    # future drift where someone writes a standalone Preflight that
+    # doesn't follow the established shared-reference pattern.
+    assert ".claude/skills/references/preflight.md" in content, (
+        f"{skill_path} Preflight section must reference "
+        f"`.claude/skills/references/preflight.md` (Bit 11.1d shared "
+        f"checklist), not roll its own preflight prose."
+    )
+
+
+def test_bit_11_1d_shared_preflight_reference_exists():
+    """The shared preflight reference at
+    `.claude/skills/references/preflight.md` must exist and contain the
+    generic checklist sections that SKILL.md files refer operators to."""
+    ref = REPO_ROOT / ".claude/skills/references/preflight.md"
+    assert ref.exists(), (
+        "Shared preflight reference missing at "
+        ".claude/skills/references/preflight.md. Bit 11.1d requires it "
+        "as the single source of truth for the per-skill Preflight "
+        "checklist (DB exists, Makefile target parses, fallback script "
+        "exists)."
+    )
+    content = ref.read_text()
+    # Pin core checklist sections by header.
+    assert re.search(r"^##\s+Generic checklist", content, re.M), (
+        "preflight.md missing `## Generic checklist` section."
+    )
+    # Pin canonical placeholders that consuming SKILL.md files
+    # substitute.
+    assert "<wrapper>" in content, (
+        "preflight.md missing `<wrapper>` placeholder."
+    )
+    assert "<X>" in content, (
+        "preflight.md missing `<X>` placeholder for direct-script fallback."
     )
 
 

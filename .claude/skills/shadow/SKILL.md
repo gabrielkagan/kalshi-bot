@@ -7,6 +7,10 @@ description: "Bird's-eye summary across ALL 5 shadow/observation systems (15M, h
 
 Comprehensive report across ALL shadow/observation systems — 15M live, hourly, SPX, weather, and sports.
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` for the 2 mappable rows (`<wrapper>` = `15m-audit` and `hourly-audit`; spx/weather/sports require direct `python3 scripts/X.py` invocation since no wrapper exists). Verify `/tmp/state.db` exists, `make -n 15m-audit && make -n hourly-audit` both parse, and the 5 fallback scripts (`scripts/{15m_live_audit,hourly_shadow_audit,spx_shadow_audit,weather_shadow_audit,sports_shadow_audit}.py`) all exist (Bit 11.1d).
+
 ## Steps
 
 1. **Sync the database.** Follow `.claude/skills/references/db-sync.md` to sync the database.

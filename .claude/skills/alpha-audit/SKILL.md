@@ -27,6 +27,10 @@ Scripts: `scripts/alpha_audit.py`, `scripts/shadow_eval.py`
 /alpha-audit shadows      # Shadow evaluation only
 ```
 
+## Preflight
+
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `alpha-audit` and `<X>` = `alpha_audit`. Verify `/tmp/state.db` exists, `make -n alpha-audit` parses, and `scripts/alpha_audit.py` + `scripts/shadow_eval.py` exist (Bit 11.1d).
+
 ## Steps
 
 ### 1. Sync the database

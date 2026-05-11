@@ -19,12 +19,7 @@ Run a specific audit script for a single system. Takes a system argument.
 
 ## Preflight
 
-Before running this skill, verify:
-- `/tmp/state.db` exists (operator must have synced via `.claude/skills/references/db-sync.md`).
-- The Makefile target (if one exists, see dispatch table) parses: `make -n <target>` exits 0.
-- The fallback `scripts/<script>.py` file exists if no Makefile target.
-
-If any check fails, surface the missing path to the operator with a clear remedy ("Run `.claude/skills/references/db-sync.md` first" or "Sprint 11 Bit 11.3 wrapper missing — fall back to `python3 scripts/X.py`").
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` and `<X>` per the dispatch table in Step 1 (rows with a `Make wrapper` use that; rows without — spx / weather / sports — substitute `<X>` = the corresponding `*_shadow_audit` script). Bit 11.1c originally inlined this checklist; Bit 11.1d retrofitted to the shared reference for consistency with the 6 other audit-style SKILL.md files.
 
 ## Steps
 
