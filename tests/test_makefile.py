@@ -54,8 +54,39 @@ PILLAR_5_TARGETS = (
     "test-changed",
     "test-mutmut",
 )
-OPTIONAL_TARGETS = ("install", "api-snapshot-regen") + PILLAR_5_TARGETS
-ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS
+OPTIONAL_TARGETS = ("install", "install-hooks", "api-snapshot-regen") + PILLAR_5_TARGETS
+
+# Bit 11.3 (Sprint 11, 2026-05-11) — operator-convenience wrappers around
+# the most-frequently-skill-referenced audit + alpha-research scripts.
+# Each target wraps `python3 scripts/X.py --db /tmp/state.db [default-arg]`
+# with sensible defaults; custom-arg invocations stay as direct
+# `python3 scripts/...` per CLAUDE.md `/audit` / `/alpha-audit` pattern.
+# The set is the narrow Bit 11.3 cut (6 targets) — wider script-set
+# wrappers (`maker-cost`, `weekend-discount`, `spx-audit`, etc.) deferred
+# to a follow-up Bit if operator demand surfaces. Cross-ref:
+# kb/decisions/repo-modularization-plan-may05.md §Sprint 11 Bit 11.3.
+BIT_11_3_TARGETS = (
+    "data-health",
+    "alpha-audit",
+    "15m-audit",
+    "hourly-audit",
+    "15m-alpha",
+    "no-side",
+)
+ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS
+
+# Bit 11.3 (Sprint 11, 2026-05-11) — explicit (target -> script) mapping
+# pinned by test_bit_11_3_targets_point_to_real_scripts. Catches typos
+# in the recipe (target name passed to skills must execute the right
+# script; a typo would silently run the wrong audit).
+BIT_11_3_TARGET_TO_SCRIPT = {
+    "data-health": "scripts/data_health_monitor.py",
+    "alpha-audit": "scripts/alpha_audit.py",
+    "15m-audit": "scripts/15m_live_audit.py",
+    "hourly-audit": "scripts/hourly_shadow_audit.py",
+    "15m-alpha": "scripts/15m_alpha_research.py",
+    "no-side": "scripts/no_side_status.py",
+}
 
 
 def _content() -> str:
@@ -1346,3 +1377,65 @@ def test_gitignore_covers_mutmut_lock_file():
         f"requires it so the lockfile sentinel doesn't show up in "
         f"`git status` after a `make test-mutmut` invocation."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bit 11.3 (Sprint 11, 2026-05-11) — operator-convenience wrappers
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("target,script", sorted(BIT_11_3_TARGET_TO_SCRIPT.items()))
+def test_bit_11_3_targets_point_to_real_scripts(target: str, script: str):
+    """Each Bit 11.3 wrapper target must (a) declare a recipe in Makefile,
+    (b) invoke the mapped scripts/<X>.py, and (c) the script must exist
+    on disk. Catches three drift classes in one pin:
+      * typo in target name → recipe missing → REQUIRED_TARGETS-style failure
+      * typo in script path in recipe → grep miss
+      * script renamed/moved without updating Makefile → file-existence miss
+    """
+    text = _content()
+    # (a) recipe header `<target>:` exists.
+    assert re.search(rf"^{re.escape(target)}:(?!=)", text, re.M), (
+        f"Makefile missing recipe header for Bit 11.3 target {target!r}."
+    )
+    # (b) recipe body references the mapped script. The recipe is the
+    # next non-blank tab-indented line after the header; we search the
+    # whole file because the recipe could be multi-line.
+    assert re.search(rf"\b{re.escape(script)}\b", text), (
+        f"Makefile target {target!r} should invoke {script!r} but the "
+        f"path isn't in the file. Bit 11.3 wraps the operator skill "
+        f"pattern `python3 {script} --db /tmp/state.db ...`."
+    )
+    # (c) the script exists on disk — catches a rename/move that
+    # bypassed Makefile maintenance.
+    assert (REPO_ROOT / script).is_file(), (
+        f"Bit 11.3 target {target!r} points to {script!r} but the file "
+        f"doesn't exist. Either restore the script or update the "
+        f"BIT_11_3_TARGET_TO_SCRIPT map in this file."
+    )
+
+
+def test_bit_11_3_targets_use_canonical_db_path():
+    """All Bit 11.3 wrappers should use /tmp/state.db (the operator
+    convention per .claude/skills/*/SKILL.md; the symlink to the live
+    DB the operator restores via scripts/restore_state.py). Each recipe
+    must contain `--db /tmp/state.db` so `make data-health` reads the
+    same DB the operator's manual `python3 scripts/data_health_monitor.py
+    --db /tmp/state.db` invocation would."""
+    text = _content()
+    for target in BIT_11_3_TARGETS:
+        # Find the recipe body — header line plus indented continuation
+        # lines until next blank line / next unindented line.
+        m = re.search(
+            rf"^{re.escape(target)}:[^\n]*\n((?:\t[^\n]*\n)+)",
+            text,
+            re.M,
+        )
+        assert m, f"Couldn't locate recipe body for Bit 11.3 target {target!r}"
+        recipe = m.group(1)
+        assert "--db /tmp/state.db" in recipe, (
+            f"Bit 11.3 target {target!r} recipe missing `--db "
+            f"/tmp/state.db`. Operator convention per "
+            f".claude/skills/*/SKILL.md is `--db /tmp/state.db` (the "
+            f"symlink the operator restores via scripts/restore_state.py)."
+        )

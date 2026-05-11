@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -161,6 +161,14 @@ help:
 	@echo "  make doc-drift            scripts/doc_drift_check.py"
 	@echo "  make deploy-check         pre-deploy aggregator"
 	@echo "  make api-snapshot-regen   regenerate Pillar 1 public_api.json"
+	@echo
+	@echo "Operator audits (Bit 11.3 — wraps --db /tmp/state.db):"
+	@echo "  make data-health          scripts/data_health_monitor.py --verbose"
+	@echo "  make alpha-audit          scripts/alpha_audit.py --days 14"
+	@echo "  make 15m-audit            scripts/15m_live_audit.py --regime auto"
+	@echo "  make hourly-audit         scripts/hourly_shadow_audit.py --regime auto"
+	@echo "  make 15m-alpha            scripts/15m_alpha_research.py --regime auto"
+	@echo "  make no-side              scripts/no_side_status.py"
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -364,3 +372,37 @@ deploy-check:
 # not already installed.
 api-snapshot-regen:
 	$(PYTHON) scripts/dump_public_api.py
+
+# ─────────────────────────────────────────────────────────────────────
+# Bit 11.3 (Sprint 11, 2026-05-11) — operator-convenience wrappers
+# ─────────────────────────────────────────────────────────────────────
+# Wraps the most-frequently-skill-referenced audit + alpha-research
+# scripts with the canonical `--db /tmp/state.db` operator argument.
+# Each target matches the corresponding `/<skill>` skill's primary
+# invocation in .claude/skills/*/SKILL.md (search: `python3 scripts/`).
+# Custom-arg invocations stay as direct `python3 scripts/...` —
+# Make's positional-arg passing is awkward and the skill docs already
+# document the full surface. Six narrow wrappers ship in this Bit;
+# wider script-set (`maker-cost`, `weekend-discount`, `spx-audit`,
+# `weather-audit`, `sports-audit`, `hourly-alpha`, `spx-alpha`,
+# `weather-alpha`, `sports-alpha`, `calibrator-health`,
+# `quiet-monitor`) deferred to follow-up Bit. Contract pin:
+# tests/test_makefile.py::test_bit_11_3_targets_point_to_real_scripts.
+
+data-health:
+	$(PYTHON) scripts/data_health_monitor.py --db /tmp/state.db --verbose
+
+alpha-audit:
+	$(PYTHON) scripts/alpha_audit.py --db /tmp/state.db --days 14
+
+15m-audit:
+	$(PYTHON) scripts/15m_live_audit.py --db /tmp/state.db --regime auto
+
+hourly-audit:
+	$(PYTHON) scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto
+
+15m-alpha:
+	$(PYTHON) scripts/15m_alpha_research.py --db /tmp/state.db --regime auto
+
+no-side:
+	$(PYTHON) scripts/no_side_status.py --db /tmp/state.db
