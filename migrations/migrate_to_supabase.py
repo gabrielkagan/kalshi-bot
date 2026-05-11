@@ -7,7 +7,7 @@ Run from VPS after:
 
 Usage:
   source ~/.env
-  python3 migrate_to_supabase.py [--dry-run]
+  python3 migrations/migrate_to_supabase.py [--dry-run]   # Sprint 10.6 (2026-05-11): relocated from repo root to migrations/
 """
 
 import os
@@ -223,7 +223,13 @@ def main():
     logging.info(f"Supabase URL: {SUPABASE_URL}")
     logging.info(f"Dry run: {DRY_RUN}")
 
-    db_path = os.path.join(os.path.dirname(__file__) or ".", "state.db")
+    # Sprint 10.6 (2026-05-11) — state.db lives at repo root. Pre-move this
+    # script was at repo root so `os.path.dirname(__file__)` resolved correctly;
+    # post-move it lives in migrations/, so explicit 2-level parent navigation
+    # is required (migrations/X.py → migrations/ → repo/). Same fix pattern
+    # as Sprint 10.1c R1 CRITICAL (`__file__`-derived cache path orphaning).
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    db_path = os.path.join(_REPO_ROOT, "state.db")
     if not os.path.exists(db_path):
         logging.error(f"state.db not found at {db_path}")
         sys.exit(1)

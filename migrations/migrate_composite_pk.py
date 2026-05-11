@@ -2,7 +2,7 @@
 """One-time migration: positions and settled_trades to composite PK (ticker, strategy_group).
 
 Run with the bot STOPPED:
-    python3 scripts/migrate_composite_pk.py
+    python3 migrations/migrate_composite_pk.py   # Sprint 10.6 (2026-05-11): relocated from scripts/ to migrations/
 
 Idempotent — safe to run multiple times. Checks if strategy_group column
 already exists before migrating.
