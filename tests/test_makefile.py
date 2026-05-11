@@ -1690,6 +1690,38 @@ def test_bit_13_6_onboarding_md_exists():
         )
 
 
+def test_bit_13_1_drift_sweeper_agent_exists():
+    """Bit 13.1-2 (2026-05-11) — second codified sub-agent.
+    drift-sweeper captures the L86 sister-doc drift sweep pattern
+    (find stale references after a name move/rename). Pin file
+    existence + canonical sections per new-agent.md template +
+    distinguishing-drift-from-frozen-history guidance."""
+    agent = REPO_ROOT / ".claude/agents/drift-sweeper.md"
+    assert agent.is_file(), (
+        "Bit 13.1-2 agent `.claude/agents/drift-sweeper.md` missing — "
+        "second codified sub-agent. Captures the L86 sister-doc drift "
+        "sweep pattern."
+    )
+    content = agent.read_text()
+    assert re.search(r"^---\nname:\s+drift-sweeper", content, re.M), (
+        "drift-sweeper.md missing canonical frontmatter `name: drift-sweeper`."
+    )
+    for section in ("## Purpose", "## Invocation", "## Capabilities",
+                    "## Tools (declared)", "## Drift classification",
+                    "## When NOT to dispatch"):
+        assert section in content, (
+            f"drift-sweeper.md missing canonical section {section!r}."
+        )
+    # Drift-vs-frozen-history guidance is the key value-add over
+    # generic adv-review — pin its presence so a future edit can't
+    # silently drop it.
+    assert "frozen history" in content.lower(), (
+        "drift-sweeper.md missing 'frozen history' guidance — this is "
+        "the key distinction operators need to avoid over-flagging "
+        "Bit-closeout narrative as current-state drift."
+    )
+
+
 def test_bit_13_1_adv_reviewer_agent_exists():
     """Bit 13.1-narrow (2026-05-11) — first codified sub-agent under
     .claude/agents/. adv-reviewer captures the dispatch pattern the
