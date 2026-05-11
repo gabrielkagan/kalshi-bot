@@ -1690,6 +1690,46 @@ def test_bit_13_6_onboarding_md_exists():
         )
 
 
+def test_bit_13_1_adv_reviewer_agent_exists():
+    """Bit 13.1-narrow (2026-05-11) — first codified sub-agent under
+    .claude/agents/. adv-reviewer captures the dispatch pattern the
+    parent agent ran ~26+ times across this session's 12 shipped Bits
+    (R1/R2/R3/R4 adversarial reviews per Bit). Pin file existence +
+    canonical sections from the new-agent.md template (Bit 13.2-rest)."""
+    agent = REPO_ROOT / ".claude/agents/adv-reviewer.md"
+    assert agent.is_file(), (
+        "Bit 13.1-narrow agent `.claude/agents/adv-reviewer.md` missing — "
+        "first codified sub-agent. Master plan §13.1 lists 5 agents; "
+        "this is the first narrow ship."
+    )
+    content = agent.read_text()
+    # Frontmatter pin — agent definition must have name + description
+    # + tools per Anthropic Claude Code agent-definition schema.
+    assert re.search(r"^---\nname:\s+adv-reviewer", content, re.M), (
+        "adv-reviewer.md missing canonical frontmatter `name: adv-reviewer`."
+    )
+    assert "description:" in content, (
+        "adv-reviewer.md missing `description:` field in frontmatter."
+    )
+    assert "tools:" in content, (
+        "adv-reviewer.md missing `tools:` field in frontmatter."
+    )
+    # Canonical sections per new-agent.md template.
+    for section in ("## Purpose", "## Invocation", "## Capabilities",
+                    "## Tools (declared)", "## Classification rules",
+                    "## 2-zero ship gate", "## When NOT to dispatch"):
+        assert section in content, (
+            f"adv-reviewer.md missing canonical section {section!r}. "
+            f"Per .claude/templates/new-agent.md (Bit 13.2-rest)."
+        )
+    # Tools enumerated: Bash + Read + Grep + Glob (read-only set; no
+    # Edit/Write since reviewer doesn't apply fixes itself).
+    assert "Bash" in content
+    assert "Read" in content
+    assert "Grep" in content
+    assert "Glob" in content
+
+
 @pytest.mark.parametrize("template,required_sections", [
     (".claude/templates/new-shadow.md",
      ("## Decision doc", "## Constants", "## Writer wiring",
