@@ -1642,6 +1642,54 @@ def test_bit_11_1c_audit_skill_has_preflight_section():
     )
 
 
+def test_bit_13_6_contributing_md_exists():
+    """Bit 13.6 (2026-05-11) — `CONTRIBUTING.md` at repo root ships
+    the contributor-facing workflow + discipline + pre-commit gate
+    reference. Pin existence + canonical sections (Quickstart,
+    Discipline, Deploying, Tests)."""
+    md = REPO_ROOT / "CONTRIBUTING.md"
+    assert md.is_file(), "CONTRIBUTING.md missing (Bit 13.6)."
+    content = md.read_text()
+    for section in ("## Quickstart", "## Discipline", "## Tests",
+                    "## Deploying", "## Anti-patterns"):
+        assert section in content, (
+            f"CONTRIBUTING.md missing canonical section {section!r}. "
+            f"Bit 13.6 ships these as the contributor reference."
+        )
+    # Pin reference to pre-commit-checks (Bit 12.4) — the load-bearing
+    # local gate operators run before push.
+    assert "make pre-commit-checks" in content, (
+        "CONTRIBUTING.md must reference `make pre-commit-checks` (Bit "
+        "12.4) as the local gate. Without it, contributors don't know "
+        "the canonical pre-push command."
+    )
+
+
+def test_bit_13_6_onboarding_md_exists():
+    """Bit 13.6 — `.claude/onboarding.md` ships the agent-facing
+    companion to CONTRIBUTING.md. Read this first in a fresh agent
+    session. Pin existence + load-bearing references."""
+    md = REPO_ROOT / ".claude/onboarding.md"
+    assert md.is_file(), ".claude/onboarding.md missing (Bit 13.6)."
+    content = md.read_text()
+    for section in ("## First moves in a new session",
+                    "## Skill routing", "## Discipline",
+                    "## Critical no-no's"):
+        assert section in content, (
+            f".claude/onboarding.md missing canonical section "
+            f"{section!r}. Bit 13.6 ships these as the agent reference."
+        )
+    # Pin cross-refs to the load-bearing docs.
+    for ref in ("CLAUDE.md", "agent_docs/repository_map.md",
+                ".claude/templates/new-skill.md",
+                ".claude/hooks/tdd_guard.py"):
+        assert ref in content, (
+            f".claude/onboarding.md must reference {ref!r}. Bit 13.6 "
+            f"ties together the agent toolchain — missing cross-refs "
+            f"make the onboarding doc less load-bearing."
+        )
+
+
 def test_bit_13_2_new_skill_template_exists():
     """Bit 13.2 (2026-05-11) — `.claude/templates/new-skill.md`
     scaffolds new operator SKILL.md files with the canonical shape
