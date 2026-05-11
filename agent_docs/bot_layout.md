@@ -152,7 +152,7 @@ Live trading process:
 Engines (separate threads/processes):
 - `bot/engines/spx_engine.py` — SPX hourly (Polygon, EGARCH, RK, VIX). Relocated from repo root in Sprint 10.1b (2026-05-11).
 - `bot/engines/weather_engine.py` — weather ensemble (Open-Meteo GFS/ECMWF). Relocated from repo root in Sprint 10.1c (2026-05-11).
-- `sports_engine.py` — sports comeback (ESPN, Bayesian posterior)
+- `bot/engines/sports_engine.py` — sports comeback (ESPN, Bayesian posterior). Relocated from repo root in Sprint 10.1d (2026-05-11). **Sprint 10.1 engines/ sibling-reorg complete** (all 4 sub-moves shipped: sports_data 10.1a, spx_engine 10.1b, weather_engine 10.1c, sports_engine 10.1d).
 - `bot/engines/sports_data.py` — sports data fetcher (relocated from repo root in Sprint 10.1a, 2026-05-11; first sub-move of the Sprint 10 engines/ sibling-reorg)
 
 Shadows (observation-only):

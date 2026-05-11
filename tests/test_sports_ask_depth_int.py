@@ -36,7 +36,7 @@ def _aggregate_depth(no_bids):
     ask_depth is an int, even when the parser yielded float qty values."""
     # Import the actual module so a refactor that changes the path here
     # forces a corresponding test update.
-    import sports_engine  # noqa: F401  — sanity check that it loads
+    import bot.engines.sports_engine as sports_engine  # Sprint 10.1d (2026-05-11); alias keeps `sports_engine.X` below working
 
     return int(sum(b[1] for b in no_bids if b)) if no_bids else 0
 
@@ -71,7 +71,7 @@ def test_sports_engine_ask_depth_returns_int_on_orderbook_fp():
     Reproduces the production poison-pill: bid like ['0.28', '9703.00']
     where qty is a string-decimal that float()s to a non-integer-looking
     float. Aggregation must yield int."""
-    import sports_engine
+    import bot.engines.sports_engine as sports_engine  # Sprint 10.1d (2026-05-11)
     # Realistic Kalshi orderbook_fp shape (the new key format that
     # b6436f3 added support for). qty is a decimal string.
     ob = {
@@ -88,7 +88,7 @@ def test_sports_engine_ask_depth_returns_int_on_orderbook_fp():
     # The production line is what ACTUALLY matters — re-read sports_engine.py
     # source and assert the literal `int(sum(` pattern is present, but tolerate
     # any internal restructuring (whitespace, line wraps, helper extraction).
-    sports_engine_path = os.path.join(PROJECT_ROOT, "sports_engine.py")
+    sports_engine_path = os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")  # Sprint 10.1d (2026-05-11)
     with open(sports_engine_path) as f:
         src = f.read()
     # Strip whitespace to make the check resilient to wrapping.

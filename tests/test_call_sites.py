@@ -31,7 +31,7 @@ BOT_IMPORTERS = [
 ENGINE_FILES = [
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
-    "sports_engine.py",
+    "bot/engines/sports_engine.py",  # Sprint 10.1d sibling-reorg (2026-05-11)
 ]
 
 
@@ -136,10 +136,10 @@ class TestCalEnginePipelineTripleShip:
     """
 
     def test_sports_engine_inserts_raw_prob(self):
-        """sports_engine.py INSERT must include raw_prob (not NULL)."""
-        filepath = os.path.join(PROJECT_ROOT, "sports_engine.py")
+        """bot/engines/sports_engine.py INSERT must include raw_prob (not NULL)."""
+        filepath = os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")  # Sprint 10.1d (2026-05-11)
         if not os.path.exists(filepath):
-            pytest.skip("sports_engine.py not found")
+            pytest.skip("bot/engines/sports_engine.py not found")
         with open(filepath) as f:
             source = f.read()
         assert "raw_prob" in source, (
@@ -181,7 +181,7 @@ class TestEvaluatedOpportunitiesTierContract:
     # Files permitted to issue their own INSERT statements against
     # evaluated_opportunities. bot/_impl.py is the StateManager home, so its raw
     # INSERT is the canonical auto-populating one.
-    ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "sports_engine.py"}
+    ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "bot/engines/sports_engine.py"}  # Sprint 10.1d (2026-05-11)
 
     # Proxy for "all Tier 4 columns" — if this one appears in the INSERT
     # column list, the author at least noticed the contract exists. The

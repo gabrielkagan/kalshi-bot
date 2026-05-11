@@ -3836,6 +3836,1261 @@
     ],
     "returns": "float"
   },
+  "bot.engines.sports_engine": {
+    "kind": "module"
+  },
+  "bot.engines.sports_engine.BINARY_ENTRY_CRITERIA": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.BINARY_LR_TABLE": {
+    "annotation": "Dict[Tuple[str, str, str], float]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.BayesianComebackModel": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "FEE_MULTIPLIER": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "evaluate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "GameState",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "game"
+          },
+          {
+            "annotation": "LeagueConfig",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "league_cfg"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "pregame_fav_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "current_kalshi_price"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "deficit"
+          },
+          {
+            "annotation": "Optional[SportGroupConfig]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "sport_group_cfg"
+          }
+        ],
+        "returns": "ComebackSignal"
+      }
+    }
+  },
+  "bot.engines.sports_engine.CONSERVATIVE_LR_SCALE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.ComebackSignal": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "comeback_prob"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "prior"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "likelihood_ratio"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "edge"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "fee_adjusted_edge"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "deficit_bucket"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "time_bucket"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "strength_bucket"
+          },
+          {
+            "annotation": "bool",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "signal_fired"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "filter_stage"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "rejection_reason"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "simulated_contracts"
+          },
+          {
+            "annotation": "float",
+            "default": "0.0",
+            "kind": "positional or keyword",
+            "name": "simulated_risk"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_50c"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_60c"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_70c"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_80c"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_pregame_55"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "would_signal_pregame_65"
+          },
+          {
+            "annotation": "float",
+            "default": "0.0",
+            "kind": "positional or keyword",
+            "name": "shadow_lr_scale_50_posterior"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "shadow_lr_scale_50_signal"
+          },
+          {
+            "annotation": "float",
+            "default": "0.0",
+            "kind": "positional or keyword",
+            "name": "market_implied_prob"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "positional or keyword",
+            "name": "sport_group"
+          },
+          {
+            "annotation": "float",
+            "default": "0.2",
+            "kind": "positional or keyword",
+            "name": "sport_lr_scale"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional or keyword",
+            "name": "is_strong_config"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "positional or keyword",
+            "name": "nba_variant"
+          }
+        ],
+        "returns": "None"
+      },
+      "comeback_prob": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "deficit_bucket": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "edge": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "fee_adjusted_edge": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "filter_stage": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "is_strong_config": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "likelihood_ratio": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "market_implied_prob": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "nba_variant": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "prior": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "rejection_reason": {
+        "annotation": "Optional[str]",
+        "kind": "attribute"
+      },
+      "shadow_lr_scale_50_posterior": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "shadow_lr_scale_50_signal": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "signal_fired": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "simulated_contracts": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "simulated_risk": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "sport_group": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "sport_lr_scale": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "strength_bucket": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "time_bucket": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "would_signal_50c": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "would_signal_60c": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "would_signal_70c": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "would_signal_80c": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "would_signal_pregame_55": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "would_signal_pregame_65": {
+        "annotation": "bool",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.sports_engine.ESPNLiveFeed": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "poll_all_leagues": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict[str, GameState]"
+      }
+    }
+  },
+  "bot.engines.sports_engine.ESPN_BASE": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.ESPN_TIMEOUT": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.GameState": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "game_id"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "league"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "home_team"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "away_team"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "home_code"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "away_code"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "home_score"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "away_score"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "period"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "clock"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "time_remaining_pct"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "game_status"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "scheduled_start"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "red_cards_home"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "red_cards_away"
+          }
+        ],
+        "returns": "None"
+      },
+      "away_code": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "away_score": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "away_team": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "clock": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "game_id": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "game_status": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "home_code": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "home_score": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "home_team": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "league": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "period": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "red_cards_away": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "red_cards_home": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "scheduled_start": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "time_remaining_pct": {
+        "annotation": "float",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.sports_engine.KalshiGameMarkets": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "Dict[str, str]",
+            "default": "dict()",
+            "kind": "positional or keyword",
+            "name": "market_tickers"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "pregame_price_home"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "pregame_price_away"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "pregame_price_draw"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "closing_price_home"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "closing_price_away"
+          }
+        ],
+        "returns": "None"
+      },
+      "closing_price_away": {
+        "annotation": "Optional[float]",
+        "kind": "attribute"
+      },
+      "closing_price_home": {
+        "annotation": "Optional[float]",
+        "kind": "attribute"
+      },
+      "event_ticker": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "market_tickers": {
+        "annotation": "Dict[str, str]",
+        "kind": "attribute"
+      },
+      "pregame_price_away": {
+        "annotation": "Optional[float]",
+        "kind": "attribute"
+      },
+      "pregame_price_draw": {
+        "annotation": "Optional[float]",
+        "kind": "attribute"
+      },
+      "pregame_price_home": {
+        "annotation": "Optional[float]",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.sports_engine.KalshiSportsDiscovery": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "kalshi_client"
+          }
+        ],
+        "returns": null
+      },
+      "capture_closing_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          }
+        ],
+        "returns": "None"
+      },
+      "capture_pregame_price": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "side"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price"
+          }
+        ],
+        "returns": "None"
+      },
+      "get_all_markets": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict[str, KalshiGameMarkets]"
+      },
+      "get_markets_for_event": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "event_ticker"
+          }
+        ],
+        "returns": "Optional[KalshiGameMarkets]"
+      },
+      "get_orderbook_snapshot": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "ticker"
+          }
+        ],
+        "returns": "Optional[Dict]"
+      },
+      "refresh_if_needed": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "None"
+      }
+    }
+  },
+  "bot.engines.sports_engine.LEAGUES": {
+    "annotation": "Dict[str, LeagueConfig]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.LeagueConfig": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "series_ticker"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "espn_sport"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "espn_league"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "outcome_type"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "display_name"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "positional or keyword",
+            "name": "sport_group"
+          },
+          {
+            "annotation": "bool",
+            "default": "True",
+            "kind": "positional or keyword",
+            "name": "enabled"
+          }
+        ],
+        "returns": "None"
+      },
+      "display_name": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "enabled": {
+        "annotation": "bool",
+        "kind": "attribute"
+      },
+      "espn_league": {
+        "annotation": "Optional[str]",
+        "kind": "attribute"
+      },
+      "espn_sport": {
+        "annotation": "Optional[str]",
+        "kind": "attribute"
+      },
+      "outcome_type": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "series_ticker": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "sport_group": {
+        "annotation": "str",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.sports_engine.MAX_MODEL_MARKET_GAP": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.PlattCalibrator": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "MIN_TRAINING_ROWS": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "REFIT_INTERVAL_SEC": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "calibrate": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "raw_prob"
+          }
+        ],
+        "returns": "float"
+      },
+      "diagnostics": {
+        "annotation": "Dict",
+        "kind": "attribute"
+      },
+      "fit_from_db": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "sqlite3.Connection",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "conn"
+          }
+        ],
+        "returns": "bool"
+      },
+      "needs_refit": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "bool"
+      }
+    }
+  },
+  "bot.engines.sports_engine.SPORTS_EXCLUDED_GROUPS": {
+    "annotation": "Set[str]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.SPORTS_SHADOW_MIN_LR": {
+    "annotation": "float",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.SPORTS_SHADOW_MIN_PRICE": {
+    "annotation": "int",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.SPORTS_SHADOW_SIGNAL_GROUPS": {
+    "annotation": "Set[str]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.SPORT_GROUPS": {
+    "annotation": "Dict[str, SportGroupConfig]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.SportGroupConfig": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "group_name"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "lr_scale"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "lr_table_type"
+          },
+          {
+            "annotation": "float",
+            "default": "1.0",
+            "kind": "positional or keyword",
+            "name": "temperature"
+          },
+          {
+            "annotation": "int",
+            "default": "50",
+            "kind": "positional or keyword",
+            "name": "min_games_for_cal"
+          }
+        ],
+        "returns": "None"
+      },
+      "group_name": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "lr_scale": {
+        "annotation": "float",
+        "kind": "attribute"
+      },
+      "lr_table_type": {
+        "annotation": "str",
+        "kind": "attribute"
+      },
+      "min_games_for_cal": {
+        "annotation": "int",
+        "kind": "attribute"
+      },
+      "temperature": {
+        "annotation": "float",
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.engines.sports_engine.SportsEngine": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "TICK_INTERVAL": {
+        "annotation": null,
+        "kind": "attribute"
+      },
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "kalshi_client"
+          },
+          {
+            "annotation": null,
+            "default": "None",
+            "kind": "positional or keyword",
+            "name": "state_manager"
+          },
+          {
+            "annotation": "str",
+            "default": "'state.db'",
+            "kind": "positional or keyword",
+            "name": "db_path"
+          }
+        ],
+        "returns": null
+      },
+      "start": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "None"
+      },
+      "stop": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "None"
+      }
+    }
+  },
+  "bot.engines.sports_engine.THREE_WAY_ENTRY_CRITERIA": {
+    "annotation": null,
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.THREE_WAY_LR_TABLE": {
+    "annotation": "Dict[Tuple[str, str, str], float]",
+    "kind": "attribute"
+  },
+  "bot.engines.sports_engine.classify_deficit_binary": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "deficit"
+      }
+    ],
+    "returns": "str"
+  },
+  "bot.engines.sports_engine.classify_deficit_tennis": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "deficit"
+      }
+    ],
+    "returns": "str"
+  },
+  "bot.engines.sports_engine.classify_deficit_three_way": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "deficit"
+      }
+    ],
+    "returns": "str"
+  },
+  "bot.engines.sports_engine.classify_strength": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "float",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "pregame_prob"
+      },
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "outcome_type"
+      }
+    ],
+    "returns": "str"
+  },
+  "bot.engines.sports_engine.classify_time_remaining": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "float",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "pct"
+      }
+    ],
+    "returns": "str"
+  },
+  "bot.engines.sports_engine.get_sport_group_config": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "LeagueConfig",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "league_cfg"
+      }
+    ],
+    "returns": "SportGroupConfig"
+  },
+  "bot.engines.sports_engine.lookup_lr": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "outcome_type"
+      },
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "deficit_bucket"
+      },
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "time_bucket"
+      },
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strength_bucket"
+      },
+      {
+        "annotation": "Optional[float]",
+        "default": "None",
+        "kind": "positional or keyword",
+        "name": "lr_scale"
+      }
+    ],
+    "returns": "float"
+  },
+  "bot.engines.sports_engine.tracked_write": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "name"
+      },
+      {
+        "annotation": "str",
+        "default": "'?'",
+        "kind": "positional or keyword",
+        "name": "sql_kind"
+      }
+    ],
+    "returns": null
+  },
   "bot.engines.spx_engine": {
     "kind": "module"
   },

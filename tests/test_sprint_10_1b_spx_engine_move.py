@@ -32,7 +32,7 @@ Path-literal refs (>= 9 sites):
 
 Sister Sprint 10.1 sub-moves still pending after this Bit:
   - 10.1c: weather_engine.py → bot/engines/weather_engine.py
-  - 10.1d: sports_engine.py → bot/engines/sports_engine.py
+  - 10.1d: sports_engine.py → bot/engines/sports_engine.py (filename preserved; shipped 2026-05-11)
 """
 from __future__ import annotations
 

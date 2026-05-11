@@ -39,7 +39,7 @@ PRODUCTION_FILES = [
     "market_config.py",
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "spx_harrv_shadow.py",
-    "sports_engine.py",
+    "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "supabase_sync.py",
     "watchdog.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
@@ -309,7 +309,7 @@ class TestSyntaxCheck:
         "supabase_sync.py",
         "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
         "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
-        "sports_engine.py",
+        "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
         "fifteenm_shadow.py",
         "hourly_alt_shadow.py",
         "spx_harrv_shadow.py",

@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Source files to extract facts from
 SOURCE_FILES = [
     "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "models.py",
-    "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "sports_engine.py",  # Sprint 10.1b/c sibling-reorg (2026-05-11): spx_engine + weather_engine relocated
+    "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "bot/engines/sports_engine.py",  # Sprint 10.1b/c/d sibling-reorg (2026-05-11): all 3 main engines relocated
     "fifteenm_shadow.py", "hourly_alt_shadow.py",
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
     # changing SIGMA_WINSOR_ABS_CAP / GLOBAL_MIN_ENTRY_PRICE etc. without
@@ -221,12 +221,11 @@ def count_weather_cities() -> int:
 
 
 def count_sports_leagues() -> int:
-    """Count sports leagues from bot/engines/sports_data.py or sports_engine.py.
+    """Count sports leagues from bot/engines/sports_data.py or bot/engines/sports_engine.py.
 
-    Sprint 10.1a (2026-05-11): sports_data.py relocated from repo root to
-    bot/engines/sports_data.py per master plan L2225-2238 (Sprint 10 row
-    "engines/" 4 sub-moves). sports_engine.py move deferred to Sprint 10.1d."""
-    for fname in ("bot/engines/sports_data.py", "sports_engine.py"):
+    Sprint 10.1a-d (2026-05-11): sports_data + sports_engine both relocated to
+    bot/engines/. Master plan L2225-2238 Sprint 10 engines/ sub-moves complete."""
+    for fname in ("bot/engines/sports_data.py", "bot/engines/sports_engine.py"):
         path = REPO_ROOT / fname
         if not path.exists():
             continue

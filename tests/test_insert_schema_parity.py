@@ -57,7 +57,7 @@ TIER_5_COLUMNS = frozenset({
 # both copies in lock-step — Round-3 adversarial MAJOR-1 fix for the
 # silent-bypass class where a future raw inserter is added to one set
 # but not the other and slips past the data_provenance contract.
-ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "sports_engine.py"}
+ALLOWED_RAW_INSERTERS = {"bot/_impl.py", "bot/engines/sports_engine.py"}  # Sprint 10.1d (2026-05-11)
 
 
 def test_allowed_raw_inserters_set_matches_canonical():
@@ -106,8 +106,8 @@ PRODUCTION_FILES = [
     "fifteenm_shadow.py",
     "hourly_alt_shadow.py",
     "researcher.py",
-    "sports_engine.py",
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
+    "bot/engines/sports_engine.py",  # Sprint 10.1d sibling-reorg (2026-05-11; replaces root-level entry)
     "spx_harrv_shadow.py",
     "supabase_sync.py",
     "watchdog.py",
@@ -269,9 +269,9 @@ class TestRawInserterTierCoverage:
     """
 
     def test_sports_engine_raw_inserts_populate_tier_4_5(self, live_schema):
-        fpath = os.path.join(PROJECT_ROOT, "sports_engine.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")  # Sprint 10.1d (2026-05-11)
         if not os.path.exists(fpath):
-            pytest.skip("sports_engine.py not present")
+            pytest.skip("bot/engines/sports_engine.py not present")
         with open(fpath) as f:
             source = f.read()
 

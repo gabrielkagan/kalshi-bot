@@ -321,7 +321,7 @@ WRITER_MODULES = [
     "fifteenm_shadow.py",
     "market_observations_snapshotter.py",
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
-    "sports_engine.py",
+    "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "spx_harrv_shadow.py",
 ]
 

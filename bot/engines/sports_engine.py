@@ -2111,12 +2111,13 @@ class SportsEngine:
         block. Any engine with its own DB conn must mirror this — tested by
         test_sports_insert_populates_tier_4_and_5.
         """
-        # Lazy import to avoid circular (bot.py imports sports_engine.run())
-        from bot import (
-            compute_time_regime_features,
-            compute_derived_features,
-            SOL_RESCUE_CONTRACT_CAP,
-        )
+        # Sprint 10.1d (2026-05-11): direct imports from canonical homes
+        # (was: `from bot import (...)` via _BotProxy → bot._impl, which violated
+        # the new engines-no-impl `.importlinter` contract once this file
+        # relocated under bot.engines.*).
+        from bot.helpers.time_features import compute_time_regime_features
+        from bot.helpers.derived_features import compute_derived_features
+        from bot.constants import SOL_RESCUE_CONTRACT_CAP
         # _resolve_cal_engine relocated from bot/_impl.py to
         # bot/engines/calibration.py in Bit 6.3 path-B (2026-05-10).
         from bot.engines.calibration import _resolve_cal_engine

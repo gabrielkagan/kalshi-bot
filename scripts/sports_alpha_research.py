@@ -1187,7 +1187,7 @@ def detect_regime_start() -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=30 days ago",
-             "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both pre+post-move paths so regime-detection sees commits on either side of the move
+             "--", "bot/engines/sports_data.py", "sports_data.py", "bot/engines/sports_engine.py", "sports_engine.py"],  # Sprint 10.1a/d (2026-05-11): include both pre+post-move paths for both files
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -1200,7 +1200,7 @@ def detect_regime_start() -> str:
             timestamp = parts[1] if len(parts) > 1 else ""
             diff_result = subprocess.run(
                 ["git", "diff", f"{commit_hash}^..{commit_hash}",
-                 "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both pre+post-move paths so regime-detection sees commits on either side of the move
+                 "--", "bot/engines/sports_data.py", "sports_data.py", "bot/engines/sports_engine.py", "sports_engine.py"],  # Sprint 10.1a/d (2026-05-11): include both pre+post-move paths for both files
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:

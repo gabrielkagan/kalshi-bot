@@ -329,7 +329,8 @@ class TestSportsInsertTierCoverage(unittest.TestCase):
     """
 
     def _fresh_sports_engine(self):
-        import tempfile, bot, sports_engine
+        import tempfile, bot
+        import bot.engines.sports_engine as sports_engine  # Sprint 10.1d (2026-05-11)
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         tmp.close()
         self.addCleanup(os.unlink, tmp.name)
@@ -338,7 +339,7 @@ class TestSportsInsertTierCoverage(unittest.TestCase):
         return sports_engine.SportsEngine(db_path=tmp.name), tmp.name
 
     def _make_game_signal(self):
-        from sports_engine import GameState, ComebackSignal
+        from bot.engines.sports_engine import GameState, ComebackSignal  # Sprint 10.1d (2026-05-11)
         from bot.engines.sports_data import LeagueConfig
         game = GameState(
             game_id="test-g-1", league="KXNBAGAME",

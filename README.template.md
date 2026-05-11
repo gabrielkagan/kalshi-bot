@@ -221,7 +221,7 @@ market_config.py               -- centralized MarketTypeConfig (validates agains
 fifteenm_shadow.py             -- 15M shadow engine (recalibrated EGARCH + LightGBM research)
 bot/engines/spx_engine.py      -- S&P 500 intraday engine (EGARCH + VIX, observation mode)  (Sprint 10.1b relocation, 2026-05-11)
 bot/engines/weather_engine.py  -- weather temperature engine (NWP ensemble, NO-side live + observation)  (Sprint 10.1c relocation, 2026-05-11)
-sports_engine.py               -- sports comeback engine (Bayesian LR, observation mode)
+bot/engines/sports_engine.py   -- sports comeback engine (Bayesian LR, observation mode)  (Sprint 10.1d relocation, 2026-05-11)
 bot/engines/sports_data.py     -- sports LR tables and league configuration  (Sprint 10.1a relocation, 2026-05-11)
 capital_allocator.py           -- capital allocation across product types
 circuit_breaker.py             -- per-asset trading halt logic

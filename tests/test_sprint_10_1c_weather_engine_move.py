@@ -36,7 +36,7 @@ detected — `grep -rn 'patch.*"weather_engine\|patch.*'\\''weather_engine'`
 returned empty across the repo.
 
 Sister Sprint 10.1 sub-moves still pending after this Bit:
-  - 10.1d: sports_engine.py → bot/engines/sports_engine.py
+  - 10.1d: sports_engine.py → bot/engines/sports_engine.py (filename preserved; shipped 2026-05-11)
 """
 from __future__ import annotations
 

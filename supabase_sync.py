@@ -557,7 +557,7 @@ class SupabaseSyncer:
         "count", "entry_price_cents", "fee_cents", "maker_price_cents",
         "pnl_cents", "revenue_cents",
         # bid_depth: not yet in remote evaluations schema but is the symmetric
-        # twin of ask_depth (same source bug class — sports_engine.py:1634).
+        # twin of ask_depth (same source bug class — bot/engines/sports_engine.py — search anchor: `int(round(sum(`).
         # Including is a no-op if absent from payload; future-proofs a remote
         # migration that adds the column.
         "bid_depth",

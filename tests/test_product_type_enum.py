@@ -47,7 +47,7 @@ PRODUCTION_FILES = [
     "hourly_alt_shadow.py",
     "market_config.py",
     "researcher.py",
-    "sports_engine.py",
+    "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "spx_harrv_shadow.py",
     "supabase_sync.py",

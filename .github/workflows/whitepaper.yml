@@ -14,6 +14,7 @@ on:
       - 'scripts/extract_config.py'
       - 'scripts/check_docs_freshness.py'
       - 'bot/engines/sports_data.py'
+      - 'bot/engines/sports_engine.py'
       - 'bot/engines/spx_engine.py'
       - 'bot/engines/weather_engine.py'
       - 'templates/**'

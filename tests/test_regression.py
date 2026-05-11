@@ -349,7 +349,7 @@ class TestBusyTimeout:
 
     # Production files that write to state.db and MUST set WAL mode
     WAL_REQUIRED_FILES = [
-        "bot/_impl.py", "supabase_sync.py", "sports_engine.py",
+        "bot/_impl.py", "supabase_sync.py", "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
         "fifteenm_shadow.py", "hourly_alt_shadow.py", "spx_harrv_shadow.py",
     ]
 
@@ -558,7 +558,7 @@ class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
     CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
-                      "sports_engine.py", "bot/engines/spx_engine.py", "bot/engines/weather_engine.py",  # Sprint 10.1c (2026-05-11)
+                      "bot/engines/sports_engine.py", "bot/engines/spx_engine.py", "bot/engines/weather_engine.py",  # Sprint 10.1c/d (2026-05-11)
                       "fifteenm_shadow.py"]  # Sprint 10.1b sibling-reorg (2026-05-11): spx_engine relocated
 
     @pytest.mark.parametrize("filename", CRITICAL_FILES)
@@ -907,11 +907,11 @@ class TestCalEnginePipelineWiring:
     """raw_prob must be present in INSERT calls for CalEngine to train."""
 
     def test_sports_insert_has_raw_prob(self):
-        """sports_engine.py must include raw_prob in evaluated_opportunities INSERT."""
-        fpath = os.path.join(PROJECT_ROOT, "sports_engine.py")
+        """bot/engines/sports_engine.py must include raw_prob in evaluated_opportunities INSERT."""
+        fpath = os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")  # Sprint 10.1d (2026-05-11)
         with open(fpath) as f:
             content = f.read()
-        assert "raw_prob" in content, "sports_engine.py missing raw_prob in INSERT"
+        assert "raw_prob" in content, "bot/engines/sports_engine.py missing raw_prob in INSERT"
 
     def test_bot_insert_evaluated_accepts_raw_prob(self):
         from bot import StateManager
@@ -1226,7 +1226,7 @@ class TestSportsSettlementCompleteness:
         fav_won IS NULL, so the _settled_games check is redundant and
         causes rows to be permanently orphaned.
         """
-        source = open(os.path.join(PROJECT_ROOT, "sports_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")).read()  # Sprint 10.1d (2026-05-11)
         tree = ast.parse(source)
 
         for node in ast.walk(tree):
@@ -1242,7 +1242,7 @@ class TestSportsSettlementCompleteness:
 
     def test_settle_completed_does_not_skip_settled_games(self):
         """_settle_completed_games must NOT skip games in _settled_games."""
-        source = open(os.path.join(PROJECT_ROOT, "sports_engine.py")).read()
+        source = open(os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")).read()  # Sprint 10.1d (2026-05-11)
         tree = ast.parse(source)
 
         for node in ast.walk(tree):
@@ -2483,7 +2483,7 @@ class TestSportsOrderbookFpShape:
     """
 
     def test_parses_fp_shape_to_integer_cents(self):
-        from sports_engine import _parse_orderbook
+        from bot.engines.sports_engine import _parse_orderbook  # Sprint 10.1d (2026-05-11)
         ob = {"orderbook_fp": {
             "no_dollars": [["0.5500", "1.00"], ["0.7100", "750.00"]],
             "yes_dollars": [["0.2800", "9703.00"]],
@@ -2496,14 +2496,14 @@ class TestSportsOrderbookFpShape:
         assert 100 - best_no == 29
 
     def test_parses_legacy_shape_unchanged(self):
-        from sports_engine import _parse_orderbook
+        from bot.engines.sports_engine import _parse_orderbook  # Sprint 10.1d (2026-05-11)
         ob = {"orderbook": {"yes": [[28, 9703]], "no": [[71, 750]]}}
         yes_bids, no_bids = _parse_orderbook(ob)
         assert no_bids == [[71, 750]]
         assert yes_bids == [[28, 9703]]
 
     def test_handles_empty_and_malformed(self):
-        from sports_engine import _parse_orderbook
+        from bot.engines.sports_engine import _parse_orderbook  # Sprint 10.1d (2026-05-11)
         assert _parse_orderbook(None) == ([], [])
         assert _parse_orderbook({}) == ([], [])
         assert _parse_orderbook({"orderbook_fp": {}}) == ([], [])
@@ -2515,7 +2515,7 @@ class TestSportsOrderbookFpShape:
         """All orderbook parsing in sports_engine must go through
         _parse_orderbook — a direct ob["orderbook"] access would silently
         break again if Kalshi renames the key."""
-        fpath = os.path.join(PROJECT_ROOT, "sports_engine.py")
+        fpath = os.path.join(PROJECT_ROOT, "bot", "engines", "sports_engine.py")  # Sprint 10.1d (2026-05-11)
         with open(fpath) as f:
             src = f.read()
         helper_start = src.find("def _parse_orderbook(")

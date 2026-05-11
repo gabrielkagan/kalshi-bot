@@ -448,7 +448,7 @@ class MainLoop:
         self.sports_engine = None
         if SPORTS_ENABLED:
             try:
-                from sports_engine import SportsEngine
+                from bot.engines.sports_engine import SportsEngine  # Sprint 10.1d sibling-reorg (2026-05-11)
                 self.sports_engine = SportsEngine(
                     kalshi_client=self.client,
                     state_manager=self.state,

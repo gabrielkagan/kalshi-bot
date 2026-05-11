@@ -1840,7 +1840,7 @@ def detect_regime_start() -> str:
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",
-             "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both paths so pre-move history is preserved + post-move commits register; sports_data.py path stays in pathspec because git log -- follows renames via the rename detector by default and the old path covers commits before the move
+             "--", "bot/engines/sports_data.py", "sports_data.py", "bot/engines/sports_engine.py", "sports_engine.py"],  # Sprint 10.1a/d (2026-05-11): include both pre+post-move paths so regime detection sees commits on either side of each rename without --follow
             capture_output=True, text=True, timeout=10, cwd=repo_dir,
         )
         if result.returncode != 0:
@@ -1852,7 +1852,7 @@ def detect_regime_start() -> str:
             commit_hash, timestamp = parts[0], parts[1] if len(parts) > 1 else ""
             diff_result = subprocess.run(
                 ["git", "diff", f"{commit_hash}^..{commit_hash}",
-                 "--", "bot/engines/sports_data.py", "sports_data.py", "sports_engine.py"],  # Sprint 10.1a (2026-05-11): include both paths so pre-move history is preserved + post-move commits register; sports_data.py path stays in pathspec because git log -- follows renames via the rename detector by default and the old path covers commits before the move
+                 "--", "bot/engines/sports_data.py", "sports_data.py", "bot/engines/sports_engine.py", "sports_engine.py"],  # Sprint 10.1a/d (2026-05-11): include both pre+post-move paths so regime detection sees commits on either side of each rename without --follow
                 capture_output=True, text=True, timeout=10, cwd=repo_dir,
             )
             if diff_result.returncode != 0:
