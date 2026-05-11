@@ -94,7 +94,7 @@ from bot.engines.probability import ProbabilityEngine
 from bot.logger import Logger
 from bot.state import StateManager
 from market_config import get_market_config
-from models import calculate_fee, calculate_taker_fee, strategy_to_group
+from bot.models import calculate_fee, calculate_taker_fee, strategy_to_group
 
 
 # Bit 86b9vpp2z (2026-05-11) RETIRED `_get_opportunity_scanner()` cycle-break
@@ -2540,7 +2540,7 @@ class OrderExecutor:
         # Race condition guard: check position at this price level
         _tm_exec_group = f"terminal_momentum_{price}"
         if STACKING_ENABLED:
-            from models import strategy_to_group
+            from bot.models import strategy_to_group
             if any(p.get("ticker") == ticker
                    and p.get("strategy_group", strategy_to_group(p.get("strategy", "")))
                        == _tm_exec_group

@@ -3,8 +3,8 @@
 These classes have zero side effects (no API calls, no DB, no websockets).
 They depend only on config.py constants and standard library + scipy.
 
-bot/_impl.py imports these via `from models import ...` so runtime behavior
-is unchanged.
+Consumers import these via `from bot.models import ...` (Sprint 10.5b 2026-05-11
+relocation; pre-relocation path was repo-root `models.py`).
 """
 
 import json

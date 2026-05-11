@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Source files to extract facts from
 SOURCE_FILES = [
-    "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "models.py",
+    "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "bot/models.py",  # Sprint 10.5b (2026-05-11): models relocated
     "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "bot/engines/sports_engine.py",  # Sprint 10.1b/c/d sibling-reorg (2026-05-11): all 3 main engines relocated
     "bot/shadows/fifteenm_shadow.py", "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,

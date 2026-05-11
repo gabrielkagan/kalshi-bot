@@ -188,7 +188,7 @@ from bot.settlement import SettlementTracker, discover_active_windows
 # Pre-Bit-3.1 leftover-in-config + market_config + models
 from config import ASSETS
 from market_config import MARKET_CONFIGS
-from models import (
+from bot.models import (
     EGARCHEstimator,
     MincerZarnowitzTracker,
     PositionSizer,

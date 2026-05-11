@@ -18,7 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BOT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot/_impl.py")
-MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models.py")
+MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot", "models.py")  # Sprint 10.5b (2026-05-11)
 
 
 def _read_bot():
@@ -88,38 +88,38 @@ class TestStrategyToGroup(unittest.TestCase):
                        "strategy_to_group must be defined in models.py, not bot/_impl.py")
 
     def test_none_maps_to_main(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         self.assertEqual(strategy_to_group(None), "main")
 
     def test_empty_maps_to_main(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         self.assertEqual(strategy_to_group(""), "main")
 
     def test_execution_strategies_map_to_main(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         for s in ("MAKER_PATIENT", "TAKER_NOW", "MAKER_AGGRESSIVE", "PANIC_CAPTURE"):
             self.assertEqual(strategy_to_group(s), "main", f"{s} should map to 'main'")
 
     def test_addon_strategies_map_to_main(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         for s in ("CONFIRMATION_ADDON", "DIP_ADDON"):
             self.assertEqual(strategy_to_group(s), "main", f"{s} should map to 'main'")
 
     def test_decided_strategies_map_to_decided(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         for s in ("decided_t1", "decided_t2", "decided_t2_z2", "decided_t2_z25"):
             self.assertEqual(strategy_to_group(s), "decided", f"{s} should map to 'decided'")
 
     def test_terminal_momentum(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         self.assertEqual(strategy_to_group("terminal_momentum"), "terminal_momentum")
 
     def test_weekend_discount(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         self.assertEqual(strategy_to_group("weekend_discount"), "weekend_discount")
 
     def test_bracket_no(self):
-        from models import strategy_to_group
+        from bot.models import strategy_to_group
         self.assertEqual(strategy_to_group("bracket_no"), "bracket_no")
 
 

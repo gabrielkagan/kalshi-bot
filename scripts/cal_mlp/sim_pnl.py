@@ -59,10 +59,10 @@ from sizing import (
     SIZING_TIERS, SIZING_TIER_RISK_FRACTIONS, SizingResult,
 )
 
-# R-p6-impl-2#C2/C11: import fees from models.py (pure-math module — no
-# bot.py side effects). models.calculate_taker_fee / calculate_maker_fee
+# R-p6-impl-2#C2/C11: import fees from bot.models (pure-math module — no
+# bot.py side effects). bot.models.calculate_taker_fee / calculate_maker_fee
 # are the authoritative implementations bot.py itself calls.
-from models import calculate_taker_fee, calculate_maker_fee  # noqa: E402
+from bot.models import calculate_taker_fee, calculate_maker_fee  # noqa: E402  (Sprint 10.5b 2026-05-11)
 
 
 # ── Shared method_output construction ──────────────────────────────────

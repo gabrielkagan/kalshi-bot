@@ -1739,8 +1739,8 @@ class TestKellySizerZeroPayout:
 
     def test_compute_guard_exists_in_source(self):
         """Source code must guard b <= 0 before Kelly division."""
-        # PositionSizer lives in models.py (extracted from bot/_impl.py)
-        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
+        # PositionSizer lives in bot/models.py (Sprint 10.5b 2026-05-11 relocation; was repo-root models.py)
+        with open(os.path.join(PROJECT_ROOT, "bot", "models.py")) as f:
             source = f.read()
         assert "if b <= 0:" in source, (
             "PositionSizer.compute() must guard b <= 0 to prevent division by zero"
@@ -1748,8 +1748,8 @@ class TestKellySizerZeroPayout:
 
     def test_guard_precedes_kelly_division(self):
         """The b <= 0 guard must appear BEFORE the kelly_edge division in compute()."""
-        # PositionSizer lives in models.py (extracted from bot/_impl.py)
-        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
+        # PositionSizer lives in bot/models.py (Sprint 10.5b 2026-05-11 relocation; was repo-root models.py)
+        with open(os.path.join(PROJECT_ROOT, "bot", "models.py")) as f:
             source = f.read()
         guard_pos = source.find("if b <= 0:")
         division_pos = source.find("kelly_edge = (b * p - q) / b")
@@ -1762,8 +1762,8 @@ class TestKellySizerZeroPayout:
 
     def test_guard_returns_early(self):
         """The b <= 0 guard must return result (not just pass)."""
-        # PositionSizer lives in models.py (extracted from bot/_impl.py)
-        with open(os.path.join(PROJECT_ROOT, "models.py")) as f:
+        # PositionSizer lives in bot/models.py (Sprint 10.5b 2026-05-11 relocation; was repo-root models.py)
+        with open(os.path.join(PROJECT_ROOT, "bot", "models.py")) as f:
             source = f.read()
         guard_idx = source.find("if b <= 0:")
         block = source[guard_idx:guard_idx + 200]
@@ -2055,12 +2055,12 @@ class TestRollingHWM:
     """PositionSizer must use rolling 7-day peak, not static startup HWM."""
 
     def test_balance_history_exists(self):
-        from models import PositionSizer
+        from bot.models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
         assert hasattr(sizer, "_balance_history")
 
     def test_record_balance(self):
-        from models import PositionSizer
+        from bot.models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
         # Must complete warmup (5 readings) before balance_history is populated
         for _ in range(5):
@@ -2068,7 +2068,7 @@ class TestRollingHWM:
         assert len(sizer._balance_history) == 1  # warmup seeds 1 median entry
 
     def test_rolling_hwm_uses_max(self):
-        from models import PositionSizer
+        from bot.models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
         # Complete warmup at 12000
         for _ in range(5):
@@ -2081,7 +2081,7 @@ class TestRollingHWM:
     def test_rolling_hwm_ages_out(self):
         """Old peaks beyond lookback should not count."""
         import time as _time
-        from models import PositionSizer
+        from bot.models import PositionSizer
         from config import HWM_LOOKBACK_SECONDS
         sizer = PositionSizer(starting_balance_cents=10000)
         # Complete warmup first
@@ -2095,7 +2095,7 @@ class TestRollingHWM:
         assert sizer.get_rolling_hwm() == 10000
 
     def test_drawdown_scaler_uses_rolling_hwm(self):
-        from models import PositionSizer
+        from bot.models import PositionSizer
         sizer = PositionSizer(starting_balance_cents=10000)
         # Complete warmup
         for _ in range(5):
@@ -2106,7 +2106,7 @@ class TestRollingHWM:
 
     def test_override_hwm_env_var(self):
         import os
-        from models import PositionSizer
+        from bot.models import PositionSizer
         os.environ["OVERRIDE_HWM"] = "100.00"
         try:
             sizer = PositionSizer(starting_balance_cents=5000)
@@ -2117,7 +2117,7 @@ class TestRollingHWM:
     def test_no_stale_hwm_after_withdrawal(self):
         """After withdrawal, drawdown scaler should recover when old peak ages out."""
         import time as _time
-        from models import PositionSizer
+        from bot.models import PositionSizer
         from config import HWM_LOOKBACK_SECONDS
         sizer = PositionSizer(starting_balance_cents=55000)
         # Complete warmup at post-withdrawal balance

@@ -126,7 +126,7 @@ from integration import (
     parity_assert as _calmlp_parity_assert_impl,
     sizing_parity_assert as _calmlp_sizing_parity_assert_impl,
 )
-from models import calculate_fee, strategy_to_group
+from bot.models import calculate_fee, strategy_to_group
 
 
 def _get_compute_for_15m_main_path():

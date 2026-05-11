@@ -122,7 +122,7 @@ from config import (
     NUMERICAL_SAFETY_CEILING,
 )
 from market_config import get_cal_excluded_types, get_market_config
-from models import calculate_taker_fee
+from bot.models import calculate_taker_fee
 
 
 class CalibrationEngine:

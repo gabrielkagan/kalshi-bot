@@ -244,7 +244,7 @@ def test_volatility_config_constants_resolve_from_config(name):
 def test_compute_tv_rk_weights_from_models():
     """compute_tv_rk_weights lives in models.py (not bot.constants — it's a
     function, not a constant). Pin the source."""
-    import models
+    import bot.models as models
     import bot.engines.volatility as bev
     assert bev.compute_tv_rk_weights is models.compute_tv_rk_weights
 
@@ -1122,7 +1122,7 @@ def test_calibration_get_cal_excluded_types_from_market_config():
 def test_calibration_calculate_taker_fee_from_models():
     """calculate_taker_fee lives in models.py. CalibrationEngine uses it
     inside backtest_adaptive_vs_fixed for fee-aware Brier comparison."""
-    import models
+    import bot.models as models
     import bot.engines.calibration as bec
     assert bec.calculate_taker_fee is models.calculate_taker_fee
 

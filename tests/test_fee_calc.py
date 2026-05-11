@@ -11,7 +11,7 @@ Guards against:
 import math
 import unittest
 
-from models import calculate_fee, calculate_taker_fee, calculate_maker_fee
+from bot.models import calculate_fee, calculate_taker_fee, calculate_maker_fee
 
 
 class TestCalculateFee(unittest.TestCase):

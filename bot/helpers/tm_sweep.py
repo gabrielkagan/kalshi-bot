@@ -2,7 +2,20 @@
 from typing import Dict, List, Optional, Tuple
 
 from bot.constants import *  # noqa: F401,F403 — TM_*, MIN_/MAX_ENTRY_PRICE, etc.
-from models import calculate_taker_fee
+
+# Sprint 10.5b (2026-05-11): models relocated to bot/models.py. Can't top-level
+# `from bot.models import calculate_taker_fee` here — would violate the
+# `helpers-leaf` .importlinter contract (helpers can't import siblings).
+# Lazy-import inside the consumer function (mirrors Sprint 10.5a
+# bot/helpers/breakers.py → bot.infra.circuit_breaker pattern). `sys.modules`
+# caches; per-call overhead negligible.
+
+
+def _get_calculate_taker_fee():
+    """Lazy-bind calculate_taker_fee from bot.models (Sprint 10.5b 2026-05-11)."""
+    from bot.models import calculate_taker_fee
+    return calculate_taker_fee
+
 
 def tm_sweep_extract_depths(yes_asks, tiers=TM_SWEEP_CAPTURE_TIERS):
     """Given a list of [price_cents, qty] yes-ask pairs (post _extract_book_levels),
@@ -40,6 +53,7 @@ def tm_sweep_counterfactual_pnl(unfilled, entry_tier, depths, market_result,
     else:
         return 0, []
 
+    calculate_taker_fee = _get_calculate_taker_fee()  # Sprint 10.5b lazy bind
     legs = []
     total = 0
     remaining = max(0, int(unfilled))

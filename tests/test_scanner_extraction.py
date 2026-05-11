@@ -103,11 +103,19 @@ SCANNER_CONFIG_CONSTANTS = (
     "SIZING_TIERS",
 )
 
-# 10 names from bot.helpers (came in via `from bot.helpers import *`
-# laundering pre-extraction; explicit per-leaf imports per L40 lesson).
+# Names from bot.helpers (came in via `from bot.helpers import *` laundering
+# pre-extraction; explicit per-leaf imports per L40 lesson).
+#
+# Sprint 10.5b (2026-05-11): `calculate_taker_fee` REMOVED from this list.
+# Pre-10.5b it was re-exported by bot/helpers/tm_sweep.py's `from models import
+# calculate_taker_fee` star-laundered through `bot.helpers`. Post-10.5b
+# tm_sweep.py uses a lazy `_get_calculate_taker_fee()` helper (helpers-leaf
+# carve-out — see .importlinter `bot.helpers.tm_sweep -> bot.models`), so the
+# name is no longer at bot.helpers' module surface. The scanner now imports
+# calculate_taker_fee directly from bot.models alongside PositionSizer +
+# calculate_fee + strategy_to_group (line 75 of bot/scanner/__init__.py).
 SCANNER_HELPERS = (
     "buffer_sizing_multiplier",
-    "calculate_taker_fee",
     "dollars_str_to_cents",
     "evaluate_execution_strategy",
     "get_min_edge",
@@ -1054,8 +1062,9 @@ def test_scanner_imports_logger_for_type_annotation():
 
 
 def test_scanner_imports_position_sizer_from_models():
+    """Sprint 10.5b (2026-05-11): models relocated from repo root to bot/models.py."""
     src = _read_scanner_source()
-    assert re.search(r"^from models import.*\bPositionSizer\b", src, re.MULTILINE)
+    assert re.search(r"^from bot\.models import.*\bPositionSizer\b", src, re.MULTILINE)
 
 
 # ============================================ L40 patch-coverage drift guard

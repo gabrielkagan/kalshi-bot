@@ -118,6 +118,7 @@ forbidden_modules =
     bot.fetchers
     bot.main_loop
     bot.infra
+    bot.models
     bot.order_flow
     bot.orphan_db_watchdog
     bot.scanner
@@ -141,6 +142,12 @@ ignore_imports =
     # is required. The lazy import is the only edge — verified via AST walk in
     # tests/test_sprint_10_5a_infra_move.py.
     bot.helpers.breakers -> bot.infra.circuit_breaker
+    # Sprint 10.5b (2026-05-11): bot.helpers.tm_sweep reaches calculate_taker_fee
+    # via a function-scoped lazy import in `_get_calculate_taker_fee()`
+    # (search anchor in bot/helpers/tm_sweep.py: `def _get_calculate_taker_fee`).
+    # Pre-10.5b models.py was at repo root; post-10.5b it lives at bot.models
+    # (sibling). Same Bit 7.1 / Sprint 10.5a carve-out pattern as breakers above.
+    bot.helpers.tm_sweep -> bot.models
 
 # ---------------------------------------------------------------------------
 # Contract 5 — bot.state must not have a top-level import of bot._impl

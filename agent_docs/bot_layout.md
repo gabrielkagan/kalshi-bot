@@ -170,7 +170,7 @@ Snapshots/sync:
 - `supabase_sync.py` — Postgres mirror
 
 Infra:
-- `bot/infra/capital_allocator.py`, `bot/infra/circuit_breaker.py` (relocated Sprint 10.5a, 2026-05-11), `watchdog.py`, `models.py` (10.5b/c deferred — watchdog has __file__-derived load-bearing paths + CLI invocation; models has 8 prod + 6 test import sites needing dedicated 3-round Bit)
+- `bot/infra/capital_allocator.py`, `bot/infra/circuit_breaker.py` (relocated Sprint 10.5a, 2026-05-11), `bot/models.py` (relocated Sprint 10.5b, 2026-05-11 — sibling under bot/, NOT under bot/infra/; helpers-leaf carve-out for bot.helpers.tm_sweep -> bot.models), `watchdog.py` (10.5c deferred — watchdog has __file__-derived load-bearing paths + CLI invocation)
 
 Config:
 - `market_config.py` — MarketTypeConfig dataclass; asserts against bot/_impl.py at startup

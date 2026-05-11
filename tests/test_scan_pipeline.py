@@ -31,7 +31,7 @@ from bot import (
     HOURLY_EXCLUDED_ASSETS, XRP_15M_SHADOW,
     get_min_edge,
 )
-from models import calculate_fee, calculate_taker_fee
+from bot.models import calculate_fee, calculate_taker_fee
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

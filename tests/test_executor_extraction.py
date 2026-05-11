@@ -542,12 +542,12 @@ def test_no_opportunityscanner_best_ask_depth_calls_in_bot_impl():
 
 @pytest.mark.parametrize("forbidden", FORBIDDEN_NUMERICAL_IMPORTS)
 def test_executor_no_forbidden_numerical_imports(forbidden: str):
-    """bot/executor.py must NOT directly import torch/sklearn/pandas (transitive via models.* OK)."""
+    """bot/executor.py must NOT directly import torch/sklearn/pandas (transitive via bot.models.* OK)."""
     src = EXECUTOR_PY.read_text()
     pattern = rf"^\s*(import {forbidden}|from {forbidden}\b)"
     assert re.search(pattern, src, re.MULTILINE) is None, (
         f"bot/executor.py has forbidden top-level `import {forbidden}` — torch/sklearn/pandas "
-        f"must reach the executor only transitively (e.g., through models.PositionSizer)"
+        f"must reach the executor only transitively (e.g., through bot.models.PositionSizer)"
     )
 
 

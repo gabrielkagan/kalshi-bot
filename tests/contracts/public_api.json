@@ -3396,6 +3396,24 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.engines.calibration.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
   "bot.engines.probability": {
     "kind": "module"
   },
@@ -6180,6 +6198,18 @@
         "returns": "Optional[Dict]"
       }
     }
+  },
+  "bot.engines.volatility.compute_tv_rk_weights": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "float",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      }
+    ],
+    "returns": "Tuple[float, float, float]"
   },
   "bot.engines.weather_engine": {
     "kind": "module"
@@ -9959,6 +9989,60 @@
     ],
     "returns": "Optional[int]"
   },
+  "bot.executor.calculate_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.07",
+        "kind": "positional or keyword",
+        "name": "fee_mult_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.0",
+        "kind": "positional or keyword",
+        "name": "fee_mult_maker"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.executor.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
   "bot.executor.convert_orderbook_fp": {
     "kind": "function",
     "parameters": [
@@ -9994,6 +10078,18 @@
       }
     ],
     "returns": "int"
+  },
+  "bot.executor.strategy_to_group": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      }
+    ],
+    "returns": "str"
   },
   "bot.executor.tm_compute_contracts": {
     "kind": "function",
@@ -13565,10 +13661,6 @@
       }
     ],
     "returns": "float"
-  },
-  "bot.helpers.calculate_taker_fee": {
-    "kind": "unresolved-alias",
-    "target_path": "bot.helpers.tm_sweep.calculate_taker_fee"
   },
   "bot.helpers.cell_blocks": {
     "kind": "module"
@@ -26275,6 +26367,174 @@
       }
     }
   },
+  "bot.main_loop.EGARCHEstimator": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_constrained_sigma": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_diagnostics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_sigma": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "is_active": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "bool"
+      },
+      "maybe_refit": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "record_return": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          }
+        ],
+        "returns": null
+      },
+      "recursive_update": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "seed_variance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rk_5min_sq"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
   "bot.main_loop.HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES": {
     "annotation": null,
     "kind": "attribute"
@@ -27407,6 +27667,108 @@
       }
     }
   },
+  "bot.main_loop.MincerZarnowitzTracker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_weight": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "float"
+      },
+      "maybe_recompute": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "now"
+          }
+        ],
+        "returns": "float"
+      },
+      "record": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "egarch_var"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "realized_var"
+          }
+        ],
+        "returns": null
+      },
+      "save_state": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
   "bot.main_loop.OBSERVATION_MODE": {
     "annotation": null,
     "kind": "attribute"
@@ -27696,6 +28058,94 @@
   "bot.main_loop.POSITION_PRICE_MONITOR_WS_STALE_SEC": {
     "annotation": null,
     "kind": "attribute"
+  },
+  "bot.main_loop.PositionSizer": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "starting_balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "compute": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "win_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_cents"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_rolling_hwm": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_balance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "starting_balance_cents": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
   },
   "bot.main_loop.ProbabilityEngine": {
     "bases": [],
@@ -30173,6 +30623,24 @@
     "annotation": null,
     "kind": "attribute"
   },
+  "bot.main_loop.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
   "bot.main_loop.discover_active_windows": {
     "kind": "function",
     "parameters": [
@@ -30196,6 +30664,463 @@
       }
     ],
     "returns": "int"
+  },
+  "bot.models": {
+    "kind": "module"
+  },
+  "bot.models.EGARCHEstimator": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_constrained_sigma": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "get_diagnostics": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_sigma": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "is_active": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "bool"
+      },
+      "maybe_refit": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "record_return": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          }
+        ],
+        "returns": null
+      },
+      "recursive_update": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "log_return"
+          }
+        ],
+        "returns": "Optional[float]"
+      },
+      "seed_variance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "rk_5min_sq"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.models.MincerZarnowitzTracker": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      },
+      "get_weight": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          }
+        ],
+        "returns": "float"
+      },
+      "maybe_recompute": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "now"
+          }
+        ],
+        "returns": "float"
+      },
+      "record": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "str",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "asset"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "egarch_var"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "realized_var"
+          }
+        ],
+        "returns": null
+      },
+      "save_state": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": null
+      }
+    }
+  },
+  "bot.models.PositionSizer": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "starting_balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "compute": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "win_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_cents"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_rolling_hwm": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_balance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "starting_balance_cents": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
+  },
+  "bot.models.calculate_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.07",
+        "kind": "positional or keyword",
+        "name": "fee_mult_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.0",
+        "kind": "positional or keyword",
+        "name": "fee_mult_maker"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.models.calculate_maker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.models.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.models.compute_tv_rk_weights": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "float",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "seconds_to_close"
+      }
+    ],
+    "returns": "Tuple[float, float, float]"
+  },
+  "bot.models.strategy_to_group": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      }
+    ],
+    "returns": "str"
   },
   "bot.notifier": {
     "kind": "module"
@@ -32214,6 +33139,94 @@
   "bot.scanner.PRICE_SHADOW_FLOOR": {
     "annotation": null,
     "kind": "attribute"
+  },
+  "bot.scanner.PositionSizer": {
+    "bases": [],
+    "kind": "class",
+    "members": {
+      "__init__": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": "0",
+            "kind": "positional or keyword",
+            "name": "starting_balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "compute": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "float",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "win_prob"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "price_cents"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": "Dict"
+      },
+      "get_rolling_hwm": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          }
+        ],
+        "returns": "int"
+      },
+      "record_balance": {
+        "kind": "function",
+        "parameters": [
+          {
+            "annotation": null,
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "self"
+          },
+          {
+            "annotation": "int",
+            "default": null,
+            "kind": "positional or keyword",
+            "name": "balance_cents"
+          }
+        ],
+        "returns": null
+      },
+      "starting_balance_cents": {
+        "annotation": null,
+        "kind": "attribute"
+      }
+    }
   },
   "bot.scanner.ProbabilityEngine": {
     "bases": [],
@@ -34815,6 +35828,60 @@
     ],
     "returns": "float"
   },
+  "bot.scanner.calculate_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.07",
+        "kind": "positional or keyword",
+        "name": "fee_mult_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.0",
+        "kind": "positional or keyword",
+        "name": "fee_mult_maker"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.scanner.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
   "bot.scanner.convert_orderbook_fp": {
     "kind": "function",
     "parameters": [
@@ -35048,6 +36115,18 @@
       }
     ],
     "returns": "bool"
+  },
+  "bot.scanner.strategy_to_group": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      }
+    ],
+    "returns": "str"
   },
   "bot.scanner.tm_compute_contracts": {
     "kind": "function",
@@ -37979,6 +39058,78 @@
       }
     ],
     "returns": "None"
+  },
+  "bot.settlement.calculate_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.07",
+        "kind": "positional or keyword",
+        "name": "fee_mult_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.0",
+        "kind": "positional or keyword",
+        "name": "fee_mult_maker"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.settlement.calculate_maker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
+  },
+  "bot.settlement.calculate_taker_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      }
+    ],
+    "returns": "int"
   },
   "bot.settlement.discover_active_windows": {
     "kind": "function",
@@ -42861,6 +44012,42 @@
       }
     }
   },
+  "bot.state.calculate_fee": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "count"
+      },
+      {
+        "annotation": "int",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "price_cents"
+      },
+      {
+        "annotation": "bool",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "is_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.07",
+        "kind": "positional or keyword",
+        "name": "fee_mult_taker"
+      },
+      {
+        "annotation": "float",
+        "default": "0.0",
+        "kind": "positional or keyword",
+        "name": "fee_mult_maker"
+      }
+    ],
+    "returns": "int"
+  },
   "bot.state.compute_derived_features": {
     "kind": "function",
     "parameters": [
@@ -42973,6 +44160,18 @@
     "kind": "function",
     "parameters": [],
     "returns": "List[Tuple[str, float, str, str]]"
+  },
+  "bot.state.strategy_to_group": {
+    "kind": "function",
+    "parameters": [
+      {
+        "annotation": "str",
+        "default": null,
+        "kind": "positional or keyword",
+        "name": "strategy"
+      }
+    ],
+    "returns": "str"
   },
   "bot.state.tm_sweep_counterfactual_pnl": {
     "kind": "function",

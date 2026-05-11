@@ -22,7 +22,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import PositionSizer
+from bot.models import PositionSizer
 
 
 class TestComputeDoesNotRecordBalance(unittest.TestCase):

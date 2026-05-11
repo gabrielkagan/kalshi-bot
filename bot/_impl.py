@@ -79,7 +79,7 @@ from integration import (  # noqa: E402
 
 
 
-from models import (  # noqa: F401 — extracted pure-math classes
+from bot.models import (  # noqa: F401 — extracted pure-math classes
     EGARCHEstimator, MincerZarnowitzTracker, PositionSizer,
     calculate_fee, calculate_taker_fee, calculate_maker_fee,
     compute_tv_rk_weights, _student_t_e_abs_z, _compute_qlike,

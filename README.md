@@ -215,7 +215,7 @@ Runs as a systemd service (`kalshi-bot`) on a DigitalOcean droplet. Pushing to `
 ```
 bot/_impl.py                         -- core bot logic (~583 lines, never rename)
 config.py                      -- centralized SIZING_TIERS / DRAWDOWN_* / MIN_EDGE_BY_PRICE
-models.py                      -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math
+bot/models.py                  -- EGARCH / Mincer-Zarnowitz / PositionSizer / fee math  (Sprint 10.5b relocation, 2026-05-11)
 analyst.py                     -- AI analyst (news sentiment, loss analysis, Telegram alerts)
 market_config.py               -- centralized MarketTypeConfig (validates against bot/_impl.py at startup)
 bot/shadows/fifteenm_shadow.py -- 15M shadow engine (recalibrated EGARCH + LightGBM research)  (Sprint 10.2 relocation, 2026-05-11)

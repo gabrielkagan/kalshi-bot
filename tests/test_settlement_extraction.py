@@ -389,7 +389,7 @@ def test_settlement_helper_partitioned_to_bot_helpers_strings(helper_name: str):
 @pytest.mark.parametrize("model_name", SETTLEMENT_MODELS_NAMES)
 def test_settlement_model_present(model_name: str):
     """L78 — calculate_fee/calculate_maker_fee/calculate_taker_fee live in models."""
-    import models
+    import bot.models as models
     assert hasattr(models, model_name), (
         f"{model_name} not in models — partition drift"
     )

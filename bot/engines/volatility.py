@@ -101,7 +101,7 @@ from config import (
     EGARCH_RV_RATIO_CLAMP,
     VOL_RETURN_INTERVAL,
 )
-from models import compute_tv_rk_weights
+from bot.models import compute_tv_rk_weights
 
 from bot.feeds.coinbase import CoinbaseFeed
 from bot.fetchers.deribit import DeribitDVOLFetcher

@@ -17,7 +17,7 @@ import sys
 DB_PATH = os.environ.get("STATE_DB_PATH", "state.db")
 BACKUP_PATH = DB_PATH + ".backup_pre_migration"
 
-# ── Strategy group CASE expression (mirrors models.strategy_to_group) ─────
+# ── Strategy group CASE expression (mirrors bot.models.strategy_to_group) ─
 STRATEGY_GROUP_CASE = """
     CASE
         WHEN strategy IN ('MAKER_PATIENT','TAKER_NOW','MAKER_AGGRESSIVE',

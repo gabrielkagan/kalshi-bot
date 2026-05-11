@@ -1665,7 +1665,7 @@ class TestFeeCalculationInExecution(unittest.TestCase):
         """Maker orders use post_only=True → $0 fees."""
         # The executor doesn't compute fees for maker path since fees are zero
         # Just verify the constant is correct
-        from models import calculate_maker_fee
+        from bot.models import calculate_maker_fee
         self.assertEqual(calculate_maker_fee(10, 92), 0)
 
 

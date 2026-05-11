@@ -72,7 +72,7 @@ from integration import (  # noqa: E402
 )
 
 from market_config import get_market_config, validate_market_configs  # noqa: E402
-from models import PositionSizer, calculate_fee, calculate_taker_fee, strategy_to_group  # noqa: E402
+from bot.models import PositionSizer, calculate_fee, calculate_taker_fee, strategy_to_group  # noqa: E402
 
 from bot.constants import (
     BALANCE_CACHE_TTL,
@@ -3324,7 +3324,7 @@ class OpportunityScanner:
                             # Data: 40/40 stackable tickers settled YES, 0/4 losses had stacking opportunities.
                             _tm_target_group = f"terminal_momentum_{best_ask}"
                             if STACKING_ENABLED:
-                                from models import strategy_to_group
+                                from bot.models import strategy_to_group
                                 _tm_has_position = any(
                                     p["ticker"] == ticker
                                     and p.get("strategy_group",
@@ -4267,7 +4267,7 @@ class OpportunityScanner:
                                 if _dc_live_enabled:
                                     _dc_existing_exposure = 0
                                     if STACKING_ENABLED:
-                                        from models import strategy_to_group
+                                        from bot.models import strategy_to_group
                                         for pos in self._state.get_open_positions():
                                             if pos["ticker"] == ticker and \
                                                pos.get("strategy_group",

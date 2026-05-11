@@ -23,8 +23,8 @@ from config import (
     EGARCH_RETURN_MAXLEN,
     ASSETS,
 )
-import models
-from models import EGARCHEstimator
+import bot.models as models
+from bot.models import EGARCHEstimator
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────

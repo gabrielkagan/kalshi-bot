@@ -231,7 +231,7 @@ def test_sizing_parity_vectors_match_integration_mirror():
 
 def test_drawdown_halt_floor_literal_matches_expected():
     """R-p7-spec-r1#C1: bot/_impl.py hardcodes DRAWDOWN_HALT_FLOOR=0.10 inline
-    inside models.PositionSizer; the make_compute_for_15m_main_path closure
+    inside bot.models.PositionSizer; the make_compute_for_15m_main_path closure
     mirrors that literal so the XRP halt path (parity vec 4) is reachable
     without a config.py edit.
 

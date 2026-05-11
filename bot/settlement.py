@@ -97,7 +97,7 @@ from bot.engines import calibration as _cal_state  # Bit 6.3 path-B alias — _c
 import bot.notifier as _telegram_state  # Bit 8.1 path-A++ alias — _telegram_state._TELEGRAM (NOT `from bot import notifier as ...` per L84)
 
 from market_config import get_market_config
-from models import calculate_fee, calculate_maker_fee, calculate_taker_fee
+from bot.models import calculate_fee, calculate_maker_fee, calculate_taker_fee
 
 
 class SettlementTracker:

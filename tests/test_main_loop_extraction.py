@@ -442,7 +442,7 @@ def test_main_loop_imports_constants_explicitly_not_via_star():
 @pytest.mark.parametrize("model_name", MAIN_LOOP_MODELS_NAMES)
 def test_main_loop_model_present(model_name: str):
     """L78 — math/sizing classes from models.py are present + imported."""
-    import models
+    import bot.models as models
     assert hasattr(models, model_name), f"{model_name} not in models"
     src = MAIN_LOOP_PY.read_text()
     assert model_name in src, f"bot/main_loop.py missing {model_name} reference"
