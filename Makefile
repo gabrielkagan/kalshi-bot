@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -161,6 +161,7 @@ help:
 	@echo "  make doc-drift            scripts/doc_drift_check.py"
 	@echo "  make deploy-check         pre-deploy aggregator"
 	@echo "  make api-snapshot-regen   regenerate Pillar 1 public_api.json"
+	@echo "  make refresh-map          regenerate agent_docs/repository_map.md (Bit 13.3 nav aid)"
 	@echo
 	@echo "Operator audits (Bit 11.3 — wraps --db /tmp/state.db):"
 	@echo "  make data-health          scripts/data_health_monitor.py --verbose"
@@ -376,6 +377,19 @@ deploy-check:
 # not already installed.
 api-snapshot-regen:
 	$(PYTHON) scripts/dump_public_api.py
+
+# Bit 13.3 (Sprint 13, 2026-05-11) — auto-regen the navigation-aid
+# repository map at agent_docs/repository_map.md. Walks bot/ via AST,
+# extracts top-level classes + public functions + LOC per module.
+# Complementary to tests/contracts/public_api.json (Pillar 1) which is
+# the public-surface SNAPSHOT contract; this is the NAVIGATION map for
+# agent sessions. Run manually whenever the bot/ structure changes
+# (extractions, new modules, etc.) — not in CI, not in pre-commit
+# (output is local-only convention, agent_docs/ is kept tracked but
+# regen is human-driven per `Don't write tests unsolicited` discipline).
+# Contract pin: tests/test_makefile.py::test_bit_13_3_refresh_map_target.
+refresh-map:
+	$(PYTHON) scripts/refresh_repo_map.py
 
 # ─────────────────────────────────────────────────────────────────────
 # Bit 11.3 (Sprint 11, 2026-05-11) — operator-convenience wrappers
