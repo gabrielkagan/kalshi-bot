@@ -608,6 +608,49 @@ def test_audit_runner_sh_repo_dir_is_two_parents_up():
     )
 
 
+def test_pre_deploy_check_sh_cd_is_two_parents_up():
+    """`scripts/ops/pre_deploy_check.sh` opens with `cd "$(dirname
+    "$0")/<dots>"`. ONE hop resolves to `scripts/`; TWO resolves to
+    repo root. fu6 (R6 indep-adv finding C-1, 2026-05-12) caught the
+    1-hop regression that fu3 missed (4th instance of the L98
+    depth-off-by-one in this Bit alone).
+
+    Invariant rationale: every step in the body assumes CWD=repo root
+    — Step 1 syntax-checks `bot/<files>.py`, Step 2 imports
+    `market_config` via `sys.path.insert(0, '.')`, Step 3 runs `pytest
+    tests/integration/test_regression.py`, Step 4 imports
+    `bot.constants`. A 1-hop CD silently makes every step a false
+    positive (the `[ -f \"$f\" ]` guards skip nonexistent files;
+    `pytest tests/...` fails noisily but only at Step 3 after Steps 1+2
+    have already produced misleading output).
+    """
+    sh_path = REPO_ROOT / "scripts" / "ops" / "pre_deploy_check.sh"
+    assert sh_path.exists(), f"{sh_path.relative_to(REPO_ROOT)} missing"
+    text = sh_path.read_text(encoding="utf-8")
+    import re
+
+    m = re.search(
+        r'^\s*cd\s+"\$\(dirname\s+"\$0"\)/(\.\.[/\.]*)"\s*$',
+        text,
+        re.MULTILINE,
+    )
+    assert m is not None, (
+        f"{sh_path.relative_to(REPO_ROOT)} does not open with "
+        f"`cd \"$(dirname \"$0\")/<dots>\"` form. If the assignment "
+        f"shape changed, update this regression test together."
+    )
+    parent_segment = m.group(1)
+    dotdots = parent_segment.split("/")
+    dotdot_count = sum(1 for s in dotdots if s == "..")
+    assert dotdot_count == 2, (
+        f"{sh_path.relative_to(REPO_ROOT)} opening `cd` uses "
+        f"{dotdot_count} parent hop(s); expected exactly 2 (file "
+        f"lives at scripts/ops/<file>.sh → repo root is 2 parents up). "
+        f"One hop regresses CWD to `scripts/`, breaking every "
+        f"subsequent step that assumes repo-root-relative paths."
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Section 7 (cont.) — CI workflow script-path references resolve
 # ═════════════════════════════════════════════════════════════════════════════
