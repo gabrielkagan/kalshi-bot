@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setup systemd timers for H-4 daily backfills on VPS.
-# Run once: bash scripts/setup_h4_cron.sh
+# Run once: bash scripts/ops/setup_h4_cron.sh
 #
 # Per kb/decisions/phase-h-forward-going-capture-required-may02.md
 # (decision matrix), H-4a/b/c use Option C — daily cron over the last
@@ -14,7 +14,7 @@
 #   /etc/systemd/system/kalshi-h4-cryptocompare.{service,timer} (05:00 UTC)
 #
 # Logs go to journalctl per-service. Failures additionally trigger a
-# Telegram alert via scripts/h4_run_with_alert.py (so multi-day H-4
+# Telegram alert via scripts/ops/h4_run_with_alert.py (so multi-day H-4
 # outages don't stay invisible until the v2 acceptance gate fires
 # weeks later).
 #
@@ -35,7 +35,7 @@ set -euo pipefail
 BOT_DIR="/home/botuser/kalshi-bot-repo"
 VENV_PYTHON="/home/botuser/kalshi-bot-repo/venv/bin/python3"
 DB="/home/botuser/kalshi-bot-repo/state.db"
-WRAPPER="/home/botuser/kalshi-bot-repo/scripts/h4_run_with_alert.py"
+WRAPPER="/home/botuser/kalshi-bot-repo/scripts/ops/h4_run_with_alert.py"
 # EnvironmentFile prefix `-` makes systemd tolerate a missing .env
 # (operator may run install on a fresh box before .env lands). On a
 # real deploy .env is required by start.sh so this is a safety belt
@@ -73,7 +73,7 @@ Type=oneshot
 User=botuser
 WorkingDirectory=${BOT_DIR}
 ${ENV_FILE_DIRECTIVE}
-ExecStart=${VENV_PYTHON} ${WRAPPER} --label gdelt -- ${VENV_PYTHON} ${BOT_DIR}/scripts/gdelt_backfill.py --db ${DB}
+ExecStart=${VENV_PYTHON} ${WRAPPER} --label gdelt -- ${VENV_PYTHON} ${BOT_DIR}/scripts/backfill/gdelt_backfill.py --db ${DB}
 TimeoutStartSec=3600
 EOF
 
@@ -101,7 +101,7 @@ Type=oneshot
 User=botuser
 WorkingDirectory=${BOT_DIR}
 ${ENV_FILE_DIRECTIVE}
-ExecStart=${VENV_PYTHON} ${WRAPPER} --label glassnode -- ${VENV_PYTHON} ${BOT_DIR}/scripts/glassnode_backfill.py --db ${DB}
+ExecStart=${VENV_PYTHON} ${WRAPPER} --label glassnode -- ${VENV_PYTHON} ${BOT_DIR}/scripts/backfill/glassnode_backfill.py --db ${DB}
 TimeoutStartSec=3600
 EOF
 
@@ -129,7 +129,7 @@ Type=oneshot
 User=botuser
 WorkingDirectory=${BOT_DIR}
 ${ENV_FILE_DIRECTIVE}
-ExecStart=${VENV_PYTHON} ${WRAPPER} --label cryptocompare -- ${VENV_PYTHON} ${BOT_DIR}/scripts/cryptocompare_news_backfill.py --db ${DB}
+ExecStart=${VENV_PYTHON} ${WRAPPER} --label cryptocompare -- ${VENV_PYTHON} ${BOT_DIR}/scripts/backfill/cryptocompare_news_backfill.py --db ${DB}
 TimeoutStartSec=3600
 EOF
 

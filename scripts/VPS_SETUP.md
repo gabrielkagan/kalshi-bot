@@ -6,10 +6,10 @@ Add to botuser's crontab (`crontab -e`):
 
 ```cron
 # Data health monitor — every 30 min, sends Telegram for critical issues
-*/30 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
+*/30 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/audit/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
 
 # Quiet market monitor — every 15 min, alerts when 15M goes unusually silent
-*/15 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
+*/15 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
 ```
 
 ## MCP Server Setup

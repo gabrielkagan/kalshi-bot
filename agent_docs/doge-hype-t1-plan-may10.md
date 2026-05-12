@@ -98,7 +98,7 @@ Bits 8.1 / 9.1 / 9.2 / 9.3-i shipped between spike (2026-05-09) and now (2026-05
 | fifteenm_shadow DEFAULT_DEBIAS | `fifteenm_shadow.py:52` | add (0.00 neutral) |
 | fifteenm_shadow recalibration loops (4) | `fifteenm_shadow.py:166, 763, 1484, 1552, 1583` | extend tuples |
 | fifteenm_shadow asset→idx map | `fifteenm_shadow.py:619` | add `"HYPE": 4, "DOGE": 5` |
-| scripts/hourly_shadow_audit.py CASE-WHEN | `scripts/hourly_shadow_audit.py` (search anchor) | extend SQL CASE |
+| scripts/audit/hourly_shadow_audit.py CASE-WHEN | `scripts/audit/hourly_shadow_audit.py` (search anchor) | extend SQL CASE |
 | scripts/cal_mlp_mac_drain.py ASSETS | `scripts/cal_mlp_mac_drain.py:58` | extend tuple |
 | Log-format: models.py | `models.py:208, 693-694` | refactor to ASSETS-driven `", ".join(...)` |
 | Log-format: bot/main_loop.py | `bot/main_loop.py:2159, 2170, 2175` | refactor |
@@ -162,7 +162,7 @@ If `XRP_15M_SHADOW` is ever re-enabled (currently False — XRP promoted to live
 
 ## Post-T1 (out of scope, ticket chain)
 
-- **T1.5 (external-feed verification + add)**: research session — verify HYPE + DOGE availability on each external feed (Binance spot, Kraken spot, Bybit spot, OKX perp, CoinGlass) via public REST APIs. Add only verified entries to `CROSS_EXCHANGE_SYMBOLS`, `COINGLASS_SYMBOLS`, `scripts/external_market_poller.py` FUNDING_SYMBOLS/OI_SYMBOLS. Skip `DERIBIT_DVOL_CURRENCIES` (Deribit DVOL is BTC/ETH options only). **Critical for cal_mlp parity** — T3 training needs HYPE/DOGE rows to have the same feature columns BTC/ETH/SOL/XRP have. Must ship within days of T1, before meaningful settled data accumulates.
+- **T1.5 (external-feed verification + add)**: research session — verify HYPE + DOGE availability on each external feed (Binance spot, Kraken spot, Bybit spot, OKX perp, CoinGlass) via public REST APIs. Add only verified entries to `CROSS_EXCHANGE_SYMBOLS`, `COINGLASS_SYMBOLS`, `scripts/backfill/external_market_poller.py` FUNDING_SYMBOLS/OI_SYMBOLS. Skip `DERIBIT_DVOL_CURRENCIES` (Deribit DVOL is BTC/ETH options only). **Critical for cal_mlp parity** — T3 training needs HYPE/DOGE rows to have the same feature columns BTC/ETH/SOL/XRP have. Must ship within days of T1, before meaningful settled data accumulates.
 - **T2 (post-deploy verify)**: immediate single-shot regression check after deploy — commit hash propagated, journalctl clean, HYPE/DOGE log signature firing, scan tick OK, evaluated_opportunities rows for HYPE/DOGE appearing, zero `order_submitted` events for new assets. No soak window.
 - **T3 (cal_mlp training)**: triggered when ~2000 settled rows accumulate per asset (~3–4 wk wall-clock from T1+T1.5 ship). Extend cal_mlp argparse choices + train/validate/conformal.
 - **T4 (promotion)**: add per-asset MIN_ENTRY_PRICE/MAX_RISK_PER_TRADE + NBBO_FALLBACK_GATES (from observed spread) + cal_subtypes + flip HYPE_15M_SHADOW=False / DOGE_15M_SHADOW=False / remove from HOURLY_EXCLUDED_ASSETS.

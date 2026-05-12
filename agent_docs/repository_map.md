@@ -1,12 +1,12 @@
 # Repository Map (auto-generated)
 
-**DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/refresh_repo_map.py`).
+**DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/ops/refresh_repo_map.py`).
 
-Generated: 2026-05-12T10:03:25Z (HEAD: `e3bf6d4`).
+Generated: 2026-05-12T13:20:23Z (HEAD: `bb52aab`).
 
 ## Summary
-- Modules: 59 .py files under `bot/`
-- Total LOC: 49,551
+- Modules: 60 .py files under `bot/`
+- Total LOC: 49,741
 - Top-level classes: 61
 - Public top-level functions: 47 (underscore-prefixed private functions excluded from this map)
 
@@ -16,10 +16,11 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
 
 ### `bot/`
 
-  - `__init__.py` (41 LOC)
+  - `__init__.py` (43 LOC)
   - `__main__.py` (58 LOC)
   - `_thread_env.py` (36 LOC)
   - `boot.py` (166 LOC)
+  - `config.py` (186 LOC)
   - `constants.py` (1804 LOC)
   - `db_writer_registry.py` (168 LOC)
     - functions: recent_writes, register_write, snapshot_active, tracked_write, unregister_write
@@ -40,7 +41,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - classes: KalshiOrderFlowTracker, OrderFlowEngine
   - `orphan_db_watchdog.py` (245 LOC)
     - functions: detect_orphan_db_holders
-  - `runtime_config.py` (52 LOC)
+  - `runtime_config.py` (54 LOC)
   - `settlement.py` (1275 LOC)
     - classes: SettlementTracker
     - functions: discover_active_windows

@@ -4,7 +4,7 @@ T1 (5dca85a, 2026-05-10) added HYPE/DOGE to shadow observation. The scanner
 producer at `bot/scanner/__init__.py:990` (`_compute_cross_asset_spot_snapshot`)
 became ASSETS-driven in T1 and ALREADY emits all six keys (incl. hype/doge).
 But the consumer chain in `bot/state.py` + `supabase_sync.py` + the G-2
-backfill harness in `scripts/shadow_coverage_backfill.py` still only knows
+backfill harness in `scripts/backfill/shadow_coverage_backfill.py` still only knows
 about btc/eth/sol/xrp — so the producer's hype/doge keys are silently
 dropped on the floor today (since 5dca85a ship). Result: HYPE/DOGE shadow
 rows accumulate WITHOUT cross-asset features, AND existing
@@ -36,7 +36,7 @@ import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts", "backfill"))
 
 
 # Bit 2 / T1 cross-asset expansion — the NEW columns added on top of the
@@ -210,13 +210,16 @@ class TestHypeDogeSpotAtDecisionMigration019Sql:
     ADD COLUMN IF NOT EXISTS, and end with NOTIFY pgrst, 'reload schema'."""
 
     def _migration_path(self):
-        scripts_dir = os.path.join(PROJECT_ROOT, "scripts")
+        # Bit 11.2 (2026-05-12): supabase_migration_*.sql moved to scripts/ops/.
+        scripts_dir = os.path.join(PROJECT_ROOT, "scripts", "ops")
         candidates = [
             f for f in os.listdir(scripts_dir)
             if f.startswith("supabase_migration_019_") and f.endswith(".sql")
+            # Skip iCloud-dup `* 2.sql`/`* 3.sql` suffixes (Mac sync noise).
+            and " " not in f
         ]
         assert candidates, (
-            "No scripts/supabase_migration_019_*.sql found. Bit 2 requires a "
+            "No scripts/ops/supabase_migration_019_*.sql found. Bit 2 requires a "
             "supabase migration that adds hype/doge_spot_at_decision to the "
             "remote evaluations table."
         )

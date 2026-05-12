@@ -22,7 +22,7 @@ Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
   Helper-call sites (good — already call canonical):
     bot/state.py:1926                      # (was bot/_impl.py:2192 pre-9.3-iii.c)
     bot/engines/sports_engine.py           # 2 call sites
-    scripts/backfill_extended_features.py
+    scripts/backfill/backfill_extended_features.py
 
   Canonical helper:
     bot/helpers/derived_features.py::compute_derived_features

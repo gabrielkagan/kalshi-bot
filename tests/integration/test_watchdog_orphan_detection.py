@@ -69,7 +69,7 @@ def test_watchdog_check_orphan_db_holders_alerts_on_h4_backfill(
     )
     monkeypatch.setattr(
         watchdog, "_get_pid_cmdline",
-        lambda pid: "python3 scripts/cryptocompare_news_backfill.py --db state.db",
+        lambda pid: "python3 scripts/backfill/cryptocompare_news_backfill.py --db state.db",
     )
     # Liveness probe: pretend the orphan is alive (real os.kill on
     # fake PID would raise ProcessLookupError → no alert).
@@ -96,7 +96,7 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
         2001: "venv/bin/python3 bot/_impl.py",
         2002: "venv/bin/python3 watchdog.py",
         2003: "venv/bin/python3 bot/ai/auditor.py",
-        2004: "venv/bin/python3 scripts/audit_cron.py --db state.db",
+        2004: "venv/bin/python3 scripts/audit/audit_cron.py --db state.db",
         2005: "venv/bin/python3 dashboard_snapshot.py",
     }
     monkeypatch.setattr(

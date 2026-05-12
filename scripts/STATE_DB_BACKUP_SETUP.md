@@ -3,7 +3,7 @@
 One-time bucket + IAM + lifecycle setup. Phase 0a per
 `kb/decisions/autoresearch-design-may05.md`. Ticket: 86b9vd9e3.
 
-After this is done once, `scripts/setup_state_db_backup_timer.sh` on
+After this is done once, `scripts/ops/setup_state_db_backup_timer.sh` on
 the VPS handles everything else (timers, rclone config, sentinel
 upload to verify creds).
 
@@ -268,7 +268,7 @@ rclone config create kalshi-restore s3 \
 To restore manually from the Mac:
 
 ```bash
-python3 scripts/state_db_restore.py \
+python3 scripts/ops/state_db_restore.py \
     --store s3 \
     --rclone-remote kalshi-restore \
     --bucket "$BUCKET" \
@@ -278,7 +278,7 @@ python3 scripts/state_db_restore.py \
 ## 7. Install timers on VPS
 
 ```bash
-ssh -t botuser@$VPS_HOST 'cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash scripts/setup_state_db_backup_timer.sh'
+ssh -t botuser@$VPS_HOST 'cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash scripts/ops/setup_state_db_backup_timer.sh'
 ```
 
 The installer runs an end-to-end probe (uploads a tiny sentinel file)
@@ -290,7 +290,7 @@ to fix.
 After the first nightly backup runs (next 06:00 UTC), on the Mac:
 
 ```bash
-python3 scripts/state_db_restore.py \
+python3 scripts/ops/state_db_restore.py \
     --store s3 \
     --rclone-remote kalshi-restore \
     --bucket "$BUCKET"
@@ -401,14 +401,14 @@ cd ~/Documents/kalshi-bot  # or wherever you cloned the repo
 
 # Sanity: dry-run without alerts (no Telegram creds set → skips POST).
 AWS_PROFILE=kalshi-state-db-restore \
-    python3 scripts/state_db_backup_heartbeat.py --bucket "$BUCKET"
+    python3 scripts/ops/state_db_backup_heartbeat.py --bucket "$BUCKET"
 # Expected: `backup_heartbeat: status=ok key=...` and exit code 0.
 
 # Smoke the alert path by passing an absurd threshold:
 AWS_PROFILE=kalshi-state-db-restore \
 TELEGRAM_BOT_TOKEN=$YOUR_TOKEN \
 TELEGRAM_CHAT_ID=$YOUR_CHAT \
-    python3 scripts/state_db_backup_heartbeat.py \
+    python3 scripts/ops/state_db_backup_heartbeat.py \
     --bucket "$BUCKET" --max-age-hours 0
 # Expected: telegram message received, exit code 1.
 ```
@@ -476,7 +476,7 @@ cat <<'TEMPLATE' | sed \
     -e "s|@TOKEN@|$YOUR_TOKEN|g" \
     -e "s|@CHAT@|$YOUR_CHAT|g" \
     -e "s|@HOME@|$HOME|g"
-0 */6 * * * AWS_PROFILE=kalshi-state-db-restore TELEGRAM_BOT_TOKEN=@TOKEN@ TELEGRAM_CHAT_ID=@CHAT@ /usr/bin/python3 @HOME@/Documents/kalshi-bot/scripts/state_db_backup_heartbeat.py --bucket @BUCKET@ >> @HOME@/Library/Logs/kalshi-state-db-backup-heartbeat.out.log 2>&1
+0 */6 * * * AWS_PROFILE=kalshi-state-db-restore TELEGRAM_BOT_TOKEN=@TOKEN@ TELEGRAM_CHAT_ID=@CHAT@ /usr/bin/python3 @HOME@/Documents/kalshi-bot/scripts/ops/state_db_backup_heartbeat.py --bucket @BUCKET@ >> @HOME@/Library/Logs/kalshi-state-db-backup-heartbeat.out.log 2>&1
 TEMPLATE
 
 # Copy the printed line, run `crontab -e`, paste, save.

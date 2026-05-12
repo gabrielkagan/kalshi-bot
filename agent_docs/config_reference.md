@@ -1,7 +1,7 @@
 # Config Reference
 
 All values mirror constants in `bot/constants.py` (canonical home post-Bit-3.1) + `bot/config.py` (probability/EGARCH/sizing peer, Bit 12.1 — relocated from repo-root `config.py` 2026-05-12; bot/_impl.py was DELETED in Bit 9.3-iii.c so the historical `from bot.constants import *` re-export chain is gone — callers reach constants directly via `bot.constants.X` or via `from bot.constants import X`). `market_config.py` asserts they match at startup.
-On change, run `make doc-drift` (alias for `python3 scripts/doc_drift_check.py`) and update this file in the same commit.
+On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_check.py`) and update this file in the same commit.
 
 ## Global / 15M
 
@@ -220,6 +220,6 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 |--------|--------|-------|
 | OKX funding + OI | `https://www.okx.com/api/v5/public/{funding-rate,open-interest}` | Switched from Binance.com (HTTP 451 from US). 4 symbols × 2 endpoints. |
 | Deribit DVOL | `https://www.deribit.com/api/v2/public/get_index_price?index_name={btcdvol_usdc,ethdvol_usdc}` | BTC + ETH only. |
-| Poll interval | 60 s | `scripts/external_market_poller.py --once` cron. |
+| Poll interval | 60 s | `scripts/backfill/external_market_poller.py --once` cron. |
 | Stale threshold | 900 s (15 min) | Above Deribit's typical weekly maintenance window (~10 min). |
 | Process-start grace | 900 s | Suppresses NEVER-stale alerts in cron mode for the first 15 min. |

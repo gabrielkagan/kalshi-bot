@@ -78,7 +78,7 @@ ticket 86b9ve11y AC: re-run is human-driven, not part of the agent loop.
 **Concurrency guard (ticket 86b9vgh1a).** `make test-mutmut`,
 `make test-equivalence`, and `make test-integration` all acquire an
 exclusive `fcntl.flock(LOCK_EX | LOCK_NB)` on `.mutmut.lock` (repo
-root, gitignored) via `scripts/_mutmut_lock.py` before they run. If
+root, gitignored) via `scripts/ops/_mutmut_lock.py` before they run. If
 one is already active, the contender exits non-zero with a clear
 "another mutmut/tier-test invocation holds the lock" error to
 stderr. This replaces the prior honor-system "don't run in parallel"

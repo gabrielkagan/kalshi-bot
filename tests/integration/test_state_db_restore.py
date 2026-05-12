@@ -1,4 +1,4 @@
-"""Tests for scripts/state_db_restore.py — verify + restore.
+"""Tests for scripts/ops/state_db_restore.py — verify + restore.
 
 Pairs with test_state_db_s3_backup.py. Tests the verify-only path
 (weekly automated check) AND the restore-to-path path (manual incident
@@ -24,7 +24,7 @@ FROZEN_VERIFY_NOW = datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc)
 import pytest
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "ops"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 

@@ -29,13 +29,13 @@ Evaluate weekend and overnight edge discount shadow strategies — performance, 
 2. **Run the audit script**:
    ```bash
    # Both sections (default)
-   python3 scripts/weekend_discount_audit.py --db /tmp/state.db 2>&1
+   python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db 2>&1
 
    # Weekend only
-   python3 scripts/weekend_discount_audit.py --db /tmp/state.db --weekend-only 2>&1
+   python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db --weekend-only 2>&1
 
    # Overnight only
-   python3 scripts/weekend_discount_audit.py --db /tmp/state.db --overnight-only 2>&1
+   python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db --overnight-only 2>&1
    ```
 
 3. **Present findings**, focusing on:

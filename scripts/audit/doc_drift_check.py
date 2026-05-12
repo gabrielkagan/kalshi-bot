@@ -28,7 +28,10 @@ from typing import Any, Dict, List, Optional, Tuple
 # Configuration
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Bit 11.2 (2026-05-12): file relocated from `scripts/doc_drift_check.py`
+# to `scripts/audit/doc_drift_check.py`. The repo-root anchor must walk
+# 3 levels (audit/ → scripts/ → repo/) instead of the pre-Bit-11.2 2.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Source files to extract facts from
 # Sprint 12 Bit 12.1 (2026-05-12): `config.py` → `bot/config.py`. Stale

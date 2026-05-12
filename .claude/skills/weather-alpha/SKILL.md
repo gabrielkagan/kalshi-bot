@@ -28,7 +28,7 @@ Analyzes the NWP ensemble model (GFS+ECMWF, 82 members) performance across 5 cit
 
 2. **Run the alpha research script**:
    ```bash
-   python3 scripts/weather_alpha_research.py --db /tmp/state.db 2>&1
+   python3 scripts/audit/weather_alpha_research.py --db /tmp/state.db 2>&1
    ```
 
 3. **Present findings** with example summary:

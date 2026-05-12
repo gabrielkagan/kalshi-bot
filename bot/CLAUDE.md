@@ -77,7 +77,7 @@ Sister-script drift surface (surfaced in R2 adv review 2026-05-12):
 - `bot/state.py:1926` — pre-DB-write `compute_derived_features` call
   (replaces `bot/_impl.py:2192` which was deleted in Bit 9.3-iii.c)
 - `bot/engines/sports_engine.py` — 2 call sites for sports-engine evals
-- `scripts/backfill_extended_features.py` — backfill script
+- `scripts/backfill/backfill_extended_features.py` — backfill script
 
 Splitting → train/serve skew (model trained on one distribution,
 served from another). See `agent_docs/calibration_pipeline.md` "cal_mlp
@@ -106,11 +106,11 @@ values. **Pattern:** any script that filters
 Identify via:
 `grep -rn "filter_stage[ =]*[='IN ]*candidate" scripts/ *.py .claude/`.
 
-Confirmed-affected (Apr 30): `scripts/15m_live_audit.py`,
-`scripts/15m_alpha_research.py` (`/15m-alpha`),
-`scripts/alpha_audit.py` (`/alpha-audit`),
-`scripts/data_health_monitor.py`, `scripts/generate_whitepaper_stats.py`,
-`scripts/maker_opportunity_cost.py`, `scripts/quiet_market_monitor.py`,
+Confirmed-affected (Apr 30): `scripts/audit/15m_live_audit.py`,
+`scripts/audit/15m_alpha_research.py` (`/15m-alpha`),
+`scripts/audit/alpha_audit.py` (`/alpha-audit`),
+`scripts/audit/data_health_monitor.py`, `scripts/ops/generate_whitepaper_stats.py`,
+`scripts/audit/maker_opportunity_cost.py`, `scripts/audit/quiet_market_monitor.py`,
 `bot/snapshots/dashboard_snapshot.py` (Sprint 10.4, 2026-05-12), `bot/ai/analyst.py`, `bot/ai/auditor.py`,
 `bot/ai/researcher.py` (Sprint 10.3, 2026-05-12), `.claude/skills/status/SKILL.md` (`/status` skill).
 Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.

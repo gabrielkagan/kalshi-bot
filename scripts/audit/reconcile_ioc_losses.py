@@ -26,7 +26,8 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Bit 11.2 (2026-05-12): relocated to scripts/audit/; 3-level dirname.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from bot.helpers.strings import fp_str_to_int, dollars_str_to_cents  # type: ignore

@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-SCRIPT = REPO / 'scripts' / 'external_market_poller.py'
+SCRIPT = REPO / 'scripts' / 'backfill' / 'external_market_poller.py'
 
 
 def _import_module():
@@ -38,7 +38,7 @@ def _import_module():
     same instance, preserving fixture mutations.
     """
     if str(REPO / 'scripts') not in sys.path:
-        sys.path.insert(0, str(REPO / 'scripts'))
+        sys.path.insert(0, str(REPO / 'scripts' / 'backfill'))
     if 'external_market_poller' not in sys.modules:
         import external_market_poller  # noqa: F401  type: ignore
     return sys.modules['external_market_poller']
@@ -305,7 +305,7 @@ def test_persist_load_roundtrip_across_processes(tmp_path: Path):
         "m._LAST_SUCCESS_TS = {'okx_funding': 1714386000.123, "
         "'okx_oi': 1714386060.456, 'deribit_dvol': 1714386120.789}; "
         "m._persist_last_success_ts()"
-    ) % (str(repo / 'scripts'), persist_path)
+    ) % (str(repo / 'scripts' / 'backfill'), persist_path)
     res1 = subprocess.run(
         [sys.executable, '-c', write_script],
         capture_output=True, text=True, timeout=10,
@@ -324,7 +324,7 @@ def test_persist_load_roundtrip_across_processes(tmp_path: Path):
         "assert m._LAST_SUCCESS_TS == {}, 'fresh process should start empty'; "
         "m._load_last_success_ts(); "
         "print(json.dumps(m._LAST_SUCCESS_TS))"
-    ) % (str(repo / 'scripts'), persist_path)
+    ) % (str(repo / 'scripts' / 'backfill'), persist_path)
     res2 = subprocess.run(
         [sys.executable, '-c', read_script],
         capture_output=True, text=True, timeout=10,

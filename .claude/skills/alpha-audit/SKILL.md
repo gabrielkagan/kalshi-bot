@@ -18,7 +18,7 @@ Full-funnel opportunity audit: traces the decision pipeline, analyzes rejected t
 - "what should we promote next?"
 
 ## Prerequisites
-Scripts: `scripts/alpha_audit.py`, `scripts/shadow_eval.py`
+Scripts: `scripts/audit/alpha_audit.py`, `scripts/audit/shadow_eval.py`
 
 ## Usage
 ```
@@ -29,7 +29,7 @@ Scripts: `scripts/alpha_audit.py`, `scripts/shadow_eval.py`
 
 ## Preflight
 
-Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `alpha-audit` and `<X>` = `alpha_audit`. Verify `/tmp/state.db` exists, `make -n alpha-audit` parses, and `scripts/alpha_audit.py` + `scripts/shadow_eval.py` exist (Bit 11.1d).
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `alpha-audit` and `<X>` = `alpha_audit`. Verify `/tmp/state.db` exists, `make -n alpha-audit` parses, and `scripts/audit/alpha_audit.py` + `scripts/audit/shadow_eval.py` exist (Bit 11.1d).
 
 ## Steps
 
@@ -39,14 +39,14 @@ Follow `.claude/skills/references/db-sync.md` to sync the database.
 ### 2. Run full opportunity audit
 ```bash
 make alpha-audit 2>&1
-# wraps `python3 scripts/alpha_audit.py --db /tmp/state.db --days 14` (Bit 11.3)
-# For custom lookback: python3 scripts/alpha_audit.py --db /tmp/state.db --days N 2>&1
+# wraps `python3 scripts/audit/alpha_audit.py --db /tmp/state.db --days 14` (Bit 11.3)
+# For custom lookback: python3 scripts/audit/alpha_audit.py --db /tmp/state.db --days N 2>&1
 ```
 Outputs: filter funnel, rejection analysis by price band, counterfactual PnL, WR by STC/z-score/asset, capital utilization, shadow status, recommendations.
 
 ### 3. Run shadow strategy evaluation
 ```bash
-python3 scripts/shadow_eval.py --db /tmp/state.db --days 14 2>&1
+python3 scripts/audit/shadow_eval.py --db /tmp/state.db --days 14 2>&1
 ```
 Outputs: per-strategy performance, breakeven analysis, Wilson CI, promotion decision (PROMOTE / KEEP / KILL).
 

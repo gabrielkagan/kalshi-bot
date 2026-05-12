@@ -13,10 +13,10 @@ on:
       - 'whitepaper.md'
       - 'whitepaper_investor.md'
       - 'README.template.md'
-      - 'scripts/generate_whitepaper_stats.py'
-      - 'scripts/build_whitepaper.py'
-      - 'scripts/extract_config.py'
-      - 'scripts/check_docs_freshness.py'
+      - 'scripts/ops/generate_whitepaper_stats.py'
+      - 'scripts/ops/build_whitepaper.py'
+      - 'scripts/ops/extract_config.py'
+      - 'scripts/audit/check_docs_freshness.py'
       - 'bot/engines/sports_data.py'
       - 'bot/engines/sports_engine.py'
       - 'bot/engines/spx_engine.py'
@@ -41,7 +41,7 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: botuser
           key: ${{ secrets.VPS_SSH_KEY }}
-          source: "scripts/generate_whitepaper_stats.py"
+          source: "scripts/ops/generate_whitepaper_stats.py"
           target: "/tmp/whitepaper_upload"
 
       - name: Generate stats JSON on VPS
@@ -52,7 +52,7 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             cd ~/kalshi-bot-repo
-            python3 /tmp/whitepaper_upload/scripts/generate_whitepaper_stats.py ~/kalshi-bot-repo/state.db > /tmp/whitepaper_stats.json
+            python3 /tmp/whitepaper_upload/scripts/ops/generate_whitepaper_stats.py ~/kalshi-bot-repo/state.db > /tmp/whitepaper_stats.json
             cat /tmp/whitepaper_stats.json
 
       - name: Setup SSH and fetch stats
@@ -71,11 +71,11 @@ jobs:
 
       - name: Extract config and render docs
         run: |
-          python3 scripts/extract_config.py > config.json
-          python3 scripts/build_whitepaper.py
+          python3 scripts/ops/extract_config.py > config.json
+          python3 scripts/ops/build_whitepaper.py
 
       - name: Check docs freshness
-        run: python3 scripts/check_docs_freshness.py || true
+        run: python3 scripts/audit/check_docs_freshness.py || true
 
       - name: Install pandoc and TeX Live
         run: |

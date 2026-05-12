@@ -1,4 +1,4 @@
-"""Regression tests for scripts/generate_whitepaper_stats.py.
+"""Regression tests for scripts/ops/generate_whitepaper_stats.py.
 
 Failure modes (all originally surfaced by the 2026-04-26 doc audit):
 
@@ -37,7 +37,7 @@ import sys
 import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-GENERATOR_PATH = os.path.join(PROJECT_ROOT, "scripts", "generate_whitepaper_stats.py")
+GENERATOR_PATH = os.path.join(PROJECT_ROOT, "scripts", "ops", "generate_whitepaper_stats.py")
 
 
 def _create_schema(conn):

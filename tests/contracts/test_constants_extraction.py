@@ -14,7 +14,7 @@ Locks the bidirectional contract between bot/_impl.py (which does
   5. bot/constants.py contains zero FunctionDef/ClassDef/AsyncFunctionDef.
   6. bot/_impl.py has zero UPPER_SNAKE module-level assignments after
      the move (catches future "I'll just add it back to _impl.py" drift).
-  7. scripts/extract_config.py main() outputs JSON with non-empty
+  7. scripts/ops/extract_config.py main() outputs JSON with non-empty
      TRACKED_CONSTANTS values (locks the CI whitepaper-regen contract).
   8. .github/workflows/post_deploy_verify.yml does not pin
      `--bot-py bot/_impl.py` (overrides the multi-path default).
@@ -165,7 +165,7 @@ def test_market_config_validate_succeeds_post_extraction():
 
 
 def test_postdeploy_verify_finds_4_gating_flags_in_constants_py():
-    """scripts/postdeploy_verify.py read_bot_constants() regex-scans
+    """scripts/audit/postdeploy_verify.py read_bot_constants() regex-scans
     source for 4 flags (WEATHER_NO_SIDE_LIVE, SPORTS_OBSERVATION_ONLY,
     OVERNIGHT_DISCOUNT_LIVE, WEEKEND_DISCOUNT_LIVE). After Bit 3.1 those
     definitions live ONLY in bot/constants.py. If the script wasn't
@@ -175,7 +175,7 @@ def test_postdeploy_verify_finds_4_gating_flags_in_constants_py():
     Tests the multi-path scan implementation (preferred over a single
     `bot/_impl.py → bot/constants.py` redirect — survives future moves).
     """
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
     from postdeploy_verify import read_bot_constants
 
     # Multi-path scan: pass list of paths matching the new default.
@@ -278,7 +278,7 @@ def test_bot_impl_has_no_module_level_uppercase_assignments():
 
 
 def test_extract_config_main_produces_non_empty_tracked_constants():
-    """scripts/extract_config.py is invoked by .github/workflows/whitepaper.yml
+    """scripts/ops/extract_config.py is invoked by .github/workflows/whitepaper.yml
     on every push touching bot/_impl.py or bot/constants.py. It outputs
     config.json which feeds whitepaper auto-regen. Pre-Bit-3.1 it
     regex-extracted ~80 TRACKED_CONSTANTS from bot/_impl.py; after
@@ -288,10 +288,10 @@ def test_extract_config_main_produces_non_empty_tracked_constants():
     a stale whitepaper.
 
     Run as subprocess to mirror the workflow's actual invocation
-    (`python3 scripts/extract_config.py > config.json`).
+    (`python3 scripts/ops/extract_config.py > config.json`).
     """
     result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / "extract_config.py")],
+        [sys.executable, str(REPO_ROOT / "scripts" / "ops" / "extract_config.py")],
         capture_output=True,
         text=True,
         timeout=30,

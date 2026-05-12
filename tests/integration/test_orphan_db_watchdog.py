@@ -92,7 +92,7 @@ def test_orphan_watchdog_detects_non_bot_pid_holding_db(monkeypatch, tmp_path):
     monkeypatch.setattr(
         bot.orphan_db_watchdog, "_get_pid_cmdline",
         lambda pid: (
-            "venv/bin/python3 scripts/cryptocompare_news_backfill.py "
+            "venv/bin/python3 scripts/backfill/cryptocompare_news_backfill.py "
             "--db state.db" if pid == orphan_pid else "bot/_impl.py"
         ),
     )
@@ -219,7 +219,7 @@ def test_orphan_watchdog_skips_alert_when_pid_already_exited(
     )
     monkeypatch.setattr(
         bot.orphan_db_watchdog, "_get_pid_cmdline",
-        lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
+        lambda pid: "python3 scripts/backfill/cryptocompare_news_backfill.py",
     )
 
     def _kill_raises(pid, sig):
@@ -261,7 +261,7 @@ def test_orphan_watchdog_does_not_kill(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         bot.orphan_db_watchdog, "_get_pid_cmdline",
-        lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
+        lambda pid: "python3 scripts/backfill/cryptocompare_news_backfill.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: kills.append((pid, sig)))
 
@@ -292,7 +292,7 @@ def test_orphan_watchdog_alerts_via_telegram(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         bot.orphan_db_watchdog, "_get_pid_cmdline",
-        lambda pid: "python3 scripts/cryptocompare_news_backfill.py",
+        lambda pid: "python3 scripts/backfill/cryptocompare_news_backfill.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
     sent = []

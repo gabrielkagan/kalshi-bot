@@ -1,5 +1,5 @@
 """Bit 11.1b (Sprint 11, 2026-05-11) — null-rate eligibility filters
-in scripts/data_health_monitor.py::check_null_rates.
+in scripts/audit/data_health_monitor.py::check_null_rates.
 
 RCA in kb/findings/skill-audit-may11-bit-11.1b.md confirmed that the
 function's CRIT/WARN signal was producing false positives because:
@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
 
 # Import lazily inside test functions to avoid touching script side
 # effects at module import.
@@ -175,7 +175,7 @@ def test_eligibility_constants_defined():
     """Pin the existence and structure of the eligibility constants
     so a future refactor can't silently remove them. R1 adversarial fix
     2026-05-11: predicate switched from deny-list to allow-list shape
-    (rationale in scripts/data_health_monitor.py module-level comment +
+    (rationale in scripts/audit/data_health_monitor.py module-level comment +
     kb/findings/skill-audit-may11-bit-11.1b.md)."""
     from data_health_monitor import (
         PRODUCT_TYPE_SKIP, SIZING_ELIGIBLE_ONLY,

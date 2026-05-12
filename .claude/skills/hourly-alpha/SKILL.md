@@ -19,7 +19,7 @@ Systematic alpha research on hourly trading data. Discovers profitable configura
 
 2. **Run the alpha research script**:
    ```bash
-   python3 scripts/hourly_alpha_research.py --db /tmp/state.db 2>&1
+   python3 scripts/audit/hourly_alpha_research.py --db /tmp/state.db 2>&1
    ```
 
 3. **Present findings** with example summary:

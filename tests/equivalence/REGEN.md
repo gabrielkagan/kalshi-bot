@@ -85,7 +85,7 @@ synthetic scenarios are inline in `test_volatility_engine.py`.
 ```bash
 ssh botuser@<VPS>
 cd ~/kalshi-bot-repo
-python3 scripts/sample_engine_inputs.py --db ~/kalshi-bot-repo/state.db
+python3 scripts/ops/sample_engine_inputs.py --db ~/kalshi-bot-repo/state.db
 # Outputs:
 #   tests/fixtures/engine_inputs.parquet
 #   tests/fixtures/engine_inputs.meta.json
@@ -97,7 +97,7 @@ git diff -- tests/fixtures/engine_inputs.meta.json  # human-readable strata diff
 
 ```bash
 scp botuser@<VPS>:~/kalshi-bot-repo/state.db /tmp/state.db
-python3 scripts/sample_engine_inputs.py --db /tmp/state.db
+python3 scripts/ops/sample_engine_inputs.py --db /tmp/state.db
 ```
 
 **Bootstrap note (2026-05-09):** the initial parquet shipped with

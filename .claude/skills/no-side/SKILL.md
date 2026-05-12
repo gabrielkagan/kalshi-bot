@@ -15,7 +15,7 @@ Comprehensive NO-side shadow data report. Shows data volume, pricing verificatio
 
 ## Preflight
 
-Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-side` and `<X>` = `no_side_status`. Verify `/tmp/state.db` exists, `make -n no-side` parses, and `scripts/no_side_status.py` exists (Bit 11.1d).
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-side` and `<X>` = `no_side_status`. Verify `/tmp/state.db` exists, `make -n no-side` parses, and `scripts/audit/no_side_status.py` exists (Bit 11.1d).
 
 ## Steps
 
@@ -24,7 +24,7 @@ Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-s
 2. **Run the status script**:
    ```bash
    make no-side 2>&1
-   # wraps `python3 scripts/no_side_status.py --db /tmp/state.db` (Bit 11.3)
+   # wraps `python3 scripts/audit/no_side_status.py --db /tmp/state.db` (Bit 11.3)
    ```
 
 3. **Present the output** — show the full script output, then add:

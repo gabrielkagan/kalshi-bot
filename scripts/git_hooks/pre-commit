@@ -116,16 +116,20 @@ def _refuse(msg: str) -> None:
 
 
 def _import_session_lock():
-    """Try to import scripts._session_lock. Returns module or None.
+    """Try to import scripts.ops._session_lock. Returns module or None.
 
     Honors the test-hook env var KALSHI_PSC_HOOK_FORCE_IMPORT_FAIL.
     Walks up from this script's location to find the repo root, since
     cwd at hook-invocation time is the git repo (which may or may not
     be the kalshi-bot repo if symlinks are weird).
+
+    Bit 11.2 (2026-05-12): `_session_lock.py` relocated from
+    `scripts/_session_lock.py` to `scripts/ops/_session_lock.py`. The
+    canonical import path is now `scripts.ops._session_lock`.
     """
     if os.environ.get(_ENV_FORCE_IMPORT_FAIL):
         _warn(
-            "scripts._session_lock import forced-failed via "
+            "scripts.ops._session_lock import forced-failed via "
             f"{_ENV_FORCE_IMPORT_FAIL}; skipping lock check (fail-open)"
         )
         return None
@@ -136,10 +140,10 @@ def _import_session_lock():
         scripts_parent = str(repo_root)
         if scripts_parent not in sys.path:
             sys.path.insert(0, scripts_parent)
-        from scripts import _session_lock  # type: ignore[import-not-found]
+        from scripts.ops import _session_lock  # type: ignore[import-not-found]
         return _session_lock
     except Exception as e:  # noqa: BLE001 — fail-open
-        _warn(f"could not import scripts._session_lock ({e!r}); skipping lock check")
+        _warn(f"could not import scripts.ops._session_lock ({e!r}); skipping lock check")
         return None
 
 
@@ -281,7 +285,7 @@ def _check_part_a(session_lock_mod, my_session_id: str) -> tuple[bool, str]:
     read_meta = getattr(session_lock_mod, "_read_lockfile_metadata", None)
     is_stale_fn = getattr(session_lock_mod, "is_stale", None)
     if not (flatten and read_meta and is_stale_fn):
-        _warn("scripts._session_lock missing expected helpers; skipping lock check")
+        _warn("scripts.ops._session_lock missing expected helpers; skipping lock check")
         return True, ""
 
     held_by_others: list[tuple[str, dict]] = []

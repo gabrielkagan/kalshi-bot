@@ -118,7 +118,8 @@ def detect_regime_start(conn: sqlite3.Connection) -> str:
         "XRP_MAX_RISK_PER_TRADE", "SIZING_TIERS",
     ]
 
-    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Bit 11.2 (2026-05-12): relocated to scripts/audit/; 3-level dirname.
+    repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     try:
         # Get recent bot/_impl.py-changing commit hashes

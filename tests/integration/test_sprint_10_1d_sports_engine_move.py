@@ -21,10 +21,10 @@ Internal sports_engine.py import (already correct):
   - line 29: `from bot.engines.sports_data import (...)` — set by Sprint 10.1a
 
 Path-literal refs (~65 across):
-  - scripts/pre_deploy_check.sh (bash for-loop)
-  - scripts/doc_drift_check.py (SOURCE_FILES + count_sports_leagues fname iteration)
-  - scripts/sports_shadow_audit.py (git pathspec — extend BOTH paths like 10.1a sports_data)
-  - scripts/sports_alpha_research.py (git pathspec — same)
+  - scripts/ops/pre_deploy_check.sh (bash for-loop)
+  - scripts/audit/doc_drift_check.py (SOURCE_FILES + count_sports_leagues fname iteration)
+  - scripts/audit/sports_shadow_audit.py (git pathspec — extend BOTH paths like 10.1a sports_data)
+  - scripts/audit/sports_alpha_research.py (git pathspec — same)
   - .github/workflows/whitepaper.yml (`paths:` trigger — add new path)
   - README.template.md + README.md (file-tree literal)
   - agent_docs/bot_layout.md (project file-map)

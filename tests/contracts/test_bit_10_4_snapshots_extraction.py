@@ -34,7 +34,7 @@ snapshot modules — verified pre-flight).
 R6 (test surface): 4 contract-tier AST-walk literal-path retargets +
 ~13 top-import / function-scoped retargets across tests/integration/.
 
-R7 (doc-drift, L86): scripts/pre_deploy_check.sh:18, agent_docs/bot_layout.md.
+R7 (doc-drift, L86): scripts/ops/pre_deploy_check.sh:18, agent_docs/bot_layout.md.
 
 No bot/helpers/*.py edges → no carve-out → contract count unchanged at 5.
 """

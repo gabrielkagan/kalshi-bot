@@ -143,7 +143,7 @@ def test_no_stale_doc_state_at_root():
     """DOC_STATE.md was a one-off extract (2026-03-20). Should not be re-introduced."""
     assert not (REPO_ROOT / "DOC_STATE.md").exists(), (
         "DOC_STATE.md re-appeared. It was deleted as a stale one-off doc dump. "
-        "If you need a doc snapshot, prefer running scripts/doc_drift_check.py "
+        "If you need a doc snapshot, prefer running scripts/audit/doc_drift_check.py "
         "or generating fresh content."
     )
 
@@ -163,7 +163,7 @@ def test_no_doc_drift_report_committed_at_root():
     )
     assert result.returncode != 0, (
         "DOC_DRIFT_REPORT.txt is tracked by git. It is a transient artifact "
-        "of scripts/doc_drift_check.py and must remain gitignored."
+        "of scripts/audit/doc_drift_check.py and must remain gitignored."
     )
 
 

@@ -24,7 +24,8 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.join(SCRIPT_DIR, "..")
+# Bit 11.2 (2026-05-12): relocated to scripts/audit/; need 2 ".." levels.
+REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
 
 EXTRACT_CONFIG = os.path.join(SCRIPT_DIR, "extract_config.py")
 GENERATE_STATS = os.path.join(SCRIPT_DIR, "generate_whitepaper_stats.py")

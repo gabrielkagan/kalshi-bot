@@ -1,6 +1,6 @@
 """Sprint A Bit 7 — immutable training-data snapshot.
 
-TDD-first regression tests for `scripts/_state_db_snapshot.py` (shared helper
+TDD-first regression tests for `scripts/ops/_state_db_snapshot.py` (shared helper
 with Phase 0a, ticket 86b9vd9e3) and `scripts/cal_mlp/snapshot_state_db.py`
 (A.7 CLI, ticket 86b9vejrj).
 
@@ -25,10 +25,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
+# Bit 11.2 (2026-05-12): `_state_db_snapshot.py` relocated from scripts/
+# to scripts/ops/. Add the new home so `importlib.import_module('_state_db_snapshot')`
+# still resolves.
+OPS_DIR = SCRIPTS_DIR / 'ops'
 CAL_MLP_DIR = SCRIPTS_DIR / 'cal_mlp'
 
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(OPS_DIR) not in sys.path:
+    sys.path.insert(0, str(OPS_DIR))
 if str(CAL_MLP_DIR) not in sys.path:
     sys.path.insert(0, str(CAL_MLP_DIR))
 

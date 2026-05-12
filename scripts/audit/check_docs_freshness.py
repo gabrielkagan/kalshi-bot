@@ -16,7 +16,8 @@ import re
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.join(SCRIPT_DIR, "..")
+# Bit 11.2 (2026-05-12): relocated to scripts/audit/; need 2 ".." levels.
+REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
 CONFIG_JSON = os.path.join(REPO_DIR, "config.json")
 
 RENDERED_DOCS = [

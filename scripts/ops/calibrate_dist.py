@@ -22,7 +22,8 @@ import requests
 from scipy.stats import t as student_t, norminvgauss, kstest
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.join(SCRIPT_DIR, "..")
+# Bit 11.2 (2026-05-12): relocated to scripts/ops/; need 2 ".." levels.
+REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
 OUTPUT_PATH = os.path.join(REPO_DIR, "dist_config.json")
 
 ASSETS = {

@@ -38,7 +38,9 @@ from typing import Any, Dict, List, Sequence, Tuple
 # (for help / arg validation) on a fresh checkout before `pip install -e .[dev]`.
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Bit 11.2 (2026-05-12): relocated to scripts/ops/; 3-level dirname
+# (ops/ → scripts/ → repo/).
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_OUT = REPO_ROOT / "tests" / "fixtures" / "engine_inputs.parquet"
 DEFAULT_DB = "state.db"
 

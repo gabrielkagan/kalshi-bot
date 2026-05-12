@@ -104,12 +104,12 @@ ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B
 # in the recipe (target name passed to skills must execute the right
 # script; a typo would silently run the wrong audit).
 BIT_11_3_TARGET_TO_SCRIPT = {
-    "data-health": "scripts/data_health_monitor.py",
-    "alpha-audit": "scripts/alpha_audit.py",
-    "15m-audit": "scripts/15m_live_audit.py",
-    "hourly-audit": "scripts/hourly_shadow_audit.py",
-    "15m-alpha": "scripts/15m_alpha_research.py",
-    "no-side": "scripts/no_side_status.py",
+    "data-health": "scripts/audit/data_health_monitor.py",
+    "alpha-audit": "scripts/audit/alpha_audit.py",
+    "15m-audit": "scripts/audit/15m_live_audit.py",
+    "hourly-audit": "scripts/audit/hourly_shadow_audit.py",
+    "15m-alpha": "scripts/audit/15m_alpha_research.py",
+    "no-side": "scripts/audit/no_side_status.py",
 }
 
 
@@ -450,7 +450,7 @@ def test_deploy_check_routes_through_existing_script():
 
 def test_doc_drift_routes_through_existing_script():
     recipe = _recipe_for("doc-drift")
-    expected = "scripts/doc_drift_check.py"
+    expected = "scripts/audit/doc_drift_check.py"
     assert expected in recipe, (
         f"doc-drift must call {expected!r}, not reimplement drift checking."
     )
@@ -1172,7 +1172,7 @@ def test_dry_run_each_target_clean():
 def test_make_aliases_in_tracked_docs_resolve_to_real_targets():
     """Tracked docs (CLAUDE.md, agent_docs/) reference `make <name>`
     aliases for legacy commands. If a future Bit renames a target, the
-    docs go stale silently — `scripts/doc_drift_check.py` knows about
+    docs go stale silently — `scripts/audit/doc_drift_check.py` knows about
     config-value drift, not Makefile target names.
 
     This test scans tracked docs for `make <name>` patterns and asserts
@@ -1251,7 +1251,7 @@ def test_help_lists_all_targets():
 
 # ----- Ticket 86b9vgh1a: cross-platform flock-style guard for mutmut -----
 
-MUTMUT_LOCK_SCRIPT = REPO_ROOT / "scripts" / "_mutmut_lock.py"
+MUTMUT_LOCK_SCRIPT = REPO_ROOT / "scripts" / "ops" / "_mutmut_lock.py"
 
 
 def test_mutmut_lock_wrapper_script_exists():
@@ -1316,7 +1316,7 @@ def test_mutmut_lock_recipes_guard_long_running_tiers():
     test-mutmut` clobbers an in-progress equivalence/integration run.
 
     Variable-resolution aware: the recipe may invoke the script
-    directly (`python scripts/_mutmut_lock.py ...`) OR via a Make
+    directly (`python scripts/ops/_mutmut_lock.py ...`) OR via a Make
     variable (`$(MUTMUT_GUARD) ...`) whose body expands to the same
     script invocation. Both shapes are valid.
     """
@@ -1336,7 +1336,7 @@ def test_mutmut_lock_recipes_guard_long_running_tiers():
                 resolved = True
                 break
         assert resolved, (
-            f"{tgt} recipe does not invoke scripts/_mutmut_lock.py "
+            f"{tgt} recipe does not invoke scripts/ops/_mutmut_lock.py "
             f"directly or via a Make variable that resolves to it. "
             f"Ticket 86b9vgh1a requires all three long-running tier "
             f"recipes to acquire the lock so concurrent invocations "
@@ -1539,8 +1539,8 @@ def test_bit_11_1a_skills_reference_make_wrapper(skill_path: str, wrapper: str):
 def test_bit_11_1b_skill_smoke_target_exit_code_policy():
     """The `skill-smoke` recipe must encode the documented exit-code
     policy: accept 0 (clean), 1 (data-health WARN-only,
-    `scripts/data_health_monitor.py:569`), or 2 (data-health CRIT,
-    `scripts/data_health_monitor.py:567`); reject timeout (142/124),
+    `scripts/audit/data_health_monitor.py:569`), or 2 (data-health CRIT,
+    `scripts/audit/data_health_monitor.py:567`); reject timeout (142/124),
     127 (cmd not found), or any other non-zero (script crash).
     R1-fix 2026-05-11: original recipe accepted only 0/2, which would
     cause smoke false-positive fail on data-health's exit-1 WARN-only
@@ -1555,19 +1555,19 @@ def test_bit_11_1b_skill_smoke_target_exit_code_policy():
         "skill-smoke recipe missing `0)` case — clean exit must be accepted."
     )
     # Exit-code 1 (data-health WARN-only) must be accepted (R1-fix
-    # 2026-05-11 — scripts/data_health_monitor.py:569 exits 1 on
+    # 2026-05-11 — scripts/audit/data_health_monitor.py:569 exits 1 on
     # WARN-only).
     assert re.search(r"\b1\)", recipe), (
         "skill-smoke recipe missing `1)` case — data-health's exit-1 "
         "(WARN-only findings) must be accepted, not treated as wrapper "
-        "failure. See scripts/data_health_monitor.py:569 + "
+        "failure. See scripts/audit/data_health_monitor.py:569 + "
         "kb/findings/skill-audit-may11-bit-11.1b.md."
     )
     # Exit-code 2 (data-health real findings) must be accepted.
     assert re.search(r"\b2\)", recipe), (
         "skill-smoke recipe missing `2)` case — data-health's exit-2 "
         "(CRIT findings) must be accepted. See "
-        "scripts/data_health_monitor.py:567 + "
+        "scripts/audit/data_health_monitor.py:567 + "
         "kb/findings/skill-audit-may11-bit-11.1b.md."
     )
     # Timeout (perl alarm SIGTERM → exit 142, or coreutils timeout → 124)
@@ -1931,20 +1931,20 @@ def test_bit_13_2_new_skill_template_exists():
 
 def test_bit_13_3_refresh_map_target():
     """Bit 13.3: `make refresh-map` must invoke
-    `scripts/refresh_repo_map.py`. The script exists and writes
+    `scripts/ops/refresh_repo_map.py`. The script exists and writes
     `agent_docs/repository_map.md` as an auto-generated navigation
     aid for agent sessions (complementary to public_api.json)."""
     text = _content()
     m = re.search(r"^refresh-map:[^\n]*\n((?:\t[^\n]*\n)+)", text, re.M)
     assert m, "Makefile missing `refresh-map:` recipe (Bit 13.3)."
     recipe = m.group(1)
-    assert "scripts/refresh_repo_map.py" in recipe, (
-        f"refresh-map recipe must invoke `scripts/refresh_repo_map.py`. "
+    assert "scripts/ops/refresh_repo_map.py" in recipe, (
+        f"refresh-map recipe must invoke `scripts/ops/refresh_repo_map.py`. "
         f"Found recipe: {recipe!r}"
     )
-    script = REPO_ROOT / "scripts/refresh_repo_map.py"
+    script = REPO_ROOT / "scripts/ops/refresh_repo_map.py"
     assert script.is_file(), (
-        f"scripts/refresh_repo_map.py missing — refresh-map target "
+        f"scripts/ops/refresh_repo_map.py missing — refresh-map target "
         f"would error at runtime."
     )
 
@@ -1966,9 +1966,9 @@ def test_bit_13_3_repository_map_generated():
     assert "DO NOT EDIT MANUALLY" in content, (
         "agent_docs/repository_map.md missing the auto-gen warning. "
         "Per Bit 13.3, the file is regenerated by "
-        "`scripts/refresh_repo_map.py`; manual edits would be lost."
+        "`scripts/ops/refresh_repo_map.py`; manual edits would be lost."
     )
-    assert "scripts/refresh_repo_map.py" in content, (
+    assert "scripts/ops/refresh_repo_map.py" in content, (
         "agent_docs/repository_map.md missing the regen-command pointer. "
         "Operators need a clear `make refresh-map` remedy in the header."
     )
@@ -1992,7 +1992,7 @@ def test_bit_12_4_pre_commit_checks_chains_tier_targets():
         f"{prereqs!r}. Order matters — ast-check is fastest fail mode "
         f"(syntax error in bot/_impl.py); fail-fast on the cheapest "
         f"gate. doc-drift covers config-constant ↔ README/whitepaper "
-        f"consistency per scripts/doc_drift_check.py SOURCE_FILES × "
+        f"consistency per scripts/audit/doc_drift_check.py SOURCE_FILES × "
         f"DOC_FILES walk (R1 adversarial caught the master-plan "
         f"coverage gap). See Makefile comment block."
     )
@@ -2051,9 +2051,9 @@ def test_bit_11_1a_shadow_has_both_wrappers():
 def test_bit_11_3_targets_use_canonical_db_path():
     """All Bit 11.3 wrappers should use /tmp/state.db (the operator
     convention per .claude/skills/*/SKILL.md; the symlink to the live
-    DB the operator restores via scripts/restore_state.py). Each recipe
+    DB the operator restores via scripts/ops/state_db_restore.py). Each recipe
     must contain `--db /tmp/state.db` so `make data-health` reads the
-    same DB the operator's manual `python3 scripts/data_health_monitor.py
+    same DB the operator's manual `python3 scripts/audit/data_health_monitor.py
     --db /tmp/state.db` invocation would."""
     text = _content()
     for target in BIT_11_3_TARGETS:
@@ -2070,5 +2070,5 @@ def test_bit_11_3_targets_use_canonical_db_path():
             f"Bit 11.3 target {target!r} recipe missing `--db "
             f"/tmp/state.db`. Operator convention per "
             f".claude/skills/*/SKILL.md is `--db /tmp/state.db` (the "
-            f"symlink the operator restores via scripts/restore_state.py)."
+            f"symlink the operator restores via scripts/ops/state_db_restore.py)."
         )

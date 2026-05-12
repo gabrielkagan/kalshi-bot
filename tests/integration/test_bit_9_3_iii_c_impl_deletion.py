@@ -503,8 +503,8 @@ def test_importlinter_no_bot_impl_references():
 
 
 def test_dump_public_api_skipped_submodules_drops_bot_impl():
-    """scripts/dump_public_api.py SKIPPED_SUBMODULES must drop 'bot._impl'."""
-    src = _read("scripts/dump_public_api.py")
+    """scripts/audit/dump_public_api.py SKIPPED_SUBMODULES must drop 'bot._impl'."""
+    src = _read("scripts/audit/dump_public_api.py")
     # Locate the SKIPPED_SUBMODULES assignment via AST so comments/docstring
     # mentions of bot._impl don't trip the check.
     tree = ast.parse(src)
@@ -514,7 +514,7 @@ def test_dump_public_api_skipped_submodules_drops_bot_impl():
                 if isinstance(target, ast.Name) and target.id == "SKIPPED_SUBMODULES":
                     value_src = ast.unparse(node.value)
                     assert "bot._impl" not in value_src, (
-                        f"scripts/dump_public_api.py SKIPPED_SUBMODULES still "
+                        f"scripts/audit/dump_public_api.py SKIPPED_SUBMODULES still "
                         f"references bot._impl (no longer exists): {value_src}"
                     )
                     return

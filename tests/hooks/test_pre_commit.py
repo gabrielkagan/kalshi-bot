@@ -145,7 +145,7 @@ def _write_lockfile(
     """
     sys.path.insert(0, str(_REPO_ROOT))
     try:
-        from scripts._session_lock import flatten_target_path
+        from scripts.ops._session_lock import flatten_target_path
     finally:
         sys.path.pop(0)
     flat = flatten_target_path(target_path)
@@ -334,7 +334,7 @@ def test_s06_part_a_session_lock_import_fails_open(repo_with_staged_file, tmp_pa
     not findable from the cwd, the hook should fail-open.
 
     Concrete mechanism: invoke the hook with cwd at a tmp dir that is a
-    git repo but does NOT contain scripts/_session_lock.py. The hook
+    git repo but does NOT contain scripts/ops/_session_lock.py. The hook
     should fail-open with a warning, not crash.
     """
     isolated = tmp_path / "isolated-repo"
@@ -342,7 +342,7 @@ def test_s06_part_a_session_lock_import_fails_open(repo_with_staged_file, tmp_pa
     (isolated / "foo.txt").write_text("x\n")
     _git(isolated, "add", "foo.txt")
     _git(isolated, "checkout", "-b", "feature-x")
-    # No KALSHI_SESSION_LOCK_ROOT and no scripts/_session_lock.py in cwd
+    # No KALSHI_SESSION_LOCK_ROOT and no scripts/ops/_session_lock.py in cwd
     # tree → the hook's import attempt must catch and fail-open.
     # We DO pass a lock_root so dir-missing isn't the failure mode;
     # we want the import to fail because the hook can't find the module.
@@ -591,7 +591,7 @@ def test_s14_self_test_passes_on_healthy_install(tmp_path):
     """`scripts/git_hooks/pre-commit --self-test` returns 0 with OK message."""
     # Self-test is a meta-check: the hook script verifies its own integrity.
     # We invoke it from the actual repo root (not a tmp dir) because the
-    # self-test needs to find scripts/_session_lock.py via the canonical
+    # self-test needs to find scripts/ops/_session_lock.py via the canonical
     # path.
     env = os.environ.copy()
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
@@ -612,7 +612,7 @@ def test_s14_self_test_passes_on_healthy_install(tmp_path):
 
 
 def test_s14b_self_test_fails_when_session_lock_unimportable(tmp_path):
-    """`--self-test` from a dir with no scripts/_session_lock.py exits 1.
+    """`--self-test` from a dir with no scripts/ops/_session_lock.py exits 1.
 
     The self-test is the ONE code path where we WANT a nonzero exit on
     failure — it's a manual operator-confidence check, not the commit-time

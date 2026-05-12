@@ -784,7 +784,7 @@ class StateManager:
             # Phase G-6 (2026-05-02): provenance flag for v2 calibrator
             # train/serve skew control. Live-bot inserts default 'live_ws'.
             # Backfilled rows stamped 'backfill_60s_inputs' via
-            # scripts/stamp_data_provenance.py (one-time post-migration).
+            # scripts/backfill/stamp_data_provenance.py (one-time post-migration).
             # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.
             ("data_provenance", "TEXT"),
             # Phase H-2 (2026-05-03): bot microstate forward capture.
@@ -1929,7 +1929,7 @@ class StateManager:
                                      # Phase G-6 (2026-05-02): provenance flag.
                                      # Live-bot inserts always default 'live_ws'. Existing
                                      # backfilled rows are stamped retroactively by
-                                     # scripts/stamp_data_provenance.py (no caller passes this
+                                     # scripts/backfill/stamp_data_provenance.py (no caller passes this
                                      # kwarg today — backfill scripts use raw UPDATE SQL with
                                      # COALESCE(data_provenance, '<source>') instead).
                                      # See kb/decisions/v2-train-must-account-for-backfill-skew-may02.md.

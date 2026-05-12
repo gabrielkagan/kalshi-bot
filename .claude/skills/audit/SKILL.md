@@ -27,12 +27,12 @@ Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` and `<X
 
    | Argument | Make wrapper | Script | Default args |
    |----------|--------------|--------|-------------|
-   | `15m` | `make 15m-audit` | `scripts/15m_live_audit.py` | `--regime auto` |
-   | `hourly` | `make hourly-audit` | `scripts/hourly_shadow_audit.py` | `--regime auto` |
-   | `spx` | — | `scripts/spx_shadow_audit.py` | `--regime auto` |
-   | `weather` | — | `scripts/weather_shadow_audit.py` | `--regime auto` |
-   | `sports` | — | `scripts/sports_shadow_audit.py` | `--regime auto` |
-   | `no_side` | `make no-side` | `scripts/no_side_status.py` | `--db /tmp/state.db` |
+   | `15m` | `make 15m-audit` | `scripts/audit/15m_live_audit.py` | `--regime auto` |
+   | `hourly` | `make hourly-audit` | `scripts/audit/hourly_shadow_audit.py` | `--regime auto` |
+   | `spx` | — | `scripts/audit/spx_shadow_audit.py` | `--regime auto` |
+   | `weather` | — | `scripts/audit/weather_shadow_audit.py` | `--regime auto` |
+   | `sports` | — | `scripts/audit/sports_shadow_audit.py` | `--regime auto` |
+   | `no_side` | `make no-side` | `scripts/audit/no_side_status.py` | `--db /tmp/state.db` |
    | `all` | partial (15m + hourly + no_side via `make`) | Run all 6 scripts sequentially | see above for each |
 
    If no argument provided, ask the user which system.

@@ -1,4 +1,4 @@
-"""Tests for scripts/h4_run_with_alert.py — Telegram-on-failure wrapper.
+"""Tests for scripts/ops/h4_run_with_alert.py — Telegram-on-failure wrapper.
 
 Round-1 adversarial review critique #1: H-4 backfill failures are
 otherwise invisible until the v2 acceptance gate fires weeks later
@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / 'scripts'
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / 'scripts' / 'ops'
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -61,7 +61,7 @@ def test_format_failure_message_labels_124_as_hard_timeout(monkeypatch):
     msg = h4_run_with_alert.format_failure_message(
         label='gdelt',
         exit_code=124,
-        cmd=['python3', 'scripts/gdelt_backfill.py', '--db', 'state.db'],
+        cmd=['python3', 'scripts/backfill/gdelt_backfill.py', '--db', 'state.db'],
     )
     assert 'HARD TIMEOUT' in msg, (
         f"exit code 124 must be labeled 'HARD TIMEOUT'; got: {msg!r}"
@@ -95,7 +95,7 @@ def test_alert_message_includes_label_exit_code_and_journal_hint(monkeypatch):
     msg = h4_run_with_alert.format_failure_message(
         label='cryptocompare',
         exit_code=42,
-        cmd=['python3', 'scripts/cryptocompare_news_backfill.py', '--db', 'state.db'],
+        cmd=['python3', 'scripts/backfill/cryptocompare_news_backfill.py', '--db', 'state.db'],
     )
     assert 'cryptocompare' in msg
     assert 'exit_code=42' in msg
@@ -215,7 +215,7 @@ def test_sigterm_handler_alerts_and_exits_143(monkeypatch):
     # auto-restore after the test (round-3 critique #2 fix).
     monkeypatch.setattr(h4_run_with_alert, '_LABEL', 'gdelt')
     monkeypatch.setattr(
-        h4_run_with_alert, '_CMD', ['python3', 'scripts/gdelt_backfill.py'],
+        h4_run_with_alert, '_CMD', ['python3', 'scripts/backfill/gdelt_backfill.py'],
     )
     monkeypatch.setattr(h4_run_with_alert, '_START_TIME', 0.0)
     monkeypatch.setattr(h4_run_with_alert, '_PROC', None)

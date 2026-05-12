@@ -23,7 +23,7 @@ Real caller imports (3 sites, all in bot/main_loop.py):
 Path-literal refs across ~107 sites: parametrize lists in test_db_signatures,
 test_call_sites, test_db_writer_registry, test_insert_schema_parity,
 test_product_type_enum, test_regression; README.template.md + README.md;
-agent_docs/bot_layout.md; scripts/pre_deploy_check.sh + doc_drift_check.py;
+agent_docs/bot_layout.md; scripts/ops/pre_deploy_check.sh + doc_drift_check.py;
 .github/workflows/whitepaper.yml; plus docstrings/comments.
 
 CalEngine pipeline note: these shadow engines do NOT write `raw_prob` to

@@ -2,7 +2,7 @@
 
 Validates that bot's public surface matches the committed snapshot at
 ``tests/contracts/public_api.json``. Layers (see
-``scripts/dump_public_api.py`` for full design):
+``scripts/audit/dump_public_api.py`` for full design):
 
 1. Static walk of ``bot.*`` submodules (excluding ``bot._impl``).
 2. Static walk of canonical classes still resident in ``bot/_impl.py``.
@@ -24,7 +24,7 @@ smoke. Both layers are needed.
 
 If this test fails:
 - Intentional surface change: regenerate via
-  ``python3 scripts/dump_public_api.py`` (or ``make api-snapshot-regen``)
+  ``python3 scripts/audit/dump_public_api.py`` (or ``make api-snapshot-regen``)
   and commit the resulting ``tests/contracts/public_api.json``.
 - Unintentional: revert the change.
 - "Diff is huge / paths look weird": you may have a griffe version skew.
@@ -41,7 +41,7 @@ import pytest
 
 # Bit 9.3-iii.c (2026-05-11): griffe's expression iterator can exceed pytest
 # worker stack depth when walking the bot package. The CLI regen path
-# (`python3 scripts/dump_public_api.py`, with sys.setrecursionlimit at module
+# (`python3 scripts/audit/dump_public_api.py`, with sys.setrecursionlimit at module
 # top) works, but pytest workers OS-kill before Python can catch the
 # RecursionError. Skip the regen-comparison test at the module level until
 # either griffe upstream avoids the deep recursion or we add a worker-stack
@@ -53,7 +53,7 @@ pytestmark = pytest.mark.skip(
 )
 
 SNAPSHOT_PATH = Path(__file__).parent / "public_api.json"
-REGEN_CMD = "python3 scripts/dump_public_api.py"
+REGEN_CMD = "python3 scripts/audit/dump_public_api.py"
 DIFF_MAX_CHARS = 12000  # raised from 6k to surface more context on real diffs
 
 # If the live snapshot has wildly more entries than the committed one, OR
@@ -130,7 +130,7 @@ def test_public_api_matches_snapshot() -> None:
         actual = dump_bot_public_api()
     except RecursionError:
         pytest.skip(
-            "griffe RecursionError under default stack — see scripts/dump_public_api.py "
+            "griffe RecursionError under default stack — see scripts/audit/dump_public_api.py "
             "module-top sys.setrecursionlimit(15000) — pytest worker stack appears tighter "
             "than CLI stack. Run snapshot regeneration via the CLI; if the committed "
             "snapshot is stale, the regen + commit is the operator action, not this test."

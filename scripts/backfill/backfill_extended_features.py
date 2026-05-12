@@ -31,8 +31,10 @@ import sys
 import os
 from pathlib import Path
 
-# Ensure we can import bot.compute_* helpers regardless of CWD
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Ensure we can import bot.compute_* helpers regardless of CWD.
+# Bit 11.2 (2026-05-12): relocated to scripts/backfill/; 3-level dirname
+# (backfill/ → scripts/ → repo/).
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from bot.constants import SOL_RESCUE_CONTRACT_CAP

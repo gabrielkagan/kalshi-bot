@@ -1966,7 +1966,8 @@ def detect_regime_start() -> str:
         "SPX_HOURLY_MAX_POSITIONS_PER_WINDOW", "SPX_HOURLY_MAX_WINDOW_RISK",
     ]
 
-    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Bit 11.2 (2026-05-12): relocated to scripts/audit/; 3-level dirname.
+    repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %aI", "--since=180 days ago",

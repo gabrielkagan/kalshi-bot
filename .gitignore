@@ -79,7 +79,7 @@ DOC_DRIFT_REPORT.txt
 .testmondata
 /mutants/
 .mutmut-cache/
-# Ticket 86b9vgh1a — Pillar 5 lock sentinel. scripts/_mutmut_lock.py
+# Ticket 86b9vgh1a — Pillar 5 lock sentinel. scripts/ops/_mutmut_lock.py
 # opens this file with O_CREAT to anchor an fcntl.flock(LOCK_EX|LOCK_NB)
 # guard so concurrent `make test-mutmut` / `test-equivalence` /
 # `test-integration` invocations fail-fast (instead of racing on

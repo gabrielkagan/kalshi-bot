@@ -15,10 +15,10 @@ Real caller imports (5 sites):
   - tests/integration/test_supabase_asset_parity.py:33,49,64 (3× method-body `from weather_engine import WEATHER_CITIES`)
 
 Path-literal refs:
-  - scripts/pre_deploy_check.sh:18 (bash for-loop)
-  - scripts/extract_config.py:7,25,232 (docstring + WEATHER_PATH constant + docstring)
-  - scripts/check_docs_freshness.py:68,69,308 (docstring + path constant + error message)
-  - scripts/doc_drift_check.py:36,214,215 (SOURCE_FILES + docstring + path)
+  - scripts/ops/pre_deploy_check.sh:18 (bash for-loop)
+  - scripts/ops/extract_config.py:7,25,232 (docstring + WEATHER_PATH constant + docstring)
+  - scripts/audit/check_docs_freshness.py:68,69,308 (docstring + path constant + error message)
+  - scripts/audit/doc_drift_check.py:36,214,215 (SOURCE_FILES + docstring + path)
   - .github/workflows/whitepaper.yml:18 (path trigger)
   - README.template.md:223 (file-tree literal)
   - agent_docs/bot_layout.md (project file-map)

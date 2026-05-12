@@ -34,12 +34,12 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT_PATH = REPO_ROOT / "scripts" / "alpha_audit.py"
+SCRIPT_PATH = REPO_ROOT / "scripts" / "audit" / "alpha_audit.py"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(REPO_ROOT / "scripts") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
 
 
 # ─────────────────────────────────────────────────────────────────────────

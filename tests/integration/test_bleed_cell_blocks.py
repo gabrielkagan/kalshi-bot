@@ -832,8 +832,8 @@ def test_filter_stage_value_consistency_across_files():
     Lockstep-required (this test enforces — runtime correctness depends
     on these matching bot/_impl.py constants):
       - fifteenm_shadow.py (per-asset temperature recalibration training set)
-      - scripts/backtest.py (expansion-signal universe for counterfactual)
-      - scripts/generate_whitepaper_stats.py (Brier/calibration sample)
+      - scripts/audit/backtest.py (expansion-signal universe for counterfactual)
+      - scripts/ops/generate_whitepaper_stats.py (Brier/calibration sample)
 
     Manual-cutover (kb decision doc warns operators; not enforced):
       - scripts/{15m_live_audit, 15m_alpha_research, alpha_audit,

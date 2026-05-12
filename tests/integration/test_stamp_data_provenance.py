@@ -1,4 +1,4 @@
-"""Tests for scripts/stamp_data_provenance.py — Phase G-6 one-time stamp.
+"""Tests for scripts/backfill/stamp_data_provenance.py — Phase G-6 one-time stamp.
 
 Coverage:
 - Stamps 'backfill_60s_inputs' on pre-Phase-F-3 rows with G-2/G-4 populated
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "scripts" / "backfill"))
 
 import stamp_data_provenance as stamp_mod  # noqa: E402
 

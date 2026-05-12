@@ -32,7 +32,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>REPLACE_REPO_PATH/scripts/state_db_backup_heartbeat.py</string>
+        <string>REPLACE_REPO_PATH/scripts/ops/state_db_backup_heartbeat.py</string>
         <string>--bucket</string>
         <string>REPLACE_BUCKET_NAME</string>
     </array>

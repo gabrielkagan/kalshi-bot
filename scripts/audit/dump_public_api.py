@@ -79,7 +79,8 @@ from typing import Any
 # is an orthogonal bump for the iterator depth.
 sys.setrecursionlimit(max(sys.getrecursionlimit(), 15000))
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Bit 11.2 (2026-05-12): relocated to scripts/audit/; 3-level dirname.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

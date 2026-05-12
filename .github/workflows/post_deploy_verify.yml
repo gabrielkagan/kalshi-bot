@@ -124,7 +124,7 @@ jobs:
             # 4. Run audit_cron to verify metrics computation
             echo "[4/6] Running audit_cron.py..."
             cd ~/kalshi-bot-repo
-            venv/bin/python3 scripts/audit_cron.py --db state.db 2>&1 | tail -10
+            venv/bin/python3 scripts/audit/audit_cron.py --db state.db 2>&1 | tail -10
             echo "  OK: audit_cron completed"
 
             # 5. DB-row verification per enabled feature flag. Catches the
@@ -141,7 +141,7 @@ jobs:
             # checks (WEATHER_NO_SIDE_LIVE etc. live in bot/constants.py
             # post-extraction). Regression: tests/contracts/test_constants_extraction.py
             # ::test_post_deploy_verify_yml_does_not_pin_bot_impl_only.
-            venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env
+            venv/bin/python3 scripts/audit/postdeploy_verify.py --db state.db --env .env
             echo "  OK: postdeploy_verify completed"
 
             # 6. Bot reached init AND is not in a crash loop. Smell 3 from
@@ -154,7 +154,7 @@ jobs:
             # so 0 rows in a 5-min window after the deploy proves the bot
             # crashed before init completed; ≥3 rows in 5 min proves a
             # post-init crash loop. Threshold logic + SQL semantics live
-            # in `scripts/post_deploy_scan_gate.py` (mirrors the
+            # in `scripts/audit/post_deploy_scan_gate.py` (mirrors the
             # postdeploy_verify.py / audit_cron.py separate-script
             # convention; the VPS doesn't have a `sqlite3` CLI
             # installed so we use Python's stdlib sqlite3 module).
@@ -167,7 +167,7 @@ jobs:
             # → market_observations_continuous → bot_startup_log).
             echo "[6/6] Verifying bot startup pattern (no crash loop, deploy reached init)..."
             cd ~/kalshi-bot-repo
-            venv/bin/python3 scripts/post_deploy_scan_gate.py --db state.db --window-seconds 300 --max-events 2
+            venv/bin/python3 scripts/audit/post_deploy_scan_gate.py --db state.db --window-seconds 300 --max-events 2
 
             echo ""
             echo "=== All post-deploy checks passed ==="

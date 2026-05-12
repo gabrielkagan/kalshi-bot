@@ -58,9 +58,9 @@ The three pipelines use the SAME formulas. Any drift = silent training-distribut
 | v3 (+3 features: spread, flow, CB-Kraken gap) | 2026-04-23 | K=2 train target 2026-06-22 |
 | External market data (OKX funding+OI, Deribit DVOL) | 2026-04-29 (this commit) | Earliest v3 use 2026-06-22 |
 
-Health monitoring: `scripts/calibrator_feature_health.py` (cron 6h) alerts via Telegram when any feature drops below 99% (or 95% for known-WS-flaky 5m momentum). Schema drift surfaced as `SCHEMA_DRIFT` alert.
+Health monitoring: `scripts/audit/calibrator_feature_health.py` (cron 6h) alerts via Telegram when any feature drops below 99% (or 95% for known-WS-flaky 5m momentum). Schema drift surfaced as `SCHEMA_DRIFT` alert.
 
-External polling: `scripts/external_market_poller.py --once` is a CRON-NEVER-INSTALLED script (greenfield at `7ad2464` 2026-04-29; ClickUp 86b9vrr8q RCA 2026-05-11) — `external_market_data` table does NOT exist on VPS. The script targets OKX funding+OI for all 6 assets in `config.ASSETS` (T1.5 bf8b9a3 added HYPE+DOGE to its `FUNDING_SYMBOLS`/`OI_SYMBOLS` lists) + Deribit BTC/ETH DVOL, but is operationally dormant. The load-bearing writer for `evaluated_opportunities.okx_funding_rate_at_decision` + `deribit_funding_rate_at_decision` is the Phase G-5 backfill in `scripts/shadow_coverage_backfill.py` — also currently uninstalled-on-VPS (separate P1 G-5 ticket to install daily cron; population dropped 80% → 0% on 2026-05-03, 17.5K NULL rows accumulated).
+External polling: `scripts/backfill/external_market_poller.py --once` is a CRON-NEVER-INSTALLED script (greenfield at `7ad2464` 2026-04-29; ClickUp 86b9vrr8q RCA 2026-05-11) — `external_market_data` table does NOT exist on VPS. The script targets OKX funding+OI for all 6 assets in `config.ASSETS` (T1.5 bf8b9a3 added HYPE+DOGE to its `FUNDING_SYMBOLS`/`OI_SYMBOLS` lists) + Deribit BTC/ETH DVOL, but is operationally dormant. The load-bearing writer for `evaluated_opportunities.okx_funding_rate_at_decision` + `deribit_funding_rate_at_decision` is the Phase G-5 backfill in `scripts/backfill/shadow_coverage_backfill.py` — also currently uninstalled-on-VPS (separate P1 G-5 ticket to install daily cron; population dropped 80% → 0% on 2026-05-03, 17.5K NULL rows accumulated).
 
 ### Spot price buffer persistence (`bot/feeds/coinbase.py::CoinbaseFeed`)
 
@@ -96,6 +96,6 @@ Sister-script drift surface (R2 adv 2026-05-12):
 
 **Canonical helper home:** `bot/helpers/derived_features.py::compute_derived_features` owns `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4 (helpers-leaf). A.1b will replace integration.py's inline formulas with calls to this helper.
 
-**Helper-call sites (already correct):** `bot/state.py:1926` (pre-DB-write call, replaces the deleted `bot/_impl.py:2192` post-Bit-9.3-iii.c) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill_extended_features.py`.
+**Helper-call sites (already correct):** `bot/state.py:1926` (pre-DB-write call, replaces the deleted `bot/_impl.py:2192` post-Bit-9.3-iii.c) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py`.
 
 Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a, 2026-05-12).

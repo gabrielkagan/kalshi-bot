@@ -1,4 +1,4 @@
-"""Tests for scripts/state_db_s3_backup.py — Phase 0a state.db backup.
+"""Tests for scripts/ops/state_db_s3_backup.py — Phase 0a state.db backup.
 
 Phase 0a per kb/decisions/autoresearch-design-may05.md hazards table:
 the worst-case failure mode for the autoresearch track is losing
@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "ops"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -98,7 +98,7 @@ def live_db(tmp_path: Path) -> Path:
 @pytest.fixture
 def backup_module():
     """Lazy import after path patching so the test collector doesn't fail
-    if scripts/state_db_s3_backup.py was renamed/removed (then the test
+    if scripts/ops/state_db_s3_backup.py was renamed/removed (then the test
     file's import-time line itself becomes the regression flag)."""
     import state_db_s3_backup
     return state_db_s3_backup

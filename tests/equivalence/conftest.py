@@ -71,7 +71,7 @@ def parquet_path() -> Path:
     if not PARQUET_PATH.exists():
         raise pytest.UsageError(
             f"engine_inputs.parquet missing at {PARQUET_PATH}; regenerate via "
-            f"`python3 scripts/sample_engine_inputs.py --db state.db`"
+            f"`python3 scripts/ops/sample_engine_inputs.py --db state.db`"
         )
     return PARQUET_PATH
 

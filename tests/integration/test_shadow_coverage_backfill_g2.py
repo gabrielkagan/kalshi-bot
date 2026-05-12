@@ -24,7 +24,7 @@ import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts", "backfill"))
 
 
 def _make_db_with_eval_schema(tmp_path):

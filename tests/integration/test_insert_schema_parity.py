@@ -329,7 +329,7 @@ class TestRawInserterDataProvenance:
     its raw INSERT column list omitted `data_provenance` from G-6 ship
     (2026-05-02) onward. Result: every sports row through 2026-05-09
     was written with NULL data_provenance — 1,183 rows on live VPS.
-    The G-6 stamp script (`scripts/stamp_data_provenance.py`) is 15m-
+    The G-6 stamp script (`scripts/backfill/stamp_data_provenance.py`) is 15m-
     scoped, so it never fixes sports rows; only the writer can.
 
     See kb/decisions/sprint-a-bit-2-rca-may09.md for full RCA.

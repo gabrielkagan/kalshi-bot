@@ -23,14 +23,14 @@ from pathlib import Path
 import pytest
 
 # scripts/ is not a package; test runs with the repo root on sys.path.
-# Add the repo root explicitly so `from scripts._session_lock import ...`
+# Add the repo root explicitly so `from scripts.ops._session_lock import ...`
 # works regardless of how pytest is invoked.
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts import _session_lock  # noqa: E402
-from scripts._session_lock import (  # noqa: E402
+from scripts.ops import _session_lock  # noqa: E402
+from scripts.ops._session_lock import (  # noqa: E402
     LockHeldError,
     SessionLock,
     flatten_target_path,
@@ -164,7 +164,7 @@ class TestPathFlatten:
         string. There are 8 such classes (k=1..8) and the R4 code only
         covered k=7. This parametrized test pins ALL of them.
         """
-        from scripts._session_lock import _SLASH_MARKER
+        from scripts.ops._session_lock import _SLASH_MARKER
 
         marker = _SLASH_MARKER
         target = f"A{marker[:k]}/{marker[k:]}B"
@@ -180,7 +180,7 @@ class TestPathFlatten:
         ``__SLASH__`` self-overlap is exactly {7, 8}. R4 only covered
         the k=7 case (`SLASH__` startswith); R5 found k=8 (`_SLASH__`).
         """
-        from scripts._session_lock import _SLASH_MARKER
+        from scripts.ops._session_lock import _SLASH_MARKER
 
         marker = _SLASH_MARKER
         required_prefix = marker[len(marker) - k:]
@@ -224,7 +224,7 @@ class TestPathFlatten:
         recomputation. If anyone changes ``_SLASH_MARKER`` in the future
         the constant could go stale silently — this test forces a
         regen + manual review."""
-        from scripts._session_lock import (
+        from scripts.ops._session_lock import (
             _SLASH_MARKER,
             _SLASH_MARKER_SELF_OVERLAP_KS,
         )
@@ -295,7 +295,7 @@ class TestPathFlatten:
         import itertools
         import random
 
-        from scripts._session_lock import _SLASH_MARKER
+        from scripts.ops._session_lock import _SLASH_MARKER
 
         M = _SLASH_MARKER  # '__SLASH__'
 
@@ -365,7 +365,7 @@ class TestPathFlatten:
         # We assert p1 raises for every k. For k in self_overlap_ks we
         # ALSO assert the right-straddle half (a non-first component
         # starting with M[len-k:]) is rejected.
-        from scripts._session_lock import _SLASH_MARKER_SELF_OVERLAP_KS
+        from scripts.ops._session_lock import _SLASH_MARKER_SELF_OVERLAP_KS
 
         for k in range(1, len(M)):
             p1 = f"A{M[:k]}/{M[k:]}B"
@@ -505,9 +505,9 @@ def _child_acquire_target(root_path: str, reclaim_log_path: str, target: str, qu
     os.environ["KALSHI_SESSION_LOCK_ROOT"] = root_path
     os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"] = reclaim_log_path
     # Re-import in the child so the env vars take effect.
-    from scripts import _session_lock as child_mod
-    from scripts._session_lock import LockHeldError as ChildLockHeldError
-    from scripts._session_lock import SessionLock as ChildSessionLock
+    from scripts.ops import _session_lock as child_mod
+    from scripts.ops._session_lock import LockHeldError as ChildLockHeldError
+    from scripts.ops._session_lock import SessionLock as ChildSessionLock
 
     # Force module to re-resolve overrides from env (test env uses
     # module-attribute overrides, but the subprocess reads from env vars).
@@ -541,9 +541,9 @@ def _child_acquire_barriered(
     """
     os.environ["KALSHI_SESSION_LOCK_ROOT"] = root_path
     os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"] = reclaim_log_path
-    from scripts import _session_lock as child_mod
-    from scripts._session_lock import LockHeldError as ChildLockHeldError
-    from scripts._session_lock import SessionLock as ChildSessionLock
+    from scripts.ops import _session_lock as child_mod
+    from scripts.ops._session_lock import LockHeldError as ChildLockHeldError
+    from scripts.ops._session_lock import SessionLock as ChildSessionLock
 
     child_mod._LOCK_ROOT_OVERRIDE = None
     child_mod._RECLAIM_LOG_OVERRIDE = None
@@ -752,11 +752,11 @@ def _child_acquire_then_die(root_path: str, reclaim_log_path: str, target: str):
     """
     os.environ["KALSHI_SESSION_LOCK_ROOT"] = root_path
     os.environ["KALSHI_SESSION_LOCK_RECLAIM_LOG"] = reclaim_log_path
-    from scripts import _session_lock as child_mod
+    from scripts.ops import _session_lock as child_mod
 
     child_mod._LOCK_ROOT_OVERRIDE = None
     child_mod._RECLAIM_LOG_OVERRIDE = None
-    from scripts._session_lock import SessionLock as ChildSessionLock
+    from scripts.ops._session_lock import SessionLock as ChildSessionLock
 
     lock = ChildSessionLock(target)
     lock.acquire_raw()
@@ -926,7 +926,7 @@ class TestTOCTOU:
         flat = flatten_target_path(target)
         canonical = lock_root / f"{flat}.lock"
 
-        from scripts._session_lock import _read_lockfile_metadata
+        from scripts.ops._session_lock import _read_lockfile_metadata
 
         N_TRIALS = 50
         bad: list[str] = []
@@ -1083,18 +1083,18 @@ class TestWorktreeRepoRoot:
 
         # Stub `Path(__file__).resolve().parent` for each call by directly
         # exercising _repo_root via monkeypatched module-attr.
-        import scripts._session_lock as mod
+        import scripts.ops._session_lock as mod
 
         # Save the original module __file__ to restore.
         orig_file = mod.__file__
 
         try:
-            # Pretend we're running from main_repo/scripts/_session_lock.py.
-            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            # Pretend we're running from main_repo/scripts/ops/_session_lock.py.
+            mod.__file__ = str(main_repo / "scripts" / "ops" / "_session_lock.py")
             main_root = mod._repo_root()
 
-            # Pretend we're running from worktree/scripts/_session_lock.py.
-            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            # Pretend we're running from worktree/scripts/ops/_session_lock.py.
+            mod.__file__ = str(worktree / "scripts" / "ops" / "_session_lock.py")
             worktree_root = mod._repo_root()
         finally:
             mod.__file__ = orig_file
@@ -1128,7 +1128,7 @@ class TestWorktreeRepoRoot:
             f"gitdir: {worktree_gitdir}\n", encoding="utf-8"
         )
 
-        import scripts._session_lock as mod
+        import scripts.ops._session_lock as mod
 
         # Clear env + module overrides so _lock_root() falls back to
         # _repo_root() / .claude / locks / active-work.
@@ -1139,10 +1139,10 @@ class TestWorktreeRepoRoot:
 
         orig_file = mod.__file__
         try:
-            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            mod.__file__ = str(main_repo / "scripts" / "ops" / "_session_lock.py")
             main_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
 
-            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            mod.__file__ = str(worktree / "scripts" / "ops" / "_session_lock.py")
             wt_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
         finally:
             mod.__file__ = orig_file
@@ -1165,11 +1165,11 @@ class TestWorktreeRepoRoot:
         (main_repo / ".git").mkdir()
         (main_repo / "scripts").mkdir()
 
-        import scripts._session_lock as mod
+        import scripts.ops._session_lock as mod
 
         orig_file = mod.__file__
         try:
-            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            mod.__file__ = str(main_repo / "scripts" / "ops" / "_session_lock.py")
             root = mod._repo_root()
         finally:
             mod.__file__ = orig_file
@@ -1228,14 +1228,14 @@ class TestWorktreeRepoRoot:
             f"gitdir: {rel}\n", encoding="utf-8"
         )
 
-        import scripts._session_lock as mod
+        import scripts.ops._session_lock as mod
 
         orig_file = mod.__file__
         try:
-            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            mod.__file__ = str(main_repo / "scripts" / "ops" / "_session_lock.py")
             main_root = mod._repo_root()
 
-            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            mod.__file__ = str(worktree / "scripts" / "ops" / "_session_lock.py")
             worktree_root = mod._repo_root()
         finally:
             mod.__file__ = orig_file
@@ -1277,7 +1277,7 @@ class TestWorktreeRepoRoot:
             "gitdir: ../../../.git/worktrees/wt1\n", encoding="utf-8"
         )
 
-        import scripts._session_lock as mod
+        import scripts.ops._session_lock as mod
 
         # Clear env + module overrides so _lock_root() falls back to
         # _repo_root() / .claude / locks / active-work.
@@ -1288,10 +1288,10 @@ class TestWorktreeRepoRoot:
 
         orig_file = mod.__file__
         try:
-            mod.__file__ = str(main_repo / "scripts" / "_session_lock.py")
+            mod.__file__ = str(main_repo / "scripts" / "ops" / "_session_lock.py")
             main_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
 
-            mod.__file__ = str(worktree / "scripts" / "_session_lock.py")
+            mod.__file__ = str(worktree / "scripts" / "ops" / "_session_lock.py")
             wt_lock_path = mod.SessionLock("bot/_impl.py").lockfile_path
         finally:
             mod.__file__ = orig_file

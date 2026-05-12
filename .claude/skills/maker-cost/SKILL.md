@@ -19,7 +19,7 @@ Tracks the cost of maker-first execution by computing hypothetical taker P&L for
 
 2. **Run the script**:
    ```bash
-   python3 scripts/maker_opportunity_cost.py --db /tmp/state.db --since 2026-03-03 2>&1
+   python3 scripts/audit/maker_opportunity_cost.py --db /tmp/state.db --since 2026-03-03 2>&1
    ```
    Adjust `--since` to match the current config regime start.
 

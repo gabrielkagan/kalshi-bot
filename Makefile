@@ -2,7 +2,7 @@
 # (kb/decisions/repo-modularization-plan-may05.md).
 # Sprint 1: developer-convenience targets only — no runtime impact, no
 # code moves. Targets call existing scripts where they exist
-# (scripts/cal_mlp/deploy_check.sh, scripts/doc_drift_check.py) rather
+# (scripts/cal_mlp/deploy_check.sh, scripts/audit/doc_drift_check.py) rather
 # than reinventing.
 #
 # Make's "missing separator" error on a tab/space mistake is opaque, so
@@ -106,7 +106,7 @@ INTEGRATION_IGNORES := \
 # A `flock --nonblock --exclusive ...` recipe would silently no-op
 # on darwin. The fcntl module is in Python's stdlib on both platforms,
 # so a tiny Python wrapper closes the cross-platform gap with no new
-# native dependencies. See scripts/_mutmut_lock.py for the
+# native dependencies. See scripts/ops/_mutmut_lock.py for the
 # fcntl.flock(LOCK_EX | LOCK_NB) implementation + behavior contract.
 #
 # Lockfile lives at the repo root (gitignored — `.mutmut.lock` entry
@@ -114,7 +114,7 @@ INTEGRATION_IGNORES := \
 # appears on first invocation; fcntl locks the FD, not the path, so
 # the lockfile contents are irrelevant.
 MUTMUT_LOCK := .mutmut.lock
-MUTMUT_GUARD := $(PYTHON) scripts/_mutmut_lock.py acquire $(MUTMUT_LOCK) --
+MUTMUT_GUARD := $(PYTHON) scripts/ops/_mutmut_lock.py acquire $(MUTMUT_LOCK) --
 
 help:
 	@echo "Kalshi-bot dev targets (Pillar 5 tiered suite — 86b9ve11y)"
@@ -139,18 +139,18 @@ help:
 	@echo "  make install-hooks        symlink scripts/git_hooks/pre-commit → .git/hooks/ (Sprint PSC P5.3)"
 	@echo "  make ast-check            syntax-check bot/constants.py + main_loop.py + scanner/"
 	@echo "  make lint                 ruff check ."
-	@echo "  make doc-drift            scripts/doc_drift_check.py"
+	@echo "  make doc-drift            scripts/audit/doc_drift_check.py"
 	@echo "  make deploy-check         pre-deploy aggregator"
 	@echo "  make api-snapshot-regen   regenerate Pillar 1 public_api.json"
 	@echo "  make refresh-map          regenerate agent_docs/repository_map.md (Bit 13.3 nav aid)"
 	@echo
 	@echo "Operator audits (Bit 11.3 — wraps --db /tmp/state.db):"
-	@echo "  make data-health          scripts/data_health_monitor.py --verbose"
-	@echo "  make alpha-audit          scripts/alpha_audit.py --days 14"
-	@echo "  make 15m-audit            scripts/15m_live_audit.py --regime auto"
-	@echo "  make hourly-audit         scripts/hourly_shadow_audit.py --regime auto"
-	@echo "  make 15m-alpha            scripts/15m_alpha_research.py --regime auto"
-	@echo "  make no-side              scripts/no_side_status.py"
+	@echo "  make data-health          scripts/audit/data_health_monitor.py --verbose"
+	@echo "  make alpha-audit          scripts/audit/alpha_audit.py --days 14"
+	@echo "  make 15m-audit            scripts/audit/15m_live_audit.py --regime auto"
+	@echo "  make hourly-audit         scripts/audit/hourly_shadow_audit.py --regime auto"
+	@echo "  make 15m-alpha            scripts/audit/15m_alpha_research.py --regime auto"
+	@echo "  make no-side              scripts/audit/no_side_status.py"
 	@echo "  make skill-smoke          end-to-end smoke of the 6 wrappers (Bit 11.1b)"
 	@echo
 	@echo "Pre-commit composite gate (Bit 12.4 — chains existing checks):"
@@ -342,7 +342,7 @@ lint:
 	$(RUFF) check .
 
 doc-drift:
-	$(PYTHON) scripts/doc_drift_check.py
+	$(PYTHON) scripts/audit/doc_drift_check.py
 
 # scripts/cal_mlp/deploy_check.sh is the canonical pre-deploy aggregator
 # (gates: ast.parse bot/constants.py + bot/main_loop.py + bot/scanner/__init__.py
@@ -359,7 +359,7 @@ deploy-check:
 # 86b9ve0wa. Requires griffe (in dev extras) — `make install` first if
 # not already installed.
 api-snapshot-regen:
-	$(PYTHON) scripts/dump_public_api.py
+	$(PYTHON) scripts/audit/dump_public_api.py
 
 # Bit 13.3 (Sprint 13, 2026-05-11) — auto-regen the navigation-aid
 # repository map at agent_docs/repository_map.md. Walks bot/ via AST,
@@ -372,7 +372,7 @@ api-snapshot-regen:
 # regen is human-driven per `Don't write tests unsolicited` discipline).
 # Contract pin: tests/unit/test_makefile.py::test_bit_13_3_refresh_map_target.
 refresh-map:
-	$(PYTHON) scripts/refresh_repo_map.py
+	$(PYTHON) scripts/ops/refresh_repo_map.py
 
 # ─────────────────────────────────────────────────────────────────────
 # Bit 11.3 (Sprint 11, 2026-05-11) — operator-convenience wrappers
@@ -391,22 +391,22 @@ refresh-map:
 # tests/unit/test_makefile.py::test_bit_11_3_targets_point_to_real_scripts.
 
 data-health:
-	$(PYTHON) scripts/data_health_monitor.py --db /tmp/state.db --verbose
+	$(PYTHON) scripts/audit/data_health_monitor.py --db /tmp/state.db --verbose
 
 alpha-audit:
-	$(PYTHON) scripts/alpha_audit.py --db /tmp/state.db --days 14
+	$(PYTHON) scripts/audit/alpha_audit.py --db /tmp/state.db --days 14
 
 15m-audit:
-	$(PYTHON) scripts/15m_live_audit.py --db /tmp/state.db --regime auto
+	$(PYTHON) scripts/audit/15m_live_audit.py --db /tmp/state.db --regime auto
 
 hourly-audit:
-	$(PYTHON) scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto
+	$(PYTHON) scripts/audit/hourly_shadow_audit.py --db /tmp/state.db --regime auto
 
 15m-alpha:
-	$(PYTHON) scripts/15m_alpha_research.py --db /tmp/state.db --regime auto
+	$(PYTHON) scripts/audit/15m_alpha_research.py --db /tmp/state.db --regime auto
 
 no-side:
-	$(PYTHON) scripts/no_side_status.py --db /tmp/state.db
+	$(PYTHON) scripts/audit/no_side_status.py --db /tmp/state.db
 
 # Bit 12.4 (Sprint 12, 2026-05-11) — composed pre-commit gate.
 # Per master plan §Bit 12.4: "ast-parse, doc-drift, iCloud-dup
@@ -415,7 +415,7 @@ no-side:
 #   - ast-parse        → make ast-check (existing)
 #   - ruff             → make lint (existing)
 #   - doc-drift        → make doc-drift (existing,
-#                        scripts/doc_drift_check.py — walks
+#                        scripts/audit/doc_drift_check.py — walks
 #                        SOURCE_FILES × DOC_FILES for config-constant
 #                        ↔ README/whitepaper/CLAUDE.md consistency)
 #   - iCloud-dup       → tests/unit/test_repo_hygiene.py::test_no_icloud_*
@@ -441,15 +441,15 @@ pre-commit-checks: ast-check lint doc-drift test-unit test-contract
 # wrappers. Each wrapper invoked with a 60s `perl alarm` timeout (macOS
 # has no `timeout(1)` by default). Exit-code policy:
 #   0  — clean run
-#   1  — data-health flagged WARN-only findings (scripts/data_health_monitor.py:569
+#   1  — data-health flagged WARN-only findings (scripts/audit/data_health_monitor.py:569
 #        `sys.exit(1)` when WARNINGS exist but no critical). NOT a wrapper
 #        bug; the script's documented exit code for "warnings only".
-#   2  — data-health flagged critical findings (scripts/data_health_monitor.py:567
+#   2  — data-health flagged critical findings (scripts/audit/data_health_monitor.py:567
 #        `sys.exit(2)`). NOT a wrapper bug; the script's documented exit code.
 #   127 / timeout (142/124) — wrapper broken; smoke fails.
 #   any other non-zero — script crash; smoke fails.
 # data-health's three-level exit code (0/1/2 = clean/warn/crit) is the
-# documented contract per scripts/data_health_monitor.py:565 comment.
+# documented contract per scripts/audit/data_health_monitor.py:565 comment.
 # Other wrappers (alpha-audit / 15m-audit / hourly-audit / 15m-alpha /
 # no-side) exit 0 on success and non-zero on script crash — they don't
 # have a WARN-tier exit code, so the `1)` case fires ONLY for data-health

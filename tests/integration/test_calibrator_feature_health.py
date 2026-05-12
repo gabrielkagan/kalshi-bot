@@ -1,4 +1,4 @@
-"""Tests for scripts/calibrator_feature_health.py — the daily v1/v2/v3
+"""Tests for scripts/audit/calibrator_feature_health.py — the daily v1/v2/v3
 feature non-null monitor (P3, R-p7-deploy-r11).
 
 Background: kb/concepts/calibrator-data-hygiene-apr29.md.
@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / 'scripts' / 'calibrator_feature_health.py'
+SCRIPT = Path(__file__).resolve().parents[2] / 'scripts' / 'audit' / 'calibrator_feature_health.py'
 
 
 def _build_test_db(tmp_path: Path) -> Path:

@@ -3,7 +3,7 @@
 Background: `settled_trades.pnl_cents` is `revenue - total_cost` and EXCLUDES
 fees. True net PnL (after Kalshi fees) = `pnl_cents - fee_cents`. The
 canonical query in `dashboard_snapshot.py` correctly subtracts fees, but
-`scripts/15m_live_audit.py` and `scripts/alpha_audit.py` had 19 SQL sites
+`scripts/audit/15m_live_audit.py` and `scripts/audit/alpha_audit.py` had 19 SQL sites
 using bare `SUM(pnl_cents)` and labeling the result "Net PnL" or "pnl".
 
 This bug overstates PnL by the total fee burden (~$77/30d on current
@@ -24,16 +24,17 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS_15M = REPO_ROOT / 'scripts' / '15m_live_audit.py'
-SCRIPTS_ALPHA = REPO_ROOT / 'scripts' / 'alpha_audit.py'
+SCRIPTS_15M = REPO_ROOT / 'scripts' / 'audit' / '15m_live_audit.py'
+SCRIPTS_ALPHA = REPO_ROOT / 'scripts' / 'audit' / 'alpha_audit.py'
 # Round-1 review #1: bug class extends to these scripts too. The most
 # critical is 15m_alpha_research.py which drives shadow→live promotion
 # decisions (10 sites). audit_cron.py writes JSON consumed downstream.
 # generate_whitepaper_stats.py publishes external numbers in PDFs/README.
-SCRIPTS_AUDIT_CRON = REPO_ROOT / 'scripts' / 'audit_cron.py'
-SCRIPTS_15M_RESEARCH = REPO_ROOT / 'scripts' / '15m_alpha_research.py'
-SCRIPTS_WHITEPAPER = REPO_ROOT / 'scripts' / 'generate_whitepaper_stats.py'
-SCRIPTS_MAKER_OPP = REPO_ROOT / 'scripts' / 'maker_opportunity_cost.py'
+# Bit 11.2 (2026-05-12) sibling-reorg: paths now include the tier subdir.
+SCRIPTS_AUDIT_CRON = REPO_ROOT / 'scripts' / 'audit' / 'audit_cron.py'
+SCRIPTS_15M_RESEARCH = REPO_ROOT / 'scripts' / 'audit' / '15m_alpha_research.py'
+SCRIPTS_WHITEPAPER = REPO_ROOT / 'scripts' / 'ops' / 'generate_whitepaper_stats.py'
+SCRIPTS_MAKER_OPP = REPO_ROOT / 'scripts' / 'audit' / 'maker_opportunity_cost.py'
 ANALYSIS_REGIME = REPO_ROOT / 'analysis' / 'regime_analysis.py'
 
 ALL_AFFECTED_SCRIPTS = [
@@ -79,12 +80,12 @@ def _bare_sum_pnl_sites(src: str) -> list[tuple[int, str]]:
 
 
 def test_15m_live_audit_no_bare_sum_pnl_cents():
-    """`SUM(pnl_cents)` in scripts/15m_live_audit.py overstates net PnL by
+    """`SUM(pnl_cents)` in scripts/audit/15m_live_audit.py overstates net PnL by
     the fee burden. Replace with `SUM(pnl_cents - fee_cents)`."""
     src = SCRIPTS_15M.read_text()
     sites = _bare_sum_pnl_sites(src)
     assert not sites, (
-        f"Found {len(sites)} bare `SUM(pnl_cents)` site(s) in scripts/15m_live_audit.py. "
+        f"Found {len(sites)} bare `SUM(pnl_cents)` site(s) in scripts/audit/15m_live_audit.py. "
         f"Each overstates net PnL by total fees. Replace with "
         f"`SUM(pnl_cents - fee_cents)`. Sites:\n" +
         "\n".join(f"  line {ln}: {line}" for ln, line in sites)
@@ -92,11 +93,11 @@ def test_15m_live_audit_no_bare_sum_pnl_cents():
 
 
 def test_alpha_audit_no_bare_sum_pnl_cents():
-    """Same contract for scripts/alpha_audit.py."""
+    """Same contract for scripts/audit/alpha_audit.py."""
     src = SCRIPTS_ALPHA.read_text()
     sites = _bare_sum_pnl_sites(src)
     assert not sites, (
-        f"Found {len(sites)} bare `SUM(pnl_cents)` site(s) in scripts/alpha_audit.py. "
+        f"Found {len(sites)} bare `SUM(pnl_cents)` site(s) in scripts/audit/alpha_audit.py. "
         f"Replace with `SUM(pnl_cents - fee_cents)`. Sites:\n" +
         "\n".join(f"  line {ln}: {line}" for ln, line in sites)
     )

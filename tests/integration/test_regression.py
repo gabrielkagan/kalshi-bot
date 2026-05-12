@@ -1727,7 +1727,7 @@ class TestV2VariantSafety:
 
     def test_v2_audit_section_exists(self):
         """Audit script must have V2 comparison section."""
-        with open(os.path.join(PROJECT_ROOT, "scripts", "hourly_shadow_audit.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "scripts", "audit", "hourly_shadow_audit.py")) as f:
             source = f.read()
         assert "hourly_observation_v2" in source, (
             "hourly_shadow_audit.py must query hourly_observation_v2 for variant comparison"
@@ -1738,7 +1738,7 @@ class TestV2VariantSafety:
 
     def test_v2_alpha_section_exists(self):
         """Alpha research script must have V2 comparison section."""
-        with open(os.path.join(PROJECT_ROOT, "scripts", "hourly_alpha_research.py")) as f:
+        with open(os.path.join(PROJECT_ROOT, "scripts", "audit", "hourly_alpha_research.py")) as f:
             source = f.read()
         assert "hourly_observation_v2" in source, (
             "hourly_alpha_research.py must query hourly_observation_v2 for variant comparison"
@@ -2013,7 +2013,7 @@ class TestNoSideWinCounting:
 
     def test_compute_hourly_uses_yes_side_filter(self):
         """Static analysis: compute_hourly queries must include YES_SIDE_FILTER."""
-        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit", "audit_cron.py")
         with open(audit_path) as f:
             source = f.read()
 
@@ -2040,7 +2040,7 @@ class TestNoSideWinCounting:
 
     def test_compute_spx_uses_yes_side_filter(self):
         """Static analysis: compute_spx queries must include YES_SIDE_FILTER."""
-        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit", "audit_cron.py")
         with open(audit_path) as f:
             source = f.read()
 
@@ -2057,7 +2057,7 @@ class TestNoSideWinCounting:
 
     def test_compute_weather_uses_yes_side_filter(self):
         """Static analysis: compute_weather queries must include YES_SIDE_FILTER."""
-        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit_cron.py")
+        audit_path = os.path.join(PROJECT_ROOT, "scripts", "audit", "audit_cron.py")
         with open(audit_path) as f:
             source = f.read()
 

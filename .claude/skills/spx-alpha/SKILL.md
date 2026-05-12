@@ -19,7 +19,7 @@ Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend 
 
 2. **Run the alpha research script**:
    ```bash
-   python3 scripts/spx_alpha_research.py --db /tmp/state.db 2>&1
+   python3 scripts/audit/spx_alpha_research.py --db /tmp/state.db 2>&1
    ```
 
 3. **Present findings** with focus on:
@@ -94,7 +94,7 @@ Systematic alpha research on SPX hourly observation data. Analyzes EGARCH blend 
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/spx*`. The script may not exist yet — offer to run the hourly audit script instead (`scripts/spx_shadow_audit.py`). |
+| Script not found | Check: `ls scripts/spx*`. The script may not exist yet — offer to run the hourly audit script instead (`scripts/audit/spx_shadow_audit.py`). |
 | Very few observations (n < 30) | Report what exists but add **"INSUFFICIENT DATA"** on every finding. Don't run the readiness checklist — it's meaningless at n<30. Say: "Need N more observations before meaningful analysis. Current rate: ~X/day, est. Y days." |
 | No SPX data at all | SPX engine may not be running during market hours, or it may be a weekend. Check if `spx_engine.py` is active: `ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 \| grep -i spx"`. |
 | EGARCH blend weight is stuck at prior | Flag this prominently: "EGARCH blend not adapting — model is running on crypto priors, not SPX-calibrated. Readiness check #4 FAILS." |

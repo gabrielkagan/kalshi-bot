@@ -1,9 +1,9 @@
-"""Tests for scripts/_h4_runtime_safety.py — shared hard-timeout
+"""Tests for scripts/ops/_h4_runtime_safety.py — shared hard-timeout
 guard for H-4 backfill scripts.
 
 Layer 2 of orphan prevention (May 3 2026 incident postmortem in
 `kb/failures/shape-d-contention-explosion-may03.md`). The wrapper
-fix (`scripts/h4_run_with_alert.py`) handles SIGTERM/SIGHUP-mediated
+fix (`scripts/ops/h4_run_with_alert.py`) handles SIGTERM/SIGHUP-mediated
 orphans. This layer prevents the script itself from running away
 silently — if `cryptocompare_news_backfill.py` gets stuck in an API
 or DNS loop with no signal arriving, the alarm fires and the script
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "ops"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -153,7 +153,10 @@ def test_glassnode_backfill_main_installs_hard_timeout():
 
 def _assert_script_installs_hard_timeout(script_name: str) -> None:
     import ast
-    src_path = SCRIPT_DIR / script_name
+    # Bit 11.2 (2026-05-12): the H-4 backfill scripts live in scripts/backfill/,
+    # not scripts/ops/. The runtime-safety helper itself is in scripts/ops/.
+    backfill_dir = Path(__file__).resolve().parents[2] / "scripts" / "backfill"
+    src_path = backfill_dir / script_name
     src = src_path.read_text()
     tree = ast.parse(src)
     # Find the main() function.

@@ -132,9 +132,9 @@ jobs:
             # Source → backfill script mapping. Fail-loud on unknown
             # source (catches typos in the resolve step's case dispatch).
             case "${{ matrix.source }}" in
-              gdelt)         BACKFILL_SCRIPT="scripts/gdelt_backfill.py" ;;
-              glassnode)     BACKFILL_SCRIPT="scripts/glassnode_backfill.py" ;;
-              cryptocompare) BACKFILL_SCRIPT="scripts/cryptocompare_news_backfill.py" ;;
+              gdelt)         BACKFILL_SCRIPT="scripts/backfill/gdelt_backfill.py" ;;
+              glassnode)     BACKFILL_SCRIPT="scripts/backfill/glassnode_backfill.py" ;;
+              cryptocompare) BACKFILL_SCRIPT="scripts/backfill/cryptocompare_news_backfill.py" ;;
               *)
                 echo "ERROR: unknown source '${{ matrix.source }}' — update the case statement" >&2
                 exit 1
@@ -151,7 +151,7 @@ jobs:
             # python script reads. Empty string treated by script as unset.
             export CRYPTOCOMPARE_API_KEY="${CC_API_KEY_FROM_SECRET:-}"
             echo "Running ${{ matrix.source }} backfill: $BACKFILL_SCRIPT"
-            venv/bin/python3 scripts/h4_run_with_alert.py \
+            venv/bin/python3 scripts/ops/h4_run_with_alert.py \
               --label ${{ matrix.source }} \
               -- venv/bin/python3 "$BACKFILL_SCRIPT" --db state.db
         env:

@@ -20,7 +20,7 @@ Real caller imports (3 sites):
   - tests/integration/test_spx_price_feed.py:12 (`from spx_engine import (...)`)
 
 Path-literal refs (>= 9 sites):
-  - scripts/pre_deploy_check.sh:18 (`for f in ... spx_engine.py ...`)
+  - scripts/ops/pre_deploy_check.sh:18 (`for f in ... spx_engine.py ...`)
   - README.template.md:222 (file-tree)
   - tests/integration/test_insert_schema_parity.py:110 (parametrize list — opens file)
   - tests/integration/test_product_type_enum.py:51 (parametrize list — opens file)

@@ -122,7 +122,7 @@ class TestCoinGlassSymbolsContents(unittest.TestCase):
 
 class TestOkxPollerSymbols(unittest.TestCase):
     def setUp(self):
-        import scripts.external_market_poller as poller
+        import scripts.backfill.external_market_poller as poller
         self.funding = poller.FUNDING_SYMBOLS
         self.oi = poller.OI_SYMBOLS
 
@@ -170,7 +170,7 @@ class TestOkxPollerSymbols(unittest.TestCase):
 
 class TestBackfillOkxFundingInstruments(unittest.TestCase):
     def setUp(self):
-        import scripts.shadow_coverage_backfill as bf
+        import scripts.backfill.shadow_coverage_backfill as bf
         self.instruments = bf.OKX_FUNDING_INSTRUMENTS
 
     def test_existing_4_unchanged(self):
@@ -192,7 +192,7 @@ class TestBackfillOkxFundingInstruments(unittest.TestCase):
         instId divergence would mean either (a) the live poller emits
         signals for rows the backfill can't repopulate, or (b) the
         backfill fills rows the live poller doesn't track."""
-        import scripts.external_market_poller as poller
+        import scripts.backfill.external_market_poller as poller
         backfill_instids = set(self.instruments.values())
         live_instids = set(poller.FUNDING_SYMBOLS)
         self.assertEqual(
@@ -206,14 +206,14 @@ class TestBackfillOkxFundingInstruments(unittest.TestCase):
 class TestBackfillCoinbaseProducts(unittest.TestCase):
     """R2 minor-1 (same class as R1-MAJOR-1): Phase G-2 path-metrics
     backfill has its own hardcoded 4-asset COINBASE_PRODUCTS dict at
-    scripts/shadow_coverage_backfill.py:376-380. When run with HYPE/DOGE
+    scripts/backfill/shadow_coverage_backfill.py:376-380. When run with HYPE/DOGE
     rows present in the source DB, the backfill silently writes NULL path
     metrics for HYPE/DOGE rows + advances the checkpoint. Live capture is
     the primary writer so impact is reduced — but the symmetric defensive
     fix is to extend this dict atomically with T1.5."""
 
     def setUp(self):
-        import scripts.shadow_coverage_backfill as bf
+        import scripts.backfill.shadow_coverage_backfill as bf
         self.products = bf.COINBASE_PRODUCTS
 
     def test_existing_4_unchanged(self):
@@ -237,7 +237,7 @@ class TestBackfillCoinbaseProducts(unittest.TestCase):
 
 class TestBackfillDeribitFundingInstruments(unittest.TestCase):
     def setUp(self):
-        import scripts.shadow_coverage_backfill as bf
+        import scripts.backfill.shadow_coverage_backfill as bf
         self.instruments = bf.DERIBIT_FUNDING_INSTRUMENTS
 
     def test_existing_4_unchanged(self):
@@ -258,7 +258,7 @@ class TestBackfillDeribitFundingInstruments(unittest.TestCase):
         Per the verify-first contract, HYPE stays absent from this dict —
         documented gap, not silent NULL.
 
-        Consumer code at scripts/shadow_coverage_backfill.py:1096 uses
+        Consumer code at scripts/backfill/shadow_coverage_backfill.py:1096 uses
         DERIBIT_FUNDING_INSTRUMENTS.get(asset) and at :1182 iterates the
         dict — both safe under key-absence semantics."""
         self.assertNotIn("HYPE", self.instruments)
@@ -276,7 +276,7 @@ class TestDvolStaysBtcEthOnly(unittest.TestCase):
         self.assertEqual(set(DERIBIT_DVOL_CURRENCIES.keys()), {"BTC", "ETH"})
 
     def test_poller_dvol_symbols_stays_btc_eth(self):
-        import scripts.external_market_poller as poller
+        import scripts.backfill.external_market_poller as poller
         self.assertEqual(set(poller.DVOL_SYMBOLS), {"btcdvol_usdc", "ethdvol_usdc"})
 
 
@@ -384,8 +384,8 @@ class TestAtomicActivationT15(unittest.TestCase):
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not in ASSETS yet")
         from bot.constants import CROSS_EXCHANGE_SYMBOLS, COINGLASS_SYMBOLS
-        import scripts.external_market_poller as poller
-        import scripts.shadow_coverage_backfill as backfill
+        import scripts.backfill.external_market_poller as poller
+        import scripts.backfill.shadow_coverage_backfill as backfill
         self.assertIn(
             "HYPE", CROSS_EXCHANGE_SYMBOLS,
             "HYPE active in ASSETS but missing from CROSS_EXCHANGE_SYMBOLS. "
@@ -412,8 +412,8 @@ class TestAtomicActivationT15(unittest.TestCase):
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not in ASSETS yet")
         from bot.constants import CROSS_EXCHANGE_SYMBOLS, COINGLASS_SYMBOLS
-        import scripts.external_market_poller as poller
-        import scripts.shadow_coverage_backfill as backfill
+        import scripts.backfill.external_market_poller as poller
+        import scripts.backfill.shadow_coverage_backfill as backfill
         self.assertIn("DOGE", CROSS_EXCHANGE_SYMBOLS)
         self.assertIn("DOGE", COINGLASS_SYMBOLS)
         self.assertIn("DOGE-USDT-SWAP", poller.FUNDING_SYMBOLS)

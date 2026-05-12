@@ -23,7 +23,8 @@ import os
 from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.join(SCRIPT_DIR, "..")
+# Bit 11.2 (2026-05-12): relocated to scripts/ops/; need 2 ".." levels.
+REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
 CONSTANTS_PATH = os.path.join(REPO_DIR, "bot/constants.py")
 CONFIG_PY_PATH = os.path.join(REPO_DIR, "bot/config.py")  # Bit 12.1 (2026-05-12): relocated from repo root
 WEATHER_PATH = os.path.join(REPO_DIR, "bot", "engines", "weather_engine.py")  # Sprint 10.1c (2026-05-11)

@@ -446,7 +446,7 @@ def test_public_api_snapshot_post_proxy_drop():
         import pytest
         pytest.skip(
             "Snapshot not yet regenerated post-proxy-retirement. "
-            "Run `python3 scripts/dump_public_api.py > tests/contracts/public_api.json` "
+            "Run `python3 scripts/audit/dump_public_api.py > tests/contracts/public_api.json` "
             "at commit time."
         )
 
@@ -474,11 +474,11 @@ def test_public_api_snapshot_post_proxy_drop():
 def test_bot_constants_canonical_home_after_proxy_retirement():
     """The 4 constants pre_deploy_check.sh reads must resolve from bot.constants post-retarget.
 
-    Pre-retirement: scripts/pre_deploy_check.sh does `bot.OBSERVATION_MODE` etc., which
+    Pre-retirement: scripts/ops/pre_deploy_check.sh does `bot.OBSERVATION_MODE` etc., which
     routes through the proxy to bot._impl.OBSERVATION_MODE, which is itself imported from
     bot.constants via `from bot.constants import *`.
 
-    Post-retirement: scripts/pre_deploy_check.sh must be retargeted to bot.constants.X.
+    Post-retirement: scripts/ops/pre_deploy_check.sh must be retargeted to bot.constants.X.
     This pin validates the canonical home is correct.
     """
     import bot.constants

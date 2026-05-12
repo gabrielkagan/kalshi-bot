@@ -13,7 +13,8 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Bit 11.2 (2026-05-12): relocated to scripts/audit/; 3-level dirname.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from bot.kalshi_client import KalshiClient  # noqa: E402
 

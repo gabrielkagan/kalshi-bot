@@ -100,4 +100,4 @@ jobs:
             python3 -c "import ast; ast.parse(open('bot/constants.py').read()); ast.parse(open('bot/main_loop.py').read()); ast.parse(open('bot/scanner/__init__.py').read()); print('SYNTAX OK')"
             sudo systemctl restart kalshi-bot
             # Documentation drift check (warning only — never blocks deploy)
-            python3 scripts/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"
+            python3 scripts/audit/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"

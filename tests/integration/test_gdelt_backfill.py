@@ -1,6 +1,6 @@
 """Phase H-4a: GDELT news event clusters → evaluated_opportunities backfill.
 
-Tests the backfill harness in scripts/gdelt_backfill.py with the GDELT
+Tests the backfill harness in scripts/backfill/gdelt_backfill.py with the GDELT
 Doc API mocked. Mirrors the test conventions established in
 test_shadow_coverage_backfill_g2.py / g4.py / g5.py:
 
@@ -26,7 +26,7 @@ import bot.state  # noqa: F401
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "scripts", "backfill"))
 
 
 def _make_db(tmp_path):

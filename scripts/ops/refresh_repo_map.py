@@ -22,7 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# Bit 11.2 (2026-05-12): relocated to scripts/ops/; 3-level dirname
+# (ops/ → scripts/ → repo/).
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BOT_DIR = REPO_ROOT / "bot"
 OUTPUT_FILE = REPO_ROOT / "agent_docs" / "repository_map.md"
 
@@ -153,7 +155,7 @@ def main() -> int:
         "# Repository Map (auto-generated)",
         "",
         "**DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` "
-        f"(invokes `scripts/refresh_repo_map.py`).",
+        f"(invokes `scripts/ops/refresh_repo_map.py`).",
         "",
         f"Generated: {timestamp}{sha_tag}.",
         "",

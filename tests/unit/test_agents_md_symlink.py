@@ -33,7 +33,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
-DOC_DRIFT_SCRIPT = REPO_ROOT / "scripts" / "doc_drift_check.py"
+DOC_DRIFT_SCRIPT = REPO_ROOT / "scripts" / "audit" / "doc_drift_check.py"
 MAKEFILE = REPO_ROOT / "Makefile"
 
 
@@ -159,7 +159,7 @@ def test_agents_md_git_mode_is_symlink():
 
 
 def _doc_files_literal_elements() -> list:
-    """AST-parse `scripts/doc_drift_check.py` and return the literal
+    """AST-parse `scripts/audit/doc_drift_check.py` and return the literal
     string elements of the EFFECTIVE module-level `DOC_FILES` list.
 
     AST (not import) avoids the script's import-time side effects
@@ -209,7 +209,7 @@ def _doc_files_literal_elements() -> list:
                 )
     if not matches:
         pytest.fail(
-            "scripts/doc_drift_check.py is missing the DOC_FILES top-level "
+            "scripts/audit/doc_drift_check.py is missing the DOC_FILES top-level "
             "assignment — likely renamed/refactored. Update this regression "
             "test to point at the new symbol."
         )
@@ -227,7 +227,7 @@ def _doc_files_literal_elements() -> list:
 
 
 def test_doc_drift_check_includes_agents_md():
-    """`scripts/doc_drift_check.py` DOC_FILES must include 'AGENTS.md'.
+    """`scripts/audit/doc_drift_check.py` DOC_FILES must include 'AGENTS.md'.
 
     Plan reference: `kb/decisions/repo-modularization-plan-may05.md` line 897
     ("doc_drift_check.py extended to detect symlink target drift").
@@ -246,7 +246,7 @@ def test_doc_drift_check_includes_agents_md():
     """
     elements = _doc_files_literal_elements()
     assert "AGENTS.md" in elements, (
-        f"scripts/doc_drift_check.py DOC_FILES must include 'AGENTS.md' "
+        f"scripts/audit/doc_drift_check.py DOC_FILES must include 'AGENTS.md' "
         f"per Phase α1 of repo-modularization-plan-may05.md (line 897). "
         f"Without it, two-file-mode divergence between AGENTS.md and "
         f"CLAUDE.md goes silent. Current DOC_FILES: {elements}"

@@ -200,13 +200,16 @@ class TestPhaseBSupabaseMigrationSql:
     dashboard-drift postmortem)."""
 
     def _migration_path(self):
-        scripts_dir = os.path.join(PROJECT_ROOT, "scripts")
+        # Bit 11.2 (2026-05-12): supabase_migration_*.sql moved to scripts/ops/.
+        scripts_dir = os.path.join(PROJECT_ROOT, "scripts", "ops")
         candidates = [
             f for f in os.listdir(scripts_dir)
             if f.startswith("supabase_migration_011_") and f.endswith(".sql")
+            # Skip iCloud-dup `* 2.sql`/`* 3.sql` suffixes (Mac sync noise).
+            and " " not in f
         ]
         assert candidates, (
-            "No scripts/supabase_migration_011_*.sql found. Phase B requires a "
+            "No scripts/ops/supabase_migration_011_*.sql found. Phase B requires a "
             "supabase migration that adds the new evaluations columns."
         )
         assert len(candidates) == 1, f"Multiple migration_011 files: {candidates}"

@@ -47,7 +47,8 @@ import sys
 from datetime import datetime, timezone
 
 DB_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "state.db"
+    # Bit 11.2 (2026-05-12): relocated to scripts/ops/; need 2 ".." levels.
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "state.db"
 )
 
 

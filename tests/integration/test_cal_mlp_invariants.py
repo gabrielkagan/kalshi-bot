@@ -967,7 +967,7 @@ def test_thread_env_imported_before_numerical_libs_in_bot_boot():
 
     **Form**: `__import__()` runtime call rather than `import bot._thread_env`
     statement. The statement form triggers a griffe RecursionError (infinite
-    alias-canonical-path chain) when scripts/dump_public_api.py walks bot/boot.py
+    alias-canonical-path chain) when scripts/audit/dump_public_api.py walks bot/boot.py
     for the public_api.json snapshot. The runtime form has identical side-effect
     semantics but bypasses griffe's static expression walker.
 

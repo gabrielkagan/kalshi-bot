@@ -1,4 +1,4 @@
-"""Unit tests for scripts/postdeploy_verify.py (Tier 2 #4).
+"""Unit tests for scripts/audit/postdeploy_verify.py (Tier 2 #4).
 
 Verifies the script's building blocks so future edits don't silently
 regress the verify logic. End-to-end test uses an in-memory DB that
@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = PROJECT_ROOT / "scripts" / "postdeploy_verify.py"
+SCRIPT = PROJECT_ROOT / "scripts" / "audit" / "postdeploy_verify.py"
 
 
 def _load_verify_module():

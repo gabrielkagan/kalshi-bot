@@ -48,11 +48,11 @@ Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` for the
 3. **Full audit fallback** — Run all 5 audit scripts with `--regime auto`:
 
    ```bash
-   make 15m-audit 2>&1          # wraps `python3 scripts/15m_live_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
-   make hourly-audit 2>&1       # wraps `python3 scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
-   python3 scripts/spx_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
-   python3 scripts/weather_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
-   python3 scripts/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   make 15m-audit 2>&1          # wraps `python3 scripts/audit/15m_live_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
+   make hourly-audit 2>&1       # wraps `python3 scripts/audit/hourly_shadow_audit.py --db /tmp/state.db --regime auto` (Bit 11.3)
+   python3 scripts/audit/spx_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/audit/weather_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/audit/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1
    ```
 
    **Always use `--regime auto`** — it auto-detects the last relevant config change from git history. Never hardcode regime dates (they go stale).

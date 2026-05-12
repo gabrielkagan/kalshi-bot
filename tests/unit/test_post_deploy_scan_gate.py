@@ -20,11 +20,11 @@ audit trail at kb/decisions/bit-2.0.5.3-spec-correction-may07.md):
   max 2 events in any 5-min window historically. ≥3 has zero
   historical false-positives.
 
-The gate logic lives in `scripts/post_deploy_scan_gate.py` (mirrors
+The gate logic lives in `scripts/audit/post_deploy_scan_gate.py` (mirrors
 the postdeploy_verify.py / audit_cron.py separate-script convention;
 the VPS doesn't have a sqlite3 CLI installed so the gate uses Python's
 stdlib sqlite3 module). The workflow's `[6/6]` step is a one-line
-invocation: `venv/bin/python3 scripts/post_deploy_scan_gate.py --db
+invocation: `venv/bin/python3 scripts/audit/post_deploy_scan_gate.py --db
 state.db --window-seconds 300 --max-events 2`.
 
 Threshold:
@@ -55,7 +55,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 POST_DEPLOY_YML = REPO_ROOT / ".github" / "workflows" / "post_deploy_verify.yml"
-GATE_SCRIPT = REPO_ROOT / "scripts" / "post_deploy_scan_gate.py"
+GATE_SCRIPT = REPO_ROOT / "scripts" / "audit" / "post_deploy_scan_gate.py"
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ GATE_SCRIPT = REPO_ROOT / "scripts" / "post_deploy_scan_gate.py"
 
 
 def test_workflow_invokes_gate_script():
-    """post_deploy_verify.yml [6/6] invokes scripts/post_deploy_scan_gate.py.
+    """post_deploy_verify.yml [6/6] invokes scripts/audit/post_deploy_scan_gate.py.
 
     Pins the contract that the workflow runs the separate Python
     script (not an inline sqlite3 CLI call). Anti-regression for the
@@ -75,9 +75,9 @@ def test_workflow_invokes_gate_script():
         f"{POST_DEPLOY_YML.relative_to(REPO_ROOT)} missing."
     )
     text = POST_DEPLOY_YML.read_text()
-    assert "venv/bin/python3 scripts/post_deploy_scan_gate.py" in text, (
+    assert "venv/bin/python3 scripts/audit/post_deploy_scan_gate.py" in text, (
         "post_deploy_verify.yml [6/6] no longer invokes "
-        "scripts/post_deploy_scan_gate.py via the venv Python. The "
+        "scripts/audit/post_deploy_scan_gate.py via the venv Python. The "
         "gate must run as a separate script (mirrors "
         "postdeploy_verify.py / audit_cron.py convention; sqlite3 "
         "CLI is NOT installed on the VPS, so the gate must use "
@@ -105,36 +105,36 @@ def test_workflow_invokes_gate_script():
     # (NOT the workflow) where SQL lives.
     script_text = GATE_SCRIPT.read_text()
     assert "bot_startup_log" in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL must reference "
+        "scripts/audit/post_deploy_scan_gate.py SQL must reference "
         "`bot_startup_log` (the 2nd-pivot signal choice)."
     )
     assert "evaluated_opportunities" not in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL contains "
+        "scripts/audit/post_deploy_scan_gate.py SQL contains "
         "`evaluated_opportunities` — the original spec's signal "
         "had ~50% per-deploy false-positive rate and was rejected "
         "in pivot 0→1."
     )
     assert "market_observations_continuous" not in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL contains "
+        "scripts/audit/post_deploy_scan_gate.py SQL contains "
         "`market_observations_continuous` — the 1st-pivot signal "
         "had ~3.8% per-deploy false-positive rate due to "
         "KALSHI_15M_CATALOG_GAP and was rejected in pivot 1→2."
     )
     # Anti-regression: lex-compare cutoffs MUST NOT reappear.
     assert "datetime('now'" not in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL contains "
+        "scripts/audit/post_deploy_scan_gate.py SQL contains "
         "`datetime('now', ...)` — that's a lex-compare cutoff "
         "form (R1 CRITICAL #2 class). Use julianday() instead."
     )
     assert "strftime(" not in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL contains "
+        "scripts/audit/post_deploy_scan_gate.py SQL contains "
         "`strftime(...)` — that's a lex-compare cutoff form. Use "
         "julianday() for numerical comparison."
     )
     # The julianday() form is required (no T-vs-space lex hazard,
     # handles both `+00:00` and `Z` ISO-8601 quirks).
     assert "julianday(ts)" in script_text and "julianday('now'" in script_text, (
-        "scripts/post_deploy_scan_gate.py SQL must use julianday() "
+        "scripts/audit/post_deploy_scan_gate.py SQL must use julianday() "
         "for numerical time compare. Avoids R1 CRITICAL #2 lex class."
     )
 
@@ -251,7 +251,7 @@ def test_test_unit_tier_invokes_scan_gate_test():
 
 
 # ───────────────────────────────────────────────────────────────────
-# Behavioral tests against scripts/post_deploy_scan_gate.py.
+# Behavioral tests against scripts/audit/post_deploy_scan_gate.py.
 # Build a fixture state.db with controlled bot_startup_log rows; run
 # the gate script as subprocess; assert the right branch fires.
 #
@@ -302,7 +302,7 @@ def _make_db(tmp_path: Path, n_recent_rows: int) -> Path:
 
 
 def _run_gate(db_path: Path, *, window: int = 300, max_events: int = 2):
-    """Invoke scripts/post_deploy_scan_gate.py via subprocess."""
+    """Invoke scripts/audit/post_deploy_scan_gate.py via subprocess."""
     return subprocess.run(
         [
             sys.executable,
@@ -531,12 +531,12 @@ def test_gate_script_uses_wal_and_busy_timeout_pragmas():
     """
     src = GATE_SCRIPT.read_text()
     assert 'PRAGMA journal_mode=WAL' in src, (
-        "scripts/post_deploy_scan_gate.py missing "
+        "scripts/audit/post_deploy_scan_gate.py missing "
         "`PRAGMA journal_mode=WAL` after sqlite3.connect(). "
         "scripts/CLAUDE.md convention; R4 MAJOR #1."
     )
     assert 'PRAGMA busy_timeout=10000' in src, (
-        "scripts/post_deploy_scan_gate.py missing "
+        "scripts/audit/post_deploy_scan_gate.py missing "
         "`PRAGMA busy_timeout=10000` after sqlite3.connect(). "
         "scripts/CLAUDE.md convention; R4 MAJOR #1. Note: "
         "Python's `timeout=10.0` parameter is NOT equivalent."
@@ -609,11 +609,11 @@ def test_gate_script_is_executable_via_python_module():
     ast.parse(src)
     # Also confirm the main entrypoint exists (by name, not by run).
     assert "def main(" in src, (
-        "scripts/post_deploy_scan_gate.py missing `def main(` entry "
+        "scripts/audit/post_deploy_scan_gate.py missing `def main(` entry "
         "point — the script structure must be conventional."
     )
     assert 'if __name__ == "__main__":' in src, (
-        "scripts/post_deploy_scan_gate.py missing `if __name__ == "
+        "scripts/audit/post_deploy_scan_gate.py missing `if __name__ == "
         "\"__main__\":` guard — required for subprocess invocation "
         "+ unit-test isolation."
     )

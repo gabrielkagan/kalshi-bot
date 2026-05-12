@@ -16,36 +16,36 @@ Run comprehensive alpha research on the 15-minute crypto prediction market tradi
 - When the user asks about alpha, edge, or profit drivers
 
 ## Prerequisites
-1. Script location: `scripts/15m_alpha_research.py`
+1. Script location: `scripts/audit/15m_alpha_research.py`
 
 ## Usage
 
 ### Full analysis (all 13 sections)
 ```bash
 make 15m-alpha 2>&1
-# wraps `python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto` (Bit 11.3)
+# wraps `python3 scripts/audit/15m_alpha_research.py --db /tmp/state.db --regime auto` (Bit 11.3)
 ```
 
 ### Single section
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --section calibration 2>&1
+python3 scripts/audit/15m_alpha_research.py --db /tmp/state.db --regime auto --section calibration 2>&1
 ```
 
 Available sections: `regime`, `asset`, `price`, `stc`, `execution`, `calibration`, `edge`, `counterfactual`, `loss`, `robustness`, `vol`, `time`, `shadow`
 
 ### Filter by asset
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --regime auto --asset XRP 2>&1
+python3 scripts/audit/15m_alpha_research.py --db /tmp/state.db --regime auto --asset XRP 2>&1
 ```
 
 ### Custom date range
 ```bash
-python3 scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03 2>&1
+python3 scripts/audit/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03 2>&1
 ```
 
 ## Preflight
 
-Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `15m-alpha` and `<X>` = `15m_alpha_research`. Verify `/tmp/state.db` exists, `make -n 15m-alpha` parses, and `scripts/15m_alpha_research.py` exists (Bit 11.1d).
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `15m-alpha` and `<X>` = `15m_alpha_research`. Verify `/tmp/state.db` exists, `make -n 15m-alpha` parses, and `scripts/audit/15m_alpha_research.py` exists (Bit 11.1d).
 
 ## Steps
 

@@ -1,4 +1,4 @@
-"""Tests for scripts/state_db_backup_heartbeat.py — Phase 0a follow-up.
+"""Tests for scripts/ops/state_db_backup_heartbeat.py — Phase 0a follow-up.
 
 Closes the deferred B-M3 silent-failure gap (`STATE_DB_BACKUP_SETUP.md` §10):
 the systemd timer + h4_run_with_alert wrapper covers exit-code failures
@@ -36,7 +36,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts"
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "ops"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 

@@ -19,20 +19,20 @@ Systematic alpha research on sports comeback prediction market data. Discovers p
 
 2. **Run the existing audit first** (for context on data quality and settlement gaps):
    ```bash
-   python3 scripts/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1 | head -100
+   python3 scripts/audit/sports_shadow_audit.py --db /tmp/state.db --regime auto 2>&1 | head -100
    ```
 
 3. **Run the alpha research script**:
    ```bash
-   python3 scripts/sports_alpha_research.py --db /tmp/state.db 2>&1
+   python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db 2>&1
    ```
    Or with regime filter:
    ```bash
-   python3 scripts/sports_alpha_research.py --db /tmp/state.db --regime auto 2>&1
+   python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db --regime auto 2>&1
    ```
    Or focused on one sport:
    ```bash
-   python3 scripts/sports_alpha_research.py --db /tmp/state.db --sport-group basketball 2>&1
+   python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db --sport-group basketball 2>&1
    ```
 
 4. **Present findings** with focus on:

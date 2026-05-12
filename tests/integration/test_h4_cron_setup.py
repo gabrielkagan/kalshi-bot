@@ -1,4 +1,4 @@
-"""Regression tests for scripts/setup_h4_cron.sh.
+"""Regression tests for scripts/ops/setup_h4_cron.sh.
 
 H-4 Option C (per kb/decisions/phase-h-forward-going-capture-required-may02.md):
 daily cron entry on VPS that runs each H-4 backfill script (GDELT,
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / 'scripts' / 'setup_h4_cron.sh'
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / 'scripts' / 'ops' / 'setup_h4_cron.sh'
 
 
 @pytest.fixture(scope='module')
@@ -77,9 +77,9 @@ def test_installs_three_timers_one_per_h4_source(script_content: str):
 def test_services_invoke_existing_backfill_scripts(script_content: str):
     """ExecStart references the right scripts under scripts/."""
     expected_scripts = [
-        'scripts/gdelt_backfill.py',
-        'scripts/glassnode_backfill.py',
-        'scripts/cryptocompare_news_backfill.py',
+        'scripts/backfill/gdelt_backfill.py',
+        'scripts/backfill/glassnode_backfill.py',
+        'scripts/backfill/cryptocompare_news_backfill.py',
     ]
     for sc in expected_scripts:
         assert sc in script_content, (
