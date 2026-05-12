@@ -489,7 +489,7 @@ def test_bot_py_implementation_rules_breadcrumb_present():
     """The breadcrumb to `agent_docs/bot-claude-md-draft.md` must remain.
 
     Bit 1.4 design: bot/_impl.py-specific implementation rules
-    (torch threading + `_thread_env` ordering, cal_mlp four-site
+    (torch threading + `_thread_env` ordering, cal_mlp feature-transform
     lock-step, cell-block string literals, SQLite WAL pragmas, etc.)
     were moved out of root CLAUDE.md and staged at
     `agent_docs/bot-claude-md-draft.md` (R1 review fix: the original
@@ -522,7 +522,7 @@ def test_bot_py_implementation_rules_breadcrumb_present():
         "CLAUDE.md is missing the ``**`bot/` implementation rules**`` "
         "Critical-rules bullet label. This is the load-bearing "
         "breadcrumb that points operators at the bot/ implementation rules "
-        "(torch threading, cal_mlp four-site lock-step, cell-block "
+        "(torch threading, cal_mlp feature-transform lock-step, cell-block "
         "filter_stage values, SQLite WAL pragmas, etc.). Without "
         "this label at root, citations across the codebase that "
         "reference 'CLAUDE.md' for these rules become wrong-by-pointer."

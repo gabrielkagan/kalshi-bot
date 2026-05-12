@@ -34,13 +34,9 @@ Per-asset M=5 ensemble residual calibrator + Mondrian conformal. v1 LIVE shadow-
 
 ### Sigma winsorize (R-p7-deploy-r11)
 
-`spot_distance_to_strike_sigma` blows up to ±3,000+ at terminal STC (T→0 in denominator). Without clipping, z-scoring across the column inflates std 100×+ and collapses real signal. Fix: `features.SIGMA_WINSOR_ABS_CAP = 25.0`, applied via `features.apply_sigma_winsor(sd)` at THREE sites that must stay in lock-step:
+`spot_distance_to_strike_sigma` blows up to ±3,000+ at terminal STC (T→0 in denominator). Without clipping, z-scoring across the column inflates std 100×+ and collapses real signal. Fix: `features.SIGMA_WINSOR_ABS_CAP = 25.0`, applied via `features.apply_sigma_winsor(sd)`. The canonical enumeration of all surfaces (including sister-script drift sites surfaced in 2026-05-12 R2 adv review) is below in **"cal_mlp feature transforms (lock-step)"**. Cross-reference that section as the source of truth.
 
-1. **Train** — `extract_data.build_feature_frame` (clips before deriving abs/tdp)
-2. **Serve post-hoc** — `post_hoc_processor._process_row` (clips DB-loaded value before predict)
-3. **Serve sync gate** — `integration.should_block_tm96` (clips inline-computed value)
-
-Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regression tests in `tests/integration/test_calmlp_sigma_winsorize.py` lock that all three serve paths see ≤25.
+Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regression tests in `tests/integration/test_calmlp_sigma_winsorize.py` lock that all serve paths see ≤25; cross-site AST + runtime parity guard in `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a 2026-05-12).
 
 ### Train/serve consistency invariants
 
@@ -81,13 +77,25 @@ When wiring any engine to CalEngine pipeline, all three must ship in the SAME co
 
 Splitting these creates silent data gaps.
 
-### cal_mlp feature transforms (four-site lock-step)
+### cal_mlp feature transforms (lock-step)
 
-R-p7-deploy-r11: any change to a feature transform (winsorize cap, hour_sin/cos derivation, prob_breakeven_gap formula, sigma derivation) must ship in ONE commit touching ALL four sites:
+R-p7-deploy-r11: any change to a feature transform (winsorize cap, hour_sin/cos derivation, prob_breakeven_gap formula, sigma derivation) must ship in ONE commit keeping all surfaces in lock-step. RCA refresh 2026-05-12 (Sprint A.1a, ticket `86b9vejnq`) revised the surface from the historical "four-site" framing:
 
-1. **Train** — `scripts/cal_mlp/extract_data.py:build_feature_frame`
-2. **Serve post-hoc** — `scripts/cal_mlp/post_hoc_processor.py:_process_row`
-3. **Serve sync gate** — `scripts/cal_mlp/integration.py:should_block_tm96`
-4. **Fingerprint** — `scripts/cal_mlp/features.py:compute_cfg_fp` canonical dict
+**Drift surface — inline duplicate formulas (Sprint A.1b will refactor to helper calls):**
 
-Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review caught this exact regression after R2 winsorize landed in extract but not the serve paths.
+Primary train/serve paths (from RCA):
+1. **Train** — `scripts/cal_mlp/extract_data.py:build_feature_frame` (hour_sin/cos inline)
+2. **Serve post-hoc** — `scripts/cal_mlp/post_hoc_processor.py:_process_row` (hour_sin/cos inline)
+3. **Serve sync gate** — `scripts/cal_mlp/integration.py:should_block_tm96` (hour_sin/cos + sigma + breakeven inline)
+4. **Fingerprint** — `scripts/cal_mlp/features.py:compute_cfg_fp` canonical dict + `SIGMA_WINSOR_ABS_CAP` constant + `apply_sigma_winsor` helper home
+
+Sister-script drift surface (R2 adv 2026-05-12):
+5. `scripts/cal_mlp/sim_pnl.py:~901-902` (hour_sin/cos inline; train-side sim-PnL)
+6. `scripts/cal_mlp/backfill_offline.py:~140-141` (hour_sin/cos inline; train-side backfill)
+7. `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py:~126-127` (hour_sin/cos inline; serve-side diagnostic)
+
+**Canonical helper home:** `bot/helpers/derived_features.py::compute_derived_features` owns `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4 (helpers-leaf). A.1b will replace integration.py's inline formulas with calls to this helper.
+
+**Helper-call sites (already correct):** `bot/state.py:1926` (pre-DB-write call, replaces the deleted `bot/_impl.py:2192` post-Bit-9.3-iii.c) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill_extended_features.py`.
+
+Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a, 2026-05-12).

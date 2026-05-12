@@ -147,7 +147,7 @@ to the cell-block UNION in audit/dashboard scripts (full list in
 
 ## Editing this file
 
-- Most repo-wide rules (threading, cal_mlp four-site, SQLite WAL,
+- Most repo-wide rules (threading, cal_mlp feature-transform lock-step, SQLite WAL,
   `_shadow_diag` schema chain, Engine→CalEngine wiring,
   `discover_active_windows()` cross-checks) live in `bot/CLAUDE.md`
   and apply transitively when editing the scanner. **Don't duplicate

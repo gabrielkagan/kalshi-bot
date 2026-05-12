@@ -50,10 +50,11 @@ Until enough data is collected, ``calibrate()`` falls back to
 then hard cap). ``backtest_adaptive_vs_fixed`` is the held-out Brier
 diff harness used by the cal_mlp tooling.
 
-The four-site lock-step rule (``scripts/cal_mlp/extract_data.py`` /
+The cal_mlp feature-transform lock-step rule (``scripts/cal_mlp/extract_data.py`` /
 ``post_hoc_processor.py`` / ``integration.py`` /
-``features.py::compute_cfg_fp``) operates entirely within
-``scripts/cal_mlp/`` and is **NOT** affected by this extraction —
+``features.py``; canonical helper ``bot/helpers/derived_features.py``)
+operates entirely within ``scripts/cal_mlp/`` (plus the helper home)
+and is **NOT** affected by this extraction —
 CalibrationEngine has no feature-derivation code (no
 ``SIGMA_WINSOR_ABS_CAP``, no ``hour_sin``/``hour_cos``, no
 ``prob_breakeven_gap``, no sigma derivation). Features go INTO this

@@ -75,8 +75,8 @@ def compute_method_output(df: "pd.DataFrame") -> "pd.Series":
 
     Single source of truth for Phase 6 — both `sim_pnl.run_sim_pnl` and
     `validate.main` MUST go through this helper. Hand-rolled duplicates
-    drift silently (cf. CLAUDE.md "cal_mlp feature transforms (four-site
-    lock-step)" anti-pattern). When the formula changes, this is the
+    drift silently (cf. CLAUDE.md "cal_mlp feature transforms (lock-step)"
+    anti-pattern). When the formula changes, this is the
     one site to update.
 
     Inputs: DataFrame REQUIRED to contain `calibrated_prob` and

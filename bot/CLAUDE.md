@@ -8,7 +8,7 @@ and the engine modules (`bot/engines/spx_engine.py`,
 `bot/shadows/fifteenm_shadow.py`, `analyst.py`). **Bit 9.3-iii.c (2026-05-11)
 DELETED `bot/_impl.py`** — the rules historically attributed to that file
 now apply cross-cutting to the bot/ package. The first seven sections
-(Threading, cal_mlp four-site, Cell-block, SQLite, `_shadow_diag`,
+(Threading, cal_mlp feature-transform lock-step, Cell-block, SQLite, `_shadow_diag`,
 Engine→CalEngine, `discover_active_windows()`) are
 **implementation-specific** — they only matter when editing the
 runtime, not when running audits or working in `tests/` /
@@ -41,23 +41,52 @@ readable here for agents working inside `bot/`.
   regression:
   `tests/integration/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_boot` (the sister `..._in_bot_impl` test self-skips post-Bit-9.3-iii.c since bot/_impl.py was deleted).
 
-## cal_mlp feature transforms (four-site lock-step)
+## cal_mlp feature transforms (lock-step)
 
 Any change to a feature transform — winsorize cap
 `SIGMA_WINSOR_ABS_CAP=25.0`, `hour_sin`/`hour_cos` derivation,
-`prob_breakeven_gap` formula, sigma derivation — must update **all
-four sites in ONE commit**:
+`prob_breakeven_gap` formula, sigma derivation — must keep all
+surfaces in lock-step in ONE commit. RCA refresh 2026-05-12 (Sprint
+A.1a RCA closeout; ticket `86b9vejnq`) revised the surface from the
+historical "four-site" framing to its actual shape.
 
-1. `scripts/cal_mlp/extract_data.py`
-2. `scripts/cal_mlp/post_hoc_processor.py`
-3. `scripts/cal_mlp/integration.py`
-4. `scripts/cal_mlp/features.py::compute_cfg_fp`
+**Drift surface — inline duplicate formulas (A.1b will refactor to
+helper calls; sister ticket `86b9veppa`):**
+
+Primary train/serve paths (from RCA):
+1. `scripts/cal_mlp/extract_data.py` — hour_sin/cos inline; reads sigma + breakeven from DB
+2. `scripts/cal_mlp/post_hoc_processor.py` — hour_sin/cos inline; reads sigma + breakeven from DB
+3. `scripts/cal_mlp/integration.py` — hour_sin/cos inline; re-implements sigma + breakeven inline (the riskiest site — drift here = train/serve skew)
+4. `scripts/cal_mlp/features.py` — `SIGMA_WINSOR_ABS_CAP` constant home + `apply_sigma_winsor` helper home + `compute_cfg_fp` (captures sigma_winsor_abs_cap but NOT hour/breakeven/sigma formulas)
+
+Sister-script drift surface (surfaced in R2 adv review 2026-05-12):
+5. `scripts/cal_mlp/sim_pnl.py` — hour_sin/cos inline at ~L901-902 (the "mod-24 mirrors extract_data" comment is the deliberate-duplicate smell). Train-side sim-PnL backbone.
+6. `scripts/cal_mlp/backfill_offline.py` — hour_sin/cos inline at ~L140-141. Train-side historical backfill.
+7. `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py` — hour_sin/cos inline at ~L126-127. Serve-side diagnostic harness.
+
+**Canonical helper home:**
+
+- `bot/helpers/derived_features.py::compute_derived_features` — owns
+  `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted
+  in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4
+  (helpers-leaf). A.1b will replace `scripts/cal_mlp/integration.py`
+  inline formulas with calls to this helper.
+
+**Helper-call sites (already correct — preserve when editing):**
+
+- `bot/state.py:1926` — pre-DB-write `compute_derived_features` call
+  (replaces `bot/_impl.py:2192` which was deleted in Bit 9.3-iii.c)
+- `bot/engines/sports_engine.py` — 2 call sites for sports-engine evals
+- `scripts/backfill_extended_features.py` — backfill script
 
 Splitting → train/serve skew (model trained on one distribution,
 served from another). See `agent_docs/calibration_pipeline.md` "cal_mlp
-feature transforms (four-site lock-step)" for the rationale.
-Regression tests: `tests/integration/test_calmlp_sigma_winsorize.py` +
-`tests/integration/test_calmlp_tm96_gate.py`.
+feature transforms (lock-step)" for the rationale.
+Regression tests:
+`tests/integration/test_calmlp_sigma_winsorize.py` (single-anchor behavior) +
+`tests/integration/test_calmlp_tm96_gate.py` (integration) +
+`tests/contracts/test_calmlp_lockstep.py` (cross-site AST + runtime parity guard,
+Sprint A.1a 2026-05-12).
 
 ## Cell-block activations deflate `filter_stage='candidate'` rollups
 
@@ -103,7 +132,7 @@ Multi-thread access shares `state.db`. Single-writer is the design.
 
 Adding keys to `_shadow_diag`: also update
 `insert_rejection()` + `insert_evaluated_opportunity()` signatures + SQL.
-All four sites ship in one commit, otherwise the new key gets dropped
+All schema-chain sites ship in one commit, otherwise the new key gets dropped
 silently at write time.
 
 ## Engine → CalEngine wiring (one-commit rule)

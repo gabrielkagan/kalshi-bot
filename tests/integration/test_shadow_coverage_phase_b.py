@@ -85,7 +85,7 @@ class TestPhaseBSchemaColumns:
     def test_phase_b_int_columns_are_integer_typed(self):
         """INTEGER-typed Phase B columns must be declared INTEGER in SQLite.
         Float values silently round in SQLite (loose typing) but the supabase
-        mirror does not — the four-site lock-step rule (CLAUDE.md) means a
+        mirror does not — the cal_mlp feature-transform lock-step rule (CLAUDE.md) means a
         type mismatch is a 22P02 wedge waiting to happen."""
         import bot
         import bot.state  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.state.X access)
