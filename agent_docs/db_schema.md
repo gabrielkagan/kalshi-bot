@@ -85,4 +85,38 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 - `state.db` — SQLite (settled_trades, rejected_opportunities, evaluated_opportunities, etc.)
 - `opportunity_journal.jsonl` — filter stage tracking
 - `scan_journal.jsonl` — per-tick scan summaries (~330MB/day)
-- `fill_model_journal.jsonl` — maker order lifecycle for ML fill prediction
+- `fill_model_journal.jsonl` — order lifecycle (maker + taker IOC) for ML fill prediction
+
+### `fill_model_journal.jsonl` field reference
+
+Writer: `OrderExecutor._log_fill_model_sample` in `bot/executor.py`. One row per
+order outcome (`outcome ∈ {"filled","canceled","partial_filled","expired"}`).
+Sprint B Bit B.2a (2026-05-12, ticket 86b9vfznd) audited the production
+journal and reclassified NULL-prone columns. The current surface is:
+
+| Column | Type | Applicability predicate |
+|---|---|---|
+| `type` | `"fill_model_sample"` literal | always present |
+| `ts`, `ticker`, `asset`, `outcome` | identity | always non-NULL |
+| `fill_latency_s` | float \| null | non-NULL iff `outcome == "filled"`; NULL on canceled/expired by design |
+| `fill_source` | str \| null | `"websocket"` / `"rest_poll"` set by maker fill paths; `"ioc_inline"` set by writer for `outcome=filled AND is_taker=True`; NULL on cancel/expired |
+| `price_cents`, `count`, `post_only`, `fair_value`, `offset_cents` | submission context | always non-NULL when candidate has `best_yes_ask` |
+| `seconds_to_close`, `vol_regime`, `blended_rv` | market context at submission | non-NULL (sourced from candidate) |
+| `ask_depth`, `total_ob_depth`, `bid_depth`, `spread_at_submit` | OB context | NULL iff `ob_snapshot_source != "scanner"` OR (for `spread`/`bid_depth`) the resting bid book was empty at scan |
+| `ob_snapshot_source` | `"scanner"` \| `"addon_empty"` \| `"missing"` | predicate column for the four OB fields above. `"addon_empty"` = confirmation_addon / dip_addon path (no fresh scanner OB mid-execution). `"missing"` = candidate had no ob_snapshot at all. |
+| `z_score`, `edge`, `kelly_f` | signal context | non-NULL (sourced from candidate) |
+| `queue_position_final` | int \| null | non-NULL iff maker order survived ≥5s AND `client.get_queue_position` succeeded |
+| `queue_position_polled` | bool | predicate column: True iff the polling loop fired at least once for this order. Distinguishes "filled before first poll" from "polled but Kalshi returned nothing" |
+| `execution_method` | `"maker"` \| `"ioc"` \| `"cancel_replace_ioc"` \| ... | non-NULL |
+| `entry_path` | str | strategy entry tag (`"maker"`, `"direct_taker"`, `"tm_taker"`, `"sol_taker_override"`, `"confirmation_addon"`, `"dip_addon"`, ...) |
+| `cancel_reason` | str \| null | non-NULL iff `outcome ∈ {"canceled","partial_filled","expired"}` |
+| `elapsed_seconds`, `ws_connected`, `maker_only_threshold` | bookkeeping | always non-NULL |
+
+**Removed in B.2a** (were 100% NULL in 10,210 production rows):
+- `queue_position_initial` — never written anywhere in code.
+- `convergence_velocity` — computed by scanner into strategy-helper dicts but
+  never propagated to the `candidate` dict; the writer was reading a key
+  that never existed.
+
+Pre-B.2a rows on disk retain those two fields with `null` values; consumers
+must tolerate their absence on post-B.2a rows.

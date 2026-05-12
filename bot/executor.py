@@ -4596,13 +4596,66 @@ class OrderExecutor:
     def _log_fill_model_sample(self, order: Dict, outcome: str,
                                fill: Optional[Dict] = None,
                                cancel_reason: Optional[str] = None):
-        """Write one fill_model_sample to FILL_MODEL_JOURNAL for ML training."""
+        """Write one fill_model_sample to FILL_MODEL_JOURNAL for ML training.
+
+        Sprint B Bit B.2a (2026-05-12) NULL audit + writer fixes
+        (ticket 86b9vfznd). Production journal had several 100%-NULL
+        columns; classified each as:
+
+        - (i) writer bug -> ``fill_source`` was never set on IOC fills
+          (the taker path doesn't go through ``_check_for_fill``'s
+          ws/rest attribution). Now defaults to ``"ioc_inline"`` for
+          IOC outcome=filled when no upstream tag exists.
+        - (ii) only-when-applicable -> kept the column but added a
+          predicate alongside so downstream ML can distinguish
+          "NULL by design" from "missing data":
+            * ``queue_position_polled`` (bool) - was the queue ever sampled?
+              Maker orders polling fires every 5s; orders filled <5s
+              legitimately have ``queue_position_final=None``.
+            * ``ob_snapshot_source`` (str) - ``"scanner"`` |
+              ``"addon_empty"`` | ``"missing"``. confirmation_addon /
+              dip_addon paths set ``ob_snapshot={}`` because no fresh
+              scanner OB exists mid-execution; this column distinguishes
+              that from a true missing OB snapshot.
+        - (iii) deprecated -> ``queue_position_initial`` (never written
+          anywhere) and ``convergence_velocity`` (lives only on scanner
+          helper dicts, never on the ``candidate`` dict) removed from
+          the output entirely.
+
+        See ``agent_docs/db_schema.md`` "fill_model_journal.jsonl"
+        for the per-column predicate map.
+        """
         try:
             candidate = order.get("candidate", {})
             now = time.time()
             elapsed = now - order["submit_time"]
             fill_latency = round(elapsed, 3) if outcome == "filled" else None
-            ob_snap = candidate.get("ob_snapshot", {})
+            ob_snap_raw = candidate.get("ob_snapshot")
+            # ob_snapshot_source classification (B.2a predicate)
+            if ob_snap_raw is None:
+                ob_snapshot_source = "missing"
+                ob_snap = {}
+            elif ob_snap_raw == {}:
+                # confirmation_addon / dip_addon set ob_snapshot={}
+                # because no fresh scanner OB exists mid-execution.
+                ob_snapshot_source = "addon_empty"
+                ob_snap = {}
+            else:
+                ob_snapshot_source = "scanner"
+                ob_snap = ob_snap_raw
+
+            # B.2a (i) writer-bug fix: IOC fills now record a default
+            # fill_source so the column isn't 100% NULL on taker rows.
+            # Maker WS/REST paths still set order["fill_source"]
+            # upstream -- that value wins.
+            fill_source = order.get("fill_source")
+            if fill_source is None and outcome == "filled" and order.get("is_taker"):
+                fill_source = "ioc_inline"
+
+            # B.2a (ii) predicate: was queue position polled at all?
+            # Polling fires every 5s; maker orders that fill <5s
+            # legitimately have queue_position_final=None.
+            queue_position_polled = bool(order.get("_last_queue_poll", 0) > 0)
 
             sample = {
                 "type": "fill_model_sample",
@@ -4611,7 +4664,7 @@ class OrderExecutor:
                 "asset": order["asset"],
                 "outcome": outcome,
                 "fill_latency_s": fill_latency,
-                "fill_source": order.get("fill_source"),
+                "fill_source": fill_source,
                 # Submission context
                 "price_cents": order["price_cents"],
                 "fair_value": candidate.get("best_yes_ask"),
@@ -4627,13 +4680,13 @@ class OrderExecutor:
                 "total_ob_depth": ob_snap.get("total_depth"),
                 "spread_at_submit": ob_snap.get("spread"),
                 "bid_depth": ob_snap.get("bid_depth"),
-                "convergence_velocity": candidate.get("convergence_velocity"),
+                "ob_snapshot_source": ob_snapshot_source,
                 "z_score": candidate.get("z_score"),
                 "edge": candidate.get("edge"),
                 "kelly_f": candidate.get("kelly_f"),
                 # Queue tracking
-                "queue_position_initial": order.get("queue_position_initial"),
                 "queue_position_final": order.get("queue_position"),
+                "queue_position_polled": queue_position_polled,
                 # Execution details
                 "execution_method": order.get("execution_method", "maker"),
                 "entry_path": order.get("entry_path", "maker"),

@@ -869,7 +869,7 @@ Append-only journal files provide a complete audit trail:
 | `opportunity_journal.jsonl` | Filter stage tracking for every market evaluation |
 | `scan_journal.jsonl` | Per-tick scan summaries (~330MB/day) |
 | `rejection_journal.jsonl` | Settlement outcomes for rejected opportunities |
-| `fill_model_journal.jsonl` | Maker order lifecycle data for ML fill prediction |
+| `fill_model_journal.jsonl` | Order lifecycle (maker + taker IOC) for ML fill prediction |
 
 **Journal rotation**: A daily cron job (4 AM UTC) runs `rotate_journals.sh` using a copytruncate pattern — journals are compressed to `journal_archives/` with zstd and 90-day retention. The bot uses open/close per write, so rotation is safe without process interruption.
 
