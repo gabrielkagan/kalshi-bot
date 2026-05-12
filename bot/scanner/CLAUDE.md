@@ -128,22 +128,27 @@ The scanner emits many distinct `filter_stage` values into
 constants from `bot/constants.py`
 (`HIGH_PRICE_STC_BLOCK_FILTER_STAGE`,
 `TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE`,
-`SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE`), plus dynamic stages
+`SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE`,
+`SOL_BLEED_V2_BLOCK_FILTER_STAGE`), plus dynamic stages
 assigned via conditionals (`_cand_filter_stage`, `_obs_label`,
 `_wknd_stage`, `_ovn_stage`).
 
-The three cell-block constants resolve to these string-literal
+The four cell-block constants resolve to these string-literal
 values stored in DB (which audit scripts grep for, NOT the constant
 names):
 
 - `'96C_SOL_XRP_STC_DANGER_BAND'`
 - `'TM98_97_98C_2_5MIN_BLEED'`
 - `'SOL_TAKER_85_89C_2_5MIN_BLEED'`
+- `'SOL_BLEED_V2_88_93C_2_5MIN'`
 
-These three DEFLATE rollups filtered with `WHERE filter_stage =
+These four DEFLATE rollups filtered with `WHERE filter_stage =
 'candidate'`. Any new filter_stage value emitted here must be added
-to the cell-block UNION in audit/dashboard scripts (full list in
-`bot/CLAUDE.md` → "Cell-block activations deflate `filter_stage='candidate'` rollups").
+to the cell-block UNION in audit/dashboard scripts AND to
+`bot.helpers.cohort_attribution.COHORT_PARTITION_STAGES` (canonical
+5-set including baseline `'candidate'`; Money Printer Roadmap P1.1,
+ticket `86b9x3kgd`, 2026-05-12). Full list in `bot/CLAUDE.md` →
+"Cell-block activations deflate `filter_stage='candidate'` rollups".
 
 ## Editing this file
 

@@ -1079,6 +1079,18 @@ class StateManager:
             "CREATE INDEX IF NOT EXISTS idx_ess_ticker ON exit_signal_shadow(ticker)")
         self.conn.commit()
 
+        # Cohort attribution daily aggregates — Money Printer Roadmap Phase 1
+        # P1.1 (ticket 86b9x3kgd, 2026-05-12). Materialized nightly at 13:07
+        # UTC by `scripts/audit/cohort_attribution_nightly.py` calling
+        # `bot.helpers.cohort_attribution.run_aggregation(self.conn)`. The
+        # canonical DDL lives there as the single source of truth — both
+        # this bootstrap and the nightly script call `ensure_schema(conn)`
+        # so the schema is owned in exactly one place.
+        # Design doc: kb/decisions/cohort-measurement-design-may12.md.
+        from bot.helpers.cohort_attribution import ensure_schema as _cohort_ensure_schema
+        _cohort_ensure_schema(self.conn)
+        self.conn.commit()
+
     # ── Ticker Parsing ────────────────────────────────────────────────────
 
     @staticmethod
