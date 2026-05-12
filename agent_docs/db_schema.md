@@ -71,7 +71,7 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 | hour_cos | REAL | (B.1a) Cyclic 24h embedding of UTC hour. Lock-step with cal_mlp. |
 | prob_breakeven_gap | REAL | (B.1a) `calibrated_prob − market_price/100`. NULL when either input is missing (e.g. `price_out_of_range_early` rejections that fire before calibrated_prob compute). |
 | vol_regime | TEXT | (B.1a) 'normal' / 'elevated' from `vol_est["regime"]` at rejection time. NULL when rejection fires before vol_est is built. |
-| data_provenance | TEXT | (B.1a) 'live_ws' for live-bot inserts (mirrors `evaluated_opportunities.data_provenance` Sprint A.2 / commit f26a611). |
+| data_provenance | TEXT | (B.1a) 'live_ws' for live-bot inserts (mirrors `evaluated_opportunities.data_provenance` Sprint A.2 / commit f26a611). B.1a-fu2 (2026-05-12) adds 'backfill_b1a_fu2' for rows touched by `scripts/backfill/wave1_derived_cols.py` (stamped only when the backfill actually computed at least one Wave 1 cell; rows with all-live-written cells keep prov=NULL). |
 | orderbook_levels_json | TEXT | (B.1a) Top-N YES ladder JSON via `_get_fresh_ob_ladder` (10s freshness gate; stale → NULL). NULL on `no_orderbook` rejections — correct, the gate fires precisely because the ladder is absent. |
 
 ## Other tables

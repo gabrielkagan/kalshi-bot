@@ -38,6 +38,8 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 - `shadow_coverage_backfill.py`, `shadow_coverage_calmlp_backfill.py` — Phase G coverage backfills
 - `external_market_poller.py` — OKX funding/OI + Deribit DVOL; CRON-NEVER-INSTALLED (see `agent_docs/calibration_pipeline.md`)
 - `stamp_data_provenance.py` — one-time post-migration backfill (referenced from `bot/state.py`)
+- `backfill_extended_features.py` — one-time Tier 4 (time/regime) + Tier 5 (derived) backfill on `evaluated_opportunities` (pre-B.1a).
+- `wave1_derived_cols.py` — B.1a-fu2 (2026-05-12) one-shot backfill of Wave 1 derivable cols (`hour_sin`/`hour_cos`/`sigma_winsorize`/`prob_breakeven_gap`) on `rejected_opportunities` + `prob_breakeven_gap` on `evaluated_opportunities`. Replays B.1a auto-fill via canonical helpers in `bot/helpers/{derived_features,time_features}.py`. Idempotent + honest-NULL.
 
 ## Ops scripts (`scripts/ops/`)
 ### Backup (Phase 0a — state.db S3 backup)

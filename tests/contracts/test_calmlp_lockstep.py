@@ -23,6 +23,7 @@ Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
     bot/state.py:1713 + 1723 + 2010        # pre-DB-write compute_derived_features + apply_sigma_winsor
     bot/engines/sports_engine.py           # 2 call sites
     scripts/backfill/backfill_extended_features.py
+    scripts/backfill/wave1_derived_cols.py  # B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill
 
   Canonical helpers:
     bot/helpers/derived_features.py::compute_derived_features

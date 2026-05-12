@@ -83,7 +83,8 @@ Untracked dev artifacts (NOT in HOUR_SINCOS_DRIFT_SITES; ticket `86b9wjd3e` pend
 
 - `bot/state.py:1713` + `:2010` — pre-DB-write `compute_derived_features` calls (+ `:1723` `apply_sigma_winsor` on the returned sigma); replaces the pre-Bit-9.3-iii.c `bot/_impl.py:2192` site
 - `bot/engines/sports_engine.py` — 2 call sites for sports-engine evals
-- `scripts/backfill/backfill_extended_features.py` — backfill script
+- `scripts/backfill/backfill_extended_features.py` — backfill script (pre-B.1a evaluated_opportunities Tier 4/5)
+- `scripts/backfill/wave1_derived_cols.py` — backfill script (B.1a-fu2, 2026-05-12; replays B.1a auto-fill on `rejected_opportunities` Wave 1 derivable cols + `evaluated_opportunities.prob_breakeven_gap`)
 - `scripts/cal_mlp/integration.py` — serve-path `should_block_tm96` (post-A.1b)
 
 Splitting → train/serve skew (model trained on one distribution,
