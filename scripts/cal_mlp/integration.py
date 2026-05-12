@@ -122,6 +122,13 @@ _IDENTITY_NO_Z = _build_identity_no_zscore_set()
 # reads them.
 import bot._thread_env  # noqa: F401 — side-effect import: sets OMP_NUM_THREADS=1 etc.
 
+# Sprint A Bit 1b (86b9veppa) — canonical derived-feature helper. Replaces
+# the inline `buf_pct / sigma_denom` + `cb_prob - market_price/100` formulas
+# previously duplicated in `should_block_tm96`. Lock-step with the same
+# helper called by bot/state.py:1713 + 2010 (pre-DB-write). Safe at
+# module-top: derived_features.py imports only stdlib (math + typing).
+from bot.helpers.derived_features import compute_derived_features  # noqa: E402
+
 _TORCH_THREADS_INTRA = None       # post-call observed value (or None on failure)
 _TORCH_THREADS_INTEROP = None
 _TORCH_THREADS_INTEROP_RACE = False  # True if interop call lost race to default-2
@@ -1378,31 +1385,36 @@ def should_block_tm96(
     import numpy as _np
     from datetime import datetime as _dt, timezone as _tz
 
-    # Tier 5 derived features (pure math, ~100µs).
+    # Tier 5 derived features (pure math, ~100µs). Sprint A Bit 1b
+    # (86b9veppa) routes through bot.helpers.derived_features.compute_derived_features
+    # — the canonical helper also called from bot/state.py:1713 + :2010
+    # (pre-DB-write). Lock-step contract: train (DB write) and serve (this
+    # path) MUST use the same formula. apply_sigma_winsor is applied here
+    # on the helper's return value, mirroring bot/state.py:1723.
     spot_dist_sigma = None
     breakeven_gap = None
     try:
-        if (spot is not None and threshold is not None and threshold > 0
-                and blended_rv is not None and blended_rv > 0
-                and seconds_to_close is not None and seconds_to_close > 0):
-            buf_pct = (spot - threshold) / threshold * 100
-            sigma_denom = blended_rv * _math.sqrt(seconds_to_close / 5.0) * 100
-            if sigma_denom > 0:
-                spot_dist_sigma = buf_pct / sigma_denom
-                # R-p7-deploy-r11 R3 CRITICAL: clip to match train-time
-                # winsorize. At terminal STC (T→0) raw sigma blows up to
-                # ±3,000+; train sees ±25 max. Without this clip, the
-                # gate's row_features distribution diverges from training.
-                from features import apply_sigma_winsor
-                spot_dist_sigma = apply_sigma_winsor(spot_dist_sigma)
         # Round-1 #1 train/serve skew fix: training extracted
-        # `prob_breakeven_gap` from the DB column populated via
-        # `compute_derived_features(calibrated_prob=calibrated_prob, ...)`
-        # in insert_evaluated_opportunity. Use calibrated_prob (post-CalEngine)
-        # to match training distribution, NOT raw_prob.
+        # `prob_breakeven_gap` from the DB column populated via the same
+        # helper in insert_evaluated_opportunity. Use calibrated_prob
+        # (post-CalEngine) to match training distribution; fall back to
+        # raw_prob only when no CalEngine has fired yet.
         cb_prob = calibrated_prob if calibrated_prob is not None else raw_prob
-        if cb_prob is not None and market_price is not None:
-            breakeven_gap = cb_prob - (market_price / 100.0)
+        _t5 = compute_derived_features(
+            spot_price=spot,
+            threshold=threshold,
+            volatility=blended_rv,
+            seconds_to_close=seconds_to_close,
+            calibrated_prob=cb_prob,
+            market_price_cents=market_price,
+        )
+        # R-p7-deploy-r11 R3 CRITICAL: clip to match train-time winsorize.
+        # At terminal STC (T→0) raw sigma blows up to ±3,000+; train sees
+        # ±25 max. Without this clip the gate's row_features distribution
+        # diverges from training.
+        from features import apply_sigma_winsor
+        spot_dist_sigma = apply_sigma_winsor(_t5['spot_distance_to_strike_sigma'])
+        breakeven_gap = _t5['prob_breakeven_gap']
     except Exception as e:
         diag['cal_mlp_skipped_reason'] = f'feature_build_error:{type(e).__name__}'
         _tm96_gate_bump('fail_open_feature_error')
@@ -1418,6 +1430,8 @@ def should_block_tm96(
 
     now_dt = _dt.now(_tz.utc)
     int_hour = float(now_dt.hour)
+    from features import compute_hour_features
+    _hsin, _hcos = compute_hour_features(int_hour)
     row_features = {
         'price_tier': int(_np.digitize(market_price, [80, 90, 96], right=True)),
         'stc_bucket': int(_np.digitize(seconds_to_close, [120, 300, 600], right=True)),
@@ -1427,8 +1441,8 @@ def should_block_tm96(
         'abs_spot_distance_to_strike_sigma': abs_dist,
         'time_decayed_proximity': tdp,
         'prob_breakeven_gap': breakeven_gap,
-        'hour_sin': _math.sin(2.0 * _math.pi * int_hour / 24.0),
-        'hour_cos': _math.cos(2.0 * _math.pi * int_hour / 24.0),
+        'hour_sin': _hsin,
+        'hour_cos': _hcos,
         'seconds_to_close': seconds_to_close,
     }
 

@@ -115,8 +115,9 @@ from bot.helpers import (
     tm_sweep_counterfactual_pnl,
 )
 # Sprint B Bit B.1a (2026-05-12): rejected_opportunities feature enrichment
-# routes through these helpers. Mirrors the cal_mlp four-site lock-step
-# (bot/CLAUDE.md). See ticket 86b9vfzjp + kb/decisions/sprint-b-bit-1a-shipped-may12.md.
+# routes through these helpers. Mirrors the cal_mlp lock-step surface
+# (bot/CLAUDE.md "cal_mlp feature transforms (lock-step)"). See ticket
+# 86b9vfzjp + kb/decisions/sprint-b-bit-1a-shipped-may12.md.
 from bot.helpers.derived_features import apply_sigma_winsor, compute_hour_sin_cos
 from bot.kalshi_client import KalshiClient
 
@@ -1694,7 +1695,7 @@ class StateManager:
             orderbook_levels_json = self._get_fresh_ob_ladder(ticker)
 
         # ── Auto-compute Tier 4 hour_sin/hour_cos (cyclic 24h embedding) ──
-        # Cal_mlp four-site lock-step routes through bot.helpers.derived_features.
+        # Cal_mlp lock-step routes through bot.helpers.derived_features.
         # Derived from rejection-time (already in scope as `now`) when the
         # caller did not pass them explicitly.
         if hour_sin is None or hour_cos is None:

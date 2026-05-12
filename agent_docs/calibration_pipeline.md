@@ -79,23 +79,27 @@ Splitting these creates silent data gaps.
 
 ### cal_mlp feature transforms (lock-step)
 
-R-p7-deploy-r11: any change to a feature transform (winsorize cap, hour_sin/cos derivation, prob_breakeven_gap formula, sigma derivation) must ship in ONE commit keeping all surfaces in lock-step. RCA refresh 2026-05-12 (Sprint A.1a, ticket `86b9vejnq`) revised the surface from the historical "four-site" framing:
+R-p7-deploy-r11: any change to a feature transform (winsorize cap, hour_sin/cos derivation, prob_breakeven_gap formula, sigma derivation) must ship in ONE commit keeping all surfaces in lock-step. RCA refresh 2026-05-12 (Sprint A.1a, ticket `86b9vejnq`) revised the surface from the historical "four-site" framing; **Sprint A.1b (ticket `86b9veppa`, 2026-05-12) closed the inline-drift surface** by routing all tracked cal_mlp sites through canonical helpers. bot/CLAUDE.md "cal_mlp feature transforms (lock-step)" is the source of truth — this section mirrors it.
 
-**Drift surface — inline duplicate formulas (Sprint A.1b will refactor to helper calls):**
+**Drift surface — 4 tracked drift sites + 1 helper home (post-A.1b: all 4 call canonical helpers):**
 
-Primary train/serve paths (from RCA):
-1. **Train** — `scripts/cal_mlp/extract_data.py:build_feature_frame` (hour_sin/cos inline)
-2. **Serve post-hoc** — `scripts/cal_mlp/post_hoc_processor.py:_process_row` (hour_sin/cos inline)
-3. **Serve sync gate** — `scripts/cal_mlp/integration.py:should_block_tm96` (hour_sin/cos + sigma + breakeven inline)
-4. **Fingerprint** — `scripts/cal_mlp/features.py:compute_cfg_fp` canonical dict + `SIGMA_WINSOR_ABS_CAP` constant + `apply_sigma_winsor` helper home
+Drift sites (pinned by `HOUR_SINCOS_DRIFT_SITES` in `tests/contracts/test_calmlp_lockstep.py`):
+1. **Train** — `scripts/cal_mlp/extract_data.py:build_feature_frame` (`hour_sin/cos` via `features.compute_hour_features`)
+2. **Serve post-hoc** — `scripts/cal_mlp/post_hoc_processor.py:_process_row` (`hour_sin/cos` via `features.compute_hour_features`)
+3. **Serve sync gate** — `scripts/cal_mlp/integration.py:should_block_tm96` (`hour_sin/cos` via `features.compute_hour_features`; sigma + breakeven via `bot.helpers.derived_features.compute_derived_features` + `features.apply_sigma_winsor`)
+4. **Train sim-PnL** — `scripts/cal_mlp/sim_pnl.py` (`hour_sin/cos` via `features.compute_hour_features`; sister site added during A.1a R2 adv-review 2026-05-12)
 
-Sister-script drift surface (R2 adv 2026-05-12):
-5. `scripts/cal_mlp/sim_pnl.py:~901-902` (hour_sin/cos inline; train-side sim-PnL)
-6. `scripts/cal_mlp/backfill_offline.py:~140-141` (hour_sin/cos inline; train-side backfill)
-7. `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py:~126-127` (hour_sin/cos inline; serve-side diagnostic)
+Helper home (not a drift site — owning the formula IS the canonical change vehicle):
+- **Fingerprint** — `scripts/cal_mlp/features.py:compute_cfg_fp` canonical dict + `SIGMA_WINSOR_ABS_CAP` constant + `apply_sigma_winsor` + `compute_hour_features` helper home
 
-**Canonical helper home:** `bot/helpers/derived_features.py::compute_derived_features` owns `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4 (helpers-leaf). A.1b will replace integration.py's inline formulas with calls to this helper.
+Untracked dev artifacts (NOT in the AST-guard surface; ticket `86b9wjd3e` pending track-or-delete):
+- `scripts/cal_mlp/backfill_offline.py`
+- `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py`
 
-**Helper-call sites (already correct):** `bot/state.py:1926` (pre-DB-write call, replaces the deleted `bot/_impl.py:2192` post-Bit-9.3-iii.c) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py`.
+**Canonical helper homes:**
+- `bot/helpers/derived_features.py::compute_derived_features` owns `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4 (helpers-leaf). A.1b (2026-05-12) routed `scripts/cal_mlp/integration.py` inline formulas through this helper.
+- `bot/helpers/derived_features.py::compute_hour_sin_cos` — scalar hour-of-day cyclic encoding (Bit B.1a, 2026-05-12). Mirrored by `scripts/cal_mlp/features.compute_hour_features` (A.1b) which additionally accepts a numpy/pandas Series for DataFrame-side extract paths.
 
-Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a, 2026-05-12).
+**Helper-call sites (preserve when editing):** `bot/state.py:1713` + `:2010` (pre-DB-write `compute_derived_features` calls + `:1723` `apply_sigma_winsor` on the returned sigma) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py` + `scripts/cal_mlp/integration.py` (serve-path `should_block_tm96`, post-A.1b).
+
+Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review of A.1a caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a 2026-05-12 + A.1b 2026-05-12).

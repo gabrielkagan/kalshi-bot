@@ -61,19 +61,28 @@ RAW_PROB_CLIP_EPS = 1e-6
 # z-scoring across the column inflates std by 100×+ and collapses real signal.
 #
 # Cap chosen at 25 — above the empirical max benign value (~19) but well below
-# the 30+ outlier tail. Applied in extract_data.build_feature_frame BEFORE
-# deriving abs_spot_distance_to_strike_sigma and time_decayed_proximity, so
-# all three features see the clipped value. cfg_fp captures this constant.
+# the 30+ outlier tail. Applied at every serve/extract surface BEFORE deriving
+# abs_spot_distance_to_strike_sigma and time_decayed_proximity, so all three
+# features see the clipped value. cfg_fp captures this constant.
+#
+# Application sites (lock-step, post-A.1b 2026-05-12):
+#   extract_data.build_feature_frame  (train, DataFrame)
+#   post_hoc_processor._process_row    (serve, scalar)
+#   integration.should_block_tm96      (serve sync gate, on
+#                                       compute_derived_features return)
+#   bot/state.py:1723                  (pre-DB-write, on
+#                                       compute_derived_features return)
 SIGMA_WINSOR_ABS_CAP = 25.0
 
 
 def apply_sigma_winsor(sd):
     """Clip a single spot_distance_to_strike_sigma value to ±SIGMA_WINSOR_ABS_CAP.
 
-    Centralized helper so all three sites that touch sigma at serve/extract
-    time apply IDENTICAL clipping. Without this, train (extract) clipped
-    while serve (post_hoc_processor + should_block_tm96) read raw values
-    from DB → train/serve skew, model trained on ±25 saw ±3,337 in prod.
+    Centralized helper so all four sites that touch sigma at serve/extract
+    time apply IDENTICAL clipping (extract_data + post_hoc_processor +
+    should_block_tm96 + bot/state.py:1723 pre-DB-write). Without this,
+    train (extract) clipped while serve read raw values from DB →
+    train/serve skew, model trained on ±25 saw ±3,337 in prod.
 
     Returns:
         - None if input is None (NULL passthrough for missing-indicator path)
@@ -94,6 +103,54 @@ def apply_sigma_winsor(sd):
     if sd < -cap:
         return -cap
     return sd
+
+
+# ---------------------------------------------------------------------------
+# Hour-of-day cyclic encoding (Sprint A Bit 1b — 86b9veppa)
+# ---------------------------------------------------------------------------
+# Centralized helper for the `hour_sin = sin(2π·h/24)` / `hour_cos = cos(2π·h/24)`
+# encoding used by both train-extract paths (extract_data.py + sim_pnl.py
+# DataFrame-side) and serve-extract paths (post_hoc_processor.py +
+# integration.py scalar). Lock-step with
+# `bot.helpers.derived_features.compute_hour_sin_cos` (scalar-only) — both
+# must produce identical numbers for the same `hour` so train and serve
+# distributions match exactly.
+#
+# numpy is imported INSIDE the function body so this module's top-level
+# import surface stays stdlib-only (per the module docstring: "NO I/O, NO
+# torch, NO pandas — only primitive constants and pure helpers"). DataFrame
+# callers already have numpy in scope, so the deferred import is free.
+
+def compute_hour_features(hour):
+    """Cyclic 24h hour-of-day encoding. Returns (sin, cos).
+
+    Accepts:
+      - `None` → `(None, None)` (NULL passthrough, mirrors canonical helper).
+      - Scalar int/float → tuple of two floats.
+      - numpy/pandas Series of hours → tuple of two numpy arrays.
+
+    Caller is responsible for any `% 24` modulo on the input — this helper
+    does NOT modulo internally, mirroring
+    `bot.helpers.derived_features.compute_hour_sin_cos` which assumes
+    inputs are already in [0, 24).
+
+    Lock-step: the scalar branch (including the `None` passthrough) is
+    byte-identical to `bot.helpers.derived_features.compute_hour_sin_cos`
+    (math.sin/cos with `angle = 2π·h/24`). The vector branch uses numpy
+    with the same formula for DataFrame-side extract paths.
+    """
+    if hour is None:
+        return (None, None)
+    import math
+    import numpy as np
+    arr = np.asarray(hour)
+    if arr.ndim == 0:
+        h = float(arr)
+        angle = 2.0 * math.pi * h / 24.0
+        return (math.sin(angle), math.cos(angle))
+    h = arr.astype(float)
+    angle = 2.0 * np.pi * h / 24.0
+    return (np.sin(angle), np.cos(angle))
 
 
 # ---------------------------------------------------------------------------

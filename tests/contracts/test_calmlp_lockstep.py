@@ -1,35 +1,37 @@
-"""Sprint A Bit 1a — cal_mlp feature-transform lock-step CI guards.
+"""Sprint A Bit 1a + 1b — cal_mlp feature-transform lock-step CI guards.
 
-TDD invariant (2026-05-12): 3 tests PASS (sigma_winsor SoT + sigma_winsor
-no-shadow + doc seal); 6 tests are marked `xfail(strict=True)` until
-sister Bit A.1b (ticket 86b9veppa) ships the refactor adding
-`features.compute_hour_features()` and replacing the inline
-`buf_pct / sigma_denom` + `cb_prob - market_price/100` formulas in
-integration.py with a call to
-`bot.helpers.derived_features.compute_derived_features`. The xfail
-keeps the CI gate green pre-A.1b; `strict=True` flips xfail→FAILED
-on xpass once A.1b lands, forcing the implementer to remove the
-decorator and reseal.
+Post-A.1b (ticket 86b9veppa) all 9 tests PASS. The 6 originally-sealed
+tests verify the canonical refactor landed: `features.compute_hour_features`
+helper exists + is correct, no inline `np.sin/cos(2π·h/24)` in the 4
+drift sites (extract_data, post_hoc_processor, integration, sim_pnl),
+integration.py imports + calls `compute_derived_features` from
+`bot.helpers.derived_features` instead of inlining `buf_pct / sigma_denom`
++ `cb_prob - market_price/100`. Sister tests 1 + 2 + 9 (sigma_winsor SoT,
+no-shadow clipping, bot/CLAUDE.md doc seal) pass pre- and post-A.1b.
 
 Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
 
-  Drift surface (inline duplicate formulas — A.1b will refactor):
-    scripts/cal_mlp/extract_data.py        # hour_sin/cos inline
-    scripts/cal_mlp/post_hoc_processor.py  # hour_sin/cos inline
-    scripts/cal_mlp/integration.py         # hour_sin/cos + sigma + breakeven inline
-    scripts/cal_mlp/features.py            # SIGMA_WINSOR_ABS_CAP + apply_sigma_winsor home
+  Drift surface (post-A.1b: all 4 tracked drift sites call canonical helpers;
+                 features.py hosts the helpers):
+    scripts/cal_mlp/extract_data.py        # hour_sin/cos via compute_hour_features
+    scripts/cal_mlp/post_hoc_processor.py  # hour_sin/cos via compute_hour_features
+    scripts/cal_mlp/integration.py         # hour_sin/cos + sigma + breakeven via helpers
+    scripts/cal_mlp/sim_pnl.py             # hour_sin/cos via compute_hour_features
+    scripts/cal_mlp/features.py            # SIGMA_WINSOR_ABS_CAP + apply_sigma_winsor + compute_hour_features home
 
-  Helper-call sites (good — already call canonical):
-    bot/state.py:1926                      # (was bot/_impl.py:2192 pre-9.3-iii.c)
+  Helper-call sites (already call canonical):
+    bot/state.py:1713 + 1723 + 2010        # pre-DB-write compute_derived_features + apply_sigma_winsor
     bot/engines/sports_engine.py           # 2 call sites
     scripts/backfill/backfill_extended_features.py
 
-  Canonical helper:
+  Canonical helpers:
     bot/helpers/derived_features.py::compute_derived_features
+    bot/helpers/derived_features.py::compute_hour_sin_cos
+    bot/helpers/derived_features.py::apply_sigma_winsor (mirrored by scripts/cal_mlp/features.apply_sigma_winsor)
 
 See kb/decisions/sprint-a-bit-1-four-site-lockstep-rca-may09.md for the
-full RCA (the "site 5 = bot/_impl.py:2192" entry there is stale; the
-caller relocated to bot/state.py:1926 during Bit 9.3-iii.c).
+full A.1a RCA and the kb/decisions/bit-a.1b-shipped-* closeout for
+the A.1b refactor.
 """
 import ast
 import re
@@ -56,9 +58,9 @@ DERIVED_FEATURES_PY = REPO_ROOT / "bot" / "helpers" / "derived_features.py"
 # Two other inline-drift sites exist as LOCAL-ONLY untracked files on dev
 # machines (`scripts/cal_mlp/backfill_offline.py` + `scripts/cal_mlp/
 # mac_diagnostics/v2_live_audit/score_live_ws.py`); CI doesn't have them
-# so they're out of this test's surface. Followup ticket investigates
-# whether they should be tracked-in-git or deleted as stale local dev
-# artifacts (see ClickUp `86b9wgfff` or successor).
+# so they're out of this test's surface. Followup ticket `86b9wjd3e`
+# investigates whether they should be tracked-in-git or deleted as stale
+# local dev artifacts.
 HOUR_SINCOS_DRIFT_SITES = (
     EXTRACT_DATA_PY,
     POST_HOC_PY,
@@ -147,14 +149,12 @@ def test_sigma_winsor_no_shadow_clipping_in_other_sites():
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_hour_features_helper_exists():
-    """A.1b ships `features.compute_hour_features(hour: int) -> tuple[float, float]`.
+    """A.1b ships `features.compute_hour_features(hour) -> tuple[float, float]`.
 
-    Until A.1b lands, this test FAILS — that's the TDD seal. Marked
-    `xfail(strict=True)` so pytest reports XFAIL (not FAILED) while
-    A.1b is pending, and CONVERTS xfail-passes to FAILED once A.1b
-    ships (forcing the A.1b implementer to remove the decorator).
+    Scalar API matches `bot.helpers.derived_features.compute_hour_sin_cos`.
+    The cal_mlp helper additionally accepts a numpy/pandas Series for
+    DataFrame-side extract paths (extract_data.py, sim_pnl.py).
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location("cal_mlp_features", FEATURES_PY)
@@ -168,12 +168,8 @@ def test_hour_features_helper_exists():
     assert callable(mod.compute_hour_features)
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_hour_features_helper_correctness():
-    """compute_hour_features must agree with sin(2π·h/24), cos(2π·h/24).
-
-    Until A.1b lands, this test FAILS (helper doesn't exist).
-    """
+    """compute_hour_features must agree with sin(2π·h/24), cos(2π·h/24)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("cal_mlp_features", FEATURES_PY)
     assert spec is not None and spec.loader is not None
@@ -197,32 +193,58 @@ def test_hour_features_helper_correctness():
     assert c == pytest.approx(0.0, abs=1e-12)
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_no_inline_hour_sin_cos_in_other_sites():
-    """After A.1b refactor, none of the 3 inline hour_sin/cos sites survive.
+    """No inline `sin|cos(...pi...24...)` survives in the 4 tracked drift sites.
 
-    AST-walks scripts/cal_mlp/{extract_data,post_hoc_processor,integration}.py
-    for `sin|cos(2*pi*X/24)` patterns. Flags any survivor.
+    AST-walks scripts/cal_mlp/{extract_data,post_hoc_processor,integration,
+    sim_pnl}.py for any `Call` whose func is `<np|math|_math>.<sin|cos>`
+    AND whose argument subtree references BOTH `pi` (as `Attribute(attr='pi')`)
+    AND the constant `24` / `24.0`. This catches all natural drift variants
+    (bare `2`, argument-order swap `pi*2*h/24`, regrouped `2*pi/24*h`,
+    constant-folded `0.2617993878*h` — wait, constant-folded variants don't
+    reference pi by name and slip through, but they require a deliberate
+    bypass that no reasonable refactor would produce; widening to catch
+    constant-folded forms would over-match unrelated code).
 
-    Until A.1b lands, this test FAILS (6 inline sites still present:
-    3 primary train/serve + 3 sister scripts surfaced in R2 adv 2026-05-12).
+    Post-A.1b: all 4 sites route through `features.compute_hour_features`.
     """
-    # Match `sin(2 * pi * X / 24)` or `cos(2 * pi * X / 24)` with any spacing.
-    pattern = re.compile(
-        r"(?:np|math|_math)\.(?:sin|cos)\s*\(\s*2\.0?\s*\*\s*(?:np|math|_math)\.pi\s*\*\s*\w+\s*/\s*24(?:\.0)?\s*\)"
-    )
     survivors = []
     for path in HOUR_SINCOS_DRIFT_SITES:
-        for i, line in enumerate(_read(path).splitlines(), start=1):
-            if pattern.search(line):
-                survivors.append(f"{path.relative_to(REPO_ROOT)}:{i}: {line.strip()}")
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr in ("sin", "cos")):
+                continue
+            # Verify the namespace is one of the math libraries (skip e.g.
+            # asyncio.sin or unrelated `.sin()` method calls).
+            ns = func.value
+            if not (isinstance(ns, ast.Name) and ns.id in ("np", "math", "_math")):
+                continue
+            # Walk the argument subtree(s) for both `pi` reference + `24` const.
+            has_pi = False
+            has_24 = False
+            for arg in node.args:
+                for child in ast.walk(arg):
+                    if isinstance(child, ast.Attribute) and child.attr == "pi":
+                        has_pi = True
+                    if isinstance(child, ast.Constant) and isinstance(child.value, (int, float)):
+                        if float(child.value) == 24.0:
+                            has_24 = True
+                if has_pi and has_24:
+                    break
+            if has_pi and has_24:
+                survivors.append(
+                    f"{path.relative_to(REPO_ROOT)}:{node.lineno}: "
+                    f"{ns.id}.{func.attr}(...) call with pi + 24 inline"
+                )
     assert not survivors, (
-        "Inline hour_sin/cos formulas still present (A.1b not yet shipped). "
-        "Replace each with the canonical helper "
-        "(`bot.helpers.derived_features.compute_hour_sin_cos` per Bit B.1a; "
-        "or `scripts/cal_mlp/features.compute_hour_features` if A.1b "
-        "introduces a thin cal_mlp-local wrapper). "
-        "Survivors:\n  " + "\n  ".join(survivors)
+        "Inline hour_sin/cos formulas reintroduced — call "
+        "`scripts/cal_mlp/features.compute_hour_features` (cal_mlp-local "
+        "wrapper, accepts scalar OR Series) or "
+        "`bot.helpers.derived_features.compute_hour_sin_cos` (scalar only) "
+        "instead. Survivors:\n  " + "\n  ".join(survivors)
     )
 
 
@@ -231,14 +253,12 @@ def test_no_inline_hour_sin_cos_in_other_sites():
 # ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_breakeven_gap_uses_canonical_helper():
     """integration.py must NOT inline `prob - market_price/100`.
 
-    The canonical formula lives in bot.helpers.derived_features.compute_derived_features.
-    integration.py:1287-1309 currently re-implements it inline.
-
-    Until A.1b lands, this test FAILS.
+    The canonical formula lives in
+    bot.helpers.derived_features.compute_derived_features; integration.py
+    must import and call it (mirroring bot/state.py:1713 + 2010).
     """
     src = _read(INTEGRATION_PY)
     # Match `<prob_var> - <market_price_var> / 100[.0]` patterns.
@@ -258,10 +278,9 @@ def test_breakeven_gap_uses_canonical_helper():
             continue
         real_matches.append(f"integration.py:{i}: {line}")
     assert not real_matches, (
-        "Inline prob_breakeven_gap formula still present in integration.py "
-        "(A.1b not yet shipped). Replace with "
-        "`from bot.helpers.derived_features import compute_derived_features` "
-        "and call the helper. Survivors:\n  " + "\n  ".join(real_matches)
+        "Inline prob_breakeven_gap formula reintroduced in integration.py. "
+        "Use `compute_derived_features(...)['prob_breakeven_gap']` instead. "
+        "Survivors:\n  " + "\n  ".join(real_matches)
     )
 
     # Also assert integration.py imports the canonical helper (not just
@@ -274,19 +293,16 @@ def test_breakeven_gap_uses_canonical_helper():
     )
     assert import_present, (
         "integration.py must import compute_derived_features from "
-        "bot.helpers.derived_features at module top (A.1b). Comment "
-        "mentions don't count — needs a real import statement."
+        "bot.helpers.derived_features at module top. Comment mentions "
+        "don't count — needs a real import statement."
     )
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_sigma_derivation_uses_canonical_helper():
     """integration.py must NOT inline `buf_pct / sigma_denom` sigma derivation.
 
-    The canonical formula lives in bot.helpers.derived_features.compute_derived_features.
-    integration.py:1289-1295 currently re-implements it inline.
-
-    Until A.1b lands, this test FAILS.
+    The canonical formula lives in
+    bot.helpers.derived_features.compute_derived_features.
     """
     src = _read(INTEGRATION_PY)
     # Inline pattern: `buf_pct = (spot - threshold) / threshold * 100` OR
@@ -302,24 +318,20 @@ def test_sigma_derivation_uses_canonical_helper():
         inline_evidence.append(f"sigma_denom assignment at byte {has_sigma_denom_assign.start()}")
 
     assert not inline_evidence, (
-        "Inline sigma derivation still present in integration.py "
-        "(A.1b not yet shipped). Replace with compute_derived_features call. "
+        "Inline sigma derivation reintroduced in integration.py. "
+        "Use `compute_derived_features(...)['spot_distance_to_strike_sigma']` "
+        "(then apply_sigma_winsor) instead. "
         "Evidence:\n  " + "\n  ".join(inline_evidence)
     )
 
 
-@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_integration_py_has_canonical_helper_call_site():
     """integration.py's serve path must CALL compute_derived_features.
 
     AST-walks integration.py looking for a `Call` node whose func is named
     `compute_derived_features` (either as a bare Name after `from ... import`
-    or attribute access `<mod>.compute_derived_features`). This is the
-    strongest TDD seal — comments mentioning the helper don't count, neither
-    does the import alone. There has to be a real call site replacing
-    integration.py:1287-1309's current inline formulas.
-
-    Until A.1b lands, this test FAILS.
+    or attribute access `<mod>.compute_derived_features`). Strongest seal —
+    comments mentioning the helper don't count, neither does the import alone.
 
     (Replaces the prior `test_compute_derived_features_runtime_parity` test,
     which was a canonical-vs-canonical tautology — caught by R1 adv review
@@ -336,9 +348,9 @@ def test_integration_py_has_canonical_helper_call_site():
                 call_sites.append(node.lineno)
     assert call_sites, (
         "integration.py must contain at least one Call to "
-        "compute_derived_features (A.1b refactor). Comment mentions + "
-        "import alone don't count — need an actual invocation that "
-        "replaces the inline buf_pct/sigma_denom + breakeven_gap formulas."
+        "compute_derived_features. Comment mentions + import alone don't "
+        "count — need an actual invocation that replaces the inline "
+        "buf_pct/sigma_denom + breakeven_gap formulas."
     )
 
 

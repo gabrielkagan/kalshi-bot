@@ -68,6 +68,7 @@ from features import (  # noqa: E402
     STC_BIN_CUTOFFS,
     asset_min_price,
     compute_cfg_fp,
+    compute_hour_features,
 )
 from normalize import fit_normstats, transform
 
@@ -423,10 +424,9 @@ def build_feature_frame(rows: list[dict]) -> pd.DataFrame:
     df['abs_spot_distance_to_strike_sigma'] = sd.abs()
     stc = df['seconds_to_close'].astype(np.float32)
     df['time_decayed_proximity'] = sd * (1.0 - stc / 900.0)
-    # Cyclic hour (sin/cos)
+    # Cyclic hour (sin/cos) — canonical helper, lock-step with serve path
     h = df['hour_of_day_utc'].astype(np.float32) % 24.0
-    df['hour_sin'] = np.sin(2.0 * np.pi * h / 24.0)
-    df['hour_cos'] = np.cos(2.0 * np.pi * h / 24.0)
+    df['hour_sin'], df['hour_cos'] = compute_hour_features(h)
     # Log-balance — column NAME is the post-transform identity; the VALUE
     # written here is raw cents. The `log_cents_to_dollars` transform
     # (`log1p(x/100)`) is applied later by `normalize.apply_norm` via

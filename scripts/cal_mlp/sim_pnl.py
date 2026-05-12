@@ -896,10 +896,11 @@ def _prepare_candidate_features(candidate_df: 'pd.DataFrame') -> 'pd.DataFrame':
     stc = candidate_df['seconds_to_close'].astype(np.float32)
     candidate_df['time_decayed_proximity'] = sd * (1.0 - stc / 900.0)
 
-    # Cyclic hour. mod-24 mirrors extract_data.py:404 exactly.
+    # Cyclic hour. Routes through canonical features.compute_hour_features
+    # so train (this path) and serve (integration.py) stay in lock-step.
+    from features import compute_hour_features
     h = candidate_df['hour_of_day_utc'].astype(np.float32) % 24.0
-    candidate_df['hour_sin'] = np.sin(2.0 * np.pi * h / 24.0)
-    candidate_df['hour_cos'] = np.cos(2.0 * np.pi * h / 24.0)
+    candidate_df['hour_sin'], candidate_df['hour_cos'] = compute_hour_features(h)
 
     return candidate_df
 

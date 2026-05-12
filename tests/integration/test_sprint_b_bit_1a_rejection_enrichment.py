@@ -9,8 +9,8 @@ features, not just the 9-col base schema):
   sigma_winsorize REAL        — winsorized spot_distance_to_strike_sigma,
                                 clipped to ±SIGMA_WINSOR_ABS_CAP (=25.0)
                                 via canonical helper to preserve
-                                train/serve invariant (the four-site
-                                cal_mlp lock-step).
+                                train/serve invariant (the cal_mlp
+                                lock-step surface).
   hour_sin REAL, hour_cos REAL — analytical 24h cyclic embedding,
                                 identical formula to cal_mlp
                                 extract_data.py / post_hoc_processor.py /
@@ -41,8 +41,8 @@ The 4 pre-gate rejection sites in `bot/scanner/__init__.py` covered:
   - no_best_ask               (line ~2205)
 
 Lock-step rule (bot/CLAUDE.md): hour_sin/hour_cos/sigma_winsorize/
-prob_breakeven_gap derivations MUST match the four cal_mlp anchors.
-This test pins numeric equivalence.
+prob_breakeven_gap derivations MUST match the cal_mlp lock-step
+surface. This test pins numeric equivalence.
 
 See kb/decisions/sprint-b-bit-1a-shipped-may12.md.
 """
@@ -247,16 +247,16 @@ class TestInsertRejectionEnrichment:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Numeric equivalence — bot.helpers MUST match cal_mlp's four-site lock-step.
+# Numeric equivalence — bot.helpers MUST match cal_mlp's lock-step surface.
 # ──────────────────────────────────────────────────────────────────────
 
 
 class TestCalMLPLockStepEquivalence:
     """Numeric outputs from bot.helpers MUST match cal_mlp/{extract_data,
-    post_hoc_processor, integration, features}. Any divergence is
-    train/serve skew (model trained on one distribution, served from
+    post_hoc_processor, integration, features, sim_pnl}. Any divergence
+    is train/serve skew (model trained on one distribution, served from
     another — see kb/failures/ws-cache-drift-... and bot/CLAUDE.md
-    "cal_mlp feature transforms (four-site lock-step)")."""
+    "cal_mlp feature transforms (lock-step)")."""
 
     def test_apply_sigma_winsor_matches_cal_mlp_features(self):
         """bot.helpers.derived_features.apply_sigma_winsor must clip

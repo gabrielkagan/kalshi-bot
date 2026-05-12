@@ -48,36 +48,43 @@ Any change to a feature transform — winsorize cap
 `prob_breakeven_gap` formula, sigma derivation — must keep all
 surfaces in lock-step in ONE commit. RCA refresh 2026-05-12 (Sprint
 A.1a RCA closeout; ticket `86b9vejnq`) revised the surface from the
-historical "four-site" framing to its actual shape.
+historical "four-site" framing to its actual shape, and **Sprint A.1b
+(ticket `86b9veppa`, 2026-05-12) closed the inline-drift surface** by
+routing all tracked cal_mlp sites through canonical helpers.
 
-**Drift surface — inline duplicate formulas (A.1b will refactor to
-helper calls; sister ticket `86b9veppa`):**
+**Drift surface — 4 tracked drift sites + 1 helper home (post-A.1b: all 4 call canonical helpers):**
 
-Primary train/serve paths (from RCA):
-1. `scripts/cal_mlp/extract_data.py` — hour_sin/cos inline; reads sigma + breakeven from DB
-2. `scripts/cal_mlp/post_hoc_processor.py` — hour_sin/cos inline; reads sigma + breakeven from DB
-3. `scripts/cal_mlp/integration.py` — hour_sin/cos inline; re-implements sigma + breakeven inline (the riskiest site — drift here = train/serve skew)
-4. `scripts/cal_mlp/features.py` — `SIGMA_WINSOR_ABS_CAP` constant home + `apply_sigma_winsor` helper home + `compute_cfg_fp` (captures sigma_winsor_abs_cap but NOT hour/breakeven/sigma formulas)
+Drift sites (pinned by `HOUR_SINCOS_DRIFT_SITES` in `tests/contracts/test_calmlp_lockstep.py`):
+1. `scripts/cal_mlp/extract_data.py` — `hour_sin/cos` via `features.compute_hour_features`; reads sigma + breakeven from DB
+2. `scripts/cal_mlp/post_hoc_processor.py` — `hour_sin/cos` via `features.compute_hour_features`; reads sigma + breakeven from DB
+3. `scripts/cal_mlp/integration.py` — `hour_sin/cos` via `features.compute_hour_features`; sigma + breakeven via `bot.helpers.derived_features.compute_derived_features` + `features.apply_sigma_winsor` (mirrors the train-time DB-write path at `bot/state.py:1713`/`2010`)
+4. `scripts/cal_mlp/sim_pnl.py` — `hour_sin/cos` via `features.compute_hour_features` (sister tracked site, added during A.1a R2 adv-review 2026-05-12; train-side sim-PnL backbone)
 
-Sister-script drift surface (surfaced in R2 adv review 2026-05-12):
-5. `scripts/cal_mlp/sim_pnl.py` — hour_sin/cos inline at ~L901-902 (the "mod-24 mirrors extract_data" comment is the deliberate-duplicate smell). Train-side sim-PnL backbone.
-6. `scripts/cal_mlp/backfill_offline.py` — hour_sin/cos inline at ~L140-141. Train-side historical backfill.
-7. `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py` — hour_sin/cos inline at ~L126-127. Serve-side diagnostic harness.
+Helper home (not a drift site — owning the formula IS the canonical change vehicle):
+- `scripts/cal_mlp/features.py` — `SIGMA_WINSOR_ABS_CAP` + `apply_sigma_winsor` + `compute_hour_features` home; `compute_cfg_fp` captures sigma_winsor_abs_cap
+
+Untracked dev artifacts (NOT in HOUR_SINCOS_DRIFT_SITES; ticket `86b9wjd3e` pending to track-or-delete):
+- `scripts/cal_mlp/backfill_offline.py`
+- `scripts/cal_mlp/mac_diagnostics/v2_live_audit/score_live_ws.py`
 
 **Canonical helper home:**
 
 - `bot/helpers/derived_features.py::compute_derived_features` — owns
   `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted
   in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4
-  (helpers-leaf). A.1b will replace `scripts/cal_mlp/integration.py`
-  inline formulas with calls to this helper.
+  (helpers-leaf). A.1b (2026-05-12) routed `scripts/cal_mlp/integration.py`
+  inline formulas through this helper.
+- `bot/helpers/derived_features.py::compute_hour_sin_cos` — scalar
+  hour-of-day cyclic encoding (Bit B.1a, 2026-05-12). Mirrored by
+  `scripts/cal_mlp/features.compute_hour_features` (A.1b) which accepts
+  scalar OR Series for DataFrame-side extract paths.
 
-**Helper-call sites (already correct — preserve when editing):**
+**Helper-call sites (preserve when editing):**
 
-- `bot/state.py:1926` — pre-DB-write `compute_derived_features` call
-  (replaces `bot/_impl.py:2192` which was deleted in Bit 9.3-iii.c)
+- `bot/state.py:1713` + `:2010` — pre-DB-write `compute_derived_features` calls (+ `:1723` `apply_sigma_winsor` on the returned sigma); replaces the pre-Bit-9.3-iii.c `bot/_impl.py:2192` site
 - `bot/engines/sports_engine.py` — 2 call sites for sports-engine evals
 - `scripts/backfill/backfill_extended_features.py` — backfill script
+- `scripts/cal_mlp/integration.py` — serve-path `should_block_tm96` (post-A.1b)
 
 Splitting → train/serve skew (model trained on one distribution,
 served from another). See `agent_docs/calibration_pipeline.md` "cal_mlp

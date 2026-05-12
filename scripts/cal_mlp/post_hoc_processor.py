@@ -232,7 +232,7 @@ class CalMLPPostHocProcessor:
         # ±25 sees ±3,337 in prod (terminal-STC blowup). All three derived
         # values (abs, tdp, the row_features sigma key itself) MUST come
         # from the clipped value.
-        from features import apply_sigma_winsor
+        from features import apply_sigma_winsor, compute_hour_features
         spot_dist_sigma = apply_sigma_winsor(spot_dist_sigma)
 
         if spot_dist_sigma is not None:
@@ -245,6 +245,7 @@ class CalMLPPostHocProcessor:
 
         # numpy.digitize requires numpy; we already have it via integration.
         import numpy as np
+        _hsin, _hcos = compute_hour_features(hour)
         row_features = {
             'price_tier': int(np.digitize(market_price, [80, 90, 96], right=True)),
             'stc_bucket': int(np.digitize(seconds_to_close, [120, 300, 600], right=True)),
@@ -254,8 +255,8 @@ class CalMLPPostHocProcessor:
             'abs_spot_distance_to_strike_sigma': abs_dist,
             'time_decayed_proximity': tdp,
             'prob_breakeven_gap': prob_breakeven_gap,
-            'hour_sin': math.sin(2.0 * math.pi * hour / 24.0),
-            'hour_cos': math.cos(2.0 * math.pi * hour / 24.0),
+            'hour_sin': _hsin,
+            'hour_cos': _hcos,
             'seconds_to_close': seconds_to_close,
         }
 

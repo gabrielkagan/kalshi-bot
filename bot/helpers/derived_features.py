@@ -1,21 +1,27 @@
 """Bit 3.2: Derived feature helpers (Tier 5), extracted from bot/_impl.py.
 
 Sprint B Bit B.1a (2026-05-12) added `apply_sigma_winsor`,
-`SIGMA_WINSOR_ABS_CAP`, and `compute_hour_sin_cos`. These mirror the
-cal_mlp four-site canonical anchors:
+`SIGMA_WINSOR_ABS_CAP`, and `compute_hour_sin_cos`. Sprint A Bit A.1b
+(2026-05-12, ticket `86b9veppa`) routed all tracked cal_mlp sites through
+canonical helpers (closing the inline-drift surface). Lock-step surface
+(mirrors bot/CLAUDE.md "cal_mlp feature transforms (lock-step)"):
 
-  scripts/cal_mlp/features.py            (SIGMA_WINSOR_ABS_CAP + apply_sigma_winsor)
-  scripts/cal_mlp/extract_data.py        (df['hour_sin']/['hour_cos'] derivation)
-  scripts/cal_mlp/post_hoc_processor.py  (math.sin(2*pi*hour/24) inline form)
-  scripts/cal_mlp/integration.py         (_math.sin(2.0*_math.pi*int_hour/24.0))
+  Drift sites (4 — pinned by HOUR_SINCOS_DRIFT_SITES in test_calmlp_lockstep.py):
+    scripts/cal_mlp/extract_data.py        (calls features.compute_hour_features)
+    scripts/cal_mlp/post_hoc_processor.py  (calls features.compute_hour_features)
+    scripts/cal_mlp/integration.py         (calls features.compute_hour_features + compute_derived_features + apply_sigma_winsor)
+    scripts/cal_mlp/sim_pnl.py             (calls features.compute_hour_features; sister site)
+  Helper home (not a drift site):
+    scripts/cal_mlp/features.py            (SIGMA_WINSOR_ABS_CAP + apply_sigma_winsor + compute_hour_features homes)
 
-Any change to the constant or formula MUST update all four cal_mlp sites
-in the same commit (bot/CLAUDE.md "cal_mlp feature transforms (four-site
-lock-step)"). The mirrored bot.helpers copy keeps the bot package off
+Any change to a constant or formula MUST update all surfaces in
+lock-step in ONE commit (bot/CLAUDE.md "cal_mlp feature transforms
+(lock-step)"). The mirrored bot.helpers copy keeps the bot package off
 the scripts/cal_mlp import path (which transitively loads torch/numpy
 heavyweight deps); numeric equivalence is pinned by
-tests/integration/test_sprint_b_bit_1a_rejection_enrichment.py and
-tests/integration/test_calmlp_sigma_winsorize.py.
+tests/contracts/test_calmlp_lockstep.py (AST + helper-call seal),
+tests/integration/test_sprint_b_bit_1a_rejection_enrichment.py
+(numeric parity), and tests/integration/test_calmlp_sigma_winsorize.py.
 """
 import math
 from typing import Dict, Optional, Tuple
@@ -56,17 +62,20 @@ def apply_sigma_winsor(sd: Optional[float]) -> Optional[float]:
 def compute_hour_sin_cos(
     hour_of_day_utc: Optional[int],
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Cyclic 24h embedding of `hour_of_day_utc`. Mirrors:
+    """Cyclic 24h embedding of `hour_of_day_utc`. Scalar canonical helper.
 
-      scripts/cal_mlp/integration.py:1430-1431
-      scripts/cal_mlp/extract_data.py:428-429
-      scripts/cal_mlp/post_hoc_processor.py:257-258
+    Lock-step partner of `scripts/cal_mlp/features.compute_hour_features`
+    (A.1b 2026-05-12) which wraps the same formula and `None` passthrough,
+    and additionally accepts a numpy/pandas Series for DataFrame-side
+    extract paths. Both must produce byte-identical outputs for the same
+    scalar (including `None`) input.
 
     Returns (None, None) on None input — NULL passthrough so consumers
     see honest missing values rather than a synthesized 0/1 point.
 
-    The float cast is load-bearing to match cal_mlp/integration.py which
-    converts hour to `float(now_dt.hour)` before the trig multiply.
+    The float cast is load-bearing to match cal_mlp's call sites which
+    convert hour to `float(now_dt.hour)` / `float(dt.hour)` before the
+    trig multiply.
     """
     if hour_of_day_utc is None:
         return (None, None)
