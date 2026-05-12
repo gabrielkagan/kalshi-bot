@@ -6,14 +6,14 @@
 --   (_compute_cross_asset_spot_snapshot) became ASSETS-driven in T1 and
 --   ALREADY emits all six cross-asset spot keys today — but the consumer
 --   chain in bot/state.py + bot/snapshots/supabase_sync.py + the G-2 backfill harness in
---   scripts/shadow_coverage_backfill.py still only knew about
+--   scripts/backfill/shadow_coverage_backfill.py still only knew about
 --   btc/eth/sol/xrp. The producer's hype/doge keys were silently dropped
 --   on the floor (consumer block at bot/state.py:1833-1840).
 --
 --   Bit 2 closes the gap: bot/state.py adds 2 ALTER TABLE ADD COLUMN
 --   entries + extends signature, consumer, INSERT, VALUES, ON CONFLICT,
 --   and parameter tuple. supabase_sync._EVAL_COLUMNS gains the 2 fields.
---   scripts/shadow_coverage_backfill.py UPDATE statement extends to 6.
+--   scripts/backfill/shadow_coverage_backfill.py UPDATE statement extends to 6.
 --   This migration ships the matching 2 columns on the remote.
 --
 --   Per supabase_sync._validate_schema_parity (and the 2026-04-04 incident

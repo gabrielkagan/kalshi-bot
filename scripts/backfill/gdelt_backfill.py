@@ -21,9 +21,9 @@ Mirrors the G-2/G-4/G-5 idempotency + checkpoint pattern in
     "backfilled" forever and never get retried.
 
 Usage:
-  python3 scripts/gdelt_backfill.py --db state.db
-  python3 scripts/gdelt_backfill.py --db state.db --dry-run
-  python3 scripts/gdelt_backfill.py --db state.db --batch-size 50 --sleep-ms 250
+  python3 scripts/backfill/gdelt_backfill.py --db state.db
+  python3 scripts/backfill/gdelt_backfill.py --db state.db --dry-run
+  python3 scripts/backfill/gdelt_backfill.py --db state.db --batch-size 50 --sleep-ms 250
 
 Design doc: kb/decisions/phase-h4a-gdelt-may02.md.
 Master plan: kb/decisions/shadow-coverage-phase-h-data-recovery-may02.md.

@@ -22,7 +22,7 @@
 --   shaped at z-score scale (the bot's decisions are on 15M markets;
 --   on-chain dynamics evolve much slower than that).
 --
---   Backfill: scripts/glassnode_backfill.py (date-bucketed cache: one
+--   Backfill: scripts/backfill/glassnode_backfill.py (date-bucketed cache: one
 --   API call per asset per day, then one z-score per row from the
 --   trailing-30d window in memory).
 --

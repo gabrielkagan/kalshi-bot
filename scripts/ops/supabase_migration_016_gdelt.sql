@@ -12,7 +12,7 @@
 --   Source: https://api.gdeltproject.org/api/v2/doc/doc?query=...&mode=ArtList
 --   (free, no auth, indexed since 2015 — covers our entire backfill window).
 --
---   Backfill: scripts/gdelt_backfill.py (date+hour+asset bucket cache —
+--   Backfill: scripts/backfill/gdelt_backfill.py (date+hour+asset bucket cache —
 --   many rows share the same hour bucket, so cache amortizes API cost).
 --
 --   Design doc: kb/decisions/phase-h4a-gdelt-may02.md.

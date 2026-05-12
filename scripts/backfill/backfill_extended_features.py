@@ -3,7 +3,7 @@
 evaluated_opportunities rows.
 
 Usage:
-    python3 scripts/backfill_extended_features.py [--dry-run] [--db state.db] [--limit N]
+    python3 scripts/backfill/backfill_extended_features.py [--dry-run] [--db state.db] [--limit N]
 
 Tier 4 fields populated from `evaluation_time` column (pure timestamp derivation):
     hour_of_day_utc, day_of_week, is_weekend, minutes_since_us_open,

@@ -6,7 +6,7 @@ Follows SPX audit pattern: --since, --json, --db flags, PRAGMA busy_timeout.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/weather_shadow_audit.py [--db /tmp/state.db] [--since 2026-03-02T16:54:00] [--json weather_audit.json]
+    python3 scripts/audit/weather_shadow_audit.py [--db /tmp/state.db] [--since 2026-03-02T16:54:00] [--json weather_audit.json]
 """
 
 import argparse

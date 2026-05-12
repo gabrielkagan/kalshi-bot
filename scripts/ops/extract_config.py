@@ -11,8 +11,8 @@ Sources (post-Bit-12.1, 2026-05-12):
     - bot/engines/sports_data.py
 
 Usage:
-    python3 scripts/extract_config.py > config.json
-    python3 scripts/extract_config.py --diff config_previous.json
+    python3 scripts/ops/extract_config.py > config.json
+    python3 scripts/ops/extract_config.py --diff config_previous.json
 """
 
 import ast

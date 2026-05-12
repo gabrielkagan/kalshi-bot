@@ -1185,7 +1185,7 @@ class MainLoop:
                 )
 
             # Sprint B Bit B.2b — 90-day retention on order_decision_snapshots.
-            # Daily housekeeping hook (mirrors scripts/audit_cron.prune_old).
+            # Daily housekeeping hook (mirrors scripts/audit/audit_cron.prune_old).
             # Defensive: own try/except so a prune failure can't poison the
             # daily-summary path.
             try:

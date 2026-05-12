@@ -2,7 +2,7 @@
 
 Run as::
 
-    python3 scripts/dump_public_api.py
+    python3 scripts/audit/dump_public_api.py
     # or: make api-snapshot-regen
 
 Writes ``tests/contracts/public_api.json``. Consumed by

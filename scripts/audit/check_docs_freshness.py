@@ -6,8 +6,8 @@ and against hardcoded cross-file checks (sports, weather, etc.).
 Returns exit code 1 if any values are stale. Designed to run in CI or locally.
 
 Usage:
-    python3 scripts/check_docs_freshness.py
-    python3 scripts/check_docs_freshness.py --strict  # fail on unreplaced placeholders too
+    python3 scripts/audit/check_docs_freshness.py
+    python3 scripts/audit/check_docs_freshness.py --strict  # fail on unreplaced placeholders too
 """
 
 import json

@@ -80,7 +80,7 @@
 --
 -- Operator: apply via Supabase SQL editor or:
 --   PGPASSWORD="$SUPABASE_DB_PASSWORD" psql "$SUPABASE_DB_URL" \
---     -f scripts/supabase_migration_013_bot_state_snapshot.sql
+--     -f scripts/ops/supabase_migration_013_bot_state_snapshot.sql
 --
 -- Idempotent — IF NOT EXISTS guard.
 

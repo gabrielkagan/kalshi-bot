@@ -10,13 +10,13 @@ Designed to be rerun on updated data — outputs standardized alpha discovery re
 Usage:
     # Run locally against copied DB:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/sports_alpha_research.py --db /tmp/state.db
+    python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db
 
     # Filter to current regime:
-    python3 scripts/sports_alpha_research.py --db /tmp/state.db --regime auto
+    python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db --regime auto
 
     # Focus on a sport group:
-    python3 scripts/sports_alpha_research.py --db /tmp/state.db --sport-group basketball
+    python3 scripts/audit/sports_alpha_research.py --db /tmp/state.db --sport-group basketball
 """
 
 import argparse

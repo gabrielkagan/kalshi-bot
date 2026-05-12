@@ -2,7 +2,7 @@
 """Monitor 15M market activity and alert when markets go unusually quiet.
 
 Designed to run as a cron job every 15 minutes on VPS:
-    */15 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/quiet_market_monitor.py --db state.db
+    */15 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/audit/quiet_market_monitor.py --db state.db
 
 Sends Telegram alerts when:
   - CRITICAL: Zero evals of any kind for 2+ hours during weekday market hours (14-23 UTC)

@@ -4,7 +4,7 @@ Shadow Strategy Evaluator — evaluates all shadow strategies and recommends
 promotion decisions based on win rate, PnL, and statistical confidence.
 
 Usage:
-    python3 scripts/shadow_eval.py --db state.db --days 14
+    python3 scripts/audit/shadow_eval.py --db state.db --days 14
 """
 
 import argparse

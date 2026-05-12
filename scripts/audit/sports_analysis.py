@@ -6,7 +6,7 @@ Evaluates shadow signal quality, CLV, and readiness for live trading.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python scripts/sports_analysis.py [--db /tmp/state.db]
+    python scripts/audit/sports_analysis.py [--db /tmp/state.db]
 """
 
 import argparse

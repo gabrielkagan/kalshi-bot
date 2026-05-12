@@ -18,14 +18,14 @@ poison batch); per-pass errors don't crash the loop.
 This runs as a SEPARATE process from bot.py to keep blast radius small.
 
 Usage (one-shot):
-    python3 scripts/external_market_poller.py --db state.db --once
+    python3 scripts/backfill/external_market_poller.py --db state.db --once
 
 Usage (continuous, systemd-style):
-    python3 scripts/external_market_poller.py --db state.db
+    python3 scripts/backfill/external_market_poller.py --db state.db
         # polls every 60s until SIGTERM
 
 Cron (alternative to continuous):
-    * * * * * cd ~/kalshi-bot-repo && python3 scripts/external_market_poller.py \\
+    * * * * * cd ~/kalshi-bot-repo && python3 scripts/backfill/external_market_poller.py \\
         --db state.db --once >> logs/external_poller.log 2>&1
 """
 

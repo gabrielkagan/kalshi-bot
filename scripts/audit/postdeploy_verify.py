@@ -25,9 +25,9 @@ Design:
   - Run with --strict-all to escalate warnings to failures
 
 Usage on VPS (called by workflow):
-    python3 scripts/postdeploy_verify.py --db /home/botuser/kalshi-bot/state.db
-    python3 scripts/postdeploy_verify.py --db state.db --strict-all
-    python3 scripts/postdeploy_verify.py --db state.db --dry-run
+    python3 scripts/audit/postdeploy_verify.py --db /home/botuser/kalshi-bot/state.db
+    python3 scripts/audit/postdeploy_verify.py --db state.db --strict-all
+    python3 scripts/audit/postdeploy_verify.py --db state.db --dry-run
 
 See kb/concepts/contract-testing.md Tier 2 #4.
 """

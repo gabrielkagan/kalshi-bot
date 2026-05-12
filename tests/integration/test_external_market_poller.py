@@ -37,7 +37,7 @@ def _import_module():
     Cache the module after first import; subsequent calls return the
     same instance, preserving fixture mutations.
     """
-    if str(REPO / 'scripts') not in sys.path:
+    if str(REPO / 'scripts' / 'backfill') not in sys.path:
         sys.path.insert(0, str(REPO / 'scripts' / 'backfill'))
     if 'external_market_poller' not in sys.modules:
         import external_market_poller  # noqa: F401  type: ignore

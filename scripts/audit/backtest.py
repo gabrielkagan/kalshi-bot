@@ -11,19 +11,19 @@ Two modes:
 
 Usage:
     # Filter mode (default) — what if we capped/gated actual trades?
-    python3 scripts/backtest.py --db /tmp/state.db --since 2026-03-30
+    python3 scripts/audit/backtest.py --db /tmp/state.db --since 2026-03-30
 
     # Sweep SOL interventions
-    python3 scripts/backtest.py --db /tmp/state.db --since 2026-03-30 --sweep sol
+    python3 scripts/audit/backtest.py --db /tmp/state.db --since 2026-03-30 --sweep sol
 
     # Expansion mode — what if we loosened edge thresholds?
-    python3 scripts/backtest.py --db /tmp/state.db --since 2026-03-30 --mode expand --sweep edge
+    python3 scripts/audit/backtest.py --db /tmp/state.db --since 2026-03-30 --mode expand --sweep edge
 
     # Gate an asset
-    python3 scripts/backtest.py --db /tmp/state.db --since 2026-03-30 --gate SOL
+    python3 scripts/audit/backtest.py --db /tmp/state.db --since 2026-03-30 --gate SOL
 
     # With train/validation split
-    python3 scripts/backtest.py --db /tmp/state.db --since 2026-03-30 --validate
+    python3 scripts/audit/backtest.py --db /tmp/state.db --since 2026-03-30 --validate
 """
 
 import argparse

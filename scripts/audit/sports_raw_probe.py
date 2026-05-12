@@ -7,7 +7,7 @@ Compares:
 
 Usage on VPS:
   cd /home/botuser/kalshi-bot-repo && set -a && source .env && set +a && \
-    ./venv/bin/python3 scripts/sports_raw_probe.py
+    ./venv/bin/python3 scripts/audit/sports_raw_probe.py
 """
 import json
 import os

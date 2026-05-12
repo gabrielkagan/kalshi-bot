@@ -7,9 +7,9 @@ config sensitivity, and data sufficiency.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python scripts/15m_live_audit.py [--db /tmp/state.db] [--since 2026-02-28]
-    python scripts/15m_live_audit.py --db /tmp/state.db --regime auto
-    python scripts/15m_live_audit.py --db /tmp/state.db --asset XRP
+    python scripts/audit/15m_live_audit.py [--db /tmp/state.db] [--since 2026-02-28]
+    python scripts/audit/15m_live_audit.py --db /tmp/state.db --regime auto
+    python scripts/audit/15m_live_audit.py --db /tmp/state.db --asset XRP
 """
 
 import argparse

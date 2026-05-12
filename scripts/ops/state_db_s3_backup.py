@@ -336,7 +336,7 @@ def _run_rclone(cmd: List[str]) -> subprocess.CompletedProcess:
                 "rclone binary not found in PATH. "
                 "Install on the VPS with: sudo apt-get install -y rclone "
                 "(or single-binary: curl https://rclone.org/install.sh | sudo bash). "
-                "Then re-run scripts/setup_state_db_backup_timer.sh."
+                "Then re-run scripts/ops/setup_state_db_backup_timer.sh."
             ) from e
         raise
 

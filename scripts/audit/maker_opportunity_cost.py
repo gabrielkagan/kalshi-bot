@@ -7,9 +7,9 @@ with order_outcome='unfilled') joined to settled_trades for settlement
 outcomes.
 
 Usage:
-    python3 scripts/maker_opportunity_cost.py --db /tmp/state.db
-    python3 scripts/maker_opportunity_cost.py --db /tmp/state.db --since 2026-03-03
-    python3 scripts/maker_opportunity_cost.py --db /tmp/state.db --asset SOL
+    python3 scripts/audit/maker_opportunity_cost.py --db /tmp/state.db
+    python3 scripts/audit/maker_opportunity_cost.py --db /tmp/state.db --since 2026-03-03
+    python3 scripts/audit/maker_opportunity_cost.py --db /tmp/state.db --asset SOL
 """
 
 import argparse

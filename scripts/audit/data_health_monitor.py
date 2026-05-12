@@ -6,9 +6,9 @@ and DB integrity across all systems. Optionally sends Telegram alerts for
 critical issues.
 
 Usage:
-    python3 scripts/data_health_monitor.py --db /path/to/state.db
-    python3 scripts/data_health_monitor.py --db /path/to/state.db --telegram
-    python3 scripts/data_health_monitor.py --db /path/to/state.db --verbose
+    python3 scripts/audit/data_health_monitor.py --db /path/to/state.db
+    python3 scripts/audit/data_health_monitor.py --db /path/to/state.db --telegram
+    python3 scripts/audit/data_health_monitor.py --db /path/to/state.db --verbose
 
 Designed to run as a cron job every 30 minutes on VPS.
 """

@@ -1601,7 +1601,7 @@ class StateManager:
         in the same day prunes 0 the second time. Invoked from
         MainLoop._log_daily_summary (daily housekeeping hook).
 
-        Mirrors scripts/audit_cron.prune_old() pattern. Volume estimate
+        Mirrors scripts/audit/audit_cron.prune_old() pattern. Volume estimate
         ~500-1000 rows/day → ~45-90K rows steady-state at 90d.
         """
         cutoff = (datetime.datetime.now(timezone.utc)

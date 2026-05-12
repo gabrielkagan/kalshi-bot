@@ -9,17 +9,17 @@ Output is organized per-sport so each league can be evaluated independently.
 
 Usage:
     # Run on VPS directly:
-    python3 scripts/sports_shadow_audit.py
+    python3 scripts/audit/sports_shadow_audit.py
 
     # Run locally against copied DB:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/sports_shadow_audit.py --db /tmp/state.db
+    python3 scripts/audit/sports_shadow_audit.py --db /tmp/state.db
 
     # Filter to current regime (since a specific date):
-    python3 scripts/sports_shadow_audit.py --since 2026-03-01
+    python3 scripts/audit/sports_shadow_audit.py --since 2026-03-01
 
     # Output JSON artifact for dashboard/analyst consumption:
-    python3 scripts/sports_shadow_audit.py --json sports_audit_results.json
+    python3 scripts/audit/sports_shadow_audit.py --json sports_audit_results.json
 """
 
 import argparse

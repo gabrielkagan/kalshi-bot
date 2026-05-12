@@ -8,7 +8,7 @@ Reads evaluated_opportunities and computes a scorecard for the buy-low strategy:
 This is offline analysis only. No trading decisions are made.
 
 Usage:
-    python3 scripts/buy_low_analysis.py [--db state.db] [--days 7] [--min-depth 10]
+    python3 scripts/audit/buy_low_analysis.py [--db state.db] [--days 7] [--min-depth 10]
 
 Validation criteria for going live:
     - n >= 50 entries at chosen entry/exit pair

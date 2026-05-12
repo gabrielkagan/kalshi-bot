@@ -27,7 +27,7 @@ Mirrors mclaude (github.com/AnastasiyaW/mclaude):
     reclaim is logged to .claude/locks/reclaim.log for forensic audit.
   * Malformed JSON → quarantined sidecar (.quarantine), reclaim audited.
 
-Stdlib-only by deliberate choice (mirrors scripts/_state_db_snapshot.py).
+Stdlib-only by deliberate choice (mirrors scripts/ops/_state_db_snapshot.py).
 No `bot.*` imports — this is leaf infrastructure.
 
 iCloud caveat

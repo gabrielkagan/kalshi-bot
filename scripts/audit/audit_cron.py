@@ -8,8 +8,8 @@ one row per system into the audit_snapshots table. Prunes rows older than
 7 days.
 
 Usage:
-    python3 scripts/audit_cron.py                   # default: ~/kalshi-bot-repo/state.db
-    python3 scripts/audit_cron.py --db /tmp/state.db # custom path
+    python3 scripts/audit/audit_cron.py                   # default: ~/kalshi-bot-repo/state.db
+    python3 scripts/audit/audit_cron.py --db /tmp/state.db # custom path
 """
 
 import argparse

@@ -8,7 +8,7 @@ Answers three questions without deploying anything:
   Q3 (Layer 3b): Do the market orderbooks actually have no-side bids?
 
 Run on the VPS:  cd /opt/kalshi-bot && source venv/bin/activate && \
-    source .env && python3 scripts/sports_diagnose.py
+    source .env && python3 scripts/audit/sports_diagnose.py
 """
 import json
 import os

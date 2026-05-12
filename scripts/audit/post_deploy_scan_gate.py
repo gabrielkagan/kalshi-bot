@@ -32,7 +32,7 @@ offset (NOT `Z` suffix as other bot/_impl.py write sites use). julianday()
 handles both forms identically.
 
 Why this is a separate script (not inline in the workflow): mirrors
-`scripts/postdeploy_verify.py` and `scripts/audit_cron.py`
+`scripts/audit/postdeploy_verify.py` and `scripts/audit/audit_cron.py`
 conventions, and the VPS doesn't have the `sqlite3` CLI installed
 (it relies on Python's stdlib `sqlite3` module instead).
 """
@@ -49,8 +49,8 @@ def query_startup_count(db_path: str, window_seconds: int) -> int:
     Uses Python's sqlite3 module (stdlib) — no `sqlite3` CLI required
     on the VPS. Sets `PRAGMA journal_mode=WAL` and
     `PRAGMA busy_timeout=10000` explicitly per scripts/CLAUDE.md
-    convention; matches the pattern in `scripts/postdeploy_verify.py`
-    and `scripts/audit_cron.py`. Connection-level `timeout=10.0` is
+    convention; matches the pattern in `scripts/audit/postdeploy_verify.py`
+    and `scripts/audit/audit_cron.py`. Connection-level `timeout=10.0` is
     Python's wrapper retry — distinct from SQLite's internal
     busy_timeout, which interacts with WAL-mode reader/writer
     concurrency. Sister scripts pin both, so this gate does too.

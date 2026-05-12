@@ -7,7 +7,7 @@ NIG distributions per asset, and writes the best-fit parameters to
 dist_config.json.
 
 Usage:
-    python3 scripts/calibrate_dist.py
+    python3 scripts/ops/calibrate_dist.py
 """
 
 import json

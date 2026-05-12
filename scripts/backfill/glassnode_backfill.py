@@ -33,8 +33,8 @@ total for the entire backfill window) — caching is at (asset, metric)
 granularity, not per-row.
 
 Usage:
-  python3 scripts/glassnode_backfill.py --db state.db
-  python3 scripts/glassnode_backfill.py --db state.db --dry-run
+  python3 scripts/backfill/glassnode_backfill.py --db state.db
+  python3 scripts/backfill/glassnode_backfill.py --db state.db --dry-run
 
 Design doc: kb/decisions/phase-h4b-glassnode-may02.md.
 Master plan: kb/decisions/shadow-coverage-phase-h-data-recovery-may02.md.

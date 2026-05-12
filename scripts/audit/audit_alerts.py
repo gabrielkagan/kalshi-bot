@@ -5,8 +5,8 @@ Reads JSON artifacts produced by the 5 audit scripts and checks
 health invariants. Sends Telegram alerts on violations.
 
 Usage:
-    python3 scripts/audit_alerts.py --json-dir /tmp/audit_artifacts/ --dry-run
-    python3 scripts/audit_alerts.py --json-dir /tmp/audit_artifacts/ --telegram
+    python3 scripts/audit/audit_alerts.py --json-dir /tmp/audit_artifacts/ --dry-run
+    python3 scripts/audit/audit_alerts.py --json-dir /tmp/audit_artifacts/ --telegram
 """
 
 import argparse

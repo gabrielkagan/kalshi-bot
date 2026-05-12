@@ -8,10 +8,10 @@ counterfactual simulations with statistical robustness checks.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python scripts/15m_alpha_research.py [--db /tmp/state.db] [--regime auto]
-    python scripts/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03
-    python scripts/15m_alpha_research.py --db /tmp/state.db --asset BTC
-    python scripts/15m_alpha_research.py --db /tmp/state.db --section calibration
+    python scripts/audit/15m_alpha_research.py [--db /tmp/state.db] [--regime auto]
+    python scripts/audit/15m_alpha_research.py --db /tmp/state.db --since 2026-03-03
+    python scripts/audit/15m_alpha_research.py --db /tmp/state.db --asset BTC
+    python scripts/audit/15m_alpha_research.py --db /tmp/state.db --section calibration
 """
 
 import argparse

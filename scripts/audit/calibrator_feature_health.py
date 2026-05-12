@@ -17,12 +17,12 @@ v2 K=1 train. Without it, we'd discover a silent NULL spike at train time
 and wait 3+ weeks for cleaner data.
 
 Usage:
-    python3 scripts/calibrator_feature_health.py --db /path/to/state.db
-    python3 scripts/calibrator_feature_health.py --db ... --telegram
-    python3 scripts/calibrator_feature_health.py --db ... --verbose
+    python3 scripts/audit/calibrator_feature_health.py --db /path/to/state.db
+    python3 scripts/audit/calibrator_feature_health.py --db ... --telegram
+    python3 scripts/audit/calibrator_feature_health.py --db ... --verbose
 
 Cron: every 6 hours
-    0 */6 * * * cd ~/kalshi-bot-repo && python3 scripts/calibrator_feature_health.py \\
+    0 */6 * * * cd ~/kalshi-bot-repo && python3 scripts/audit/calibrator_feature_health.py \\
         --db state.db --telegram >> logs/calmlp_feature_health.log 2>&1
 
 Exit codes:

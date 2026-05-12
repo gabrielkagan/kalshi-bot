@@ -15,10 +15,10 @@ re-samples and reviews the diff. See the runbook in
 
 Mac dev workflow:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/sample_engine_inputs.py --db /tmp/state.db
+    python3 scripts/ops/sample_engine_inputs.py --db /tmp/state.db
 
 VPS workflow:
-    python3 scripts/sample_engine_inputs.py --db ~/kalshi-bot-repo/state.db
+    python3 scripts/ops/sample_engine_inputs.py --db ~/kalshi-bot-repo/state.db
 
 Output: ``tests/fixtures/engine_inputs.parquet`` (~80KB at n=1000).
 """

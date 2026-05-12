@@ -71,8 +71,8 @@ Safe under live bot writes — the live bot always writes 'live_ws' on
 insert (per Phase G-6 bot.py edit), so any new rows already have a value.
 
 Usage:
-  python3 scripts/stamp_data_provenance.py --db state.db
-  python3 scripts/stamp_data_provenance.py --db state.db --dry-run
+  python3 scripts/backfill/stamp_data_provenance.py --db state.db
+  python3 scripts/backfill/stamp_data_provenance.py --db state.db --dry-run
 """
 
 from __future__ import annotations

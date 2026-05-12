@@ -11,7 +11,7 @@ compares against positions.count / settled_trades.pnl_cents.
 Output: one row per divergence, plus a summary of restated PnL.
 
 Usage:
-  python3 scripts/reconcile_ioc_losses.py [--days 30] [--product 15m] [--limit N]
+  python3 scripts/audit/reconcile_ioc_losses.py [--days 30] [--product 15m] [--limit N]
 
 Requires the same env vars as bot.py:
   KALSHI_API_KEY (or KALSHI_API_KEY_ID)

@@ -1,7 +1,7 @@
 """SHARED helper — A.7 (86b9vejrj) + Phase 0a (86b9vd9e3) both consume.
 
 A.7 = scripts/cal_mlp/snapshot_state_db.py (extract-time, local, content-addressed).
-Phase 0a = scripts/state_db_s3_backup.py (operational, nightly, S3-bound).
+Phase 0a = scripts/ops/state_db_s3_backup.py (operational, nightly, S3-bound).
 
 Both take an online SQLite backup of state.db, SHA-256 it, and compress it.
 This module factors that shared primitive.

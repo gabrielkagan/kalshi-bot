@@ -5,9 +5,9 @@ Reads from evaluated_opportunities table (source of truth after settlement).
 Shows performance of the 0.6x weekend edge discount shadow signals.
 
 Usage:
-    python3 scripts/weekend_discount_audit.py --db /tmp/state.db
-    python3 scripts/weekend_discount_audit.py --db /tmp/state.db --asset SOL
-    python3 scripts/weekend_discount_audit.py --db /tmp/state.db --discount 0.7
+    python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db
+    python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db --asset SOL
+    python3 scripts/audit/weekend_discount_audit.py --db /tmp/state.db --discount 0.7
 """
 
 import argparse

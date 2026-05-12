@@ -332,11 +332,23 @@ def _grep_scripts_paths_in(file_paths):
 
     Skips obvious meta-placeholders like the literal `scripts/X.py` used
     in skill-writing guidance.
+
+    Bit 11.2 fu3 (2026-05-12): widened to accept digit-starting filenames
+    (`15m_live_audit.py` etc.) AND yield each enumerated leaf inside a
+    brace-expansion like `scripts/{a,b,c}.py`. The pre-fu3 regex
+    `[A-Za-z_]...` silently skipped both forms, letting `.claude/skills/shadow/SKILL.md`
+    cite legacy flat-root paths via `scripts/{15m_live_audit,...}.py`
+    without tripping this pin.
     """
     import re
 
-    SCRIPT_PATH_RE = re.compile(r"scripts/[A-Za-z_][A-Za-z_0-9/]*\.(?:py|sh)")
+    # Match BOTH simple paths AND brace-expansion forms (open with `{`).
+    # Note `[A-Za-z_0-9{]` opening class allows digit-starting names AND `{`.
+    SCRIPT_PATH_RE = re.compile(
+        r"scripts/(\{[^}]+\}|[A-Za-z_0-9][A-Za-z_0-9/]*)\.(?:py|sh)"
+    )
     META_PLACEHOLDERS = {"scripts/X.py", "scripts/X.sh"}
+    SUBDIRS = {"audit", "backfill", "ops", "cal_mlp", "git_hooks"}
     for fp in file_paths:
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")
@@ -347,10 +359,26 @@ def _grep_scripts_paths_in(file_paths):
                 ref = m.group(0)
                 if ref in META_PLACEHOLDERS:
                     continue
+                # Brace-expansion: `scripts/{a,b,c}.py` → enumerate each leaf
+                # as `scripts/<leaf>.py`.
+                core = m.group(1)
+                ext = ref.rsplit(".", 1)[1]
+                if core.startswith("{") and core.endswith("}"):
+                    leaves = [s.strip() for s in core[1:-1].split(",")]
+                    for leaf in leaves:
+                        # Reject empty / non-leaf-shaped entries.
+                        if not leaf:
+                            continue
+                        synthesized = f"scripts/{leaf}.{ext}"
+                        rel = leaf
+                        if rel.split("/", 1)[0] in SUBDIRS:
+                            continue
+                        yield (fp, lineno, synthesized)
+                    continue
                 # Strip the `scripts/` prefix to get the relative path.
                 rel = ref[len("scripts/") :]
                 # Don't flag refs that point INTO the new subdirs.
-                if rel.split("/", 1)[0] in {"audit", "backfill", "ops", "cal_mlp", "git_hooks"}:
+                if rel.split("/", 1)[0] in SUBDIRS:
                     continue
                 yield (fp, lineno, ref)
 
@@ -406,6 +434,137 @@ def test_makefile_script_references_resolve():
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Section 7 — CI workflow script-path references resolve
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Section 8 — L98 path-anchor invariants (Bit 11.2 fu3, 2026-05-12)
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# RCA from fu3 adversarial round 5 indep review: relocation Bits MUST audit
+# EVERY `__file__`-derived path chain AND every `$0`-derived bash chain.
+# The fu1 sweep missed:
+#   * `scripts/backfill/shadow_coverage_calmlp_backfill.py:37` — 2 hops not 3
+#   * `scripts/audit/audit_runner.sh:14-15` — 1 hop not 2
+# Both broke silently because the IMMEDIATE failure was caught (`except
+# ImportError: pass` for the python case; `--quiet` flag suppressing stderr
+# for the bash case via systemd timer). These pins detect drift if a future
+# relocation Bit nudges the path-anchor depth again.
+
+
+def test_shadow_coverage_calmlp_backfill_repo_anchor_resolves_to_repo_root():
+    """`scripts/backfill/shadow_coverage_calmlp_backfill.py` computes `_REPO`
+    via `os.path.dirname()` chained 3 times from `__file__`. Two hops
+    resolves to `scripts/`; THREE hops resolves to repo root. This pin
+    catches drift if a future Bit edits the chain length.
+
+    Invariant rationale: the script's `_thread_env` import + cal_mlp
+    sys.path insert BOTH depend on `_REPO == repo root`. Off-by-one
+    silently regressed prior to Bit 11.2 fu3 — the `except ImportError:
+    pass` masked the failed `bot._thread_env` import, leaving
+    OMP_NUM_THREADS unset (torch-thread contention class) and the
+    `scripts/cal_mlp/` sys.path insert pointed at a non-existent
+    directory (ModuleNotFoundError when `main()` ran the deferred
+    `from integration import ...`).
+    """
+    script_path = (
+        REPO_ROOT
+        / "scripts"
+        / "backfill"
+        / "shadow_coverage_calmlp_backfill.py"
+    )
+    assert script_path.exists(), f"{script_path.relative_to(REPO_ROOT)} missing"
+    text = script_path.read_text(encoding="utf-8")
+    # Look for the assignment of _REPO. The fix uses 3 dirname() calls.
+    # Accept either the procedural-style `dirname(dirname(dirname(...)))`
+    # OR the pathlib-style `Path(__file__).resolve().parent.parent.parent`.
+    import re
+
+    procedural = re.search(
+        r"_REPO\s*=\s*_os\.path\.dirname\(\s*_os\.path\.dirname\(\s*_os\.path\.dirname\(",
+        text,
+    )
+    pathlib_style = re.search(
+        r"_REPO\s*=\s*(?:_?)Path\(__file__\)\.resolve\(\)\.parent\.parent\.parent",
+        text,
+    )
+    assert procedural or pathlib_style, (
+        f"{script_path.relative_to(REPO_ROOT)} does not anchor `_REPO` at "
+        f"three parent hops from __file__. The file lives at "
+        f"scripts/backfill/<name>.py so REPO root is THREE parents up. "
+        f"Two-hop anchor regresses to `scripts/`, silently breaking the "
+        f"`bot._thread_env` import (caught by `except ImportError`) and "
+        f"the `scripts/cal_mlp/` sys.path insert (would resolve to "
+        f"scripts/scripts/cal_mlp, doesn't exist)."
+    )
+
+    # Belt + suspenders: actually compute _REPO and confirm it's repo root.
+    # Run the script's path-resolution in an isolated subprocess so we
+    # don't side-effect the test process's sys.path.
+    import subprocess
+    import sys as _sys
+
+    probe = (
+        "import os, sys; "
+        f"_FILE = {str(script_path)!r}; "
+        "print(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_FILE)))))"
+    )
+    out = subprocess.run(
+        [_sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=str(REPO_ROOT),
+    )
+    resolved = out.stdout.strip()
+    assert resolved == str(REPO_ROOT), (
+        f"_REPO resolves to {resolved!r}, expected repo root {str(REPO_ROOT)!r}. "
+        f"Path-anchor depth must equal scripts/backfill/<file>.py → repo root."
+    )
+
+
+def test_audit_runner_sh_repo_dir_is_two_parents_up():
+    """`scripts/audit/audit_runner.sh` computes `REPO_DIR` via
+    `cd "$SCRIPT_DIR/../.."`. ONE parent hop resolves to `scripts/`;
+    TWO resolves to repo root. This pin catches drift if a future
+    Bit edits the parent-hop count.
+
+    Invariant rationale: every `$REPO_DIR/scripts/audit/<X>.py` invocation
+    in the body of the runner depends on REPO_DIR being repo root. The
+    runner is invoked by `scripts/ops/setup_full_audit_timer.sh` as a
+    systemd `--quiet` timer; a broken REPO_DIR silently fails (no stderr,
+    no alert) until alerts stop firing entirely.
+    """
+    sh_path = REPO_ROOT / "scripts" / "audit" / "audit_runner.sh"
+    assert sh_path.exists(), f"{sh_path.relative_to(REPO_ROOT)} missing"
+    text = sh_path.read_text(encoding="utf-8")
+    # Look for `REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"`
+    import re
+
+    m = re.search(
+        r'REPO_DIR\s*=\s*"\$\(cd\s+"?\$SCRIPT_DIR/(\.\.[/\.]*)"?\s*&&\s*pwd\)"',
+        text,
+    )
+    assert m is not None, (
+        f"{sh_path.relative_to(REPO_ROOT)} does not assign REPO_DIR via "
+        f"`cd \"$SCRIPT_DIR/<dots>\" && pwd` form. If the assignment "
+        f"shape changed, update this regression test together."
+    )
+    parent_segment = m.group(1)
+    # Count the number of `..` segments.
+    dotdots = parent_segment.split("/")
+    dotdot_count = sum(1 for s in dotdots if s == "..")
+    assert dotdot_count == 2, (
+        f"{sh_path.relative_to(REPO_ROOT)} REPO_DIR uses {dotdot_count} "
+        f"parent hop(s); expected exactly 2 (file lives at "
+        f"scripts/audit/<file>.sh → repo root is 2 parents up). "
+        f"One hop regresses REPO_DIR to `scripts/`, breaking every "
+        f"`$REPO_DIR/scripts/audit/<X>.py` invocation in the runner body."
+    )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Section 7 (cont.) — CI workflow script-path references resolve
 # ═════════════════════════════════════════════════════════════════════════════
 
 

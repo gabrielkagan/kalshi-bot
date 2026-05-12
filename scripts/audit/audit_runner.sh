@@ -11,8 +11,16 @@
 
 set -euo pipefail
 
+# Bit 11.2 fu3 (2026-05-12, L98 path-anchor): file now lives at
+# `scripts/audit/audit_runner.sh` — REPO_DIR is TWO parent hops, not one.
+# Prior `$SCRIPT_DIR/..` resolved to `scripts/`, breaking every
+# `$REPO_DIR/scripts/audit/X.py` invocation below (path doubled to
+# `scripts/scripts/audit/...`). Also broke `audit_alerts.py` at line 173.
+# Operationally invoked by `scripts/ops/setup_full_audit_timer.sh` as a
+# systemd timer with `--quiet`, so the silent-fail would have been
+# invisible on the VPS until alerts stopped firing.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # ── Defaults ────────────────────────────────────────────────────
 MODULE="all"

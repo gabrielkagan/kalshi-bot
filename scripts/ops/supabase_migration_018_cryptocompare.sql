@@ -20,7 +20,7 @@
 --   Free tier covers 250K calls/month — well above what the backfill
 --   needs. No API key required for the news endpoint.
 --
---   Backfill: scripts/cryptocompare_news_backfill.py (date+hour+asset
+--   Backfill: scripts/backfill/cryptocompare_news_backfill.py (date+hour+asset
 --   bucket cache, like H-4a; many rows share buckets).
 --
 --   Design doc: kb/decisions/phase-h4c-cryptocompare-may02.md.

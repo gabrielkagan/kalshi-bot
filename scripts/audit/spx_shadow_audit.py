@@ -5,7 +5,7 @@ Reads from state.db evaluated_opportunities (product_type='spx_hourly') and
 rejected_opportunities (product_type='spx_hourly').
 
 Usage:
-    python3 scripts/spx_shadow_audit.py [--db state.db] [--since 2026-03-02] [--json spx_audit.json]
+    python3 scripts/audit/spx_shadow_audit.py [--db state.db] [--since 2026-03-02] [--json spx_audit.json]
 """
 
 import argparse

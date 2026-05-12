@@ -14,7 +14,7 @@
 --
 -- Operator: apply via Supabase SQL editor or:
 --   PGPASSWORD="$SUPABASE_DB_PASSWORD" psql "$SUPABASE_DB_URL" \
---     -f scripts/supabase_migration_012_data_provenance.sql
+--     -f scripts/ops/supabase_migration_012_data_provenance.sql
 --
 -- Idempotent — IF NOT EXISTS guards + UPDATE filters on
 -- `data_provenance IS NULL`, so re-running the file re-stamps zero rows.
@@ -32,7 +32,7 @@ ALTER TABLE public.evaluations
 
 -- Bulk backfill historical rows so Supabase mirror matches SQLite after
 -- stamp_data_provenance.py runs. Predicate logic mirrors the SQLite
--- stamp script (scripts/stamp_data_provenance.py):
+-- stamp script (scripts/backfill/stamp_data_provenance.py):
 --   - product_type='15m' AND evaluation_time < F-3-deploy
 --     AND (btc_spot OR time_above NOT NULL) → 'backfill_60s_inputs'
 --   - product_type='15m' AND evaluation_time >= F-3-deploy → 'live_ws'

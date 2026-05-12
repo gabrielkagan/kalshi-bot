@@ -6,9 +6,9 @@ and compares them against claims in documentation files. Reports DRIFT when a
 doc claims a value that differs from the code.
 
 Usage:
-    python3 scripts/doc_drift_check.py              # full report
-    python3 scripts/doc_drift_check.py --quiet       # only drift, exit code
-    python3 scripts/doc_drift_check.py --telegram    # send drift alert via Telegram
+    python3 scripts/audit/doc_drift_check.py              # full report
+    python3 scripts/audit/doc_drift_check.py --quiet       # only drift, exit code
+    python3 scripts/audit/doc_drift_check.py --telegram    # send drift alert via Telegram
 
 Exit code: 1 if any DRIFT detected, 0 if clean.
 """
@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Bit 11.2 (2026-05-12): file relocated from `scripts/doc_drift_check.py`
+# Bit 11.2 (2026-05-12): file relocated from `scripts/audit/doc_drift_check.py`
 # to `scripts/audit/doc_drift_check.py`. The repo-root anchor must walk
 # 3 levels (audit/ → scripts/ → repo/) instead of the pre-Bit-11.2 2.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -575,7 +575,7 @@ def format_telegram_alert(drifts: List[Dict]) -> str:
         )
     if len(drifts) > 10:
         lines.append(f"\n...and {len(drifts) - 10} more")
-    lines.append(f"\nRun `python3 scripts/doc_drift_check.py` for full report.")
+    lines.append(f"\nRun `python3 scripts/audit/doc_drift_check.py` for full report.")
     return "\n".join(lines)
 
 

@@ -6,8 +6,8 @@ Evaluates shadow performance, calibration, config sensitivity, and readiness.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python scripts/hourly_shadow_audit.py [--db /tmp/state.db] [--since 2026-02-28]
-    python scripts/hourly_shadow_audit.py --db /tmp/state.db --regime auto
+    python scripts/audit/hourly_shadow_audit.py [--db /tmp/state.db] [--since 2026-02-28]
+    python scripts/audit/hourly_shadow_audit.py --db /tmp/state.db --regime auto
 """
 
 import argparse

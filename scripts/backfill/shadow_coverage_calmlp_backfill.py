@@ -23,18 +23,28 @@ This script unsticks them in two stages:
     OR max_iterations is reached.
 
 Operator workflow (run on VPS where ML deps are installed):
-  python3 scripts/shadow_coverage_calmlp_backfill.py --db state.db --stage all
+  python3 scripts/backfill/shadow_coverage_calmlp_backfill.py --db state.db --stage all
 
 Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
 """
 
 # Phase G-3 round 2 C6 fix: pin OMP threads BEFORE numpy/scipy/torch
 # load (transitively via cal_mlp.integration). Per CLAUDE.md "Critical
-# rules" + bot/_impl.py's same-pattern import. No-op if bot package
-# is absent (stamp-only stage skips the ML import).
+# rules". No-op if bot package is absent (stamp-only stage skips the
+# ML import).
+#
+# Bit 11.2 fu3 (2026-05-12, L98 path-anchor): this file now lives at
+# `scripts/backfill/shadow_coverage_calmlp_backfill.py` — REPO root is
+# THREE parent hops, not two. The prior two-hop math resolved to
+# `scripts/` and silently broke both the `bot._thread_env` import
+# (caught by `except ImportError: pass` → OMP_NUM_THREADS not set;
+# torch-thread contention class per kb/failures/cal-mlp-torch-thread-contention-apr29.md)
+# AND the deferred `scripts/cal_mlp/` sys.path insert (resolving to
+# `scripts/scripts/cal_mlp` which doesn't exist → ModuleNotFoundError
+# when `main()` runs `from integration import ...`).
 import os as _os
 import sys as _sys
-_REPO = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 _sys.path.insert(0, _REPO)
 try:
     import bot._thread_env  # noqa: F401

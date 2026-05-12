@@ -6,10 +6,10 @@ outcomes, and approach comparisons for the NO-side shadow pipeline.
 
 Usage:
     # Against local copy
-    python3 scripts/no_side_status.py --db /tmp/state.db
+    python3 scripts/audit/no_side_status.py --db /tmp/state.db
 
     # Quick refresh from VPS (checkpoint + copy + run)
-    python3 scripts/no_side_status.py --refresh
+    python3 scripts/audit/no_side_status.py --refresh
 """
 
 import argparse

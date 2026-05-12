@@ -6,7 +6,7 @@ Rerunnable on updated data -- outputs standardized alpha discovery report.
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/weather_alpha_research.py [--db /tmp/state.db]
+    python3 scripts/audit/weather_alpha_research.py [--db /tmp/state.db]
 """
 import argparse
 import math

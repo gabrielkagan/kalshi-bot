@@ -23,8 +23,8 @@ are tagged for the asset in the 1h window — DO NOT synthesize 0.0
 Mirrors G-2/G-4/G-5 idempotency + checkpoint pattern.
 
 Usage:
-  python3 scripts/cryptocompare_news_backfill.py --db state.db
-  python3 scripts/cryptocompare_news_backfill.py --db state.db --dry-run
+  python3 scripts/backfill/cryptocompare_news_backfill.py --db state.db
+  python3 scripts/backfill/cryptocompare_news_backfill.py --db state.db --dry-run
 
 Design doc: kb/decisions/phase-h4c-cryptocompare-may02.md.
 Master plan: kb/decisions/shadow-coverage-phase-h-data-recovery-may02.md.

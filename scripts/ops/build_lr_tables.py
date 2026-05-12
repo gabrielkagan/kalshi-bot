@@ -7,7 +7,7 @@ by (deficit, time_remaining, pregame_strength) buckets.
 Runs locally, not on VPS. Requires: pip install nba_api
 
 Usage:
-    python scripts/build_lr_tables.py [--seasons 5] [--output sports_data_lr.py]
+    python scripts/ops/build_lr_tables.py [--seasons 5] [--output sports_data_lr.py]
 """
 
 import argparse

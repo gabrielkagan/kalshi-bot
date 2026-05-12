@@ -8,7 +8,7 @@ Reads from evaluated_opportunities (product_type='spx_hourly') and
 rejected_opportunities (product_type='spx_hourly') in state.db.
 
 Usage:
-    python3 scripts/spx_alpha_research.py [--db /tmp/state.db] [--since 2026-03-02] [--json spx_alpha.json]
+    python3 scripts/audit/spx_alpha_research.py [--db /tmp/state.db] [--since 2026-03-02] [--json spx_alpha.json]
 """
 
 import argparse
@@ -1872,9 +1872,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python3 scripts/spx_alpha_research.py --db /tmp/state.db
-    python3 scripts/spx_alpha_research.py --db /tmp/state.db --since 2026-03-04
-    python3 scripts/spx_alpha_research.py --db /tmp/state.db --json spx_alpha.json
+    python3 scripts/audit/spx_alpha_research.py --db /tmp/state.db
+    python3 scripts/audit/spx_alpha_research.py --db /tmp/state.db --since 2026-03-04
+    python3 scripts/audit/spx_alpha_research.py --db /tmp/state.db --json spx_alpha.json
         """,
     )
     parser.add_argument("--db", default="state.db", help="Path to state.db")

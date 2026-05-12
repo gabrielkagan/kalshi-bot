@@ -27,11 +27,11 @@ Design:
     `--batch-size` / `--sleep-ms` if running offline.
 
 Usage:
-  python3 scripts/shadow_coverage_backfill.py --phase final_spot --db state.db
-  python3 scripts/shadow_coverage_backfill.py --phase maker --db state.db
-  python3 scripts/shadow_coverage_backfill.py --phase streak --db state.db
-  python3 scripts/shadow_coverage_backfill.py --phase tslf --db state.db
-  python3 scripts/shadow_coverage_backfill.py --phase all --db state.db
+  python3 scripts/backfill/shadow_coverage_backfill.py --phase final_spot --db state.db
+  python3 scripts/backfill/shadow_coverage_backfill.py --phase maker --db state.db
+  python3 scripts/backfill/shadow_coverage_backfill.py --phase streak --db state.db
+  python3 scripts/backfill/shadow_coverage_backfill.py --phase tslf --db state.db
+  python3 scripts/backfill/shadow_coverage_backfill.py --phase all --db state.db
 
 Master plan: kb/decisions/shadow-coverage-expansion-may01.md.
 """

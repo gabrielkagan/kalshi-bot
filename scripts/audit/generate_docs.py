@@ -6,16 +6,16 @@ Designed to run locally (with state.db) or in CI (with pre-fetched stats JSON).
 
 Usage:
     # Local (has state.db):
-    python3 scripts/generate_docs.py
+    python3 scripts/audit/generate_docs.py
 
     # CI / remote (stats pre-fetched):
-    python3 scripts/generate_docs.py --stats-json whitepaper_stats.json
+    python3 scripts/audit/generate_docs.py --stats-json whitepaper_stats.json
 
     # Extract config only (no rendering):
-    python3 scripts/generate_docs.py --config-only
+    python3 scripts/audit/generate_docs.py --config-only
 
     # Check freshness without rendering:
-    python3 scripts/generate_docs.py --check-only
+    python3 scripts/audit/generate_docs.py --check-only
 """
 
 import json

@@ -28,7 +28,7 @@ stdlib on both darwin and Linux.
 
 * CLI shape:
 
-    python scripts/_mutmut_lock.py acquire <lockfile> -- <cmd> [args...]
+    python scripts/ops/_mutmut_lock.py acquire <lockfile> -- <cmd> [args...]
 
 * Opens `<lockfile>` with `O_CREAT` so the file appears on first
   invocation. The lockfile contents are NEVER read or written — fcntl
@@ -62,7 +62,7 @@ stdlib on both darwin and Linux.
 
 ## Self-test
 
-    python scripts/_mutmut_lock.py --self-test
+    python scripts/ops/_mutmut_lock.py --self-test
 
 Runs a quick acceptance test: spawns a 0.5s holder, attempts a
 contender, asserts the contender exits non-zero with a clear

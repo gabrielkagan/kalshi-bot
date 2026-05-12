@@ -11,7 +11,7 @@ which time 1-3 weeks of evaluated_opportunities rows have accumulated
 with NULL features — silently blocking v2 ship.
 
 Usage:
-    h4_run_with_alert.py --label gdelt -- python3 scripts/gdelt_backfill.py --db state.db
+    h4_run_with_alert.py --label gdelt -- python3 scripts/backfill/gdelt_backfill.py --db state.db
 
 The `--label` is the human-readable backfill name that appears in the
 Telegram alert. Args after `--` are the actual command to run; the
@@ -233,7 +233,7 @@ def main(argv=None) -> int:
     )
     parser.add_argument(
         "command", nargs=argparse.REMAINDER,
-        help="command to run after `--` (e.g. python3 scripts/gdelt_backfill.py --db state.db)",
+        help="command to run after `--` (e.g. python3 scripts/backfill/gdelt_backfill.py --db state.db)",
     )
     args = parser.parse_args(argv)
 

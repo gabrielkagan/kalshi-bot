@@ -8,8 +8,8 @@ Before writing anything, this script RE-VERIFIES against Kalshi's fills API
 so it's safe to re-run — if counts already match, it becomes a no-op.
 
 Usage:
-  python3 scripts/correct_ioc_double_count.py            # dry-run
-  python3 scripts/correct_ioc_double_count.py --apply    # write changes
+  python3 scripts/backfill/correct_ioc_double_count.py            # dry-run
+  python3 scripts/backfill/correct_ioc_double_count.py --apply    # write changes
 """
 from __future__ import annotations
 import argparse

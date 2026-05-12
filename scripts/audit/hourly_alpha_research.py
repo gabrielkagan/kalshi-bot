@@ -17,7 +17,7 @@ Enhancements over v1:
 
 Usage:
     scp botuser@45.55.181.30:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/hourly_alpha_research.py --db /tmp/state.db
+    python3 scripts/audit/hourly_alpha_research.py --db /tmp/state.db
 """
 import argparse
 import math

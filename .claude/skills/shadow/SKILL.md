@@ -9,7 +9,7 @@ Comprehensive report across ALL shadow/observation systems — 15M live, hourly,
 
 ## Preflight
 
-Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` for the 2 mappable rows (`<wrapper>` = `15m-audit` and `hourly-audit`; spx/weather/sports require direct `python3 scripts/X.py` invocation since no wrapper exists). Verify `/tmp/state.db` exists, `make -n 15m-audit && make -n hourly-audit` both parse, and the 5 fallback scripts (`scripts/{15m_live_audit,hourly_shadow_audit,spx_shadow_audit,weather_shadow_audit,sports_shadow_audit}.py`) all exist (Bit 11.1d).
+Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` for the 2 mappable rows (`<wrapper>` = `15m-audit` and `hourly-audit`; spx/weather/sports require direct `python3 scripts/audit/<name>.py` invocation since no wrapper exists). Verify `/tmp/state.db` exists, `make -n 15m-audit && make -n hourly-audit` both parse, and the 5 fallback scripts (`scripts/audit/15m_live_audit.py`, `scripts/audit/hourly_shadow_audit.py`, `scripts/audit/spx_shadow_audit.py`, `scripts/audit/weather_shadow_audit.py`, `scripts/audit/sports_shadow_audit.py`) all exist (Bit 11.1d + Bit 11.2 2026-05-12 subdir reorg).
 
 ## Steps
 

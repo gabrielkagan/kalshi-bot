@@ -16,8 +16,8 @@ in source (bot.py:25721, 25731-25736). Sum it directly.
 
 Usage:
     scp botuser@<vps>:~/kalshi-bot-repo/state.db /tmp/state.db
-    python3 scripts/alpha_audit.py --db /tmp/state.db
-    python3 scripts/alpha_audit.py --db /tmp/state.db --days 7 --asset BTC
+    python3 scripts/audit/alpha_audit.py --db /tmp/state.db
+    python3 scripts/audit/alpha_audit.py --db /tmp/state.db --days 7 --asset BTC
 """
 
 import argparse
