@@ -257,7 +257,7 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 | `settlement` | Contract outcomes and P&L |
 | `execution` | Execution quality metrics |
 | `performance` | Daily summary aggregations |
-| `fill_model` | Maker order lifecycle data for ML fill prediction |
+| `fill_model` | Order lifecycle (maker + taker IOC) for ML fill prediction |
 
 ### Dashboard (Supabase)
 
