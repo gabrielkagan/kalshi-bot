@@ -66,6 +66,13 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 | calibrated_prob | REAL | Calibrated probability |
 | status | TEXT | open/settled |
 | product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
+| sigma_winsorize | REAL | (Sprint B Bit B.1a, 2026-05-12) Winsorized `spot_distance_to_strike_sigma` clipped to ±`SIGMA_WINSOR_ABS_CAP=25.0` via `bot.helpers.derived_features.apply_sigma_winsor`. Mirrors `scripts/cal_mlp/features.py` train-time clip. |
+| hour_sin | REAL | (B.1a) Cyclic 24h embedding of UTC hour. Derived via `bot.helpers.derived_features.compute_hour_sin_cos` — lock-step with cal_mlp four-site canonical formula. |
+| hour_cos | REAL | (B.1a) Cyclic 24h embedding of UTC hour. Lock-step with cal_mlp. |
+| prob_breakeven_gap | REAL | (B.1a) `calibrated_prob − market_price/100`. NULL when either input is missing (e.g. `price_out_of_range_early` rejections that fire before calibrated_prob compute). |
+| vol_regime | TEXT | (B.1a) 'normal' / 'elevated' from `vol_est["regime"]` at rejection time. NULL when rejection fires before vol_est is built. |
+| data_provenance | TEXT | (B.1a) 'live_ws' for live-bot inserts (mirrors `evaluated_opportunities.data_provenance` Sprint A.2 / commit f26a611). |
+| orderbook_levels_json | TEXT | (B.1a) Top-N YES ladder JSON via `_get_fresh_ob_ladder` (10s freshness gate; stale → NULL). NULL on `no_orderbook` rejections — correct, the gate fires precisely because the ladder is absent. |
 
 ## Other tables
 

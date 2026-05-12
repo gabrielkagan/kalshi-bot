@@ -114,6 +114,10 @@ from bot.helpers import (
     fp_str_to_int,
     tm_sweep_counterfactual_pnl,
 )
+# Sprint B Bit B.1a (2026-05-12): rejected_opportunities feature enrichment
+# routes through these helpers. Mirrors the cal_mlp four-site lock-step
+# (bot/CLAUDE.md). See ticket 86b9vfzjp + kb/decisions/sprint-b-bit-1a-shipped-may12.md.
+from bot.helpers.derived_features import apply_sigma_winsor, compute_hour_sin_cos
 from bot.kalshi_client import KalshiClient
 
 # top-level modules — `scripts/cal_mlp/` is on sys.path (see top of file)
@@ -829,6 +833,23 @@ class StateManager:
             ("oft_n_snapshots", "INTEGER"),
             # NO-side pricing (for DC-NO analysis)
             ("no_ask_cents", "INTEGER"),
+            # ── Sprint B Bit B.1a (2026-05-12, ticket 86b9vfzjp): training-data
+            # feature enrichment so a future gate-policy learner can be
+            # trained on rejected rows. Auto-populated by insert_rejection()
+            # via the existing _scan_ob_cache + helper-based derivation
+            # pattern. The cal_mlp anchors for sigma_winsorize / hour_sin /
+            # hour_cos / prob_breakeven_gap are mirrored through
+            # bot.helpers.derived_features.{apply_sigma_winsor,
+            # compute_hour_sin_cos, compute_derived_features} — DO NOT
+            # inline duplicate formulas (lock-step rule, bot/CLAUDE.md).
+            # See kb/decisions/sprint-b-bit-1a-shipped-may12.md.
+            ("sigma_winsorize", "REAL"),
+            ("hour_sin", "REAL"),
+            ("hour_cos", "REAL"),
+            ("prob_breakeven_gap", "REAL"),
+            ("vol_regime", "TEXT"),
+            ("data_provenance", "TEXT"),
+            ("orderbook_levels_json", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -1641,9 +1662,67 @@ class StateManager:
                          oft_prob_adjustment: Optional[float] = None,
                          oft_imbalance_ratio: Optional[float] = None,
                          oft_n_snapshots: Optional[int] = None,
-                         no_ask_cents: Optional[int] = None):
-        """Insert a rejected opportunity. INSERT OR IGNORE keeps the first rejection reason."""
+                         no_ask_cents: Optional[int] = None,
+                         # ── Sprint B Bit B.1a (2026-05-12, ticket 86b9vfzjp) ──
+                         # Feature enrichment so a future gate-policy learner
+                         # can be trained on rejected rows. Most are auto-filled
+                         # from the existing inputs + caches (see body below).
+                         # Caller may override by passing an explicit non-None
+                         # value (mirrors insert_evaluated_opportunity semantics).
+                         vol_regime: Optional[str] = None,
+                         data_provenance: str = 'live_ws',
+                         orderbook_levels_json: Optional[str] = None,
+                         sigma_winsorize: Optional[float] = None,
+                         hour_sin: Optional[float] = None,
+                         hour_cos: Optional[float] = None,
+                         prob_breakeven_gap: Optional[float] = None):
+        """Insert a rejected opportunity. INSERT OR IGNORE keeps the first rejection reason.
+
+        Sprint B Bit B.1a (2026-05-12) added auto-fill for the 7 new
+        training-data columns. Auto-fill skips when the caller passed
+        a non-None value (explicit-wins, same as insert_evaluated_opportunity).
+        Honest-NULL rule: when a derivation has insufficient inputs (e.g.
+        prob_breakeven_gap with calibrated_prob=None at price_out_of_range_early)
+        we write NULL rather than fabricating a value.
+        """
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # ── Auto-compute orderbook ladder snapshot from scanner cache ──
+        # Same freshness-gated path used by insert_evaluated_opportunity
+        # (10s gate; stale entries → None — honest, never lie).
+        if orderbook_levels_json is None:
+            orderbook_levels_json = self._get_fresh_ob_ladder(ticker)
+
+        # ── Auto-compute Tier 4 hour_sin/hour_cos (cyclic 24h embedding) ──
+        # Cal_mlp four-site lock-step routes through bot.helpers.derived_features.
+        # Derived from rejection-time (already in scope as `now`) when the
+        # caller did not pass them explicitly.
+        if hour_sin is None or hour_cos is None:
+            _t4 = compute_time_regime_features(now)
+            _hour = _t4.get("hour_of_day_utc")
+            _hs, _hc = compute_hour_sin_cos(_hour)
+            if hour_sin is None:
+                hour_sin = _hs
+            if hour_cos is None:
+                hour_cos = _hc
+
+        # ── Auto-compute Tier 5 derived features (prob_breakeven_gap +
+        # spot_distance_to_strike_sigma → winsorized) ──
+        if prob_breakeven_gap is None or sigma_winsorize is None:
+            _t5 = compute_derived_features(
+                spot_price=spot_price, threshold=threshold, volatility=volatility,
+                seconds_to_close=seconds_to_close, calibrated_prob=calibrated_prob,
+                market_price_cents=market_price,
+            )
+            if prob_breakeven_gap is None:
+                prob_breakeven_gap = _t5["prob_breakeven_gap"]
+            if sigma_winsorize is None:
+                # Winsorize at ±SIGMA_WINSOR_ABS_CAP=25.0 to match
+                # train-time clipping in scripts/cal_mlp/features.py.
+                sigma_winsorize = apply_sigma_winsor(
+                    _t5["spot_distance_to_strike_sigma"]
+                )
+
         self.conn.execute("""
             INSERT OR IGNORE INTO rejected_opportunities
                 (ticker, event_ticker, asset, rejection_reason, rejection_time,
@@ -1653,8 +1732,10 @@ class StateManager:
                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
                  counterfactual, product_type,
                  oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-                 no_ask_cents)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 no_ask_cents,
+                 sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
+                 vol_regime, data_provenance, orderbook_levels_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, raw_prob, "pending",
@@ -1662,7 +1743,9 @@ class StateManager:
               shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
               counterfactual, product_type,
               oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-              no_ask_cents))
+              no_ask_cents,
+              sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
+              vol_regime, data_provenance, orderbook_levels_json))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:

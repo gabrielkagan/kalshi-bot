@@ -312,7 +312,7 @@
     idx_positions_asset                                           unique=0  origin=c  partial=0  cols=['asset']
     sqlite_autoindex_positions_1                                  unique=1  origin=pk  partial=0  cols=['ticker']
 
-## rejected_opportunities (29 columns)
+## rejected_opportunities (36 columns)
   cid=  0  name=ticker                                              type=TEXT                  notnull=0  pk=1  dflt=None
   cid=  1  name=event_ticker                                        type=TEXT                  notnull=1  pk=0  dflt=None
   cid=  2  name=asset                                               type=TEXT                  notnull=1  pk=0  dflt=None
@@ -342,6 +342,13 @@
   cid= 26  name=oft_imbalance_ratio                                 type=REAL                  notnull=0  pk=0  dflt=None
   cid= 27  name=oft_n_snapshots                                     type=INTEGER               notnull=0  pk=0  dflt=None
   cid= 28  name=no_ask_cents                                        type=INTEGER               notnull=0  pk=0  dflt=None
+  cid= 29  name=sigma_winsorize                                     type=REAL                  notnull=0  pk=0  dflt=None
+  cid= 30  name=hour_sin                                            type=REAL                  notnull=0  pk=0  dflt=None
+  cid= 31  name=hour_cos                                            type=REAL                  notnull=0  pk=0  dflt=None
+  cid= 32  name=prob_breakeven_gap                                  type=REAL                  notnull=0  pk=0  dflt=None
+  cid= 33  name=vol_regime                                          type=TEXT                  notnull=0  pk=0  dflt=None
+  cid= 34  name=data_provenance                                     type=TEXT                  notnull=0  pk=0  dflt=None
+  cid= 35  name=orderbook_levels_json                               type=TEXT                  notnull=0  pk=0  dflt=None
   Indexes (2):
     idx_rejected_status                                           unique=0  origin=c  partial=0  cols=['status']
     sqlite_autoindex_rejected_opportunities_1                     unique=1  origin=pk  partial=0  cols=['ticker']
@@ -788,7 +795,7 @@ CREATE TABLE rejected_opportunities (
                 seconds_to_close REAL,
                 calibrated_prob REAL,
                 status TEXT NOT NULL DEFAULT 'pending'
-            , raw_prob REAL, market_result TEXT, egarch_sigma REAL, egarch_blend_sigma REAL, egarch_blend_weight REAL, mz_r_squared REAL, shadow_tv_blend_rv REAL, mz_shadow_sigmoid_w REAL, mz_baseline_qlike REAL, mz_qlike REAL, counterfactual TEXT, product_type TEXT, oft_prob_adjustment REAL, oft_imbalance_ratio REAL, oft_n_snapshots INTEGER, no_ask_cents INTEGER)
+            , raw_prob REAL, market_result TEXT, egarch_sigma REAL, egarch_blend_sigma REAL, egarch_blend_weight REAL, mz_r_squared REAL, shadow_tv_blend_rv REAL, mz_shadow_sigmoid_w REAL, mz_baseline_qlike REAL, mz_qlike REAL, counterfactual TEXT, product_type TEXT, oft_prob_adjustment REAL, oft_imbalance_ratio REAL, oft_n_snapshots INTEGER, no_ask_cents INTEGER, sigma_winsorize REAL, hour_sin REAL, hour_cos REAL, prob_breakeven_gap REAL, vol_regime TEXT, data_provenance TEXT, orderbook_levels_json TEXT)
 
 --- [table] settled_trades ---
 CREATE TABLE settled_trades (

@@ -1854,7 +1854,14 @@ class OpportunityScanner:
                                         None, spot, threshold,
                                         blended_rv, _nbbo,
                                         seconds_remaining, None,
-                                        product_type=_pt)
+                                        product_type=_pt,
+                                        # Sprint B Bit B.1a (2026-05-12): training-data
+                                        # enrichment. vol_est is in scope here (set at
+                                        # _pt-branch lines ~1591/1597/1620 — all three
+                                        # paths that lead to spx_hourly/hourly/weather
+                                        # price_out_of_range_early reach here with
+                                        # vol_est populated).
+                                        vol_regime=vol_est["regime"])
                                 except Exception:
                                     logging.warning(
                                         "price_out_of_range_early insert_rejection failed",
@@ -2062,6 +2069,8 @@ class OpportunityScanner:
                                 blended_rv, best_ask, seconds_remaining,
                                 cal_prob, raw_prob=raw_prob_pre,
                                 product_type=window.get("product_type"),
+                                # Sprint B Bit B.1a (2026-05-12): training-data enrichment
+                                vol_regime=vol_est["regime"],
                                 **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.warning(
@@ -2139,6 +2148,8 @@ class OpportunityScanner:
                                 blended_rv, None, seconds_remaining, cal_prob,
                                 raw_prob=raw_prob_pre,
                                 product_type=window.get("product_type"),
+                                # Sprint B Bit B.1a (2026-05-12): training-data enrichment
+                                vol_regime=vol_est["regime"],
                                 **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.debug(
@@ -2209,6 +2220,8 @@ class OpportunityScanner:
                             blended_rv, None, seconds_remaining, cal_prob,
                             raw_prob=raw_prob_pre,
                             product_type=window.get("product_type"),
+                            # Sprint B Bit B.1a (2026-05-12): training-data enrichment
+                            vol_regime=vol_est["regime"],
                             **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.debug(
