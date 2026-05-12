@@ -523,6 +523,51 @@ def test_shadow_coverage_calmlp_backfill_repo_anchor_resolves_to_repo_root():
     )
 
 
+def test_generate_docs_subprocess_targets_resolve():
+    """`scripts/audit/generate_docs.py` subprocess-invokes 4 sibling
+    Python scripts (extract_config.py, generate_whitepaper_stats.py,
+    build_whitepaper.py, check_docs_freshness.py). Bit 11.2 split
+    those 4 siblings across 2 buckets:
+      - check_docs_freshness.py → scripts/audit/ (orchestrator's own bucket)
+      - extract_config.py, generate_whitepaper_stats.py, build_whitepaper.py
+        → scripts/ops/
+
+    The pre-Bit-11.2 `os.path.join(SCRIPT_DIR, X)` math was correct
+    when all four lived flat in `scripts/`, but broke silently
+    post-Bit-11.2 because 3 of the 4 are no longer adjacent to the
+    orchestrator. Bit 11.2 fu5 (R-B finding) rerooted three of the
+    paths to `OPS_DIR = os.path.join(REPO_DIR, "scripts", "ops")`.
+
+    This pin protects the orchestrator's subprocess-target resolution
+    by importing the module and checking that each of the 4
+    EXTRACT_CONFIG/GENERATE_STATS/BUILD_WHITEPAPER/CHECK_FRESHNESS
+    module-level constants resolves to an existing file.
+    """
+    import importlib.util
+
+    script_path = REPO_ROOT / "scripts" / "audit" / "generate_docs.py"
+    assert script_path.exists(), f"{script_path.relative_to(REPO_ROOT)} missing"
+
+    spec = importlib.util.spec_from_file_location("_gen_docs_under_test", script_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    targets = {
+        "EXTRACT_CONFIG": mod.EXTRACT_CONFIG,
+        "GENERATE_STATS": mod.GENERATE_STATS,
+        "BUILD_WHITEPAPER": mod.BUILD_WHITEPAPER,
+        "CHECK_FRESHNESS": mod.CHECK_FRESHNESS,
+    }
+    missing = {k: v for k, v in targets.items() if not os.path.exists(v)}
+    assert not missing, (
+        f"scripts/audit/generate_docs.py subprocess targets resolve to "
+        f"non-existent paths: {missing}. Bit 11.2 fu5 rerooted 3 of 4 "
+        f"to scripts/ops/; if a relocation Bit moves any of those files "
+        f"to a different home bucket, update the path-resolution at the "
+        f"top of generate_docs.py to match."
+    )
+
+
 def test_audit_runner_sh_repo_dir_is_two_parents_up():
     """`scripts/audit/audit_runner.sh` computes `REPO_DIR` via
     `cd "$SCRIPT_DIR/../.."`. ONE parent hop resolves to `scripts/`;

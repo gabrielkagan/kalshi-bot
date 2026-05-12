@@ -27,9 +27,20 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Bit 11.2 (2026-05-12): relocated to scripts/audit/; need 2 ".." levels.
 REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
 
-EXTRACT_CONFIG = os.path.join(SCRIPT_DIR, "extract_config.py")
-GENERATE_STATS = os.path.join(SCRIPT_DIR, "generate_whitepaper_stats.py")
-BUILD_WHITEPAPER = os.path.join(SCRIPT_DIR, "build_whitepaper.py")
+# Bit 11.2 fu5 (2026-05-12, R-B finding): 3 of the 4 sibling scripts
+# this orchestrator invokes are NOT in scripts/audit/ — they live in
+# scripts/ops/. The relocation Bit moved them; this orchestrator's
+# `os.path.join(SCRIPT_DIR, ...)` math was correct PRE-Bit-11.2 (all
+# four files lived flat in `scripts/`) but became wrong because the
+# four siblings split across two buckets:
+#   - check_docs_freshness.py — stayed adjacent in scripts/audit/
+#   - extract_config.py, generate_whitepaper_stats.py,
+#     build_whitepaper.py — moved to scripts/ops/
+# Resolve each by its actual home bucket.
+OPS_DIR = os.path.join(REPO_DIR, "scripts", "ops")
+EXTRACT_CONFIG = os.path.join(OPS_DIR, "extract_config.py")
+GENERATE_STATS = os.path.join(OPS_DIR, "generate_whitepaper_stats.py")
+BUILD_WHITEPAPER = os.path.join(OPS_DIR, "build_whitepaper.py")
 CHECK_FRESHNESS = os.path.join(SCRIPT_DIR, "check_docs_freshness.py")
 
 CONFIG_JSON = os.path.join(REPO_DIR, "config.json")
