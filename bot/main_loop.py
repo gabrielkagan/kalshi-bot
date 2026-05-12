@@ -298,7 +298,7 @@ class MainLoop:
 
         assert "15m" not in _cal_state._CAL_REGISTRY, "FATAL: 15M engine must never be in _cal_state._CAL_REGISTRY"
 
-        # Backward compat for dashboard_snapshot.py
+        # Backward compat for bot/snapshots/dashboard_snapshot.py
         self.hourly_calibration = self._cal_engines.get("hourly")
         tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -376,7 +376,7 @@ class MainLoop:
         # See kb/decisions/phase-h3-deferred-needs-nbbo-infra-may02.md.
         self.market_obs_snapshotter = None
         try:
-            from market_observations_snapshotter import (
+            from bot.snapshots.market_observations_snapshotter import (
                 MarketObservationsSnapshotter,
                 ensure_schema as _moc_ensure_schema,
                 extract_active_15m_tickers as _moc_extract_15m,
@@ -406,7 +406,7 @@ class MainLoop:
                     "Market observations snapshotter not started — "
                     "kalshi_feed missing get_all_orderbooks_snapshot method "
                     "(WS client API drift; review bot/_impl.py vs "
-                    "market_observations_snapshotter.py contract)"
+                    "bot/snapshots/market_observations_snapshotter.py contract)"
                 )
         except Exception as e:
             logging.warning(
@@ -542,7 +542,7 @@ class MainLoop:
         # review #3). Wrapped in try/except — if the import fails the
         # bot still runs (column stays NULL on every 15M insert).
         try:
-            from bot_state_snapshot import compute_bot_state_snapshot as _moc_snap
+            from bot.snapshots.bot_state_snapshot import compute_bot_state_snapshot as _moc_snap
             def _bot_state_provider():
                 """Returns the snapshot dict (lock_wait_ms=None — patched
                 in by insert_evaluated_opportunity after BEGIN IMMEDIATE)."""
@@ -792,7 +792,7 @@ class MainLoop:
 
         # Dashboard snapshot builder (used by Supabase syncer)
         try:
-            from dashboard_snapshot import DashboardSnapshotBuilder
+            from bot.snapshots.dashboard_snapshot import DashboardSnapshotBuilder
             self.snapshot_builder = DashboardSnapshotBuilder(self)
         except Exception as e:
             logging.info(f"Dashboard snapshot builder not available: {e}")
@@ -800,7 +800,7 @@ class MainLoop:
 
         # Start Supabase syncer (if configured)
         try:
-            from supabase_sync import SupabaseSyncer
+            from bot.snapshots.supabase_sync import SupabaseSyncer
             self.supabase_syncer = SupabaseSyncer(self)
             self.supabase_syncer.start()
         except Exception as e:

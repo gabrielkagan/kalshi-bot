@@ -62,7 +62,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 # — bot/_impl.py imports as a top-level module).
 sys.path.insert(0, str(ROOT))
 
-import market_observations_snapshotter as mod  # noqa: E402
+import bot.snapshots.market_observations_snapshotter as mod  # noqa: E402
 
 
 # ── Test doubles ────────────────────────────────────────────────────────────
@@ -920,7 +920,7 @@ def test_ensure_schema_not_called_from_run():
     thread. A future refactor that moves it back races the bot/_impl.py ALTER
     TABLE migrations at startup."""
     import ast
-    src = (ROOT / "market_observations_snapshotter.py").read_text()
+    src = (ROOT / "bot" / "snapshots" / "market_observations_snapshotter.py").read_text()
     tree = ast.parse(src)
 
     run_method = None

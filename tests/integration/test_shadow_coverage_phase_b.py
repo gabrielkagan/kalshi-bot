@@ -169,7 +169,7 @@ class TestPhaseBSupabaseMirror:
     int-typed columns get the defensive round-to-int from _coerce_int_columns."""
 
     def test_eval_columns_whitelist_includes_phase_b(self):
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
         whitelist = {c.strip() for c in SupabaseSyncer._EVAL_COLUMNS.split(",")}
         missing = [name for (name, _, _) in PHASE_B_NEW_COLUMNS if name not in whitelist]
         assert not missing, (
@@ -181,7 +181,7 @@ class TestPhaseBSupabaseMirror:
         )
 
     def test_int_columns_includes_phase_b_integers(self):
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
         int_cols_in_phase_b = [
             name for (name, _, is_int) in PHASE_B_NEW_COLUMNS if is_int
         ]

@@ -26,7 +26,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 # Helper module under test (moved to repo root in H-2 step 2 to match
 # the H-3a pattern — bot/_impl.py imports as a top-level module).
-from bot_state_snapshot import (  # noqa: E402
+from bot.snapshots.bot_state_snapshot import (  # noqa: E402
     compute_bot_state_snapshot,
 )
 
@@ -515,7 +515,7 @@ def test_default_assets_matches_bot_py():
     """
     import ast as _ast
 
-    from bot_state_snapshot import _DEFAULT_ASSETS
+    from bot.snapshots.bot_state_snapshot import _DEFAULT_ASSETS
 
     config_path = os.path.join(PROJECT_ROOT, "config.py")
     with open(config_path) as fh:

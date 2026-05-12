@@ -124,6 +124,7 @@ forbidden_modules =
     bot.runtime_config
     bot.scanner
     bot.shadows
+    bot.snapshots
     bot.clients
     bot.kalshi_client
     bot.logger

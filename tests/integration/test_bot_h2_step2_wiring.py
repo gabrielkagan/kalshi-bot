@@ -27,7 +27,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-import bot_state_snapshot  # noqa: E402
+import bot.snapshots.bot_state_snapshot as bot_state_snapshot  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -50,11 +50,11 @@ def bot_py_source() -> str:
 
 
 def test_helper_module_at_repo_root():
-    """Step-2 moves the helper from scripts/ to repo root (matches H-3a
-    pattern). bot/_impl.py imports it as a top-level module without sys.path
-    mods. Verify the file lives at the expected location."""
-    assert (ROOT / "bot_state_snapshot.py").exists(), (
-        "bot_state_snapshot.py must live at repo root for bot/_impl.py imports"
+    """Sprint 10 Bit 10.4 (2026-05-12): the helper now lives at
+    bot/snapshots/bot_state_snapshot.py (was repo root pre-10.4).
+    main_loop.py imports it via the canonical bot.snapshots subpackage."""
+    assert (ROOT / "bot" / "snapshots" / "bot_state_snapshot.py").exists(), (
+        "bot/snapshots/bot_state_snapshot.py must exist post-Sprint-10.4"
     )
     # Old location should not exist (the move is the fix; if both exist,
     # tests pick up the wrong copy).

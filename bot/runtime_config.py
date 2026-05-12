@@ -1,4 +1,4 @@
-"""Read-only runtime-config view for dashboard_snapshot.py + supabase_sync.py.
+"""Read-only runtime-config view for bot/snapshots/dashboard_snapshot.py + bot/snapshots/supabase_sync.py.
 
 Replaces the deleted `bot/_impl.py` residual shim's role as a single getattr
 target for runtime-config introspection. Provides PEP 562 module-level
@@ -9,7 +9,7 @@ same module attribute on the dashboard's next snapshot tick).
 
 ## Caller contract
 
-dashboard_snapshot.py and supabase_sync.py use the pattern
+bot/snapshots/dashboard_snapshot.py and bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12) use the pattern
 
     import bot.runtime_config as _bot_mod
     val = getattr(_bot_mod, "WEATHER_NO_SIDE_LIVE", False)

@@ -208,7 +208,7 @@ def summary_aggregates(db_path: Path) -> Dict[str, Optional[int]]:
                 "SELECT COUNT(*) FROM settled_trades"
             ).fetchone()[0]
             if "pnl_cents" in cols:
-                # Mirror dashboard_snapshot.py: net PnL excludes fees via
+                # Mirror bot/snapshots/dashboard_snapshot.py: net PnL excludes fees via
                 # `SUM(pnl_cents - COALESCE(fee_cents, 0))` IF fee_cents
                 # exists; otherwise just SUM(pnl_cents).
                 if "fee_cents" in cols:

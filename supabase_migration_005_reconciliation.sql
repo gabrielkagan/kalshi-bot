@@ -2,7 +2,7 @@
 -- Run in Supabase SQL Editor. Safe to re-run.
 --
 -- Creates an RPC function that returns per-day PnL summaries from the trades
--- table. Used by supabase_sync.py's reconciliation check to detect and auto-fix
+-- table. Used by bot/snapshots/supabase_sync.py's reconciliation check to detect and auto-fix
 -- data drift between VPS SQLite and Supabase (e.g., ghost fill corrections,
 -- manual trade deletions).
 
@@ -25,5 +25,5 @@ AS $$
     ORDER BY day;
 $$;
 
--- Grant access to the service role (used by supabase_sync.py)
+-- Grant access to the service role (used by bot/snapshots/supabase_sync.py)
 GRANT EXECUTE ON FUNCTION daily_pnl_summary() TO service_role;

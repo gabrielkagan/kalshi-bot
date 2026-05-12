@@ -36,7 +36,7 @@
 -- the local state.db. Downstream queries can cast with `::jsonb` as
 -- needed; not casting at write time keeps the supabase mirror sync path
 -- identical to every other TEXT column (no per-column special handling
--- in supabase_sync.py — see kb/failures/supabase-cal-mlp-mirror-gap-may01.md
+-- in bot/snapshots/supabase_sync.py — see kb/failures/supabase-cal-mlp-mirror-gap-may01.md
 -- for the cost of mismatched types).
 --
 -- Why historical rows stay NULL: this is a forward-only feature (see
@@ -95,6 +95,6 @@ ALTER TABLE public.evaluations
 -- No index. Column is freeform JSON, not used in WHERE clauses on hot
 -- queries; v2 training reads it during batch feature extraction only.
 
--- Reload PostgREST schema cache so supabase_sync.py can include the
+-- Reload PostgREST schema cache so bot/snapshots/supabase_sync.py can include the
 -- new column in INSERT bodies without HTTP-400 (PGRST204).
 NOTIFY pgrst, 'reload schema';

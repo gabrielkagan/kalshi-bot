@@ -136,7 +136,7 @@ def test_no_undocumented_bare_sum_pnl_in_repo():
     test files, and any line tagged `# noqa: ... fee_cents`.
     """
     allowlist_paths = {p.resolve() for p in ALL_AFFECTED_SCRIPTS}
-    allowlist_paths.add((REPO_ROOT / 'dashboard_snapshot.py').resolve())
+    allowlist_paths.add((REPO_ROOT / 'bot' / 'snapshots' / 'dashboard_snapshot.py').resolve())  # Sprint 10 Bit 10.4 (2026-05-12)
     allowlist_paths.add((REPO_ROOT / 'tests' / 'test_audit_scripts_net_pnl.py').resolve())
     pattern_bare = re.compile(r'SUM\s*\(\s*pnl_cents\s*\)')
     pattern_corrected = re.compile(

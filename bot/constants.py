@@ -2,7 +2,7 @@
 bot/_impl.py per Sprint 3 Bit 3.1.
 
 Re-exported into bot._impl via `from bot.constants import *` near the top
-of bot/_impl.py. External consumers (market_config.py, dashboard_snapshot.py,
+of bot/_impl.py. External consumers (market_config.py, bot/snapshots/dashboard_snapshot.py,
 postdeploy_verify.py, etc.) reach these via `import bot.constants; bot.constants.X`
 directly post-Bit-9.3-iii.b (2026-05-11 — `_BotProxy` retired). Pre-retirement
 the same callers used `import bot; bot.X` via the proxy → bot._impl.X →

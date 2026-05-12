@@ -7,11 +7,18 @@ the package surface is the set of canonical submodules listed in the "Project
 file map" section below.
 
 **Historical trail (most recent first):**
+- Bit 10.4 (2026-05-12) — `bot/snapshots/` subpackage created. 4 files
+  relocated from repo root to `bot/snapshots/`: dashboard_snapshot.py +
+  bot_state_snapshot.py + market_observations_snapshotter.py + supabase_sync.py.
+  3 `__file__`-derived path sites (dist_config.json, KILL_SWITCH_FILE,
+  state.db) anchored to repo root via the 3-level dirname chain (matches
+  bot/engines/weather_engine.py:806-807). `.importlinter` helpers-leaf
+  forbidden_modules extended with `bot.snapshots`; net contracts stays at 5.
 - Bit 9.3-iii.c (`TBD`, 2026-05-11) — DELETE bot/_impl.py + kill-switch
   runtime-freshness fix bundled (scanner/executor reads of WEATHER/HOURLY/
   BRACKET kill-switch flags converted to `bot.constants.X` module-attribute
   access). NEW `bot/runtime_config.py` PEP 562 dual-probe replaces bot._impl
-  as the getattr target for `dashboard_snapshot.py` + `supabase_sync.py`.
+  as the getattr target for `bot/snapshots/dashboard_snapshot.py` + `bot/snapshots/supabase_sync.py` (post Bit 10.4 sibling-reorg).
 - Bit 9.3-iii.b (`ba46d77`, 2026-05-11) — `_BotProxy` retirement; bot/__init__.py
   is now docstring-only.
 - Bit 9.3-iii.a (`ec88540`, 2026-05-11) — 4 boot-time bindings +
@@ -164,7 +171,7 @@ breadcrumb at line ~660 records the deletion. Verify with
 
 Live trading process:
 - `bot/_impl.py` — **DELETED in Bit 9.3-iii.c (2026-05-11)**. Pre-deletion the residual re-export shim peaked at 591 LOC (9.3-iii.b ship state — 16 class/function re-exports + 2 module aliases + breadcrumb comments + 23-line residual-shim docstring; zero classes post-9.3.5). LOC trajectory: 9.3.5 ship ~767 → 9.3-ii ~582 → 9.3-iii.a ~565 → 9.3-iii.b 591 → DELETED. **Sprint 9 main modularization closes at Bit 9.3-iii.c** — the original ~18,000 LOC bot/_impl.py is gone, the canonical-submodule package (bot/main_loop.py, bot/scanner/__init__.py, bot/executor.py, bot/settlement.py, bot/state.py, bot/order_flow.py, bot/orphan_db_watchdog.py, bot/boot.py, bot/runtime_config.py + all earlier Sprint 3-8 extractions) IS the package.
-- `bot/runtime_config.py` — **NEW in Bit 9.3-iii.c (2026-05-11)**. PEP 562 module-level `__getattr__` dual-probe of bot.constants → config. Replaces bot._impl as the getattr target for dashboard_snapshot.py + supabase_sync.py runtime-config introspection. Preserves getattr-with-default semantics + mutation freshness for runtime-mutable kill-switch flags (the scanner's auto-kill writes target bot.constants.X; this module reads through to that same module attr on the next snapshot tick).
+- `bot/runtime_config.py` — **NEW in Bit 9.3-iii.c (2026-05-11)**. PEP 562 module-level `__getattr__` dual-probe of bot.constants → config. Replaces bot._impl as the getattr target for `bot/snapshots/dashboard_snapshot.py` + `bot/snapshots/supabase_sync.py` (post Bit 10.4 sibling-reorg, 2026-05-12) runtime-config introspection. Preserves getattr-with-default semantics + mutation freshness for runtime-mutable kill-switch flags (the scanner's auto-kill writes target bot.constants.X; this module reads through to that same module attr on the next snapshot tick).
 
 - `bot/order_flow.py` — `OrderFlowEngine` + `KalshiOrderFlowTracker` classes (orderbook flow signals — cross-exchange consensus + funding rate + Kalshi orderbook depth/velocity/spread/convergence; 378-line file: ~89-line header + ~122-line OFE class body + ~155-line KOFT class body + small spacers) extracted from `bot/_impl.py` (Bit 9.3.5, 2026-05-10). Strict-ban for numerical imports (zero numpy/scipy/torch/sklearn/pandas — pure stdlib + 21 explicit `bot.constants` names). Re-exported into `bot/_impl.py` via `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` (line ~120, immediately after the Bit 9.3 MainLoop re-export). **Clean leaf — mirrors Bit 9.2 SettlementTracker shape but smaller surface**: bot/order_flow.py has zero references to names defined below the line-119 re-export point in bot/_impl.py; zero `_telegram_state` consumers; zero `_cal_state` consumers; net `.importlinter` contracts stays at 5 (just adds `bot.order_flow` to `helpers-leaf` `forbidden_modules`). The two `# REMOVE BIT 9.3.5` markers in MainLoop.__init__'s late-binding block (Bit 9.3 form) collapsed to a top-level `from bot.order_flow import OrderFlowEngine, KalshiOrderFlowTracker` in bot/main_loop.py. **Sister cleanup atomic in same commit**: bot/scanner/__init__.py `Optional["OrderFlowEngine"]` and `Optional["KalshiOrderFlowTracker"]` forward-refs UNQUOTED — bot/order_flow.py has zero bot.scanner edges, so the new top-level `from bot.order_flow import` in bot/scanner/__init__.py resolves cleanly at scanner load time. The 5-consumer `_telegram_state._TELEGRAM` enumeration is UNCHANGED — OFE+KOFT do not emit Telegram alerts. **Imports**: 21 explicit names from `bot.constants` (CROSS_EXCHANGE_CONSENSUS_MIN, FUNDING_RATE_ELEVATED/EXTREME, OFA_CONSENSUS_BOOST/REDUCE, OFA_ELEVATED/EXTREME_FUNDING_REDUCE, OFA_LEAD_BOOST, OFA_MAX_ADJUSTMENT, KALSHI_OFT_BUFFER_SIZE/DEPTH_DRAIN_PCT/IMBALANCE_STRONG/WEAK/LOG_INTERVAL/MIN_SNAPSHOTS/SHADOW_MODE/STALE_SECONDS, OFA_KALSHI_CONVERGENCE_BOOST/DEPTH_DRAIN_BOOST/IMBALANCE_BOOST/REDUCE) + stdlib (logging, time, collections.deque, typing.{Dict,List,Optional,Set,Tuple}). Sprint 9 closes here.
 
@@ -201,11 +208,11 @@ Shadows (observation-only):
 AI helpers:
 - `analyst.py`, `auditor.py`, `researcher.py` — Telegram-driven analysis
 
-Snapshots/sync:
-- `dashboard_snapshot.py` — Supabase syncer (paired with `dashboard/index.html` on `gh-pages`)
-- `bot_state_snapshot.py` — bot microstate forward-capture
-- `market_observations_snapshotter.py` — NBBO continuous snapshotter
-- `supabase_sync.py` — Postgres mirror
+Snapshots/sync (`bot/snapshots/`, relocated Sprint 10.4, 2026-05-12; helpers-leaf-listed as a forbidden subpackage; each module anchors `__file__`-derived paths — `dist_config.json`, `state.db`, `.supabase_kill_switch` — to repo root via a 3-level dirname chain mirroring `bot/engines/weather_engine.py:806-807`):
+- `bot/snapshots/dashboard_snapshot.py` — Supabase syncer (paired with `dashboard/index.html` on `gh-pages`)
+- `bot/snapshots/bot_state_snapshot.py` — bot microstate forward-capture
+- `bot/snapshots/market_observations_snapshotter.py` — NBBO continuous snapshotter
+- `bot/snapshots/supabase_sync.py` — Postgres mirror
 
 Infra:
 - `bot/infra/capital_allocator.py`, `bot/infra/circuit_breaker.py` (relocated Sprint 10.5a, 2026-05-11), `bot/models.py` (relocated Sprint 10.5b, 2026-05-11 — sibling under bot/, NOT under bot/infra/; helpers-leaf carve-out for bot.helpers.tm_sweep -> bot.models), `watchdog.py` (10.5c deferred — watchdog has __file__-derived load-bearing paths + CLI invocation)

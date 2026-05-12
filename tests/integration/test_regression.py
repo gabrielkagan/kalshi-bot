@@ -357,7 +357,7 @@ class TestBusyTimeout:
 
     # Production files that write to state.db and MUST set WAL mode
     WAL_REQUIRED_FILES = [
-        "bot/_impl.py", "supabase_sync.py", "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
+        "bot/_impl.py", "bot/snapshots/supabase_sync.py", "bot/engines/sports_engine.py",  # supabase_sync: Sprint 10 Bit 10.4 (2026-05-12); sports: Sprint 10.1d (2026-05-11)
         "bot/shadows/fifteenm_shadow.py", "bot/shadows/hourly_alt_shadow.py", "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     ]
 
@@ -565,7 +565,7 @@ class TestCheckSameThread:
 class TestSyntaxCheck:
     """Every Python file must parse without syntax errors."""
 
-    CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "dashboard_snapshot.py",
+    CRITICAL_FILES = ["bot/_impl.py", "market_config.py", "bot/snapshots/dashboard_snapshot.py",  # dashboard: Sprint 10 Bit 10.4 (2026-05-12)
                       "bot/engines/sports_engine.py", "bot/engines/spx_engine.py", "bot/engines/weather_engine.py",  # Sprint 10.1c/d (2026-05-11)
                       "bot/shadows/fifteenm_shadow.py"]  # Sprint 10.2 (2026-05-11)
 

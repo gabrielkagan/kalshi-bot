@@ -194,7 +194,7 @@ class TestHypeDogeSpotAtDecisionSupabaseWhitelist:
     _check_schema_parity 2026-04-04 postmortem."""
 
     def test_eval_columns_whitelist_includes_hype_doge(self):
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
         whitelist = {c.strip() for c in SupabaseSyncer._EVAL_COLUMNS.split(",")}
         missing = [name for (name, _) in HYPE_DOGE_NEW_COLUMNS if name not in whitelist]
         assert not missing, (

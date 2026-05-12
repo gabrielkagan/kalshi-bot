@@ -121,7 +121,7 @@ def test_supabase_sync_coerces_ask_depth_to_int():
 
     This catches the case where the source fix is shipped but the local
     poisoned rows still need to drain through sync."""
-    from supabase_sync import SupabaseSyncer
+    from bot.snapshots.supabase_sync import SupabaseSyncer
     # Method-level coercion — a row dict containing float ask_depth must be
     # normalized before POST. We probe via _coerce_int_columns (added by
     # the fix) or by running the full row mapping path if no helper exists.
@@ -145,7 +145,7 @@ def test_supabase_sync_coerces_ask_depth_to_int():
 
 def test_supabase_sync_coerces_none_passthrough():
     """NULL ask_depth must stay None — not 0, not error."""
-    from supabase_sync import SupabaseSyncer
+    from bot.snapshots.supabase_sync import SupabaseSyncer
     out = SupabaseSyncer._coerce_int_columns({"ask_depth": None, "bid_depth": None})
     assert out["ask_depth"] is None
     assert out["bid_depth"] is None

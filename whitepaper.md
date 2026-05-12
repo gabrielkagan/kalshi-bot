@@ -875,7 +875,7 @@ Append-only journal files provide a complete audit trail:
 
 ## Supabase Real-Time Dashboard
 
-`supabase_sync.py` pushes a state snapshot every 30 seconds to the `dashboard_state` table in Supabase. A static HTML dashboard hosted on GitHub Pages reads from Supabase Realtime, showing:
+`bot/snapshots/supabase_sync.py` pushes a state snapshot every 30 seconds to the `dashboard_state` table in Supabase. A static HTML dashboard hosted on GitHub Pages reads from Supabase Realtime, showing:
 
 - Current positions and P&L
 - Active market evaluations

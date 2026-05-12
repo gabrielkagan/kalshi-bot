@@ -42,7 +42,7 @@ CAL_MLP_FIELDS = {
 
 def _eval_columns_set() -> set[str]:
     """Parse SupabaseSyncer._EVAL_COLUMNS into a set of bare column names."""
-    from supabase_sync import SupabaseSyncer
+    from bot.snapshots.supabase_sync import SupabaseSyncer
     raw = SupabaseSyncer._EVAL_COLUMNS
     return {c.strip() for c in raw.split(",") if c.strip()}
 
@@ -63,7 +63,7 @@ def test_eval_columns_includes_all_cal_mlp_fields():
 def test_eval_columns_no_duplicates():
     """Defensive: if someone pastes the same field twice in the long string,
     SQL still works but it's a smell. Lock against it."""
-    from supabase_sync import SupabaseSyncer
+    from bot.snapshots.supabase_sync import SupabaseSyncer
     raw = SupabaseSyncer._EVAL_COLUMNS
     cols = [c.strip() for c in raw.split(",") if c.strip()]
     dups = sorted({c for c in cols if cols.count(c) > 1})

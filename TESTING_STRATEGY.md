@@ -58,7 +58,7 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ### 3. Cross-File Call-Site Integrity Tests (`test_call_sites.py`)
 
-**Failure mode:** Function signature changed in bot/_impl.py but callers in other files (analyst.py, dashboard_snapshot.py, bot/engines/spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
+**Failure mode:** Function signature changed in bot/_impl.py but callers in other files (analyst.py, bot/snapshots/dashboard_snapshot.py, bot/engines/spx_engine.py, etc.) still use old signature → `TypeError` at runtime.
 **Past incident:** CLAUDE.md rule about grepping all call sites after signature changes.
 
 **Tests to write:**
@@ -107,7 +107,7 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 **Tests to write:**
 
-- **Dashboard state schema**: `dashboard_snapshot.py` builds state dicts. Assert the output dict has all keys that the Supabase `dashboard_state` table expects. Catches "added field to dashboard but forgot Supabase column" bugs.
+- **Dashboard state schema**: `bot/snapshots/dashboard_snapshot.py` builds state dicts. Assert the output dict has all keys that the Supabase `dashboard_state` table expects. Catches "added field to dashboard but forgot Supabase column" bugs.
 - **Telegram alert format**: `analyst.py` formats alerts. Assert alert strings don't exceed Telegram's 4096 char limit and contain required fields (asset, PnL, trade ID).
 - **JSONL schema stability**: `opportunity_journal.jsonl`, `scan_journal.jsonl`, and `fill_model_journal.jsonl` each have an expected schema. Assert a sample record from each has the expected keys. Catches "renamed a field but broke downstream analysis scripts."
 

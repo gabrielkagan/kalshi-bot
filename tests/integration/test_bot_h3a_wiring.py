@@ -27,7 +27,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-import market_observations_snapshotter as mod  # noqa: E402
+import bot.snapshots.market_observations_snapshotter as mod  # noqa: E402
 
 
 # ── Helper unit tests (extract_active_15m_tickers) ────────────────────────

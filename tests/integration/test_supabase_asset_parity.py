@@ -32,7 +32,7 @@ class TestSupabaseWeatherAssetParity:
         entry in supabase_sync._WEATHER_ASSETS — otherwise the first-ever
         settlement for that city FK-fails the sync batch."""
         from bot.engines.weather_engine import WEATHER_CITIES  # Sprint 10.1c sibling-reorg (2026-05-11)
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
 
         expected = {f"{code}_TEMP" for code in WEATHER_CITIES}
         registered = {symbol for symbol, _name, _ticker in SupabaseSyncer._WEATHER_ASSETS}
@@ -48,7 +48,7 @@ class TestSupabaseWeatherAssetParity:
         """Every registered weather asset must correspond to a real city in
         weather_engine — catches copy-paste errors and typos like PHIL vs PHI."""
         from bot.engines.weather_engine import WEATHER_CITIES  # Sprint 10.1c sibling-reorg (2026-05-11)
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
 
         expected = {f"{code}_TEMP" for code in WEATHER_CITIES}
         registered = {symbol for symbol, _name, _ticker in SupabaseSyncer._WEATHER_ASSETS}
@@ -63,7 +63,7 @@ class TestSupabaseWeatherAssetParity:
         """Each registered asset's series_ticker must match the weather_engine
         definition — defends against renames on one side."""
         from bot.engines.weather_engine import WEATHER_CITIES  # Sprint 10.1c sibling-reorg (2026-05-11)
-        from supabase_sync import SupabaseSyncer
+        from bot.snapshots.supabase_sync import SupabaseSyncer
 
         for symbol, _name, series_ticker in SupabaseSyncer._WEATHER_ASSETS:
             city_code = symbol.replace("_TEMP", "")

@@ -18,7 +18,7 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-DASHBOARD_SNAPSHOT_PATH = os.path.join(PROJECT_ROOT, "dashboard_snapshot.py")
+DASHBOARD_SNAPSHOT_PATH = os.path.join(PROJECT_ROOT, "bot", "snapshots", "dashboard_snapshot.py")  # Sprint 10 Bit 10.4 (2026-05-12)
 DASHBOARD_PATH = "/private/tmp/gabekagan-dash/dashboard/index.html"
 
 # The contract: every key dashboard_snapshot.py writes as snap["key"]

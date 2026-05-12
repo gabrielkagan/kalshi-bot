@@ -31,9 +31,10 @@ the residual shim is GONE. Production reaches names via canonical submodules:
 - `bot/__main__.py` uses `from bot.main_loop import MainLoop` directly (Bit 9.3-ii)
 - `bot/state.py` uses `from bot.boot import compute_for_15m_main_path` (Bit 9.3-iii.a)
 - The proxy fall-through that previously made `bot.X → bot._impl.X` resolve was retired (Bit 9.3-iii.b)
-- `dashboard_snapshot.py` + `supabase_sync.py` read runtime config via
-  `import bot.runtime_config as _bot_mod` (PEP 562 dual-probe of bot.constants → config;
-  Bit 9.3-iii.c — replaces bot._impl as the getattr target).
+- `bot/snapshots/dashboard_snapshot.py` + `bot/snapshots/supabase_sync.py` read runtime
+  config via `import bot.runtime_config as _bot_mod` (PEP 562 dual-probe of
+  bot.constants → config; Bit 9.3-iii.c — replaces bot._impl as the getattr target;
+  modules relocated under bot/snapshots/ in Bit 10.4, 2026-05-12).
 
 The body of this `__init__.py` is intentionally empty — Python's default
 package import semantics auto-create `sys.modules['bot']` as a plain

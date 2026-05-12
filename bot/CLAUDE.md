@@ -111,7 +111,7 @@ Confirmed-affected (Apr 30): `scripts/15m_live_audit.py`,
 `scripts/alpha_audit.py` (`/alpha-audit`),
 `scripts/data_health_monitor.py`, `scripts/generate_whitepaper_stats.py`,
 `scripts/maker_opportunity_cost.py`, `scripts/quiet_market_monitor.py`,
-`dashboard_snapshot.py` (root), `analyst.py`, `auditor.py`,
+`bot/snapshots/dashboard_snapshot.py` (Sprint 10.4, 2026-05-12), `analyst.py`, `auditor.py`,
 `researcher.py`, `.claude/skills/status/SKILL.md` (`/status` skill).
 Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.
 
@@ -161,7 +161,7 @@ know about silently drops the window.
 2. Wire into `scan()`; log to `evaluated_opportunities` with the right
    `filter_stage`.
 3. New DB columns: update INSERT + signature + SQL in same commit.
-4. Add a metric to `dashboard_snapshot.py`.
+4. Add a metric to `bot/snapshots/dashboard_snapshot.py`.
 5. Shadow only — don't promote without explicit instruction.
 
 ### Investigate a loss or anomaly (the long form behind /investigate)

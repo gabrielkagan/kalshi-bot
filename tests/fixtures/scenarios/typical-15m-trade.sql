@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS evaluated_opportunities (
     product_type TEXT
 );
 
--- Canonical schema per market_observations_snapshotter.py:87-100. Columns
+-- Canonical schema per bot/snapshots/market_observations_snapshotter.py:87-100. Columns
 -- are `yes_bid_cents`/`yes_ask_cents`/...; the table has NO `event_ticker`,
 -- `last_price`, or `spot_price` columns (snapshotter writes NBBO+depth only).
 CREATE TABLE IF NOT EXISTS market_observations_continuous (

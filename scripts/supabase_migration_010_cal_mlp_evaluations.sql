@@ -11,7 +11,7 @@
 --   the 2026-04-04 incident postmortem in kb/failures/dashboard-drift.md),
 --   adding columns to that whitelist WITHOUT the remote columns existing
 --   silently HTTP-400s every batch and freezes sync. Ship this migration
---   FIRST, then the supabase_sync.py edit.
+--   FIRST, then the bot/snapshots/supabase_sync.py edit.
 --
 -- Types: every existing probability/edge column on this table is `real`
 --   (calibrated_prob, raw_prob, breakeven_wr, edge, etc.) — keep the

@@ -24,8 +24,8 @@ sys.path.insert(0, PROJECT_ROOT)
 # Files that import from bot/_impl.py and must be checked for call-site correctness
 BOT_IMPORTERS = [
     "market_config.py",
-    "dashboard_snapshot.py",
-    "supabase_sync.py",
+    "bot/snapshots/dashboard_snapshot.py",  # Sprint 10 Bit 10.4 (2026-05-12)
+    "bot/snapshots/supabase_sync.py",  # Sprint 10 Bit 10.4 (2026-05-12)
 ]
 
 # Engine files that may wire into CalEngine pipeline
@@ -328,7 +328,7 @@ class TestDashboardSnapshotImports:
 
     def test_dashboard_snapshot_syntax(self):
         """dashboard_snapshot.py parses without errors."""
-        filepath = os.path.join(PROJECT_ROOT, "dashboard_snapshot.py")
+        filepath = os.path.join(PROJECT_ROOT, "bot", "snapshots", "dashboard_snapshot.py")
         if not os.path.exists(filepath):
             pytest.skip("dashboard_snapshot.py not found")
         with open(filepath) as f:

@@ -102,10 +102,12 @@ def test_no_production_caller_imports_bot_impl():
         string-form ast nodes only.
     """
     forbidden_roots = ["bot", "scripts"]
-    forbidden_files = [
-        REPO_ROOT / "dashboard_snapshot.py",
-        REPO_ROOT / "supabase_sync.py",
-    ]
+    # Sprint 10 Bit 10.4 (2026-05-12): dashboard_snapshot.py + supabase_sync.py
+    # relocated under bot/snapshots/. They are now reached by the
+    # `forbidden_roots = ["bot", "scripts"]` rglob walk below; the explicit
+    # forbidden_files list is empty post-relocation but kept as a hook for
+    # any future repo-root sentinel files that may need the same treatment.
+    forbidden_files: list[Path] = []
     py_files: list[Path] = []
     for root in forbidden_roots:
         for p in (REPO_ROOT / root).rglob("*.py"):
@@ -435,25 +437,25 @@ def test_dashboard_snapshot_uses_runtime_config():
     that mention bot._impl as breadcrumbs do NOT count as offenders (L97 prevention:
     avoid string-matching the literal that the breadcrumb describes).
     """
-    tree = _parse("dashboard_snapshot.py")
+    tree = _parse("bot/snapshots/dashboard_snapshot.py")  # Sprint 10 Bit 10.4 (2026-05-12)
     assert not _has_import_of(tree, "bot._impl"), (
-        "dashboard_snapshot.py must NOT have any `import bot._impl` statement."
+        "bot/snapshots/dashboard_snapshot.py must NOT have any `import bot._impl` statement."
     )
     assert _has_import_of(tree, "bot.runtime_config"), (
-        "dashboard_snapshot.py must use `import bot.runtime_config as _bot_mod` "
+        "bot/snapshots/dashboard_snapshot.py must use `import bot.runtime_config as _bot_mod` "
         "as the replacement. The PEP 562 shim preserves getattr semantics with "
         "mutation freshness."
     )
 
 
 def test_supabase_sync_uses_runtime_config():
-    """supabase_sync.py:810 must replace its lone bot._impl import."""
-    tree = _parse("supabase_sync.py")
+    """bot/snapshots/supabase_sync.py must replace its lone bot._impl import."""
+    tree = _parse("bot/snapshots/supabase_sync.py")  # Sprint 10 Bit 10.4 (2026-05-12)
     assert not _has_import_of(tree, "bot._impl"), (
-        "supabase_sync.py must NOT have any `import bot._impl` statement."
+        "bot/snapshots/supabase_sync.py must NOT have any `import bot._impl` statement."
     )
     assert _has_import_of(tree, "bot.runtime_config"), (
-        "supabase_sync.py must use `import bot.runtime_config as _bot_mod`."
+        "bot/snapshots/supabase_sync.py must use `import bot.runtime_config as _bot_mod`."
     )
 
 

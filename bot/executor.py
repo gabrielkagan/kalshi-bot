@@ -223,7 +223,7 @@ class OrderExecutor:
 
     @property
     def _active_order(self) -> Optional[Dict]:
-        """Backwards compat for dashboard_snapshot.py."""
+        """Backwards compat for bot/snapshots/dashboard_snapshot.py."""
         if not self._active_orders:
             return None
         return next(iter(self._active_orders.values()))

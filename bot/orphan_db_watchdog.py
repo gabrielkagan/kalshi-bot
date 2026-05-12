@@ -118,7 +118,7 @@ def _alert_orphan_db_holder(*, pid: int, cmdline: str) -> None:
 # Positive-list of cmdline substrings that indicate an orphan we care
 # about. We deliberately do NOT alert on legitimate cron-spawned
 # cohabitants (watchdog.py, auditor.py, audit_cron.py,
-# dashboard_snapshot.py — see adversarial review C-1) because their
+# bot/snapshots/dashboard_snapshot.py — see adversarial review C-1) because their
 # overlap with bot startup is routine and would habituate the operator
 # to ignore alerts. The May 3 2026 incident was an H-4 backfill orphan,
 # and that's the specific class we're guarding against.
@@ -145,7 +145,7 @@ def detect_orphan_db_holders(
     Why positive-list and not "anything not bot/_impl.py": the live VPS has
     several legitimate cron-spawned `state.db` openers (watchdog.py
     every 2 min, auditor.py hourly, audit_cron.py every 30 min,
-    operator-run dashboard_snapshot.py). Any of them can collide
+    operator-run bot/snapshots/dashboard_snapshot.py). Any of them can collide
     with the watchdog's lsof probe at bot startup. A negative-list
     design would generate alerts on every overlap → alert fatigue →
     the operator stops looking at the channel. Positive-list keeps
@@ -224,7 +224,7 @@ def detect_orphan_db_holders(
         # Adversarial-review C-1: only alert on PIDs that match the
         # known orphan-creator patterns. Otherwise log debug-only and
         # move on — legitimate cron processes (watchdog.py, auditor.py,
-        # audit_cron.py, dashboard_snapshot.py) routinely collide with
+        # audit_cron.py, bot/snapshots/dashboard_snapshot.py) routinely collide with
         # bot startup.
         is_orphan_class = any(
             pat in cmdline for pat in _ORPHAN_DB_WATCHDOG_PATTERNS

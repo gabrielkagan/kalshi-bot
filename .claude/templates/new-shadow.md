@@ -19,7 +19,7 @@ Per CLAUDE.md sacred rules:
 - DB columns ship atomically with INSERT signature changes
   (`_shadow_diag` schema chain — bot/CLAUDE.md).
 - New shadow row insert with the right `filter_stage` value.
-- Add a dashboard metric to `dashboard_snapshot.py` per the
+- Add a dashboard metric to `bot/snapshots/dashboard_snapshot.py` per the
   decision doc `kb/decisions/dashboard-overhaul-plan.md`.
 - Shadow only — don't promote without explicit instruction +
   data backing.
@@ -74,7 +74,7 @@ atomically (per bot/CLAUDE.md `_shadow_diag` schema chain rule):
 
 ## Dashboard
 
-Add a metric block to `dashboard_snapshot.py`:
+Add a metric block to `bot/snapshots/dashboard_snapshot.py`:
 
 ```python
 # <STRATEGY_NAME> shadow (Bit <BIT_NUMBER>)
@@ -87,7 +87,7 @@ def _<strategy_name>_metrics(conn):
     ...
 ```
 
-Ship `dashboard_snapshot.py` + `dashboard/index.html` (gh-pages) in
+Ship `bot/snapshots/dashboard_snapshot.py` + `dashboard/index.html` (gh-pages) in
 the SAME commit per `kb/decisions/dashboard-overhaul-plan.md`.
 
 ## Tests

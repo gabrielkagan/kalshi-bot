@@ -3,11 +3,11 @@
 
 -- ============================================================================
 -- 1. Fix trades sync: add missing columns to trades table (already in schema,
---    but supabase_sync.py wasn't sending them — after code fix, backfill needed)
+--    but bot/snapshots/supabase_sync.py wasn't sending them — after code fix, backfill needed)
 -- ============================================================================
 
 -- Columns already exist from migration_001. This is just a reminder to run
--- the backfill after deploying the supabase_sync.py fix.
+-- the backfill after deploying the bot/snapshots/supabase_sync.py fix.
 
 -- ============================================================================
 -- 2. Materialized view: Daily risk rollup

@@ -2,13 +2,13 @@
 
 **DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/refresh_repo_map.py`).
 
-Generated: 2026-05-11T22:45:17Z (HEAD: `ba46d77`).
+Generated: 2026-05-12T10:03:25Z (HEAD: `e3bf6d4`).
 
 ## Summary
-- Modules: 54 .py files under `bot/`
-- Total LOC: 42,390
-- Top-level classes: 58
-- Public top-level functions: 41 (underscore-prefixed private functions excluded from this map)
+- Modules: 59 .py files under `bot/`
+- Total LOC: 49,551
+- Top-level classes: 61
+- Public top-level functions: 47 (underscore-prefixed private functions excluded from this map)
 
 Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this map is the navigation-aid complement.
 
@@ -23,13 +23,13 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
   - `constants.py` (1804 LOC)
   - `db_writer_registry.py` (168 LOC)
     - functions: recent_writes, register_write, snapshot_active, tracked_write, unregister_write
-  - `executor.py` (5395 LOC)
+  - `executor.py` (5539 LOC)
     - classes: OrderExecutor
   - `kalshi_client.py` (388 LOC)
     - classes: KalshiClient
   - `logger.py` (90 LOC)
     - classes: Logger
-  - `main_loop.py` (2208 LOC)
+  - `main_loop.py` (2219 LOC)
     - classes: MainLoop
   - `models.py` (1274 LOC)
     - classes: EGARCHEstimator, MincerZarnowitzTracker, PositionSizer
@@ -44,13 +44,13 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
   - `settlement.py` (1275 LOC)
     - classes: SettlementTracker
     - functions: discover_active_windows
-  - `state.py` (2774 LOC)
+  - `state.py` (3049 LOC)
     - classes: StateManager
   - `clients/`
     - `__init__.py` (0 LOC)
   - `engines/`
     - `__init__.py` (66 LOC)
-    - `calibration.py` (1209 LOC)
+    - `calibration.py` (1210 LOC)
       - classes: CalibrationEngine
     - `probability.py` (316 LOC)
       - classes: ProbabilityEngine
@@ -86,8 +86,8 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - `breakers.py` (185 LOC)
     - `cell_blocks.py` (206 LOC)
       - functions: should_block_high_price_stc_band, should_block_high_price_stc_candidate, should_block_sol_bleed_v2_candidate, should_block_sol_taker_lowprice_bleed_candidate, should_block_tm98_highprice_bleed_candidate, should_exclude_weather_no_ticker
-    - `derived_features.py` (61 LOC)
-      - functions: compute_derived_features
+    - `derived_features.py` (134 LOC)
+      - functions: apply_sigma_winsor, compute_derived_features, compute_hour_sin_cos
     - `orderbook.py` (72 LOC)
       - functions: best_yes_ask_cents, convert_orderbook_fp
     - `raw_api_journal.py` (47 LOC)
@@ -110,7 +110,7 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
     - `circuit_breaker.py` (412 LOC)
       - classes: CircuitBreaker, CircuitBreakerOpen, CircuitBreakerRegistry, State
   - `scanner/`
-    - `__init__.py` (9472 LOC)
+    - `__init__.py` (9485 LOC)
       - classes: OpportunityScanner
   - `shadows/`
     - `__init__.py` (21 LOC)
@@ -121,3 +121,14 @@ Public-surface snapshot is in `tests/contracts/public_api.json` (Pillar 1); this
       - functions: calculate_shadow_fee
     - `spx_harrv_shadow.py` (1107 LOC)
       - classes: SPXHARRVModel, SPXHARRVShadowEngine
+  - `snapshots/`
+    - `__init__.py` (25 LOC)
+    - `bot_state_snapshot.py` (491 LOC)
+      - functions: compute_bot_state_snapshot
+    - `dashboard_snapshot.py` (4504 LOC)
+      - classes: DashboardSnapshotBuilder
+    - `market_observations_snapshotter.py` (575 LOC)
+      - classes: MarketObservationsSnapshotter
+      - functions: derive_top_of_book, ensure_schema, extract_active_15m_tickers
+    - `supabase_sync.py` (1049 LOC)
+      - classes: SupabaseSyncer

@@ -2156,7 +2156,7 @@ class StateManager:
                 _h2_snap_dict = None
 
         # Phase H-2: BEGIN IMMEDIATE timing pattern for lock_wait_ms.
-        # Mandated per bot_state_snapshot.py "lock_wait_ms semantics —
+        # Mandated per bot/snapshots/bot_state_snapshot.py "lock_wait_ms semantics —
         # MANDATED PATTERN": measure the wall-clock delay between issuing
         # BEGIN IMMEDIATE and the lock being granted, in milliseconds.
         # Falls through to the implicit-tx path under two conditions:

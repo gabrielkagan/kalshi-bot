@@ -232,8 +232,10 @@ bot/engines/sports_engine.py   -- sports comeback engine (Bayesian LR, observati
 bot/engines/sports_data.py     -- sports LR tables and league configuration  (Sprint 10.1a relocation, 2026-05-11)
 bot/infra/capital_allocator.py -- capital allocation across product types  (Sprint 10.5a relocation, 2026-05-11)
 bot/infra/circuit_breaker.py   -- per-asset trading halt logic  (Sprint 10.5a relocation, 2026-05-11)
-dashboard_snapshot.py          -- builds dashboard state snapshots for Supabase
-supabase_sync.py               -- pushes snapshots to Supabase Realtime every 10s
+bot/snapshots/dashboard_snapshot.py            -- builds dashboard state snapshots for Supabase  (Sprint 10.4 relocation, 2026-05-12)
+bot/snapshots/bot_state_snapshot.py            -- bot microstate forward-capture helper  (Sprint 10.4 relocation, 2026-05-12)
+bot/snapshots/market_observations_snapshotter.py -- NBBO continuous snapshotter  (Sprint 10.4 relocation, 2026-05-12)
+bot/snapshots/supabase_sync.py                 -- pushes snapshots to Supabase Realtime every 10s  (Sprint 10.4 relocation, 2026-05-12)
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
 start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + `python -m bot`)
@@ -261,4 +263,4 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 
 ### Dashboard (Supabase)
 
-When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, `supabase_sync.py` pushes a state snapshot every 10 seconds to the `dashboard_state` table: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. The dashboard is a static HTML page hosted on GitHub Pages, reading from Supabase Realtime.
+When `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set, `bot/snapshots/supabase_sync.py` pushes a state snapshot every 10 seconds to the `dashboard_state` table: balance, active positions, recent trades, win/loss record, current volatility readings, order flow signals, and session stats. The dashboard is a static HTML page hosted on GitHub Pages, reading from Supabase Realtime.

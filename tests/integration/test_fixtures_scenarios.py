@@ -80,7 +80,7 @@ def _seed_canonical_tables(db_path: Path) -> None:
                 shadow._db_conn.close()
             # Snapshotter DDL for market_observations_continuous —
             # the canonical writer is market_observations_snapshotter.py.
-            import market_observations_snapshotter as snap
+            import bot.snapshots.market_observations_snapshotter as snap
             mgr.conn.executescript(snap._DDL)
             mgr.conn.commit()
         finally:

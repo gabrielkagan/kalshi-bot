@@ -323,7 +323,7 @@ WRITER_MODULES = [
     # (bot/scanner/__init__.py, bot/executor.py, bot/state.py, bot/settlement.py,
     # bot/main_loop.py) and are covered transitively by other tests.
     "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
-    "market_observations_snapshotter.py",
+    "bot/snapshots/market_observations_snapshotter.py",  # Sprint 10 Bit 10.4 (2026-05-12)
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
     "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)

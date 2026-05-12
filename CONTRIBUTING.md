@@ -56,7 +56,7 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   (top-level, Sprint 10.6). `bot/_impl.py` was DELETED in Bit 9.3-iii.c
   (2026-05-11) — Sprint 9 main modularization is CLOSED. New code goes
   in canonical submodules; `bot/runtime_config.py` (PEP 562 dual-probe)
-  is the runtime-config view for dashboard_snapshot.py + supabase_sync.py.
+  is the runtime-config view for bot/snapshots/dashboard_snapshot.py + bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12).
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
   Direct `import torch` / `import pandas` anywhere under `bot/` is
   blocked by `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`).

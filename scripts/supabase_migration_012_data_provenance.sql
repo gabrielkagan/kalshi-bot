@@ -20,7 +20,7 @@
 -- `data_provenance IS NULL`, so re-running the file re-stamps zero rows.
 --
 -- Why this migration ALSO does the historical UPDATE (round 2 #1):
--- supabase_sync.py is incremental on `id` (WHERE id > watermark).
+-- bot/snapshots/supabase_sync.py is incremental on `id` (WHERE id > watermark).
 -- An UPDATE on existing rows by stamp_data_provenance.py NEVER moves
 -- the watermark, so without this Postgres-side UPDATE the Supabase
 -- mirror would keep `data_provenance = NULL` on all 81K+ historical
@@ -67,7 +67,7 @@ UPDATE public.evaluations
 CREATE INDEX IF NOT EXISTS evaluations_data_provenance_idx
     ON public.evaluations (data_provenance);
 
--- Tell PostgREST to reload its schema cache so supabase_sync.py can
+-- Tell PostgREST to reload its schema cache so bot/snapshots/supabase_sync.py can
 -- begin sending data_provenance in INSERT bodies immediately. Without
 -- this, the cache may take up to a minute to refresh and the first
 -- few batches HTTP-400 with PGRST204 (column not in schema cache).

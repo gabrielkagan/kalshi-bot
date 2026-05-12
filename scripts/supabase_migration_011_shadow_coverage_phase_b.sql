@@ -22,7 +22,7 @@
 --   2026-04-04 incident postmortem in kb/failures/dashboard-drift.md),
 --   adding columns to that whitelist WITHOUT the remote columns existing
 --   silently HTTP-400s every batch and freezes sync. Ship this migration
---   FIRST, then the supabase_sync.py edit.
+--   FIRST, then the bot/snapshots/supabase_sync.py edit.
 --
 --   Phase B is schema-only. Population ships in phases D (cal_mlp annotation),
 --   E (state-at-decision-time helper), and F (resolution / cross-asset /
