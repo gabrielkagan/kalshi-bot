@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 195,204 |
+| Markets evaluated | 196,155 |
 | Observation period | 2026-02-22 to 2026-05-12 |
-| Filter pass rate | 4.0\% (7,767 of 195,204) |
-| Top rejection reason | Insufficient Edge (58,808) |
-| Settled trades | 3,910 (3,616 W / 292 L / 2 BE) |
+| Filter pass rate | 4.0\% (7,800 of 196,155) |
+| Top rejection reason | Insufficient Edge (59,061) |
+| Settled trades | 3,930 (3,635 W / 293 L / 2 BE) |
 | Win rate | 92.5\% |
 
-*Last updated: 2026-05-12T02:54:28Z*
+*Last updated: 2026-05-12T09:26:16Z*
 
 ## Live vs Observation
 
@@ -257,7 +257,7 @@ The bot writes JSONL journals for every stage of its decision-making pipeline:
 | `settlement` | Contract outcomes and P&L |
 | `execution` | Execution quality metrics |
 | `performance` | Daily summary aggregations |
-| `fill_model` | Order lifecycle (maker + taker IOC) for ML fill prediction |
+| `fill_model` | Maker order lifecycle data for ML fill prediction |
 
 ### Dashboard (Supabase)
 
