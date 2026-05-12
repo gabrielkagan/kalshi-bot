@@ -24,6 +24,7 @@ Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
     bot/engines/sports_engine.py           # 2 call sites
     scripts/backfill/backfill_extended_features.py
     scripts/backfill/wave1_derived_cols.py  # B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill
+    scripts/backfill/hype_doge_replay_backfill.py  # Phase 2 86b9wy7v3 2026-05-12: per-market replay_market() calls compute_hour_sin_cos + compute_derived_features + apply_sigma_winsor on historical_replay_calmlp rows
 
   Canonical helpers:
     bot/helpers/derived_features.py::compute_derived_features
@@ -352,6 +353,95 @@ def test_integration_py_has_canonical_helper_call_site():
         "compute_derived_features. Comment mentions + import alone don't "
         "count — need an actual invocation that replaces the inline "
         "buf_pct/sigma_denom + breakeven_gap formulas."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase 2 replay backfill seal (86b9wy7v3, 2026-05-12) — R3 adv-review M3
+# ─────────────────────────────────────────────────────────────────────
+
+
+REPLAY_BACKFILL_PY = REPO_ROOT / "scripts" / "backfill" / "hype_doge_replay_backfill.py"
+
+
+def test_replay_backfill_calls_canonical_hour_helper():
+    """``scripts/backfill/hype_doge_replay_backfill.py`` must Call
+    ``compute_hour_sin_cos`` (not inline `sin/cos(...pi...24...)`).
+
+    Mirrors ``test_integration_py_has_canonical_helper_call_site``'s
+    seal pattern. Required so the harness's lock-step claim in
+    ``bot/CLAUDE.md`` + ``agent_docs/calibration_pipeline.md`` is
+    AST-enforced, not just docstring-claimed (R3 adv-review M3).
+    """
+    if not REPLAY_BACKFILL_PY.is_file():
+        pytest.fail(
+            f"REPLAY_BACKFILL_PY missing at {REPLAY_BACKFILL_PY} — the "
+            "Phase 2 (86b9wy7v3) harness is a tracked load-bearing file; "
+            "this seal must not silently skip. If the file was renamed, "
+            "update REPLAY_BACKFILL_PY; if intentionally deleted, also "
+            "remove this test."
+        )
+    tree = _parse(REPLAY_BACKFILL_PY)
+    call_sites = []
+    inline_sites = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Name) and f.id == "compute_hour_sin_cos":
+                call_sites.append(node.lineno)
+            elif isinstance(f, ast.Attribute) and f.attr == "compute_hour_sin_cos":
+                call_sites.append(node.lineno)
+            # Inline-drift guard: same shape as test_no_inline_hour_sin_cos_in_other_sites
+            if isinstance(f, ast.Attribute) and f.attr in ("sin", "cos"):
+                ns = f.value
+                if isinstance(ns, ast.Name) and ns.id in ("np", "math", "_math"):
+                    has_pi = False
+                    has_24 = False
+                    for arg in node.args:
+                        for child in ast.walk(arg):
+                            if isinstance(child, ast.Attribute) and child.attr == "pi":
+                                has_pi = True
+                            if isinstance(child, ast.Constant) and isinstance(
+                                child.value, (int, float)
+                            ) and float(child.value) == 24.0:
+                                has_24 = True
+                    if has_pi and has_24:
+                        inline_sites.append(node.lineno)
+    assert not inline_sites, (
+        f"Inline hour_sin/cos reintroduced in {REPLAY_BACKFILL_PY.name} at "
+        f"line(s) {inline_sites} — call bot.helpers.derived_features."
+        f"compute_hour_sin_cos instead."
+    )
+    assert call_sites, (
+        f"{REPLAY_BACKFILL_PY.name} must contain a Call to compute_hour_sin_cos "
+        "(lock-step contract per bot/CLAUDE.md cal_mlp lock-step). Comment + "
+        "import alone don't count."
+    )
+
+
+def test_replay_backfill_calls_canonical_derived_features():
+    """``scripts/backfill/hype_doge_replay_backfill.py`` must Call
+    ``compute_derived_features`` (not inline sigma/breakeven_gap math)."""
+    if not REPLAY_BACKFILL_PY.is_file():
+        pytest.fail(
+            f"REPLAY_BACKFILL_PY missing at {REPLAY_BACKFILL_PY} — the "
+            "Phase 2 (86b9wy7v3) harness is a tracked load-bearing file; "
+            "this seal must not silently skip. If the file was renamed, "
+            "update REPLAY_BACKFILL_PY; if intentionally deleted, also "
+            "remove this test."
+        )
+    tree = _parse(REPLAY_BACKFILL_PY)
+    call_sites = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Name) and f.id == "compute_derived_features":
+                call_sites.append(node.lineno)
+            elif isinstance(f, ast.Attribute) and f.attr == "compute_derived_features":
+                call_sites.append(node.lineno)
+    assert call_sites, (
+        f"{REPLAY_BACKFILL_PY.name} must contain a Call to compute_derived_features. "
+        "Lock-step contract per bot/CLAUDE.md cal_mlp lock-step."
     )
 
 
