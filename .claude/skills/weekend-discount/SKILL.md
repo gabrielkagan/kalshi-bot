@@ -115,7 +115,7 @@ Evaluate weekend and overnight edge discount shadow strategies — performance, 
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/weekend*`. |
+| Script not found | Check: `ls scripts/audit/weekend*`. |
 | 0 signals for weekend or overnight | The shadow may not be wired into the scan loop yet, or no `insufficient_edge` rejections occurred during quiet periods. Check: `SELECT COUNT(*) FROM evaluated_opportunities WHERE filter_stage LIKE '%discount_shadow%'`. If 0, the code path may not be executing. |
 | Very few settled (< 10) | Report what exists but say: "n=N is too small for any conclusions. Weekend signals accumulate at ~2-4/weekend. Need N more weekends." |
 | One asset shows 100% WR at n=2 | Don't celebrate. Say: "n=2 is meaningless. Need ≥5 before asset-level WR is informative." |

@@ -83,7 +83,7 @@ Raw WR is misleading at small sample sizes. A system with 8W/2L shows 80% WR, bu
 
 | Situation | Action |
 |-----------|--------|
-| Script not found (`No such file`) | Check if the script path is correct. Run `ls scripts/*audit*` to find available scripts. |
+| Script not found (`No such file`) | Check if the script path is correct. Run `ls scripts/audit/*audit*` to find available scripts. |
 | Script errors with `no such table` | The DB copy may be from before that table was created. Tell user the system hasn't generated enough data yet. |
 | Script outputs 0 rows / "No data found" | Not an error — the system may be new or the regime filter may be too narrow. Report: "0 settled trades in current regime (since YYYY-MM-DD). Either the regime is very new or the system isn't generating data." Offer to widen with `--since`. |
 | Script runs but numbers look wrong | Check: is `--regime auto` picking the right date? Run `python3 scripts/<script> --db /tmp/state.db --regime auto --verbose 2>&1 | head -5` to see what regime date it detected. |

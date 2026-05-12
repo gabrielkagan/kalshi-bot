@@ -117,7 +117,7 @@ Based on audit results:
 
 | Situation | Action |
 |-----------|--------|
-| `alpha_audit.py` not found | Check: `ls scripts/alpha*`. The script may have been renamed. |
+| `alpha_audit.py` not found | Check: `ls scripts/audit/alpha*`. The script may have been renamed. |
 | Script errors with `no such column` | The DB schema may have changed since the script was written. Show the error, run `PRAGMA table_info(evaluated_opportunities)` to check current schema, and report the mismatch. |
 | Script returns 0 rows | Not an error if the lookback period is too short or the system is new. Try widening: `--days 30`. If still 0, the system isn't generating data. |
 | Shadow eval shows a strategy with 100% WR at n=5 | Do NOT recommend promotion. Say: "100% WR but n=5 is meaningless — Wilson CI is (56.6%-100%). Need ≥50 settled trades." |

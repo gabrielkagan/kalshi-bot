@@ -107,7 +107,7 @@ Systematic alpha research on hourly trading data. Discovers profitable configura
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/hourly*`. May have been renamed. |
+| Script not found | Check: `ls scripts/audit/hourly*`. May have been renamed. |
 | 0 settled in current regime | Hourly is observation-only with limited volume. Try `--since 2026-02-28` to include more data from the three-layer optimization regime. |
 | Grid search takes >2 min | Normal — 600+ configs is CPU-intensive. Let it run. If it hangs >5 min, there may be a DB issue. |
 | Edge inversion section shows perfect monotonicity | Unusual — double-check that the edge column is populated. Perfect monotonicity at low n is likely noise. |

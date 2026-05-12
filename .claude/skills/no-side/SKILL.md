@@ -80,7 +80,7 @@ Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `no-s
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/no_side*`. |
+| Script not found | Check: `ls scripts/audit/no_side*`. |
 | 0 NO-side signals | This is normal if NO ask hasn't reached 70c recently. Report: "No NO-side signals — NO ask hasn't reached MIN_ENTRY_PRICE (70c) in the query window. This means YES prices are consistently high (>30c), which is expected in most market conditions." |
 | All signals are pre-fix | No post-fix data has accumulated yet. Report the pre-fix data with a warning: "All data is pre-fix (wrong pricing). Wait for post-fix settlements before drawing conclusions." |
 | Pricing verification shows wrong prices | The fix may have regressed. Check `no_ask` values in post-fix data. If they look like bids (very low, 3-15c), the bug is back — escalate. |

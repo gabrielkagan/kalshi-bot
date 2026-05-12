@@ -91,7 +91,7 @@ This means:
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/maker*`. The script may have been renamed or not yet created. |
+| Script not found | Check: `ls scripts/audit/maker*`. The script may have been renamed or not yet created. |
 | Script returns 0 orders | No maker orders in the `--since` window. Try widening: `--since 2026-02-25`. If still 0, the bot may not be trading or all trades were taker. |
 | `taker_ask_at_submit` is NULL for all rows | Shadow taker tracking was added later. All orders are using fallback pricing. Report: "0% shadow coverage — all using fallback pricing. Numbers are approximate." |
 | Fill rate is 100% | Great, but suspicious. Verify the script is counting IOC taker escalations as separate orders, not lumping them with the original maker. |

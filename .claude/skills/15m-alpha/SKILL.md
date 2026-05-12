@@ -100,7 +100,7 @@ Follow `.claude/skills/references/preflight.md` substituting `<wrapper>` = `15m-
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/15m*`. May have been renamed. |
+| Script not found | Check: `ls scripts/audit/15m*`. May have been renamed. |
 | `--regime auto` picks wrong date | The regime detector looks for the last commit that changed 15M trading constants. If it picks too recent a date (small n), override with `--since <date>` using the actual config change timestamp from CLAUDE.md or git log. |
 | 0 settled trades in regime | Regime may be very new. Widen with `--since` to include more data. Note: mixing regimes is risky (see CLAUDE.md rules), but some analysis (calibration, vol regime) is regime-agnostic. |
 | Section output is empty | That section may not have enough data (e.g., vol_regime needs vol_regime column populated). Skip it and note: "Section N: insufficient data." |

@@ -134,7 +134,7 @@ Analyzes the NWP ensemble model (GFS+ECMWF, 82 members) performance across 5 cit
 
 | Situation | Action |
 |-----------|--------|
-| Script not found | Check: `ls scripts/weather*`. |
+| Script not found | Check: `ls scripts/audit/weather*`. |
 | 0 weather observations | Weather engine may not be running. Check: `ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 \| grep -i weather"`. Weather markets are daily settlement — fewer signals than 15M/hourly. |
 | Very few settled (n < 20) | Report what exists but add **"INSUFFICIENT DATA"** on every finding. Don't run readiness checklist at n<20. Say: "Need N more observations. Weather settles once daily per city → max 5 new data points/day." |
 | Ensemble coverage < 50% | Something is wrong with the weather fetch. Check if Open-Meteo API is responding. Report: "Ensemble data missing for >50% of evals — weather_engine.py may be failing to fetch forecasts." |
