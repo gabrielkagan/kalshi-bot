@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setup systemd timer for daily doc drift check on VPS.
-# Run once: bash scripts/setup_doc_drift_timer.sh
+# Run once: bash scripts/ops/setup_doc_drift_timer.sh
 #
 # Creates:
 #   /etc/systemd/system/kalshi-doc-drift.service
@@ -15,7 +15,7 @@ SERVICE_FILE="/etc/systemd/system/kalshi-doc-drift.service"
 TIMER_FILE="/etc/systemd/system/kalshi-doc-drift.timer"
 BOT_DIR="/home/botuser/kalshi-bot-repo"
 VENV_PYTHON="${BOT_DIR}/venv/bin/python3"
-SCRIPT="${BOT_DIR}/scripts/doc_drift_check.py"
+SCRIPT="${BOT_DIR}/scripts/audit/doc_drift_check.py"
 
 echo "=== Installing kalshi-doc-drift systemd timer ==="
 

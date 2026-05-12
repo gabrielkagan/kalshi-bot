@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install systemd timer for full audit runs 4x/day on VPS.
-# Run once: bash scripts/setup_full_audit_timer.sh
+# Run once: bash scripts/ops/setup_full_audit_timer.sh
 #
 # Schedule: 00:15, 06:15, 12:15, 18:15 UTC
 # (offset 15 min from existing audit_cron 30-min timer to avoid collision)
@@ -29,7 +29,7 @@ User=botuser
 WorkingDirectory=${BOT_DIR}
 Environment="PATH=${BOT_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=/home/botuser/.env
-ExecStart=${BOT_DIR}/scripts/audit_runner.sh --module all --vps --json-dir /tmp/audit_artifacts --alert --quiet
+ExecStart=${BOT_DIR}/scripts/audit/audit_runner.sh --module all --vps --json-dir /tmp/audit_artifacts --alert --quiet
 TimeoutStartSec=300
 
 [Install]

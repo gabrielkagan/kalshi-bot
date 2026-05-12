@@ -2,12 +2,12 @@
 # Unified audit runner — wraps all 5 audit scripts with consistent interface.
 #
 # Usage:
-#   ./scripts/audit_runner.sh --module 15m                     # single module
-#   ./scripts/audit_runner.sh --module all --alert             # all + Telegram alerts
-#   ./scripts/audit_runner.sh --module hourly --since 2026-03-01
-#   ./scripts/audit_runner.sh --module all --fetch --alert     # SCP from VPS first
-#   ./scripts/audit_runner.sh --module all --vps               # run on VPS directly
-#   ./scripts/audit_runner.sh --module all --local             # use /tmp/state.db
+#   ./scripts/audit/audit_runner.sh --module 15m                     # single module
+#   ./scripts/audit/audit_runner.sh --module all --alert             # all + Telegram alerts
+#   ./scripts/audit/audit_runner.sh --module hourly --since 2026-03-01
+#   ./scripts/audit/audit_runner.sh --module all --fetch --alert     # SCP from VPS first
+#   ./scripts/audit/audit_runner.sh --module all --vps               # run on VPS directly
+#   ./scripts/audit/audit_runner.sh --module all --local             # use /tmp/state.db
 
 set -euo pipefail
 
@@ -118,19 +118,19 @@ for mod in "${MODULES[@]}"; do
 
     case "$mod" in
         15m)
-            cmd="$PYTHON $REPO_DIR/scripts/15m_live_audit.py --db $DB_PATH $since_flag --json $json_path"
+            cmd="$PYTHON $REPO_DIR/scripts/audit/15m_live_audit.py --db $DB_PATH $since_flag --json $json_path"
             ;;
         hourly)
-            cmd="$PYTHON $REPO_DIR/scripts/hourly_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
+            cmd="$PYTHON $REPO_DIR/scripts/audit/hourly_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
             ;;
         spx)
-            cmd="$PYTHON $REPO_DIR/scripts/spx_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
+            cmd="$PYTHON $REPO_DIR/scripts/audit/spx_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
             ;;
         weather)
-            cmd="$PYTHON $REPO_DIR/scripts/weather_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
+            cmd="$PYTHON $REPO_DIR/scripts/audit/weather_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
             ;;
         sports)
-            cmd="$PYTHON $REPO_DIR/scripts/sports_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
+            cmd="$PYTHON $REPO_DIR/scripts/audit/sports_shadow_audit.py --db $DB_PATH $since_flag --json $json_path"
             ;;
         *)
             echo "ERROR: Unknown module: $mod"
@@ -170,7 +170,7 @@ if [[ "$ALERT" == "true" ]]; then
     log ""
     log "━━━ Running invariant checks ━━━"
     alert_flags="--json-dir $JSON_DIR --telegram"
-    $PYTHON "$REPO_DIR/scripts/audit_alerts.py" $alert_flags || true
+    $PYTHON "$REPO_DIR/scripts/audit/audit_alerts.py" $alert_flags || true
 fi
 
 # Exit with failure if any module failed

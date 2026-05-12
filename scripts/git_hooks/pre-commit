@@ -480,8 +480,8 @@ def _self_test() -> int:
     mod = _import_session_lock()
     if mod is None:
         print(
-            "FAIL: scripts._session_lock could not be imported. "
-            "Check that the worktree contains scripts/_session_lock.py.",
+            "FAIL: scripts.ops._session_lock could not be imported. "
+            "Check that the worktree contains scripts/ops/_session_lock.py.",
             file=sys.stderr,
         )
         return 1

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setup systemd timer for audit_cron.py on VPS.
-# Run once: bash scripts/setup_audit_cron.sh
+# Run once: bash scripts/ops/setup_audit_cron.sh
 #
 # Creates:
 #   /etc/systemd/system/kalshi-audit.service
@@ -14,7 +14,7 @@ SERVICE_FILE="/etc/systemd/system/kalshi-audit.service"
 TIMER_FILE="/etc/systemd/system/kalshi-audit.timer"
 BOT_DIR="/home/botuser/kalshi-bot-repo"
 VENV_PYTHON="${BOT_DIR}/venv/bin/python3"
-SCRIPT="${BOT_DIR}/scripts/audit_cron.py"
+SCRIPT="${BOT_DIR}/scripts/audit/audit_cron.py"
 DB="${BOT_DIR}/state.db"
 
 echo "=== Installing kalshi-audit systemd timer ==="

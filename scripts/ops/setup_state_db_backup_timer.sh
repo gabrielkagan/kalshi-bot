@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Setup systemd timers for state.db S3 backup + weekly restore-verify
-# on the VPS. Run once: bash scripts/setup_state_db_backup_timer.sh
+# on the VPS. Run once: bash scripts/ops/setup_state_db_backup_timer.sh
 #
 # Phase 0a per kb/decisions/autoresearch-design-may05.md hazards table.
 # Ticket: 86b9vd9e3.
@@ -35,9 +35,9 @@ set -euo pipefail
 BOT_DIR="/home/botuser/kalshi-bot-repo"
 VENV_PYTHON="${BOT_DIR}/venv/bin/python3"
 DB="${BOT_DIR}/state.db"
-WRAPPER="${BOT_DIR}/scripts/h4_run_with_alert.py"
-BACKUP_SCRIPT="${BOT_DIR}/scripts/state_db_s3_backup.py"
-RESTORE_SCRIPT="${BOT_DIR}/scripts/state_db_restore.py"
+WRAPPER="${BOT_DIR}/scripts/ops/h4_run_with_alert.py"
+BACKUP_SCRIPT="${BOT_DIR}/scripts/ops/state_db_s3_backup.py"
+RESTORE_SCRIPT="${BOT_DIR}/scripts/ops/state_db_restore.py"
 ENV_FILE="${BOT_DIR}/.env"
 RCLONE_REMOTE="s3prod"
 
