@@ -1,11 +1,15 @@
 """Sprint A Bit 1a — cal_mlp feature-transform lock-step CI guards.
 
-TDD invariant (2026-05-12): 3 tests pass (sigma_winsor SoT + sigma_winsor
-no-shadow + doc seal); 6 tests FAIL until sister Bit A.1b (ticket
-86b9veppa) ships the refactor: adding `features.compute_hour_features()`
-and replacing the inline `buf_pct / sigma_denom` + `cb_prob - market_price/100`
-formulas in integration.py with a call to
-`bot.helpers.derived_features.compute_derived_features`.
+TDD invariant (2026-05-12): 3 tests PASS (sigma_winsor SoT + sigma_winsor
+no-shadow + doc seal); 6 tests are marked `xfail(strict=True)` until
+sister Bit A.1b (ticket 86b9veppa) ships the refactor adding
+`features.compute_hour_features()` and replacing the inline
+`buf_pct / sigma_denom` + `cb_prob - market_price/100` formulas in
+integration.py with a call to
+`bot.helpers.derived_features.compute_derived_features`. The xfail
+keeps the CI gate green pre-A.1b; `strict=True` flips xfail→FAILED
+on xpass once A.1b lands, forcing the implementer to remove the
+decorator and reseal.
 
 Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
 
@@ -42,25 +46,24 @@ EXTRACT_DATA_PY = CAL_MLP / "extract_data.py"
 POST_HOC_PY = CAL_MLP / "post_hoc_processor.py"
 INTEGRATION_PY = CAL_MLP / "integration.py"
 SIM_PNL_PY = CAL_MLP / "sim_pnl.py"
-BACKFILL_OFFLINE_PY = CAL_MLP / "backfill_offline.py"
-SCORE_LIVE_WS_PY = CAL_MLP / "mac_diagnostics" / "v2_live_audit" / "score_live_ws.py"
 DERIVED_FEATURES_PY = REPO_ROOT / "bot" / "helpers" / "derived_features.py"
 
-# All sites with inline hour_sin/cos formulas (drift surface walked by
-# test_no_inline_hour_sin_cos_in_other_sites). The first 3 are the
-# primary train/serve paths from the RCA; the trailing 3 surfaced in
-# R2 adversarial review 2026-05-12 as sister scripts that also inline
-# the same formula and would silently drift if A.1b refactors only the
-# primary 3. NOTE: The earlier `SIGMA_WINSOR_ALLOWED_FILES` allow-list
-# was dead code (not referenced) and was deleted in R2 cleanup per
-# adv-review MN1 finding.
+# All TRACKED sites with inline hour_sin/cos formulas (drift surface walked
+# by test_no_inline_hour_sin_cos_in_other_sites). The first 3 are the
+# primary train/serve paths from the RCA; sim_pnl.py surfaced in R2
+# adversarial review 2026-05-12.
+#
+# Two other inline-drift sites exist as LOCAL-ONLY untracked files on dev
+# machines (`scripts/cal_mlp/backfill_offline.py` + `scripts/cal_mlp/
+# mac_diagnostics/v2_live_audit/score_live_ws.py`); CI doesn't have them
+# so they're out of this test's surface. Followup ticket investigates
+# whether they should be tracked-in-git or deleted as stale local dev
+# artifacts (see ClickUp `86b9wgfff` or successor).
 HOUR_SINCOS_DRIFT_SITES = (
     EXTRACT_DATA_PY,
     POST_HOC_PY,
     INTEGRATION_PY,
     SIM_PNL_PY,
-    BACKFILL_OFFLINE_PY,
-    SCORE_LIVE_WS_PY,
 )
 
 
@@ -144,10 +147,14 @@ def test_sigma_winsor_no_shadow_clipping_in_other_sites():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_hour_features_helper_exists():
     """A.1b ships `features.compute_hour_features(hour: int) -> tuple[float, float]`.
 
-    Until A.1b lands, this test FAILS — that's the TDD seal.
+    Until A.1b lands, this test FAILS — that's the TDD seal. Marked
+    `xfail(strict=True)` so pytest reports XFAIL (not FAILED) while
+    A.1b is pending, and CONVERTS xfail-passes to FAILED once A.1b
+    ships (forcing the A.1b implementer to remove the decorator).
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location("cal_mlp_features", FEATURES_PY)
@@ -161,6 +168,7 @@ def test_hour_features_helper_exists():
     assert callable(mod.compute_hour_features)
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_hour_features_helper_correctness():
     """compute_hour_features must agree with sin(2π·h/24), cos(2π·h/24).
 
@@ -189,6 +197,7 @@ def test_hour_features_helper_correctness():
     assert c == pytest.approx(0.0, abs=1e-12)
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_no_inline_hour_sin_cos_in_other_sites():
     """After A.1b refactor, none of the 3 inline hour_sin/cos sites survive.
 
@@ -222,6 +231,7 @@ def test_no_inline_hour_sin_cos_in_other_sites():
 # ─────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_breakeven_gap_uses_canonical_helper():
     """integration.py must NOT inline `prob - market_price/100`.
 
@@ -269,6 +279,7 @@ def test_breakeven_gap_uses_canonical_helper():
     )
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_sigma_derivation_uses_canonical_helper():
     """integration.py must NOT inline `buf_pct / sigma_denom` sigma derivation.
 
@@ -297,6 +308,7 @@ def test_sigma_derivation_uses_canonical_helper():
     )
 
 
+@pytest.mark.xfail(strict=True, reason="A.1b refactor pending (ticket 86b9veppa) — remove xfail when A.1b ships")
 def test_integration_py_has_canonical_helper_call_site():
     """integration.py's serve path must CALL compute_derived_features.
 
