@@ -1,19 +1,27 @@
--- Sprint 13 Bit 13.4 (2026-05-11) — Typical 15M trade lifecycle scenario.
+-- Sprint 13 Bit 13.4-rest (2026-05-11) — Sub-floor IOC TAKER fill loss scenario.
 --
--- Populates a sqlite3 DB with one complete trade lifecycle:
---   1. evaluated_opportunities row (filter_stage='candidate', sized)
---   2. market_observations_continuous baseline rows (5 ticks pre-decision)
---   3. settled_trades row (positive PnL outcome)
+-- Populates a sqlite3 DB with one IOC sub-floor lifecycle (a known
+-- structural edge case — see kb/failures/ioc-subfloor-fill.md):
+--   1. evaluated_opportunities row: BTC, candidate, NBBO yes_ask=90c at scan
+--      (passes BTC_MIN_ENTRY_PRICE=88c floor; bot/constants.py:39).
+--   2. market_observations_continuous: 5 ticks showing the book shifting
+--      DOWN between scan and IOC execution (90 → 87c best ask).
+--      Captures the book-drift sequence; first-class fill-time-NBBO fields
+--      are NOT modeled on this table (the .sql encodes drift only — not
+--      a stale-NBBO frame capture).
+--   3. settled_trades: IOC filled at 85c (below the 88c floor — the bug);
+--      market settled NO; LOSS outcome with negative pnl_cents.
 --
--- Intent: tests that need a "happy path" 15M sample row set without
--- spinning up the full bot runtime. Load via:
---     conn.executescript(open("tests/fixtures/scenarios/typical-15m-trade.sql").read())
+-- Why this is a useful edge case:
+--   - Negative-PnL path (typical-15m-trade is happy-path positive PnL).
+--   - TAKER_NOW strategy (typical is MAKER_PATIENT).
+--   - entry_price_cents < per-asset floor — invariant-violation surface.
+--   - Book-drift sequence (book moves between scan tick and fill tick).
 --
--- Synthetic values throughout — no production data.
--- Schema source: agent_docs/db_schema.md.
+-- Schema source: agent_docs/db_schema.md + bot/state.py::_create_tables.
 
 -- ──────────────────────────────────────────────────────────────────────
--- DDL — minimal subset needed for the typical-15m-trade lifecycle.
+-- DDL — minimal subset; matches typical-15m-trade.sql shape.
 -- ──────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS evaluated_opportunities (
@@ -82,47 +90,52 @@ CREATE TABLE IF NOT EXISTS settled_trades (
 );
 
 -- ──────────────────────────────────────────────────────────────────────
--- DATA — one 15M trade lifecycle: BTC, MAKER_PATIENT strategy.
+-- DATA — BTC 15M, TAKER_NOW strategy, sub-floor fill, settled NO (loss).
 -- ──────────────────────────────────────────────────────────────────────
 
--- Evaluated_opportunity at decision time. Sized; passed all filters.
--- Synthetic ticker / event_ticker (KX prefix conventional).
+-- Evaluated opportunity at decision time. NBBO yes_ask was 90c at scan
+-- (passes BTC_MIN_ENTRY_PRICE=88c per bot/constants.py:39).
 INSERT INTO evaluated_opportunities (
     ticker, event_ticker, asset, filter_stage, evaluation_time,
     spot_price, threshold, volatility, market_price, seconds_to_close,
     calibrated_prob, edge, ofa_adjustment, raw_prob,
     egarch_sigma, egarch_blend_sigma, position_size, product_type
 ) VALUES (
-    'KXBTC15M-26MAY110000-110500', 'KXBTC15M-26MAY110000', 'BTC',
-    'candidate', '2026-05-11T00:00:00.000000Z',
-    110000.0, 110500.0, 0.025, 35, 600.0,
-    0.62, 0.27, 0.0, 0.60,
-    0.018, 0.019, 12.0, '15m'
+    'KXBTC15M-26MAY110100-110500', 'KXBTC15M-26MAY110100', 'BTC',
+    'candidate', '2026-05-11T01:00:00.000000Z',
+    110450.0, 110500.0, 0.032, 90, 240.0,
+    0.94, 0.04, 0.0, 0.93,
+    0.024, 0.025, 8, '15m'
 );
 
--- Market observations leading to the decision (5 ticks, 10s apart).
+-- Market observations: book drifting DOWN between scan and fill (90 → 87c
+-- best ask). Book-drift sequence captured; the snapshotter schema does NOT
+-- model fill-time-NBBO or fill timestamps as first-class fields.
 INSERT INTO market_observations_continuous (
     ticker, observation_time,
     yes_bid_cents, yes_ask_cents, no_bid_cents, no_ask_cents,
     bid_depth, ask_depth, source, cache_age_ms
 ) VALUES
-    ('KXBTC15M-26MAY110000-110500', '2026-05-10T23:59:10.000000Z', 32, 36, 64, 68, 600, 400, 'ws', 50),
-    ('KXBTC15M-26MAY110000-110500', '2026-05-10T23:59:20.000000Z', 33, 36, 64, 67, 620, 410, 'ws', 55),
-    ('KXBTC15M-26MAY110000-110500', '2026-05-10T23:59:30.000000Z', 33, 35, 65, 67, 640, 430, 'ws', 60),
-    ('KXBTC15M-26MAY110000-110500', '2026-05-10T23:59:40.000000Z', 34, 36, 64, 66, 660, 420, 'ws', 65),
-    ('KXBTC15M-26MAY110000-110500', '2026-05-10T23:59:50.000000Z', 34, 35, 65, 66, 680, 440, 'ws', 70);
+    ('KXBTC15M-26MAY110100-110500', '2026-05-11T00:59:50.000000Z', 88, 90, 10, 12, 500, 300, 'ws', 50),
+    ('KXBTC15M-26MAY110100-110500', '2026-05-11T01:00:00.000000Z', 87, 90, 10, 13, 480, 250, 'ws', 60),
+    ('KXBTC15M-26MAY110100-110500', '2026-05-11T01:00:02.000000Z', 86, 88, 12, 14, 420, 200, 'ws', 55),
+    ('KXBTC15M-26MAY110100-110500', '2026-05-11T01:00:04.000000Z', 84, 87, 13, 16, 380, 180, 'ws', 65),
+    ('KXBTC15M-26MAY110100-110500', '2026-05-11T01:00:06.000000Z', 83, 85, 15, 17, 350, 150, 'ws', 70);
 
--- Settled trade outcome. YES side, market YES (above strike), positive PnL.
--- Count=12 contracts × 65c profit = 780c gross; minus 35c fees = 745c net.
+-- Settled trade: IOC filled at 85c (below BTC floor 88c — the bug),
+-- market settled NO (BTC closed below 110500), LOSS.
+-- count=8 × 85c entry × 0c revenue = -680c gross; +20c fees = -700c net.
+-- (scenario records pnl_cents=-680 to keep the simple "entry - revenue"
+-- accounting, with fee_cents=20 separately broken out.)
 INSERT INTO settled_trades (
     ticker, event_ticker, asset, market_result, side, count,
     entry_price_cents, revenue_cents, fee_cents, pnl_cents,
     settled_at, strategy, seconds_to_close, fill_latency_seconds,
     vol_regime, calibrated_prob, edge, kelly_f, product_type
 ) VALUES (
-    'KXBTC15M-26MAY110000-110500', 'KXBTC15M-26MAY110000', 'BTC',
-    'yes', 'yes', 12,
-    35, 1200, 35, 780,
-    '2026-05-11T00:15:00.000000Z', 'MAKER_PATIENT', 600.0, 2.5,
-    'normal', 0.62, 0.27, 0.10, '15m'
+    'KXBTC15M-26MAY110100-110500', 'KXBTC15M-26MAY110100', 'BTC',
+    'no', 'yes', 8,
+    85, 0, 20, -680,
+    '2026-05-11T01:05:00.000000Z', 'TAKER_NOW', 240.0, 0.4,
+    'high', 0.94, 0.04, 0.06, '15m'
 );

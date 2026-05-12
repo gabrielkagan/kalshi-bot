@@ -24,6 +24,8 @@ Tests that consume a scenario:
 | Scenario | Intent | Used by |
 |---|---|---|
 | `typical-15m-trade.sql` | One complete 15M trade lifecycle: candidate eval → maker_pending order → settled_trade with positive PnL. Includes the related evaluated_opportunity + market_observations_continuous baseline. | (any test needing a "happy path" 15M sample row set; consume via `executescript`) |
+| `sub-floor-ioc-loss-2.sql` | BTC TAKER_NOW IOC fills sub-floor (85c with BTC_MIN_ENTRY_PRICE=88c) after the book moves between scan and execution; settles NO; LOSS outcome with negative pnl_cents. Book-drift sequence captured in observations (first-class fill-time-NBBO fields are not modeled). | (tests covering negative-PnL paths, TAKER_NOW strategy, or sub-floor-fill invariant checks per `kb/failures/ioc-subfloor-fill.md`) |
+| `cell-block-rejection-3.sql` | SOL_BLEED_V2 cell-block fires: candidate is rejected (filter_stage='SOL_BLEED_V2_88_93C_2_5MIN'), `rejected_opportunities` mirror row populated, A2 shadow captures the would-be signal in `a2_*` per-approach columns with `a2_pnl_cents`. No settled_trades row — that's the contract. | (tests covering rejection paths, cell-block filter_stage literals, shadow rollup, or counterfactual sim per SOL_BLEED_V2 ship May 10) |
 
 ## Why .sql instead of .json or .parquet
 
