@@ -991,6 +991,52 @@ class StateManager:
             "ON order_lifecycle_snapshots(ticker, observation_time)")
         self.conn.commit()
 
+        # Order-decision snapshots — captures the maker-vs-taker route
+        # decision moment for every execute() / escalation call site, plus
+        # an opportunistic 30s post-decision orderbook tick stream as a
+        # JSON-blob column (approach (c) from Sprint B Bit B.2b ticket).
+        # Sister table to order_lifecycle_snapshots:
+        #   - order_lifecycle_snapshots = per-event (submit/fill/cancel)
+        #   - order_decision_snapshots  = per-DECISION (route choice itself)
+        # The two join on (ticker, time-proximity) for forensic replay.
+        #
+        # decision_type enum-constrained so typo writes ('MAKER'/'taker')
+        # fail loudly instead of silently polluting forensic GROUP BY.
+        # followup_ticks_json: appended to opportunistically by
+        # StateManager.append_decision_followup_tick() during the 30s
+        # post-decision window — gives the future execution-policy
+        # learner the microstructure data to learn "maker vs taker at
+        # this state — which was right?"
+        #
+        # Retention: 90 days, pruned daily via
+        # StateManager.prune_old_decision_snapshots() invoked from
+        # MainLoop._log_daily_summary (mirrors the audit_cron.prune_old
+        # pattern). ~500-1000 rows/day × ~3KB = ~270 MB / 90d.
+        # See kb/decisions/sprint-b-bit-2b-shipped-may12.md.
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS order_decision_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                decision_time TEXT NOT NULL,
+                decision_type TEXT NOT NULL
+                    CHECK (decision_type IN ('maker_first','taker_first','escalate','shadow')),
+                orderbook_levels_json TEXT,
+                spot_price REAL,
+                seconds_to_close REAL,
+                vol_regime TEXT,
+                source TEXT,
+                followup_ticks_json TEXT
+            )""")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ods_decision_id "
+            "ON order_decision_snapshots(decision_id)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ods_ticker_time "
+            "ON order_decision_snapshots(ticker, decision_time)")
+        self.conn.commit()
+
         # Shadow exit signal table — tracks what early-exit would recommend
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS exit_signal_shadow (
@@ -1409,6 +1455,152 @@ class StateManager:
         except Exception:
             self._lifecycle_snapshot_failures += 1
             raise
+
+    # ── Sprint B Bit B.2b — order-decision snapshots ─────────────────
+    # Decision-data capture for future execution-policy training. ONE
+    # row per maker-vs-taker decision point (route choice itself);
+    # NOT one row per orderbook tick (regime-classifier territory,
+    # explicitly out of scope per Bit B.0 design spike). Escalations
+    # write a second row sharing the original decision_id so a learner
+    # can reconstruct the "maker_first@t0 → escalate@t15s" sequence.
+
+    # Hard cap on the 30s follow-up tick stream — defensive against
+    # callers who forget to gate by elapsed time. 30s @ 5s tick cadence
+    # gives ≤ 6 ticks; 8 is safe headroom for tick-period jitter.
+    DECISION_FOLLOWUP_WINDOW_S: float = 30.0
+    DECISION_FOLLOWUP_MAX_TICKS: int = 8
+
+    def insert_decision_snapshot(self,
+                                 decision_id: str,
+                                 ticker: str,
+                                 asset: str,
+                                 decision_type: str,
+                                 orderbook_levels_json: Optional[str] = None,
+                                 spot_price: Optional[float] = None,
+                                 seconds_to_close: Optional[float] = None,
+                                 vol_regime: Optional[str] = None,
+                                 source: Optional[str] = None) -> None:
+        """Record a route decision (maker_first / taker_first / escalate /
+        shadow) with the prevailing book state + spot context.
+
+        Auto-fills decision_time (now, UTC ISO8601) and
+        orderbook_levels_json (from _scan_ob_cache via the freshness-
+        gated _get_fresh_ob_ladder — stale → NULL, never lie). Mirrors
+        the existing insert_order_lifecycle_snapshot contract.
+
+        decision_id MUST be the same string across the route call AND
+        any subsequent escalation row, so a learner can join the two
+        events into a single sequence. The candidate dict carries it
+        as candidate['decision_id'] from execute() onward.
+
+        CHECK on decision_type and NOT NULL on (decision_id, ticker,
+        asset, decision_time, decision_type) are enforced by the schema.
+
+        COMMIT PATTERN: per-call commit, consistent with the existing
+        insert_order_lifecycle_snapshot helper. Volume estimate
+        ~500-1000 commits/day — well below PM-001 tight-loop threshold.
+        Shares self.conn (WAL + busy_timeout=30000).
+        """
+        if orderbook_levels_json is None:
+            orderbook_levels_json = self._get_fresh_ob_ladder(ticker)
+        now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        try:
+            self.conn.execute(
+                "INSERT INTO order_decision_snapshots "
+                "(decision_id, ticker, asset, decision_time, decision_type, "
+                " orderbook_levels_json, spot_price, seconds_to_close, "
+                " vol_regime, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (decision_id, ticker, asset, now, decision_type,
+                 orderbook_levels_json, spot_price, seconds_to_close,
+                 vol_regime, source))
+            self.conn.commit()
+        except Exception:
+            logging.warning(
+                "insert_decision_snapshot failed for %s decision_id=%s",
+                ticker, decision_id, exc_info=True)
+            raise
+
+    def append_decision_followup_tick(self,
+                                      decision_id: str,
+                                      t_offset_s: float,
+                                      best_yes_ask: Optional[int] = None,
+                                      best_yes_bid: Optional[int] = None,
+                                      ask_depth: Optional[int] = None,
+                                      bid_depth: Optional[int] = None) -> None:
+        """Append a single orderbook tick to the 30s post-decision
+        followup stream for decision_id. Stored as a JSON list on the
+        snapshot row's followup_ticks_json column (option (c) — no
+        new table; single-row queryability).
+
+        Silently drops ticks beyond DECISION_FOLLOWUP_WINDOW_S or beyond
+        DECISION_FOLLOWUP_MAX_TICKS — defensive against caller bugs
+        (the executor tick loop SHOULD gate by elapsed time, this is
+        belt-and-braces).
+
+        No-ops if decision_id isn't found (e.g., snapshot insert failed
+        upstream — we never resurrect rows).
+        """
+        if t_offset_s > self.DECISION_FOLLOWUP_WINDOW_S:
+            return
+        try:
+            row = self.conn.execute(
+                "SELECT followup_ticks_json FROM order_decision_snapshots "
+                "WHERE decision_id=? ORDER BY id DESC LIMIT 1",
+                (decision_id,)).fetchone()
+            if row is None:
+                return
+            existing_raw = row["followup_ticks_json"]
+            ticks = json.loads(existing_raw) if existing_raw else []
+            if len(ticks) >= self.DECISION_FOLLOWUP_MAX_TICKS:
+                return
+            ticks.append({
+                "t_offset_s": float(t_offset_s),
+                "best_yes_ask": best_yes_ask,
+                "best_yes_bid": best_yes_bid,
+                "ask_depth": ask_depth,
+                "bid_depth": bid_depth,
+            })
+            self.conn.execute(
+                "UPDATE order_decision_snapshots SET followup_ticks_json=? "
+                "WHERE decision_id=? AND id=("
+                "  SELECT id FROM order_decision_snapshots "
+                "  WHERE decision_id=? ORDER BY id DESC LIMIT 1)",
+                (json.dumps(ticks), decision_id, decision_id))
+            self.conn.commit()
+        except Exception:
+            logging.warning(
+                "append_decision_followup_tick failed decision_id=%s "
+                "t=%.1f", decision_id, t_offset_s, exc_info=True)
+            # Don't re-raise — tick capture is best-effort.
+
+    def prune_old_decision_snapshots(self, days: int = 90) -> int:
+        """Delete order_decision_snapshots rows older than `days` days.
+        Returns the number of rows deleted. Idempotent — running twice
+        in the same day prunes 0 the second time. Invoked from
+        MainLoop._log_daily_summary (daily housekeeping hook).
+
+        Mirrors scripts/audit_cron.prune_old() pattern. Volume estimate
+        ~500-1000 rows/day → ~45-90K rows steady-state at 90d.
+        """
+        cutoff = (datetime.datetime.now(timezone.utc)
+                  - datetime.timedelta(days=days)
+                  ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        try:
+            cur = self.conn.execute(
+                "DELETE FROM order_decision_snapshots WHERE decision_time < ?",
+                (cutoff,))
+            deleted = cur.rowcount or 0
+            self.conn.commit()
+            if deleted:
+                logging.info(
+                    "prune_old_decision_snapshots: deleted %d rows older "
+                    "than %dd (cutoff=%s)", deleted, days, cutoff)
+            return deleted
+        except Exception:
+            logging.warning(
+                "prune_old_decision_snapshots failed", exc_info=True)
+            return 0
 
     def _evict_stale_ob_cache(self) -> None:
         """Drop _scan_ob_cache entries older than OB_CACHE_EVICT_AGE_SECONDS.

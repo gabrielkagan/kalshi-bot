@@ -1183,6 +1183,17 @@ class MainLoop:
                     f"\U0001f4c8 Daily ({yesterday}): {wins}W/{losses}L, "
                     f"PnL=${total_pnl / 100:+.2f}, fees=${total_fees / 100:.2f}"
                 )
+
+            # Sprint B Bit B.2b — 90-day retention on order_decision_snapshots.
+            # Daily housekeeping hook (mirrors scripts/audit_cron.prune_old).
+            # Defensive: own try/except so a prune failure can't poison the
+            # daily-summary path.
+            try:
+                self.state.prune_old_decision_snapshots(days=90)
+            except Exception:
+                logging.warning(
+                    "prune_old_decision_snapshots failed in daily summary",
+                    exc_info=True)
         except Exception as e:
             logging.debug(f"_log_daily_summary failed: {e}")
 

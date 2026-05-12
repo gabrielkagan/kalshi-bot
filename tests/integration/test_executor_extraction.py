@@ -89,6 +89,7 @@ EXECUTOR_INSTANCE_METHODS = (
     "_record_post_only_rejection",
     "_should_skip_near_close",
     "_abort_near_close",
+    "_emit_decision_snapshot",
     "_execute_hourly_taker",
     "_execute_weather_no_taker",
     "_execute_hourly_no_taker",

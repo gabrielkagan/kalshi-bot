@@ -286,6 +286,48 @@ class OrderExecutor:
                 "update_evaluated_opportunity_order(skipped_near_close) "
                 "failed for %s", ticker, exc_info=True)
 
+    # ── Sprint B Bit B.2b — order-decision snapshot emission ──────────
+    # ONE row per maker-vs-taker route decision. Called from every
+    # branch in execute() and from _escalate_to_taker_inner. The
+    # decision_id is seeded on the candidate dict by execute() (or by
+    # the first emit if absent — defensive) and reused by any
+    # subsequent escalation row so a learner can join the two events.
+    #
+    # Best-effort: any exception is logged and swallowed — capture
+    # failure must NEVER break order flow.
+
+    def _emit_decision_snapshot(self, candidate: Dict,
+                                decision_type: str) -> None:
+        """Capture the route decision moment for future training data.
+
+        Pulls or seeds candidate['decision_id'] (UUID4 hex). For
+        escalations the SAME decision_id is reused (caller passes the
+        original candidate dict carried on the order record).
+
+        Auto-fills orderbook_levels_json from the StateManager's
+        freshness-gated _scan_ob_cache (stale → NULL, never lie).
+        Mirrors insert_order_lifecycle_snapshot's auto-fill contract.
+        """
+        try:
+            decision_id = candidate.get("decision_id")
+            if not decision_id:
+                decision_id = uuid.uuid4().hex
+                candidate["decision_id"] = decision_id
+            self._state.insert_decision_snapshot(
+                decision_id=decision_id,
+                ticker=candidate.get("ticker", ""),
+                asset=candidate.get("asset", ""),
+                decision_type=decision_type,
+                spot_price=candidate.get("spot_price"),
+                seconds_to_close=candidate.get("seconds_to_close"),
+                vol_regime=candidate.get("vol_regime"),
+                source=candidate.get("strategy"),
+            )
+        except Exception:
+            logging.warning(
+                "_emit_decision_snapshot failed for %s decision_type=%s",
+                candidate.get("ticker"), decision_type, exc_info=True)
+
     # ── Hourly taker-only execution ─────────────────────────────────────
 
     def _execute_hourly_taker(self, candidate: Dict) -> Optional[Dict]:
@@ -310,6 +352,8 @@ class OrderExecutor:
                 return None
 
         candidate["entry_path"] = "hourly_taker"
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         # Apply ask+1c offset for fill certainty (same pattern as SOL taker-first).
         # At sub-60c, 1c worse entry is trivial vs the 20c+ per-trade edge.
@@ -367,6 +411,8 @@ class OrderExecutor:
                 return None
 
         candidate["entry_path"] = "weather_no_taker"
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         logging.info(
             "WEATHER_NO_TAKER: %s %dx@%dc edge=%.2f%% prob=%.0f%% stc=%.0fs",
@@ -406,6 +452,8 @@ class OrderExecutor:
                 return None
 
         candidate["entry_path"] = "hourly_no_taker"
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         logging.info(
             "HOURLY_NO_TAKER: %s %s %dx@%dc edge=%.2f%% no_prob=%.1f%% stc=%.0fs",
@@ -467,6 +515,15 @@ class OrderExecutor:
 
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
+        # Sprint B Bit B.2b — seed decision_id ONCE at the top of
+        # execute(). Each downstream branch's _emit_decision_snapshot
+        # call reuses this id; if a maker_first later escalates,
+        # _escalate_to_taker_inner reads candidate['decision_id'] off
+        # the order dict it forked from and writes the 'escalate' row
+        # with the SAME decision_id — a learner joining on decision_id
+        # reconstructs the full route sequence.
+        if not candidate.get("decision_id"):
+            candidate["decision_id"] = uuid.uuid4().hex
         # Observation safety belt — should never reach here for obs-only types
         # Exceptions:
         #   - weather NO-side bypasses observation_only when WEATHER_NO_SIDE_LIVE=True
@@ -965,6 +1022,8 @@ class OrderExecutor:
 
             candidate["entry_path"] = "sol_taker_override"
             candidate["escalation_type"] = "sol_taker_override"
+            # Sprint B Bit B.2b — decision snapshot at route choice.
+            self._emit_decision_snapshot(candidate, "taker_first")
             self._recent_taker_tickers[candidate["ticker"]] = time.time()
             _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             self._session_direct_taker_attempts += 1
@@ -1135,6 +1194,8 @@ class OrderExecutor:
 
             candidate["entry_path"] = "direct_taker"
             candidate["escalation_type"] = "direct_taker"
+            # Sprint B Bit B.2b — decision snapshot at route choice.
+            self._emit_decision_snapshot(candidate, "taker_first")
             self._recent_taker_tickers[candidate["ticker"]] = time.time()
             _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             result = self._submit_taker(candidate)
@@ -1211,6 +1272,9 @@ class OrderExecutor:
             self._session_post_only_taker_escalations += 1
             candidate["entry_path"] = "post_only_taker"
             candidate["escalation_type"] = "post_only_taker"
+            # Sprint B Bit B.2b — escalation snapshot. Same decision_id
+            # reuse as the maker tier-1 emit upstream.
+            self._emit_decision_snapshot(candidate, "escalate")
             self._recent_taker_tickers[ticker] = time.time()
             _order_submit_ts = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             result = self._submit_taker(candidate)
@@ -1237,6 +1301,12 @@ class OrderExecutor:
                 "post_only_degraded_maker: %s rejections=%d, trying %d¢ worse",
                 ticker, rejections, POST_ONLY_DEGRADED_EXTRA_OFFSET)
             self._session_post_only_degraded_attempts += 1
+            # Sprint B Bit B.2b — decision snapshot at degraded-maker
+            # route choice. Same decision_id as the upstream tier-1
+            # emit IF this candidate is re-entering execute() with the
+            # original dict; defensive seed-if-missing in helper handles
+            # the fresh-entry case (rejection re-evaluation).
+            self._emit_decision_snapshot(candidate, "maker_first")
             self._submit_maker(candidate, degraded=True)
             _active = self._active_orders.get(candidate["asset"])
             if _active:
@@ -1247,6 +1317,8 @@ class OrderExecutor:
             return None
 
         # Tier 1: Normal maker (attempt 1 or 2)
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "maker_first")
         self._submit_maker(candidate)
         _active = self._active_orders.get(candidate["asset"])
         if _active:
@@ -2091,6 +2163,17 @@ class OrderExecutor:
         candidate["escalation_type"] = reason
         candidate["maker_price_cents"] = order["price_cents"]
         candidate["maker_wait_seconds"] = round(elapsed, 1)
+        # Sprint B Bit B.2b — escalation snapshot. The candidate dict
+        # was forked from order["candidate"] which carries the original
+        # decision_id seeded by execute() at maker tier-1 routing time
+        # — so this 'escalate' row shares decision_id with the
+        # maker_first row written ~15s earlier. A learner joining on
+        # decision_id reconstructs the full route sequence. Belt-and-
+        # braces: ensure decision_id is set even if order was forged
+        # in a code path that bypassed execute() seeding.
+        if not candidate.get("decision_id"):
+            candidate["decision_id"] = uuid.uuid4().hex
+        self._emit_decision_snapshot(candidate, "escalate")
         filled = order.get("filled_so_far", 0)
         if filled > 0:
             candidate["position_size"] = max(1, candidate["position_size"] - filled)
@@ -2347,6 +2430,8 @@ class OrderExecutor:
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
         cal_prob = candidate["calibrated_prob"]
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         if count <= 0:
             logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=%s price=%d",
@@ -2494,6 +2579,8 @@ class OrderExecutor:
         count = candidate["position_size"]  # scan-time: tm_compute_contracts(price, stc, balance)
         price = candidate["best_yes_ask"]
         cal_prob = candidate["calibrated_prob"]
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         if count <= 0:
             logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=terminal_momentum price=%d",
@@ -2676,6 +2763,8 @@ class OrderExecutor:
         count = candidate["position_size"]  # LPNE_FIXED_CONTRACTS
         price = candidate["best_yes_ask"]
         cal_prob = candidate["calibrated_prob"]
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         if count <= 0:
             logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=low_price_near_expiry price=%d",
@@ -2763,6 +2852,8 @@ class OrderExecutor:
         count = candidate["position_size"]  # BRACKET_NO_FIXED_CONTRACTS (5)
         no_cost = candidate["best_yes_ask"]  # NO cost in cents (100 - yes_ask)
         yes_price = candidate.get("_bracket_yes_price", 100 - no_cost)
+        # Sprint B Bit B.2b — decision snapshot at route choice.
+        self._emit_decision_snapshot(candidate, "taker_first")
 
         if count <= 0:
             logging.warning("ORDER_SUPPRESSED zero_size: %s asset=%s strategy=bracket_no no_cost=%d",
