@@ -152,6 +152,21 @@ ignore_imports =
     # Pre-10.5b models.py was at repo root; post-10.5b it lives at bot.models
     # (sibling). Same Bit 7.1 / Sprint 10.5a carve-out pattern as breakers above.
     bot.helpers.tm_sweep -> bot.models
+    # Money Printer Roadmap P1.3 (2026-05-12, ticket 86b9x3kkb):
+    # bot.helpers.cohort_alerts reaches the canonical `_TELEGRAM` singleton
+    # via a function-scoped lazy import inside `emit_alert()` (search anchor
+    # in bot/helpers/cohort_alerts.py: `def emit_alert`). The pure trigger
+    # primitives (`should_fire_bleed_alert`, `should_fire_calibration_alert`,
+    # `cooldown_active`) stay pure-function helpers; only the best-effort
+    # fire-and-forget Telegram dispatch crosses the leaf boundary. Same
+    # carve-out pattern as breakers + tm_sweep above. The 5-consumer
+    # `_telegram_state._TELEGRAM` enumeration (bot/main_loop.py,
+    # bot/scanner/__init__.py, bot/executor.py, bot/settlement.py,
+    # bot/orphan_db_watchdog.py — per bot/CLAUDE.md Bit 9.3-ii) is NOT
+    # extended by this carve-out: cohort_alerts' import is lazy and
+    # exception-swallowed, never participating in the boot path or
+    # singleton-mutation contract.
+    bot.helpers.cohort_alerts -> bot.notifier
 
 # ---------------------------------------------------------------------------
 # Contract 5 (RETIRED Bit 9.3-iii.a, 2026-05-11) — `state-no-impl-toplevel`

@@ -174,7 +174,6 @@ def test_wilson95_parity_with_inline_pattern():
 # ─── Pillar-3: alert trigger contracts (sister Bit P1.3 — ticket P1.3) ────────
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending — bot/helpers/cohort_alerts.py not yet shipped")
 def test_bleed_alert_fires_at_n50_wilson_hi_below_092_cf_below_minus50():
     """BLEED trigger fires when ALL: n_30d ≥ 50, wilson95_hi < 0.92,
     cf_pnl_30d_dollars < -50, cell_block_stage='candidate'.
@@ -190,7 +189,6 @@ def test_bleed_alert_fires_at_n50_wilson_hi_below_092_cf_below_minus50():
     ) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_bleed_alert_does_not_fire_on_already_blocked_cohort():
     """BLEED trigger does NOT fire on cell_block_stage != 'candidate'.
 
@@ -206,7 +204,6 @@ def test_bleed_alert_does_not_fire_on_already_blocked_cohort():
     ) is False
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_bleed_alert_n_boundary_49_vs_50():
     """n=49 → no fire; n=50 → fire. Boundary pin against off-by-one drift."""
     from bot.helpers.cohort_alerts import should_fire_bleed_alert
@@ -216,7 +213,6 @@ def test_bleed_alert_n_boundary_49_vs_50():
     assert should_fire_bleed_alert(n=50, **common) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_bleed_alert_wilson_hi_boundary_0919_vs_0920():
     """wilson95_hi=0.9199 → fire (strictly < 0.92); wilson95_hi=0.9200 → no fire."""
     from bot.helpers.cohort_alerts import should_fire_bleed_alert
@@ -226,7 +222,6 @@ def test_bleed_alert_wilson_hi_boundary_0919_vs_0920():
     assert should_fire_bleed_alert(wilson95_hi=0.9200, **common) is False
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_bleed_alert_cf_pnl_boundary_minus49_99_vs_minus50_01():
     """cf_pnl=-49.99 → no fire; cf_pnl=-50.01 → fire. Strictly < -50."""
     from bot.helpers.cohort_alerts import should_fire_bleed_alert
@@ -236,7 +231,6 @@ def test_bleed_alert_cf_pnl_boundary_minus49_99_vs_minus50_01():
     assert should_fire_bleed_alert(cf_pnl_30d_dollars=-50.01, **common) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_calibration_alert_requires_3_day_persistence():
     """CALIBRATION trigger requires persistence_days ≥ 3.
 
@@ -252,7 +246,6 @@ def test_calibration_alert_requires_3_day_persistence():
     assert should_fire_calibration_alert(persistence_days=3, **common) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_calibration_alert_gap_boundary_0_0499_vs_0_0501():
     """abs_cal_gap=0.0499 → no fire; abs_cal_gap=0.0501 → fire (with
     n≥30 and persistence_days≥3). Strictly > 0.05."""
@@ -263,7 +256,6 @@ def test_calibration_alert_gap_boundary_0_0499_vs_0_0501():
     assert should_fire_calibration_alert(abs_cal_gap=0.0501, **common) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_cooldown_active_within_23h_blocks_realert():
     """23h cooldown per cohort: an alert that fired <23h ago does not
     re-fire on the next nightly run. 23h not 24h: nightly aggregator
@@ -288,9 +280,9 @@ def test_cooldown_active_within_23h_blocks_realert():
     assert cooldown_active(last_alert_time=None, now=now) is False
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_cooldown_active_exact_23h_boundary():
-    """Cooldown boundary: 22h59m → active; 23h00m01s → expired.
+    """Cooldown boundary: 22h59m → active; 23h00m00s → EXPIRED (>= boundary);
+    23h00m01s → expired.
 
     Strict ≥23h to expire. Mirrors the BLEED n / cf_pnl / wilson_hi
     boundary-pinning style: each numeric threshold gets its own pin.
@@ -301,13 +293,14 @@ def test_cooldown_active_exact_23h_boundary():
 
     now = datetime(2026, 5, 12, 13, 7, 0)
     just_under_23h = now - timedelta(hours=22, minutes=59)
+    exactly_23h = now - timedelta(hours=23)
     just_over_23h = now - timedelta(hours=23, seconds=1)
 
     assert cooldown_active(last_alert_time=just_under_23h, now=now) is True
+    assert cooldown_active(last_alert_time=exactly_23h, now=now) is False
     assert cooldown_active(last_alert_time=just_over_23h, now=now) is False
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_calibration_alert_n_boundary_29_vs_30():
     """CAL n boundary: n=29 → no fire; n=30 → fire (with persistence + gap).
 
@@ -320,7 +313,6 @@ def test_calibration_alert_n_boundary_29_vs_30():
     assert should_fire_calibration_alert(n=30, **common) is True
 
 
-@pytest.mark.xfail(strict=True, reason="Sister Bit P1.3 pending")
 def test_calibration_alert_negative_gap_symmetric_abs():
     """CAL trigger uses abs() — cal_gap=−0.06 fires identically to +0.06.
 
@@ -671,3 +663,617 @@ def test_compute_next_alert_state_in_cooldown_preserves_prior_last_alert_time():
     )
     assert next_state == "firing_bleed"
     assert next_last_alert == prior_fire_iso  # NOT updated to pinned_now
+
+
+# ─── P1.3 additions: payload formatters + bundled followups ──────────────────
+
+
+def test_bleed_payload_contains_cohort_identity_and_metrics():
+    """BLEED Telegram payload includes asset, strategy, price/STC bands,
+    stage, n, wr, wilson_hi, cf_30d. Mirrors the design doc § Telegram
+    payload format sample."""
+    from bot.helpers.cohort_alerts import format_bleed_payload
+
+    row = {
+        "asset": "SOL", "product_type": "15m", "strategy": "MAKER_PATIENT",
+        "price_band_5c": 17, "stc_band_60s": 8, "cell_block_stage": "candidate",
+        "n_30d": 138, "wr_30d": 0.841, "wilson95_hi_30d": 0.892,
+        "cf_pnl_30d_dollars": -285.64, "cohort_date": "2026-05-12",
+    }
+    payload = format_bleed_payload(row)
+    assert "BLEED" in payload
+    assert "SOL" in payload
+    assert "MAKER_PATIENT" in payload
+    assert "85-89" in payload  # price band 17 → 85-89¢
+    assert "480-540" in payload  # stc band 8 → 480-540s
+    assert "candidate" in payload
+    assert "n=138" in payload
+    assert "0.841" in payload
+    assert "0.892" in payload
+    assert "-285.64" in payload
+
+
+def test_calibration_payload_contains_cal_drift_and_persistence():
+    """CALIBRATION Telegram payload includes cal_prob, realized_wr, gap%
+    and persistence_days. Sign of gap is displayed (+/−)."""
+    from bot.helpers.cohort_alerts import format_calibration_payload
+
+    row = {
+        "asset": "ETH", "product_type": "15m", "strategy": "MAKER_PATIENT",
+        "price_band_5c": 15, "stc_band_60s": 9, "cell_block_stage": "candidate",
+        "n_30d": 70, "wr_30d": 0.843, "mean_cal_prob_30d": 0.912,
+        "cal_gap_30d": 0.069, "persistence_days": 4, "cohort_date": "2026-05-12",
+    }
+    payload = format_calibration_payload(row)
+    assert "CAL" in payload
+    assert "ETH" in payload
+    assert "MAKER_PATIENT" in payload
+    assert "0.912" in payload
+    assert "0.843" in payload
+    assert "+6.9pp" in payload
+    assert "4 days" in payload
+
+
+def test_calibration_payload_renders_negative_gap_with_minus_sign():
+    """Negative cal_gap (over-realization — calibrator under-rates) renders
+    with a leading minus, not '+'."""
+    from bot.helpers.cohort_alerts import format_calibration_payload
+
+    row = {
+        "asset": "BTC", "product_type": "15m", "strategy": "TAKER_NOW",
+        "price_band_5c": 18, "stc_band_60s": 3, "cell_block_stage": "candidate",
+        "n_30d": 60, "wr_30d": 0.95, "mean_cal_prob_30d": 0.89,
+        "cal_gap_30d": -0.06, "persistence_days": 3, "cohort_date": "2026-05-12",
+    }
+    payload = format_calibration_payload(row)
+    assert "-6.0pp" in payload  # not '+-6.0pp'
+    assert "+-" not in payload
+
+
+def test_cohort_dedup_key_distinguishes_bleed_and_cal_per_cohort():
+    """`cohort_dedup_key` builds a stable per-cohort × per-kind key. BLEED
+    and CAL on the SAME cohort must NOT collide in the 60s notifier dedup
+    (different kinds = different alerts)."""
+    from bot.helpers.cohort_alerts import cohort_dedup_key
+
+    row = {
+        "asset": "SOL", "product_type": "15m", "strategy": "MAKER_PATIENT",
+        "price_band_5c": 17, "stc_band_60s": 8, "cell_block_stage": "candidate",
+    }
+    bleed_key = cohort_dedup_key(row, "bleed")
+    cal_key = cohort_dedup_key(row, "cal")
+    assert bleed_key != cal_key
+    assert "bleed" in bleed_key
+    assert "cal" in cal_key
+    # Stable: same row → same key
+    assert cohort_dedup_key(row, "bleed") == bleed_key
+
+
+def test_emit_alert_returns_false_when_telegram_singleton_unset():
+    """`emit_alert` does NOT raise when `bot.notifier._TELEGRAM` is None
+    (boot-ordering case before MainLoop.__init__ runs, or test harness)."""
+    import bot.notifier as _telegram_state
+    from bot.helpers.cohort_alerts import emit_alert
+
+    prior = _telegram_state._TELEGRAM
+    _telegram_state._TELEGRAM = None
+    try:
+        row = {
+            "asset": "SOL", "product_type": "15m", "strategy": "MAKER_PATIENT",
+            "price_band_5c": 17, "stc_band_60s": 8, "cell_block_stage": "candidate",
+            "n_30d": 138, "wr_30d": 0.841, "wilson95_hi_30d": 0.892,
+            "cf_pnl_30d_dollars": -285.64, "cohort_date": "2026-05-12",
+        }
+        assert emit_alert(row, kind="bleed") is False
+    finally:
+        _telegram_state._TELEGRAM = prior
+
+
+def test_emit_alert_calls_notifier_send_when_singleton_present():
+    """`emit_alert` hands off to `_TELEGRAM.send(payload, dedup_key=...)`
+    when the singleton is set and `enabled`. Uses a stub notifier — does
+    NOT hit the real Telegram API."""
+    import bot.notifier as _telegram_state
+    from bot.helpers.cohort_alerts import emit_alert
+
+    captured = {}
+
+    class _StubNotifier:
+        enabled = True
+
+        def send(self, message, silent=False, dedup_key=None):
+            captured["message"] = message
+            captured["dedup_key"] = dedup_key
+
+    prior = _telegram_state._TELEGRAM
+    _telegram_state._TELEGRAM = _StubNotifier()
+    try:
+        row = {
+            "asset": "SOL", "product_type": "15m", "strategy": "MAKER_PATIENT",
+            "price_band_5c": 17, "stc_band_60s": 8, "cell_block_stage": "candidate",
+            "n_30d": 138, "wr_30d": 0.841, "wilson95_hi_30d": 0.892,
+            "cf_pnl_30d_dollars": -285.64, "cohort_date": "2026-05-12",
+        }
+        assert emit_alert(row, kind="bleed") is True
+        assert "BLEED" in captured["message"]
+        assert "SOL" in captured["message"]
+        assert captured["dedup_key"] is not None
+        assert "bleed" in captured["dedup_key"]
+    finally:
+        _telegram_state._TELEGRAM = prior
+
+
+def test_persistence_days_breaks_on_date_gap():
+    """Bundled followup 1 (R3 MN1 from kb resume doc): if the nightly
+    cron misfires and leaves a gap in cohort_date series, the
+    persistence counter must NOT silently treat the breach-before-gap
+    and breach-after-gap as "consecutive" — it must reset on gap.
+
+    Example: today=2026-05-12, prior rows {05-11, 05-09, 05-08} all
+    breaching. The gap between 05-11 and 05-09 (missing 05-10) breaks
+    persistence. Expected count: 1 (only 05-11 contiguous to today).
+    """
+    from bot.helpers.cohort_attribution import _compute_persistence_days, ensure_schema
+
+    conn = sqlite3.connect(":memory:")
+    ensure_schema(conn)
+    cohort_key = ("SOL", "15m", "MAKER_PATIENT", 17, 8, "candidate")
+    for date, gap in (("2026-05-11", 0.08), ("2026-05-09", 0.09), ("2026-05-08", 0.10)):
+        conn.execute(
+            "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+            "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+            "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+            "cal_gap_30d) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (date, *cohort_key, 100, 80, 20, 0, 50, gap),
+        )
+    conn.commit()
+    n = _compute_persistence_days(
+        conn, cohort_date="2026-05-12", cohort_key=cohort_key, abs_threshold=0.05,
+    )
+    assert n == 1, f"expected 1 (gap-breaks-streak), got {n}"
+
+
+def test_persistence_days_counts_contiguous_breaches():
+    """Sanity: with no gaps, persistence counts every immediate-prior day
+    that breached."""
+    from bot.helpers.cohort_attribution import _compute_persistence_days, ensure_schema
+
+    conn = sqlite3.connect(":memory:")
+    ensure_schema(conn)
+    cohort_key = ("SOL", "15m", "MAKER_PATIENT", 17, 8, "candidate")
+    for date, gap in (("2026-05-11", 0.08), ("2026-05-10", 0.09), ("2026-05-09", 0.10)):
+        conn.execute(
+            "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+            "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+            "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+            "cal_gap_30d) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (date, *cohort_key, 100, 80, 20, 0, 50, gap),
+        )
+    conn.commit()
+    n = _compute_persistence_days(
+        conn, cohort_date="2026-05-12", cohort_key=cohort_key, abs_threshold=0.05,
+    )
+    assert n == 3
+
+
+class _FlakyConnProxy:
+    """Proxy wrapping a real sqlite3.Connection that intercepts
+    `executemany` to inject transient OperationalError('database is
+    locked'). All other attribute accesses pass through to the real
+    conn — necessary because `sqlite3.Connection.executemany` is a
+    read-only C-level attribute and can't be monkey-patched directly."""
+
+    def __init__(self, real_conn, fail_first_n_executemany: int):
+        self._real = real_conn
+        self._fail_n = fail_first_n_executemany
+        self.executemany_call_count = 0
+
+    def executemany(self, sql, rows):
+        self.executemany_call_count += 1
+        if self.executemany_call_count <= self._fail_n:
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.executemany(sql, rows)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_run_aggregation_retries_on_database_locked():
+    """Bundled followup 2 (cf34b5c retry pattern, kb resume doc): wrap
+    executemany in 3-retry-on-busy so the nightly cron silent-recovers
+    from transient `database is locked` collisions with the bot's
+    writer process.
+
+    Proxy raises OperationalError('database is locked') the first 2
+    times executemany is called and succeeds the third — must complete
+    without propagating the exception.
+    """
+    from bot.helpers.cohort_attribution import run_aggregation
+
+    real = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(real)
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        real,
+        ticker="KXSOL15M-X", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    real.commit()
+
+    proxy = _FlakyConnProxy(real, fail_first_n_executemany=2)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(proxy, alerts_module=None, cohort_date="2026-05-12", now=pinned_now)
+
+    assert proxy.executemany_call_count >= 3, (
+        f"expected ≥3 attempts (2 failures + 1 success), got {proxy.executemany_call_count}"
+    )
+
+
+def test_run_aggregation_emits_alert_on_quiet_to_firing_transition():
+    """End-to-end wire: when a previously-quiet cohort first crosses the
+    BLEED threshold today, run_aggregation calls alerts_module.emit_alert
+    exactly once with kind='bleed' and the cohort identity.
+
+    A brand-new cohort (prior_row is None) returns ('quiet', None) per
+    R7 — so seed a prior 'quiet' row to put the transition test in the
+    quiet→firing branch. A cohort that stays firing across multiple
+    ticks under cooldown emits once-per-23h, not once-per-tick.
+    """
+    from bot.helpers.cohort_attribution import ensure_schema, run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    ensure_schema(conn)
+    # Seed prior aggregation row in 'quiet' state for same cohort.
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, alert_state) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-11", "SOL", "15m", "MAKER_PATIENT", 17, 4, "candidate",
+         50, 40, 10, 0, 50, "quiet"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset"), row.get("strategy")))
+            return True
+
+    mod = _ModWithEmit(fire_bleed=True, fire_cal=False, cooldown=False)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    assert len(emitted) == 1, f"expected 1 emit on quiet→firing transition, got {len(emitted)}"
+    kind, asset, strategy = emitted[0]
+    assert kind == "bleed"
+    assert asset == "SOL"
+    assert strategy == "MAKER_PATIENT"
+
+
+def test_run_aggregation_does_not_emit_cross_family_under_cooldown():
+    """R1 M1 pin: a cohort that was `firing_bleed` yesterday and would
+    fire `firing_cal` today MUST NOT emit a fresh CAL alert when the
+    prior BLEED cooldown is still active.
+
+    Design § Alert design says "23h cooldown per cohort" (not per-kind).
+    The emit-gate uses `next_last_alert != prior_last_alert` to detect
+    a fresh fire — when cooldown is active, `compute_next_alert_state`
+    preserves the prior timestamp, and the emit-gate suppresses the
+    cross-family Telegram.
+    """
+    from bot.helpers.cohort_attribution import ensure_schema, run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+        "alert_state, last_alert_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-11", "SOL", "15m", "MAKER_PATIENT", 17, 4, "candidate",
+         100, 80, 20, -10000, 50, "firing_bleed", "2026-05-12T01:00:00+00:00"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset")))
+            return True
+
+    # BLEED no longer firing today, but CAL fires AND cooldown is still
+    # active (~12h since prior fire at 01:00 UTC, today 13:07 UTC).
+    mod = _ModWithEmit(fire_bleed=False, fire_cal=True, cooldown=True)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    assert emitted == [], (
+        f"expected 0 emits (cross-family under cooldown), got {emitted}"
+    )
+
+
+def test_run_aggregation_emits_after_cooldown_expires():
+    """Sanity: when a previously-firing cohort's cooldown has expired
+    AND the cohort still meets firing criteria, emit fires fresh
+    (because `compute_next_alert_state` stamps a new `now_iso` and the
+    emit-gate sees `next_last_alert != prior_last_alert`)."""
+    from bot.helpers.cohort_attribution import ensure_schema, run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    ensure_schema(conn)
+    # Prior fire 48h ago — cooldown expired.
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+        "alert_state, last_alert_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-10", "SOL", "15m", "MAKER_PATIENT", 17, 4, "candidate",
+         100, 80, 20, -10000, 50, "firing_bleed", "2026-05-10T13:07:00+00:00"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset")))
+            return True
+
+    # Cohort still meets BLEED criteria; cooldown=False simulates the
+    # ≥23h gap evaluation.
+    mod = _ModWithEmit(fire_bleed=True, fire_cal=False, cooldown=False)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    assert len(emitted) == 1
+    assert emitted[0] == ("bleed", "SOL")
+
+
+def test_run_aggregation_emits_alert_on_quiet_to_firing_cal_transition():
+    """R2 N2: pin the cal-side end-to-end emit path explicitly. The
+    `kind = "bleed" if next_state == "firing_bleed" else "cal"` else-arm
+    is unit-tested at the helper layer, but symmetry with the bleed pin
+    closes the integration-level surface."""
+    from bot.helpers.cohort_attribution import ensure_schema, run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    ensure_schema(conn)
+    # Seed prior 'quiet' so the transition is quiet → firing_cal.
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, alert_state) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-11", "ETH", "15m", "MAKER_PATIENT", 15, 9, "candidate",
+         50, 40, 10, 0, 50, "quiet"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="ETH", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=78, seconds_to_close=560.0,
+        market_result="yes", counterfactual_pnl=1000,
+        calibrated_prob=0.91, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset")))
+            return True
+
+    mod = _ModWithEmit(fire_bleed=False, fire_cal=True, cooldown=False)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    assert len(emitted) == 1
+    assert emitted[0] == ("cal", "ETH")
+
+
+def test_run_aggregation_emits_cross_family_after_cooldown_expires():
+    """R2 N3 + M1 symmetric pin: firing_bleed prior + CAL fires today +
+    cooldown EXPIRED (prior fire 48h ago) → emits fresh CAL alert.
+    Mirrors the same-family-cooldown-expired pin but for cross-family,
+    closing the symmetry of the M1 fix's contract surface."""
+    from bot.helpers.cohort_attribution import ensure_schema, run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+        "alert_state, last_alert_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-10", "SOL", "15m", "MAKER_PATIENT", 17, 4, "candidate",
+         100, 80, 20, -10000, 50, "firing_bleed", "2026-05-10T13:07:00+00:00"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset")))
+            return True
+
+    # CAL fires today (not BLEED); cooldown=False (48h gap exceeds 23h).
+    mod = _ModWithEmit(fire_bleed=False, fire_cal=True, cooldown=False)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    assert len(emitted) == 1
+    assert emitted[0] == ("cal", "SOL")
+
+
+def test_compute_next_alert_state_brand_new_cohort_with_firing_metrics_stays_quiet():
+    """R2 N4: pin the day-1 latency contract — a brand-new cohort
+    (prior_row=None) that already meets BLEED criteria still returns
+    ('quiet', None). The alert first fires on day 2 when prior_row
+    exists. This is intentional per R7 advisory to avoid alerting on
+    a single-day spike without any prior history to compare against."""
+    from bot.helpers.cohort_attribution import compute_next_alert_state
+
+    class _FireEverything:
+        def should_fire_bleed_alert(self, **_kw):
+            return True
+
+        def should_fire_calibration_alert(self, **_kw):
+            return True
+
+        def cooldown_active(self, **_kw):
+            return False
+
+    current_metrics = {
+        "n_30d": 138,
+        "wilson95_hi_30d": 0.892,
+        "cf_pnl_30d_dollars": -285.64,
+        "abs_cal_gap_30d": 0.08,
+        "persistence_days": 3,
+        "cell_block_stage": "candidate",
+    }
+    next_state, next_last_alert = compute_next_alert_state(
+        None, current_metrics, alerts_module=_FireEverything(),
+    )
+    assert next_state == "quiet"
+    assert next_last_alert is None
+
+
+def test_emit_alert_unknown_kind_returns_false_and_logs():
+    """MN5: emit_alert with an unknown `kind` value must log a warning
+    (operator visibility) and return False (no Telegram dispatch)."""
+    import bot.notifier as _telegram_state
+    from bot.helpers.cohort_alerts import emit_alert
+
+    class _StubNotifier:
+        enabled = True
+        last = None
+
+        def send(self, message, silent=False, dedup_key=None):
+            self.last = message
+
+    prior = _telegram_state._TELEGRAM
+    stub = _StubNotifier()
+    _telegram_state._TELEGRAM = stub
+    try:
+        row = {
+            "asset": "SOL", "product_type": "15m", "strategy": "MAKER_PATIENT",
+            "price_band_5c": 17, "stc_band_60s": 8, "cell_block_stage": "candidate",
+        }
+        assert emit_alert(row, kind="banana") is False
+        assert stub.last is None  # notifier never called
+    finally:
+        _telegram_state._TELEGRAM = prior
+
+
+def test_run_aggregation_does_not_emit_when_state_unchanged():
+    """If the cohort was already firing_bleed yesterday (prior row exists
+    with that state) and stays firing today, no NEW emit fires —
+    operator already alerted; the 23h cooldown carry covers this."""
+    from bot.helpers.cohort_attribution import run_aggregation
+
+    conn = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(conn)
+    # Seed a prior aggregation row in firing_bleed state for the same cohort.
+    from bot.helpers.cohort_attribution import ensure_schema
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO cohort_attribution_daily (cohort_date, asset, product_type, "
+        "strategy, price_band_5c, stc_band_60s, cell_block_stage, "
+        "n_30d, n_yes_30d, n_no_30d, sum_cf_cents_30d, n_7d, "
+        "alert_state, last_alert_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("2026-05-11", "SOL", "15m", "MAKER_PATIENT", 17, 4, "candidate",
+         100, 80, 20, -10000, 50, "firing_bleed", "2026-05-11T13:07:00+00:00"),
+    )
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        conn,
+        ticker="KX1", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    conn.commit()
+
+    emitted = []
+
+    class _ModWithEmit(_FakeAlertsModule):
+        def emit_alert(self, row, *, kind):
+            emitted.append((kind, row.get("asset")))
+            return True
+
+    mod = _ModWithEmit(fire_bleed=True, fire_cal=False, cooldown=True)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    run_aggregation(conn, alerts_module=mod, cohort_date="2026-05-12", now=pinned_now)
+    # Same state across ticks; cooldown active → 0 emits.
+    assert emitted == []
+
+
+def test_run_aggregation_gives_up_after_max_retries():
+    """If `database is locked` persists past the retry budget, the
+    exception MUST propagate — silent-swallowing the OperationalError
+    would lose the nightly aggregation without alerting the operator."""
+    from bot.helpers.cohort_attribution import run_aggregation
+
+    real = sqlite3.connect(":memory:")
+    _eval_opp_schema_min(real)
+    eval_time = "2026-05-11T13:07:00+00:00"
+    _insert_eval_row(
+        real,
+        ticker="KXSOL15M-X", asset="SOL", product_type="15m",
+        strategy="MAKER_PATIENT", filter_stage="candidate",
+        market_price=88, seconds_to_close=250.0,
+        market_result="yes", counterfactual_pnl=1500,
+        calibrated_prob=0.92, evaluation_time=eval_time,
+    )
+    real.commit()
+
+    proxy = _FlakyConnProxy(real, fail_first_n_executemany=999)
+    pinned_now = _dt.datetime(2026, 5, 12, 13, 7, tzinfo=_dt.timezone.utc)
+    with pytest.raises(sqlite3.OperationalError):
+        run_aggregation(proxy, alerts_module=None, cohort_date="2026-05-12", now=pinned_now)

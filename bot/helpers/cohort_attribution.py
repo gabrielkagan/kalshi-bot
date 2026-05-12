@@ -23,8 +23,10 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import math
+import random
 import sqlite3
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+import time
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 
 # ── Canonical partition-stages set (single source of truth) ──────────────────
@@ -173,7 +175,9 @@ def compute_next_alert_state(
     metrics or alerts_module presence (R7 advisory pin).
 
     With `alerts_module is None` (graceful fallback — P1.3 not yet shipped):
-      - prior state in (None, '', 'quiet'): ('quiet', None)
+      - prior state in (None, '', 'quiet'): ('quiet', None). The
+        `last_alert_time` slot was never populated (no alert ever fired),
+        so there's nothing to preserve.
       - prior state starts with 'firing': ('quiet', prior.last_alert_time)
         — preserves first-fire timestamp for P1.4 weekly-report § 4
         resolution-date attribution; conservatively treats every prior-firing
@@ -183,6 +187,15 @@ def compute_next_alert_state(
     `should_fire_bleed_alert` / `should_fire_calibration_alert` /
     `cooldown_active` primitives drive the transition. P1.3 is the canonical
     home for the trigger thresholds.
+
+    Alert-state vocab is THREE values: 'quiet' | 'firing_bleed' | 'firing_cal'.
+    The design doc § Storage CREATE TABLE block enumerates a 4th value
+    'cooldown' for narrative completeness, but the implementation never
+    writes it — cooldown is implicit via the (`last_alert_time` + 23h)
+    predicate, evaluated at next-tick. The 3-vocab choice keeps the
+    state machine flat: a cohort in cooldown is still 'firing_*' from the
+    operator's perspective; the (cohort_date, last_alert_time) pair tells
+    the emit-gate whether to actually re-fire Telegram.
     """
     prior_state = (prior_row or {}).get("alert_state")
     prior_last_alert = (prior_row or {}).get("last_alert_time")
@@ -358,6 +371,51 @@ def run_aggregation(
             now=now_dt,
         )
 
+        # Emit Telegram on FRESH-fire transitions only.
+        #
+        # `compute_next_alert_state` stamps `next_last_alert` to `now_iso`
+        # only when a NEW alert window opens (quiet→firing OR firing→firing
+        # with cooldown expired). When the cohort stays under cooldown —
+        # same-family OR cross-family (e.g., firing_bleed → firing_cal with
+        # BLEED cooldown still active) — `next_last_alert` is preserved
+        # from the prior row. Comparing against `prior_last_alert`
+        # cleanly classifies all four cases:
+        #   quiet → firing (fresh)            : prior=None,    next=now_iso → EMIT
+        #   firing → firing (cooldown active) : prior=old,     next=old     → no emit
+        #   firing → firing (cooldown expired): prior=old,     next=now_iso → EMIT
+        #   firing → quiet                    : next_state doesn't start "firing" → no emit
+        # This anchors the cooldown semantics to design § Alert design:
+        # "23h cooldown PER COHORT", not per-(cohort,kind).
+        prior_last_alert = (prior_row or {}).get("last_alert_time")
+        if (
+            alerts_module is not None
+            and isinstance(next_state, str)
+            and next_state.startswith("firing")
+            and next_last_alert != prior_last_alert
+        ):
+            kind = "bleed" if next_state == "firing_bleed" else "cal"
+            emit_fn = getattr(alerts_module, "emit_alert", None)
+            if emit_fn is not None:
+                try:
+                    emit_fn({
+                        "asset": asset, "product_type": product_type,
+                        "strategy": strategy,
+                        "price_band_5c": price_band_5c,
+                        "stc_band_60s": stc_band_60s,
+                        "cell_block_stage": stage,
+                        "n_30d": n_30d, "wr_30d": wr_30d,
+                        "wilson95_hi_30d": wilson_hi,
+                        "cf_pnl_30d_dollars": cf_pnl_30d_dollars,
+                        "mean_cal_prob_30d": mean_cal_prob_30d,
+                        "cal_gap_30d": cal_gap_30d,
+                        "persistence_days": persistence_days,
+                        "cohort_date": date_str,
+                    }, kind=kind)
+                except Exception:
+                    logging.exception(
+                        "[COHORT_ALERTS] emit_alert raised; continuing aggregation"
+                    )
+
         insert_rows.append((
             date_str, asset, product_type, strategy,
             price_band_5c, stc_band_60s, stage,
@@ -376,33 +434,62 @@ def run_aggregation(
         BATCH = 50
         for i in range(0, len(insert_rows), BATCH):
             chunk = insert_rows[i:i + BATCH]
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO cohort_attribution_daily (
-                    cohort_date, asset, product_type, strategy,
-                    price_band_5c, stc_band_60s, cell_block_stage,
-                    n_30d, n_yes_30d, n_no_30d, wr_30d,
-                    wilson95_lo_30d, wilson95_hi_30d,
-                    sum_cf_cents_30d, cf_pnl_30d_dollars,
-                    mean_cal_prob_30d, cal_gap_30d,
-                    n_7d, wr_7d, cf_pnl_7d_dollars, cal_gap_7d,
-                    alert_state, last_alert_time
-                ) VALUES (
-                    ?,?,?,?,
-                    ?,?,?,
-                    ?,?,?,?,
-                    ?,?,
-                    ?,?,
-                    ?,?,
-                    ?,?,?,?,
-                    ?,?
-                )
-                """,
-                chunk,
-            )
+            _executemany_with_retry(conn, _INSERT_COHORT_ROW_SQL, chunk)
             conn.commit()
     else:
         conn.commit()
+
+
+_INSERT_COHORT_ROW_SQL = """
+INSERT OR REPLACE INTO cohort_attribution_daily (
+    cohort_date, asset, product_type, strategy,
+    price_band_5c, stc_band_60s, cell_block_stage,
+    n_30d, n_yes_30d, n_no_30d, wr_30d,
+    wilson95_lo_30d, wilson95_hi_30d,
+    sum_cf_cents_30d, cf_pnl_30d_dollars,
+    mean_cal_prob_30d, cal_gap_30d,
+    n_7d, wr_7d, cf_pnl_7d_dollars, cal_gap_7d,
+    alert_state, last_alert_time
+) VALUES (
+    ?,?,?,?,
+    ?,?,?,
+    ?,?,?,?,
+    ?,?,
+    ?,?,
+    ?,?,
+    ?,?,?,?,
+    ?,?
+)
+"""
+
+
+def _executemany_with_retry(
+    conn: sqlite3.Connection, sql: str, rows: List[Tuple],
+    *, max_attempts: int = 3,
+) -> None:
+    """Retry-on-busy wrapper around `conn.executemany`.
+
+    Mirrors the canonical pattern at `bot/state.py:2210` (cf34b5c retry
+    loop, 2026-05-09): 3 attempts with 25-75ms jittered backoff, retry
+    only on transient "is locked"/"is busy" — re-raise everything else
+    immediately. Closes the `database is locked` race against the bot's
+    writer process during nightly cron.
+    """
+    last_exc: Optional[sqlite3.OperationalError] = None
+    for attempt in range(max_attempts):
+        try:
+            conn.executemany(sql, rows)
+            return
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            is_transient = "is locked" in msg or "is busy" in msg
+            if not is_transient:
+                raise
+            last_exc = e
+            if attempt < max_attempts - 1:
+                time.sleep(0.025 + random.random() * 0.050)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _evaluated_opportunities_exists(conn: sqlite3.Connection) -> bool:
@@ -522,8 +609,13 @@ def _compute_persistence_days(
         (asset, product_type, strategy, price_band_5c, stc_band_60s, stage,
          cohort_date, _PERSISTENCE_LOOKBACK_LIMIT),
     ).fetchall()
+    expected_prev = _dt.date.fromisoformat(cohort_date)
     persistence = 0
-    for _, cal_gap in rows:
+    for row_date, cal_gap in rows:
+        expected_prev = expected_prev - _dt.timedelta(days=1)
+        row_date_parsed = _dt.date.fromisoformat(row_date)
+        if row_date_parsed != expected_prev:
+            break
         if cal_gap is None or abs(cal_gap) <= abs_threshold:
             break
         persistence += 1
