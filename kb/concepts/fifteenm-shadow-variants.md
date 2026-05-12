@@ -61,7 +61,7 @@ The shadow engine evaluates ALL 15M signals before the live pipeline's price fil
 
 **Fix (53c953b):** All `sqlite3.connect()` calls in the file now use `check_same_thread=False`, plus `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=10000`.
 
-**Anti-pattern identified:** `except Exception: logging.debug(...)` swallowing critical DB errors. Changed to `logging.warning` with `exc_info=True`. Regression test: `TestCheckSameThread` in `tests/test_regression.py`.
+**Anti-pattern identified:** `except Exception: logging.debug(...)` swallowing critical DB errors. Changed to `logging.warning` with `exc_info=True`. Regression test: `TestCheckSameThread` in `tests/integration/test_regression.py`.
 
 ## Audit Coverage
 - `scripts/15m_live_audit.py` Section 10

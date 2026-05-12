@@ -6,7 +6,7 @@ Usage:
   1. Copy this file's structure to scripts/<audit_name>.py
   2. Replace <PLACEHOLDER> tokens with audit-specific values
   3. Delete this HTML comment block + the # TEMPLATE COMMENT lines
-  4. If wrapping in a Makefile target, add to Makefile + tests/test_makefile.py
+  4. If wrapping in a Makefile target, add to Makefile + tests/unit/test_makefile.py
      (Bit 11.3 / Bit 13.2 narrow-skill template precedent)
   5. If user-facing as a `/skill`, copy .claude/templates/new-skill.md
      and reference this audit script

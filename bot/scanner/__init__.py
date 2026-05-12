@@ -36,7 +36,7 @@ Mutable-singleton coupling (preserved via aliased module-attribute access):
 `main_loop=None` constructor arg → 11 self._ml.X sub-attribute accesses
 are constructor-injected references (NOT bare-name lookups). Construction
 order in `MainLoop.__init__` guarantees the dependencies are populated
-before any scanner method runs. Locked by tests/test_scanner_extraction.py.
+before any scanner method runs. Locked by tests/integration/test_scanner_extraction.py.
 
 Re-imported into bot/_impl.py via `from bot.scanner import OpportunityScanner`
 so the runtime construction in `MainLoop.__init__` (search "self.scanner = OpportunityScanner")
@@ -3309,7 +3309,7 @@ class OpportunityScanner:
                             # T1 (2026-05-10): shadow assets must not route live through TM
                             # The XRP_15M_SHADOW gate downstream fires AFTER candidate.append,
                             # so per-strategy asset gating is required here. See
-                            # tests/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
+                            # tests/integration/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
                             and not (HYPE_15M_SHADOW and asset == "HYPE")
                             and not (DOGE_15M_SHADOW and asset == "DOGE")):
                         # Check DC overlap: skip if ticker already claimed by DC
@@ -8074,7 +8074,7 @@ class OpportunityScanner:
     # these as "scan alive" — counting them would hide the exact
     # failure class the watchdog exists to detect. Any new bail-shaped
     # rejection reason added in scan() MUST be appended here in the
-    # same commit. See `tests/test_15m_silence_alert.py`
+    # same commit. See `tests/integration/test_15m_silence_alert.py`
     # (TestSilent15MAlertSilentBailDetection) for the regression
     # contract.
     _BAIL_REJECTION_REASONS = (
@@ -8106,7 +8106,7 @@ class OpportunityScanner:
     # Shape buckets — partition `_BAIL_REJECTION_REASONS` into the two
     # diagnostic shapes the BAIL FLOOD alert routes between. The
     # partition + disjointness invariants are enforced via tests in
-    # `tests/test_15m_silence_alert.py::TestBailFloodMessageDifferentiation`
+    # `tests/integration/test_15m_silence_alert.py::TestBailFloodMessageDifferentiation`
     # (search for `test_shape_buckets_partition_bail_reasons`), NOT
     # via class-body assertions — adversarial round-4 critique C4:
     # module-load assertions on a recoverable contract (a forgotten
@@ -8592,7 +8592,7 @@ class OpportunityScanner:
             #
             # Adversarial review summary (rounds 2-7, see inline
             # comments below + per-method docstrings for per-fix
-            # rationale, plus tests/test_15m_silence_alert.py
+            # rationale, plus tests/integration/test_15m_silence_alert.py
             # ::TestBailFloodMessageDifferentiation):
             # - R2: single source of truth — breakdown drives routing
             #   AND display; "(breakdown unavailable)" annotation

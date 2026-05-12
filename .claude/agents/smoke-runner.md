@@ -75,7 +75,7 @@ mutating the tree).
 Per L93 + the Sprint 10 fu iCloud filter (commit `df782e1`), the tree
 has known noise:
 
-- `tests/test_repo_hygiene.py::test_no_icloud_duplicate_files` — 2-3
+- `tests/unit/test_repo_hygiene.py::test_no_icloud_duplicate_files` — 2-3
   failures from iCloud-conflict files. Pre-existing on plain HEAD; not
   Bit-introduced.
 - `ruff check .` — ~17000 errors on plain HEAD (lenient ruff config

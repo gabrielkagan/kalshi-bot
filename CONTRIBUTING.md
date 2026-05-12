@@ -17,7 +17,7 @@ make pre-commit-checks # run the full local gate (~30s)
 
 The `pre-commit-checks` target chains the 5 fastest gates:
 `ast-check` → `lint` → `doc-drift` → `test-unit` → `test-contract`
-(see Makefile + tests/test_makefile.py for the canonical order).
+(see Makefile + tests/unit/test_makefile.py for the canonical order).
 
 ## Discipline
 

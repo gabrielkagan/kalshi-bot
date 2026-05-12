@@ -477,7 +477,7 @@ class SupabaseSyncer:
     # `add_cal_mlp_columns_to_evaluations`, applied 2026-05-01) — adding to
     # this list without the remote columns silently 400s every batch (see
     # _check_schema_parity for the failure mode that lost data 2026-04-04).
-    # Regression test: tests/test_supabase_eval_columns_calmlp.py.
+    # Regression test: tests/integration/test_supabase_eval_columns_calmlp.py.
     _EVAL_COLUMNS = (
         "id, ticker, event_ticker, asset, filter_stage, rejection_reason, evaluation_time, "
         "spot_price, threshold, volatility, market_price, seconds_to_close, calibrated_prob, "

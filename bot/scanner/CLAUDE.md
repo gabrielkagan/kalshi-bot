@@ -75,14 +75,14 @@ are constructor-injected references, NOT bare-name lookups: `executor`,
 `_scan_loop_start`, `_open_positions_count_cache`. Construction order
 in `MainLoop.__init__` guarantees the dependencies are populated
 before any scanner method runs. Full enumeration locked by
-`tests/test_scanner_extraction.py::SCANNER_MAIN_LOOP_ATTRS`.
+`tests/integration/test_scanner_extraction.py::SCANNER_MAIN_LOOP_ATTRS`.
 
 ## Forbidden top-level imports
 
 - **No torch / sklearn / pandas direct imports.** numpy + scipy reach
   the scanner transitively through `models.PositionSizer` etc., but
   the scanner module body itself MUST NOT import them. Locked by
-  `tests/test_scanner_extraction.py::test_scanner_no_forbidden_numerical_imports`.
+  `tests/integration/test_scanner_extraction.py::test_scanner_no_forbidden_numerical_imports`.
 - **No `bot._impl` at module top.** Post-Bit-9.1 (2026-05-10), scanner
   has zero top-level `bot._impl` imports — the `_get_order_executor()`
   late-binding helper retired and the `scanner-no-impl-toplevel`
@@ -117,8 +117,8 @@ called `OpportunityScanner._best_ask_depth(...)` were FIXED in Bit 9.1
 (rewritten to `OrderExecutor._best_ask_depth(...)`); ticket
 `86b9vn9r5` closed. **Don't "fix"** by adding `_best_ask_depth` here;
 the staticmethod's home is OrderExecutor. Locked by
-`tests/test_scanner_extraction.py::test_opportunity_scanner_does_not_define_best_ask_depth`
-+ `tests/test_executor_extraction.py::test_best_ask_depth_lives_on_executor_not_scanner`.
+`tests/integration/test_scanner_extraction.py::test_opportunity_scanner_does_not_define_best_ask_depth`
++ `tests/integration/test_executor_extraction.py::test_best_ask_depth_lives_on_executor_not_scanner`.
 
 ## `filter_stage` string literals (cell-block discipline)
 
@@ -155,7 +155,7 @@ to the cell-block UNION in audit/dashboard scripts (full list in
 - After signature changes to `OpportunityScanner.__init__` or any
   staticmethod consumed by callers (OrderExecutor / MainLoop): grep
   call sites in `bot/_impl.py` and update
-  `tests/test_scanner_extraction.py::test_scanner_method_count_matches_ast`
+  `tests/integration/test_scanner_extraction.py::test_scanner_method_count_matches_ast`
   + `test_scanner_constants_resolve_from_bot_constants` /
   `_from_config` / `test_scanner_helpers_resolve_from_bot_helpers`
   if the surface changes.

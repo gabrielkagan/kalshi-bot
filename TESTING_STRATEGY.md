@@ -113,7 +113,7 @@ We have 9 standalone test files (~6,700 lines) covering EGARCH, HAR, ghost fills
 
 ---
 
-### 7. Regression Test Expansion (`tests/test_regression.py`)
+### 7. Regression Test Expansion (`tests/integration/test_regression.py`)
 
 **Current state:** Small file with fee calculation and a few other tests.
 
@@ -173,7 +173,7 @@ This eliminates the "inline copy of bot/_impl.py classes" pattern that causes te
 
 (As of repo modularization Bit 1.1, pytest config lives in `pyproject.toml`,
 not `pytest.ini`. Pytest prefers `pytest.ini` if it exists, so re-introducing
-that file silently overrides the canonical config — `tests/test_pyproject.py`
+that file silently overrides the canonical config — `tests/unit/test_pyproject.py`
 guards against it.)
 
 ```toml

@@ -49,7 +49,7 @@ helpers-leaf gained `bot.boot`).
 - **No torch / sklearn / pandas / numpy / scipy direct imports.** MainLoop is
   orchestration — engines (which carry numpy/scipy via models) are CONSTRUCTED
   here but the numerical libs themselves never enter this module's top-level.
-  Locked by `tests/test_main_loop_extraction.py::test_main_loop_no_forbidden_numerical_imports`.
+  Locked by `tests/integration/test_main_loop_extraction.py::test_main_loop_no_forbidden_numerical_imports`.
 
 ## Bit 9.3.5 marker collapse (SHIPPED 2026-05-10)
 
@@ -80,9 +80,9 @@ Bit 9.3-ii after bot/__main__.py swap).
     bot/main_loop.py block added, Sprint 9 marker advanced.
   - 7+ BOT_PY-defined tests retargeted from BOT_PY → MAIN_LOOP_PY for MainLoop
     content walks (per L38, per-test).
-  - tests/test_state_extraction.py + test_settlement_extraction.py +
+  - tests/integration/test_state_extraction.py + test_settlement_extraction.py +
     test_executor_extraction.py walk-set extensions.
-  - tests/test_orphan_db_watchdog.py AST walk retargeted from BOT_PY to
+  - tests/integration/test_orphan_db_watchdog.py AST walk retargeted from BOT_PY to
     MAIN_LOOP_PY (helpers stay in bot/_impl.py per C3).
   - .importlinter helpers-leaf forbidden_modules extended with bot.main_loop.
 """

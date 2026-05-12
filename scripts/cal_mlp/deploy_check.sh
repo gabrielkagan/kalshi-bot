@@ -7,7 +7,7 @@
 #
 # Gates (in order; each must exit 0 to proceed):
 #   1. ast.parse on bot/constants.py + bot/main_loop.py + bot/scanner/__init__.py + cal_mlp modules — catches syntax errors (Bit 9.3-iii.c: bot/_impl.py was DELETED, runtime hotspots are now the canonical submodules)
-#   2. pytest tests/test_cal_mlp_invariants.py — 33 regression tests
+#   2. pytest tests/integration/test_cal_mlp_invariants.py — 33 regression tests
 #   3. pytest tests/ -m "not fragile" — full ~2046-test suite
 #   4. python3 scripts/cal_mlp/smoke_check.py — 6 end-to-end synthetic checks
 #   5. (skipped if no models yet) bash scripts/cal_mlp/run_pipeline.sh
@@ -58,7 +58,7 @@ print('all cal_mlp modules parsed clean')"
 
 # Gate 2: cal_mlp regression suite (stdlib-only, fast)
 run_gate "pytest cal_mlp invariants" \
-    python3 -m pytest tests/test_cal_mlp_invariants.py -x --no-header -q
+    python3 -m pytest tests/integration/test_cal_mlp_invariants.py -x --no-header -q
 
 # Gate 3: full pytest suite (catches cross-test interactions)
 run_gate "pytest full suite (not fragile)" \

@@ -33,7 +33,7 @@ Before acting on any agent's "safe to remove / delete / kill" recommendation, ve
 - Is the feature referenced in `CLAUDE.md` current state? KB decision docs?
 
 ### 3. Check adjacent machinery
-- Tests asserting the key exists (`tests/test_contracts.py`, `test_dashboard_contract.py`)
+- Tests asserting the key exists (`tests/integration/test_contracts.py`, `test_dashboard_contract.py`)
 - Settlement routing that references the product_type
 - Analyst / auditor / researcher scripts consuming the key
 - Other KB articles describing why the key was added

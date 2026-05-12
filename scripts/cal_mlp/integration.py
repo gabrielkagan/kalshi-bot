@@ -672,7 +672,7 @@ def _resolve_bundle_dir(asset: str) -> str:
     .strip()-then-check pattern shared with CALMLP_ENABLED + the
     pre-Phase-1a global override).
 
-    AST guard: tests/test_calmlp_bundle_dir_per_asset.py asserts that
+    AST guard: tests/integration/test_calmlp_bundle_dir_per_asset.py asserts that
     the CALMLP_BUNDLE_DIR* env vars are ONLY read inside this function.
     """
     asset_key = asset.strip().upper() if asset else ''
@@ -1131,7 +1131,7 @@ class CalMLPPredictor:
 # Kill-switch contract (R-p7-cleanroom#H2 + R-p7-coldboot#C-S2):
 # Predictor INSTANCES are always constructed at module-import time below
 # (CalMLPPredictor.__init__ is pure attr-set; no IO — pinned by
-# tests/test_cal_mlp_invariants.py::test_cal_mlp_predictor_init_zero_io).
+# tests/integration/test_cal_mlp_invariants.py::test_cal_mlp_predictor_init_zero_io).
 # .warmup() is gated on CALMLP_ENABLED. This ordering is required so hot-
 # flipping CALMLP_ENABLED=0→1 mid-process actually activates calibration on
 # the first scan tick — without always-construct, an env=0 boot would leave
@@ -1159,7 +1159,7 @@ def warmup_predictor_cache() -> tuple:
     Reads CALMLP_ENABLED from os.environ at call time (not at module-import
     time), so an env=0 boot followed by an env=1 mid-process flip is
     honored on the next call — pin in
-    tests/test_calmlp_predictor_cache_relocation.py::test_hot_env_flip_zero_to_one_honored.
+    tests/integration/test_calmlp_predictor_cache_relocation.py::test_hot_env_flip_zero_to_one_honored.
 
     Idempotent: subsequent calls re-check env and re-iterate.
     CalMLPPredictor.warmup() short-circuits via the already-loaded guard,

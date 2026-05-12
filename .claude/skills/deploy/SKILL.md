@@ -34,7 +34,7 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
 
 5. **Run regression tests** (the ones that don't need `requests`):
    ```bash
-   python3 -m pytest tests/test_regression.py::TestInstrumentationIntegrity tests/test_regression.py::TestSyntaxCheck tests/test_regression.py::TestCalibrationPipeline -v 2>&1
+   python3 -m pytest tests/integration/test_regression.py::TestInstrumentationIntegrity tests/integration/test_regression.py::TestSyntaxCheck tests/integration/test_regression.py::TestCalibrationPipeline -v 2>&1
    ```
 
 6. **Show the user a change summary** with:
@@ -72,7 +72,7 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
    ```bash
    ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 --since '2 min ago' | grep -iE 'error|exception|traceback|assert|crash|restart' | grep -ivE 'API error.*events.*400|Unknown subscription ID|API error:.*-> 5[0-9][0-9]|API error:.*-> (HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout)|Retrying.*after connection broken'"
    ```
-   Lines that should STILL fail verify (uncovered by the exclusion): real Python `Traceback`, terminal exception lines (`ValueError`, `AssertionError`, etc.), internal `sqlite3.OperationalError`, scanner/executor exception logs, Kalshi non-events 4xx responses (including 401/403/422 whose body may contain keyword tokens like `ConnectionError` or `Timeout`). The regex anchors each suppression branch immediately after the literal `-> ` separator: the 5xx branch requires a `5XX` status code there, the network-transient branch requires one of the explicit exception class names (`HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout`) there. A `-> 401 body={...ConnectionError...}` line cannot match either branch (the `4` is neither `5XX` nor in the class-name alternation), so the gate trips correctly even when keyword tokens appear inside the response body. Regression test: `tests/test_post_deploy_verify_benign_regex.py`.
+   Lines that should STILL fail verify (uncovered by the exclusion): real Python `Traceback`, terminal exception lines (`ValueError`, `AssertionError`, etc.), internal `sqlite3.OperationalError`, scanner/executor exception logs, Kalshi non-events 4xx responses (including 401/403/422 whose body may contain keyword tokens like `ConnectionError` or `Timeout`). The regex anchors each suppression branch immediately after the literal `-> ` separator: the 5xx branch requires a `5XX` status code there, the network-transient branch requires one of the explicit exception class names (`HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout`) there. A `-> 401 body={...ConnectionError...}` line cannot match either branch (the `4` is neither `5XX` nor in the class-name alternation), so the gate trips correctly even when keyword tokens appear inside the response body. Regression test: `tests/integration/test_post_deploy_verify_benign_regex.py`.
 
 6. **Verify bot is scanning** (look for recent scan activity):
    ```bash

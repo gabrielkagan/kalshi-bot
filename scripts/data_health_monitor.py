@@ -209,7 +209,7 @@ def check_stale_data(conn: sqlite3.Connection, now_utc: datetime) -> list:
 # Columns NOT in either map are checked unconditionally against the
 # full per-product-type population (always-write: calibrated_prob,
 # edge, market_price, seconds_to_close, spot_price, raw_prob).
-# Contract pin: tests/test_data_health_null_rate_eligibility.py.
+# Contract pin: tests/integration/test_data_health_null_rate_eligibility.py.
 PRODUCT_TYPE_SKIP = {
     "egarch_sigma": ("sports", "weather"),
     "egarch_blend_sigma": ("sports", "weather"),

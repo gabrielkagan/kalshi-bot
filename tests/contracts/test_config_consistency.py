@@ -1,0 +1,259 @@
+"""Config & Wiring Consistency Tests.
+
+Failure mode: MarketTypeConfig drifts from bot/_impl.py constants -> crash loop on VPS startup.
+Past incidents: Multiple — any time a constant was changed in bot/_impl.py but not market_config.py.
+
+These tests duplicate what validate_market_configs() does at runtime, but catch it
+*before deploy* in CI.
+"""
+
+import os
+import sys
+
+import pytest
+import bot.constants  # noqa: F401
+import config  # noqa: F401
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
+
+class TestConfigConstantParity:
+    """Every MarketTypeConfig field matches its corresponding bot/_impl.py constant."""
+
+    def test_validate_market_configs_succeeds(self):
+        """The runtime validation function itself should pass."""
+        from market_config import validate_market_configs
+        validate_market_configs()
+
+    def test_15m_config_matches_bot(self):
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["15m"]
+        assert cfg.min_entry_price == bot.constants.MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.MAX_ENTRY_PRICE
+        assert cfg.max_risk_per_trade == config.MAX_RISK_PER_TRADE
+        assert cfg.min_seconds_before_close == bot.constants.MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.market_blend_w == bot.constants.MARKET_BLEND_W
+        assert cfg.observation_only == bot.constants.OBSERVATION_MODE
+
+    def test_hourly_config_matches_bot(self):
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["hourly"]
+        assert cfg.observation_only == bot.constants.HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.HOURLY_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.HOURLY_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.HOURLY_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.HOURLY_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.HOURLY_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.HOURLY_MARKET_BLEND_W
+        assert cfg.temperature_t == bot.constants.HOURLY_TEMPERATURE_T
+        assert cfg.temperature_enabled == bot.constants.HOURLY_TEMPERATURE_ENABLED
+        assert cfg.min_stc_entry == bot.constants.HOURLY_MIN_STC_ENTRY
+        assert cfg.max_stc_entry == bot.constants.HOURLY_MAX_STC_ENTRY
+        assert cfg.excluded_assets == frozenset(bot.constants.HOURLY_EXCLUDED_ASSETS)
+        assert cfg.max_positions_per_window == bot.constants.HOURLY_MAX_POSITIONS_PER_WINDOW
+        assert cfg.max_window_risk == bot.constants.HOURLY_MAX_WINDOW_RISK
+
+    def test_spx_hourly_config_matches_bot(self):
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["spx_hourly"]
+        assert cfg.observation_only == bot.constants.SPX_HOURLY_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.SPX_HOURLY_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.SPX_HOURLY_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.SPX_HOURLY_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.SPX_HOURLY_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.SPX_HOURLY_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.SPX_HOURLY_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.SPX_HOURLY_MARKET_BLEND_W
+        assert cfg.temperature_t == bot.constants.SPX_HOURLY_TEMPERATURE_T
+        assert cfg.fee_multiplier_taker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_TAKER
+        assert cfg.fee_multiplier_maker == bot.constants.SPX_HOURLY_FEE_MULTIPLIER_MAKER
+        assert cfg.max_positions_per_window == bot.constants.SPX_HOURLY_MAX_POSITIONS_PER_WINDOW
+        assert cfg.max_window_risk == bot.constants.SPX_HOURLY_MAX_WINDOW_RISK
+
+    def test_weather_config_matches_bot(self):
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["weather"]
+        assert cfg.observation_only == bot.constants.WEATHER_OBSERVATION_ONLY
+        assert cfg.min_entry_price == bot.constants.WEATHER_MIN_ENTRY_PRICE
+        assert cfg.max_entry_price == bot.constants.WEATHER_MAX_ENTRY_PRICE
+        assert cfg.min_seconds_before_close == bot.constants.WEATHER_MIN_SECONDS_BEFORE_CLOSE
+        assert cfg.max_seconds_before_close == bot.constants.WEATHER_MAX_SECONDS_BEFORE_CLOSE
+        assert cfg.max_risk_per_trade == bot.constants.WEATHER_MAX_RISK_PER_TRADE
+        assert cfg.kelly_fraction == bot.constants.WEATHER_KELLY_FRACTION
+        assert cfg.market_blend_w == bot.constants.WEATHER_MARKET_BLEND_W
+
+    def test_sports_config_matches_bot(self):
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["sports"]
+        assert cfg.observation_only == bot.constants.SPORTS_OBSERVATION_ONLY
+        assert cfg.observation_only is True, "sports must always be observation-only"
+        assert cfg.cal_eligible is False, "sports must not be cal_eligible"
+
+
+class TestConfigCompleteness:
+    """Every product type in MARKET_CONFIGS has valid field values."""
+
+    def test_all_product_types_have_valid_price_range(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert 0 < cfg.min_entry_price <= cfg.max_entry_price <= 99, (
+                f"{pt}: invalid price range [{cfg.min_entry_price}, {cfg.max_entry_price}]")
+
+    def test_all_product_types_have_valid_risk(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert 0 < cfg.max_risk_per_trade <= 1.0, (
+                f"{pt}: max_risk_per_trade={cfg.max_risk_per_trade} out of (0, 1]")
+
+    def test_all_product_types_have_valid_kelly_fraction(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert 0 < cfg.kelly_fraction <= 1.0, (
+                f"{pt}: kelly_fraction={cfg.kelly_fraction} out of (0, 1]")
+
+    def test_all_product_types_have_valid_blend_w(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert 0 <= cfg.market_blend_w <= 1.0, (
+                f"{pt}: market_blend_w={cfg.market_blend_w} out of [0, 1]")
+
+    def test_all_product_types_have_valid_temperature(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert cfg.temperature_t > 0, (
+                f"{pt}: temperature_t={cfg.temperature_t} must be positive")
+
+    def test_all_product_types_have_valid_fee_multipliers(self):
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            assert cfg.fee_multiplier_taker >= 0, (
+                f"{pt}: negative taker fee={cfg.fee_multiplier_taker}")
+            assert cfg.fee_multiplier_maker >= 0, (
+                f"{pt}: negative maker fee={cfg.fee_multiplier_maker}")
+            assert cfg.fee_multiplier_maker == 0.0, (
+                f"{pt}: maker fee should be $0 (Kalshi), got {cfg.fee_multiplier_maker}")
+
+    def test_product_type_field_matches_key(self):
+        """Config dict key must match the product_type field inside the config."""
+        from market_config import MARKET_CONFIGS
+        for key, cfg in MARKET_CONFIGS.items():
+            assert cfg.product_type == key, (
+                f"Key '{key}' does not match cfg.product_type='{cfg.product_type}'")
+
+
+class TestMinEdgeByPrice:
+    """MIN_EDGE_BY_PRICE schedule invariants."""
+
+    # Removed: test_edge_schedule_is_non_decreasing — schedule is intentionally
+    # non-monotonic at 91c (lower threshold = sweet spot). Invalid invariant.
+
+    def test_get_min_edge_covers_all_valid_prices(self):
+        """get_min_edge returns a positive value for all valid prices 1-99."""
+        import bot
+        import bot.helpers  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.helpers.X access)
+        for price in range(1, 100):
+            edge = bot.helpers.sizing.get_min_edge(price)
+            assert edge > 0, f"get_min_edge({price}) returned {edge}"
+
+    # Removed: test_get_min_edge_monotonic — schedule is intentionally
+    # non-monotonic at 91c. Invalid invariant.
+
+
+class TestObservationModeFlags:
+    """Observation-only configs have matching bot/_impl.py flags."""
+
+    def test_observation_configs_have_filter_labels(self):
+        """Every observation-only config must have a non-empty observation_filter_label."""
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            if cfg.observation_only and pt != "15m":
+                assert cfg.observation_filter_label, (
+                    f"{pt}: observation_only=True but no observation_filter_label")
+
+    def test_15m_has_no_observation_label(self):
+        """15m is live trading — should not have an observation label."""
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["15m"]
+        if not cfg.observation_only:
+            assert cfg.observation_filter_label == "", (
+                f"15m is live but has observation_filter_label='{cfg.observation_filter_label}'")
+
+
+class TestCalEngineInvariants:
+    """CalEngine registry safety checks (from validate_market_configs)."""
+
+    def test_15m_cal_engine_shadow_mode(self):
+        """15M has per-asset CalEngines but cal_engine_enabled=False (shadow)."""
+        from market_config import MARKET_CONFIGS
+        cfg = MARKET_CONFIGS["15m"]
+        assert not cfg.cal_engine_enabled  # Shadow: engines train but don't affect predictions
+        assert cfg.cal_engine_state_path == ""  # Uses subtypes, not single state path
+        assert cfg.cal_subtypes  # Per-asset engines: BTC, ETH, SOL, XRP
+        assert len(cfg.cal_subtypes) == 4
+
+    def test_subtypes_and_single_state_path_mutually_exclusive(self):
+        """cal_subtypes + cal_engine_state_path is invalid (pick one).
+
+        Note: cal_subtypes + cal_engine_enabled is OK — it means subtype
+        engines are enabled for predictions (e.g., weather per-city CalEngines).
+        This matches validate_market_configs() in market_config.py (line ~366).
+        """
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            if cfg.cal_subtypes:
+                assert not cfg.cal_engine_state_path, (
+                    f"{pt}: has both cal_engine_state_path and cal_subtypes")
+
+    def test_no_duplicate_state_paths(self):
+        from market_config import MARKET_CONFIGS
+        all_paths = []
+        for pt, cfg in MARKET_CONFIGS.items():
+            if cfg.cal_engine_state_path:
+                all_paths.append(cfg.cal_engine_state_path)
+            for sub_path in cfg.cal_subtypes.values():
+                all_paths.append(sub_path)
+        assert len(all_paths) == len(set(all_paths)), (
+            f"Duplicate state paths: {[p for p in all_paths if all_paths.count(p) > 1]}")
+
+    def test_15m_is_cal_eligible(self):
+        from market_config import MARKET_CONFIGS
+        assert MARKET_CONFIGS["15m"].cal_eligible is True
+
+    def test_non_15m_not_cal_eligible(self):
+        from market_config import MARKET_CONFIGS
+        for pt in ("hourly", "spx_hourly", "weather", "sports"):
+            assert not MARKET_CONFIGS[pt].cal_eligible, f"{pt} should not be cal_eligible"
+
+
+class TestSTCRanges:
+    """STC (seconds-to-close) range validity."""
+
+    def test_stc_ranges_valid(self):
+        """min_seconds_before_close < max_seconds_before_close for types that use STC."""
+        from market_config import MARKET_CONFIGS
+        for pt, cfg in MARKET_CONFIGS.items():
+            if cfg.max_seconds_before_close > 0:
+                assert cfg.min_seconds_before_close < cfg.max_seconds_before_close, (
+                    f"{pt}: min_stc({cfg.min_seconds_before_close}) >= max_stc({cfg.max_seconds_before_close})")
+
+    def test_stc_shadow_within_15m_range(self):
+        """STC_SHADOW_THRESHOLD for 15M must fall within the STC range."""
+        import bot
+        import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
+        assert bot.constants.STC_SHADOW_THRESHOLD <= bot.constants.MAX_SECONDS_BEFORE_CLOSE, (
+            f"STC_SHADOW_THRESHOLD({bot.constants.STC_SHADOW_THRESHOLD}) > MAX_SECONDS_BEFORE_CLOSE({bot.constants.MAX_SECONDS_BEFORE_CLOSE})")
+        assert bot.constants.STC_SHADOW_THRESHOLD >= bot.constants.MIN_SECONDS_BEFORE_CLOSE, (
+            f"STC_SHADOW_THRESHOLD({bot.constants.STC_SHADOW_THRESHOLD}) < MIN_SECONDS_BEFORE_CLOSE({bot.constants.MIN_SECONDS_BEFORE_CLOSE})")

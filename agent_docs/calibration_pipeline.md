@@ -40,12 +40,12 @@ Per-asset M=5 ensemble residual calibrator + Mondrian conformal. v1 LIVE shadow-
 2. **Serve post-hoc** — `post_hoc_processor._process_row` (clips DB-loaded value before predict)
 3. **Serve sync gate** — `integration.should_block_tm96` (clips inline-computed value)
 
-Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regression tests in `tests/test_calmlp_sigma_winsorize.py` lock that all three serve paths see ≤25.
+Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regression tests in `tests/integration/test_calmlp_sigma_winsorize.py` lock that all three serve paths see ≤25.
 
 ### Train/serve consistency invariants
 
 The three pipelines use the SAME formulas. Any drift = silent training-distribution mismatch.
-- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; `bot/helpers/derived_features.py::compute_derived_features`). Locked by `tests/test_calmlp_tm96_gate.py`.
+- `prob_breakeven_gap = calibrated_prob - market_price/100` (post-CalEngine; `bot/helpers/derived_features.py::compute_derived_features`). Locked by `tests/integration/test_calmlp_tm96_gate.py`.
 - `hour_sin/cos` from INTEGER `dt.hour` (NOT minute-fractional). Locked.
 - `spot_distance_to_strike_sigma` clipped to ±25. Locked.
 

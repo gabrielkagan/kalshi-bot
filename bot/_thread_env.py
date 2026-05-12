@@ -27,7 +27,7 @@ launcher (systemd, manual, pytest). The VPS systemd EnvironmentFile
 visible to any subprocess the bot spawns and survives Python crashes.
 
 Verify the contract is intact:
-    python3 -m pytest tests/test_cal_mlp_invariants.py -k thread_env -x
+    python3 -m pytest tests/integration/test_cal_mlp_invariants.py -k thread_env -x
 """
 import os
 

@@ -56,7 +56,7 @@ STC_SIZING_SCALER_ENABLED = True
 # R-p7-deploy-r3: edge-schedule + discount + bleeder constants previously
 # lived in sim_pnl.py. Moved here to decouple integration.parity_assert from
 # the sim_pnl module (which imports torch + pandas — heavy chain that broke
-# tests/test_db_signatures.py on local-only-no-pandas environments).
+# tests/contracts/test_db_signatures.py on local-only-no-pandas environments).
 # sim_pnl.py re-exports for back-compat.
 
 # MIN_EDGE_BY_PRICE — 6-tier FRACTION schedule per bot.py:1180-1187.

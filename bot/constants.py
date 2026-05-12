@@ -14,7 +14,7 @@ ZERO-DEPS by contract: only `os` is imported (for `os.environ.get(...)`
 env-flag constants like HIGH_PRICE_STC_BLOCK_ENABLED). DO NOT add numpy /
 scipy / torch / sklearn / pandas — that defeats bot._thread_env's
 pre-numerical-import contract. Regression test:
-tests/test_constants_extraction.py::test_bot_constants_imports_only_os.
+tests/contracts/test_constants_extraction.py::test_bot_constants_imports_only_os.
 """
 import os
 
@@ -69,7 +69,7 @@ XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/
 # chains fall to scaffolded defaults → live orders without per-asset sizing.
 # Wired into the XRP_15M_SHADOW gate pattern in bot/scanner/__init__.py
 # (YES-side ~:5867 and NO-side ~:7610). Lock-step test:
-# tests/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
+# tests/integration/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
 HYPE_15M_SHADOW = True            # HYPE 15M shadow observation — T1 onboarding
 DOGE_15M_SHADOW = True            # DOGE 15M shadow observation — T1 onboarding
 

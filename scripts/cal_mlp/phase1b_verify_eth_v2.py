@@ -10,7 +10,7 @@ more checks failed (read stderr).
 Why a script vs only pytest: this verifier exercises real on-disk bundles
 (not synthetic fixtures), and we need to run it on a host without pytest
 configured (the VPS). The pytest counterparts in
-tests/test_phase1b_eth_v2_rollout.py pin train_ids and conventions.
+tests/integration/test_phase1b_eth_v2_rollout.py pin train_ids and conventions.
 
 The pinned v2 ETH train_id is INTENTIONALLY hardcoded — Phase 1b is a
 one-shot operator handoff, not a generalizable sweep. If a future v3

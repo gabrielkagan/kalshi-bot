@@ -47,7 +47,7 @@ Tests that consume a scenario:
    - CREATE TABLE statements for the tables you populate.
    - INSERT statements with representative values.
 3. Document in this README (add a row to "Existing scenarios").
-4. Pin in `tests/test_makefile.py` or similar AST guard so the scenario
+4. Pin in `tests/unit/test_makefile.py` or similar AST guard so the scenario
    file isn't silently deleted.
 
 ## Caveats

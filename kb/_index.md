@@ -15,7 +15,7 @@ infrastructure. New session notes (`kb/decisions/`, `kb/findings/`,
 intentionally not indexed; reach them via filesystem search or the
 `kb/decisions/session-resume-*.md` chain.
 
-A regression test (`tests/test_kb_index_links_resolve.py`) asserts every
+A regression test (`tests/integration/test_kb_index_links_resolve.py`) asserts every
 `[[…]]` reference here resolves to a file on disk. Adding a new entry
 requires the file to exist; the policy decision (commit-vs-local) is the
 maintainer's call.

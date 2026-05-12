@@ -44,7 +44,7 @@ once per scan tick. The static methods ``_parzen_kernel``,
 ``_estimate_noise_variance``, ``_realized_quarticity``,
 ``_optimal_rk_bandwidth``, ``_realized_kernel``, and
 ``_bipower_variation`` are exercised directly by
-``tests/test_vol_engine.py`` via ``from bot.engines.volatility import
+``tests/integration/test_vol_engine.py`` via ``from bot.engines.volatility import
 VolatilityEngine`` (post-Bit-9.3-iii.b, 2026-05-11; the ``_BotProxy`` chain
 that previously routed ``from bot import VolatilityEngine`` through
 ``bot._impl.VolatilityEngine → bot.engines.VolatilityEngine →

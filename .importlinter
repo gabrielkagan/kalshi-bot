@@ -11,7 +11,7 @@
 # tree from `root_package = bot` below.
 #
 # AC item "No module imports `from bot._impl import *`" is enforced
-# separately by tests/test_no_impl_star_import.py — import-linter sees
+# separately by tests/contracts/test_no_impl_star_import.py — import-linter sees
 # star imports as regular imports of the source module, indistinguishable
 # from `import bot._impl` for graph purposes, so the wildcard ban needs
 # AST-level detection.
@@ -46,7 +46,7 @@ include_external_packages = True
 # `engines-no-impl` contract is now vacuous (`forbidden_modules` would be
 # empty, which import-linter rejects as malformed). The contract is
 # RETIRED here. The anti-regression seal moves to
-# `tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent`
+# `tests/integration/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent`
 # + `test_bot_impl_module_import_fails` — if bot/_impl.py is ever
 # re-created, those AST/import pins fail loudly. The original
 # `bot.engines.* must not import bot._impl` claim is stronger now: NO
@@ -141,7 +141,7 @@ ignore_imports =
     # `state-no-impl-toplevel` precedent: import-linter's `forbidden` contract
     # doesn't distinguish module-level from method-body imports, so a carve-out
     # is required. The lazy import is the only edge — verified via AST walk in
-    # tests/test_sprint_10_5a_infra_move.py.
+    # tests/integration/test_sprint_10_5a_infra_move.py.
     bot.helpers.breakers -> bot.infra.circuit_breaker
     # Sprint 10.5b (2026-05-11): bot.helpers.tm_sweep reaches calculate_taker_fee
     # via a function-scoped lazy import in `_get_calculate_taker_fee()`
@@ -170,7 +170,7 @@ ignore_imports =
 # test_state_no_toplevel_bot_impl_import_at_contract_layer,
 # test_lint_imports_fails_when_state_carve_out_removed) were retired in the
 # same atomic commit. test_state_has_zero_bot_impl_edges in
-# tests/test_bit_9_3_iii_a_boot_relocation.py replaces them with the stronger
+# tests/integration/test_bit_9_3_iii_a_boot_relocation.py replaces them with the stronger
 # claim: bot.state has zero bot._impl references, not just no top-level import.
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ ignore_imports =
 # Postmortem: production incident 2026-04-29 (scan loop ballooned to
 # 7.75s, 0 candidates in 5min) → kb/failures/cal-mlp-torch-thread-
 # contention-apr29.md. AST regression in
-# tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_
+# tests/integration/test_cal_mlp_invariants.py::test_thread_env_imported_before_
 # numerical_libs_in_bot_impl guards bot/_impl.py specifically; this
 # contract generalizes to ALL bot.* modules. torch is reachable
 # transitively via scripts/cal_mlp/integration.py (NOT under bot/), so

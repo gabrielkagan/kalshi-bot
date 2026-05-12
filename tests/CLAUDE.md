@@ -1,9 +1,35 @@
 # Tests
 
-~4,972 tests collected (post-Bit-9.1 path-A++; varies ~5 with hypothesis parameterization). Pytest. `conftest.py` at repo root.
-Verify exact count with `python3 -m pytest tests/ --collect-only -q | tail -1`;
-this header drifts as bits ship and is only refreshed when an extraction touches
-`tests/CLAUDE.md` directly.
+~5,000 tests collected. Pytest. `conftest.py` at repo root.
+Verify exact count with `python3 -m pytest tests/ --collect-only -q | tail -1`.
+
+## Layout (post-Bit-12.2)
+
+Bit 12.2 (Sprint 12, 2026-05-11) reorganized `tests/` into tier-named
+subdirectories. The tier is now visible from the tree — `make test-<tier>`
+runs `pytest tests/<tier>/`. Pattern adapted from Hypothesis's
+`cover/`/`nocover/` split (the only OSS Python project with a comparable
+explicit-tier discipline; surveyed pytest, Django, Flask, FastAPI,
+scikit-learn, pandas, Sentry, requests, httpx, Pydantic, Aider before
+choosing this layout).
+
+```
+tests/
+  unit/          # Tier 1 — pure invariants, no DB/network (<10s, ~sub-second)
+  contracts/     # Tier 2 — Pillar 1 public_api + Pillar 2 import-linter + AST guards
+  equivalence/   # Tier 3 — Pillar 3 engine snapshots (volatility, probability)
+  integration/   # Tier 4 — everything else, real DB, broad behavioral suite
+  regression/    # Sprint-1 legacy bucket (8 files pinned by test_no_root_test_files.py)
+  hooks/         # Test infrastructure (pre-commit hook tests)
+  fixtures/      # Shared fixture data (non-test files)
+```
+
+**File-classification rule for new tests:**
+- Pure invariants on repo state / packaging / Makefile / docs → `tests/unit/`
+- AST guards, public_api snapshots, import-linter contracts → `tests/contracts/`
+- Engine equivalence snapshots → `tests/equivalence/` (Pillar 3 isolation; regen is human-only)
+- Bug-fix regression tests → mirror the feature being tested in `tests/integration/` and name `test_<bug_keyword>_regression`; reserve `tests/regression/` for the 8 Sprint-1 files
+- Everything else (behavioral, multi-module, real-DB) → `tests/integration/`
 
 ## Run
 
@@ -38,8 +64,8 @@ runs in its own tier.
 ### Individual files (debugging)
 
 - All: `python3 -m pytest tests/ -x`
-- One file: `python3 -m pytest tests/test_<name>.py -x`
-- One test: `python3 -m pytest tests/test_<name>.py::test_func -x`
+- One file: `python3 -m pytest tests/<tier>/test_<name>.py -x`
+- One test: `python3 -m pytest tests/<tier>/test_<name>.py::test_func -x`
 
 ### Mutation testing (Pillar 5 — one-time baseline)
 
@@ -94,14 +120,14 @@ Do NOT push directly to main with a `[skip ci]` flag to bypass the
 gate — that's how stale-deploy incidents start.
 
 ## Conventions
-- One test file per concern. Mirror the canonical bot submodule class/function being tested (e.g., `bot/scanner/__init__.py::OpportunityScanner` → `tests/test_scanner_extraction.py` + `tests/test_scan_*`; bot/_impl.py was DELETED in Bit 9.3-iii.c).
+- One test file per concern. Mirror the canonical bot submodule class/function being tested (e.g., `bot/scanner/__init__.py::OpportunityScanner` → `tests/integration/test_scanner_extraction.py` + `tests/integration/test_scan_*`; bot/_impl.py was DELETED in Bit 9.3-iii.c).
 - Real DB, not mocks — integration tests must hit a real sqlite3 file (use `tmp_path`).
 - For sizing/Kelly assertions, use the actual `OrderExecutor` paths, never reimplement Kelly inline.
 - Regression tests after bug fixes: name `test_<bug_keyword>_regression` and reference the commit/incident in a one-line docstring.
 
 ## When adding a test
 - Match existing file naming and fixture patterns — read 2-3 sibling tests first.
-- AST-style guards (`test_call_sites.py`, `test_db_signatures.py`, `test_config_consistency.py`) catch signature drift; extend these rather than writing parallel checks when the failure mode fits.
+- AST-style guards (`tests/contracts/test_call_sites.py`, `tests/contracts/test_db_signatures.py`, `tests/contracts/test_config_consistency.py`) catch signature drift; extend these rather than writing parallel checks when the failure mode fits.
 
 ## Equivalence harness (`tests/equivalence/`, Pillar 3)
 

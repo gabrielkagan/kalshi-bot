@@ -52,7 +52,7 @@ bot._impl namespace.
 
 - **No torch / sklearn / pandas / numpy / scipy direct imports.**
   Settlement is pure stdlib + sqlite3 + requests-via-KalshiClient. Locked
-  by `tests/test_settlement_extraction.py::test_settlement_no_forbidden_numerical_imports`.
+  by `tests/integration/test_settlement_extraction.py::test_settlement_no_forbidden_numerical_imports`.
 - **No `bot._impl` at module top.** SettlementTracker has zero references
   to names defined below the line-117 re-export point in bot/_impl.py;
   no late-binding helper needed and no `.importlinter` carve-out

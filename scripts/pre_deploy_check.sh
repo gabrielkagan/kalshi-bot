@@ -40,7 +40,7 @@ print('  OK: All configs in sync')
 
 # 3. Run regression tests
 echo "[3/4] Running regression tests..."
-python3 -m pytest tests/test_regression.py -x -q --tb=short 2>&1
+python3 -m pytest tests/integration/test_regression.py -x -q --tb=short 2>&1
 if [ $? -ne 0 ]; then
     echo "FAIL: Regression tests failed"
     exit 1

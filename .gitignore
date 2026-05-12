@@ -56,7 +56,7 @@ DOC_DRIFT_REPORT.txt
 /.ruff_cache/
 /*.egg-info/
 /build/
-# Defense in depth for tests/test_pyproject.py::test_extend_exclude_actually_excludes:
+# Defense in depth for tests/unit/test_pyproject.py::test_extend_exclude_actually_excludes:
 # the test drops `_ruff_exclude_probe_<pid>_<uuid>.py` into kb/, models/, etc.
 # (most NOT gitignored) and relies on a finally-block to clean up. If pytest
 # is killed mid-test, leak risk is real. This pattern guarantees stray probes

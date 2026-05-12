@@ -941,7 +941,7 @@ def backfill_path_metrics(
 # T1.5 (2026-05-10, ticket 86b9vre9p): DOGE + HYPE added. Both verified live
 # via /api/v5/public/funding-rate-history. Must stay lock-step with the live
 # poller's FUNDING_SYMBOLS (regression test: TestBackfillOkxFundingInstruments
-# in tests/test_doge_hype_onboarding_t1_5.py) — divergence biases T3 training.
+# in tests/integration/test_doge_hype_onboarding_t1_5.py) — divergence biases T3 training.
 OKX_FUNDING_INSTRUMENTS = {
     "BTC": "BTC-USDT-SWAP",
     "ETH": "ETH-USDT-SWAP",

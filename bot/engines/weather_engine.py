@@ -802,7 +802,7 @@ class WeatherEngine:
         # the existing 21KB warm cache and cold-starting weather data on first
         # deploy restart. Anchor explicitly to the repo root (2 levels up from
         # bot/engines/) so the cache file location is invariant under the move.
-        # Pinned by tests/test_sprint_10_1c_weather_engine_move.py::test_weather_ensemble_cache_path_is_repo_root.
+        # Pinned by tests/integration/test_sprint_10_1c_weather_engine_move.py::test_weather_ensemble_cache_path_is_repo_root.
         _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self._cache_path = os.path.join(_REPO_ROOT, WEATHER_ENSEMBLE_CACHE_FILE)
         # Warm-start from on-disk cache (weather changes slowly, stale OK)

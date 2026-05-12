@@ -20,7 +20,7 @@ A PreToolUse Claude Code hook (`Edit|Write|MultiEdit` matcher) that blocks edits
 | `.claude/hooks/tdd_guard.py` (~215 LOC) | Block bot/ Edit/Write/MultiEdit unless prior tests/*.py edit OR bypass | PreToolUse hook reading stdin JSON, scanning `transcript_path` JSONL line-by-line |
 | `.claude/settings.json` PreToolUse wiring | Cwd-relative path first, `$CLAUDE_PROJECT_DIR` fallback, exit 0 if neither | Bash command with explicit existence checks |
 | `.claude/skills/test-writer/SKILL.md` | Scaffold a RED test + run pytest to confirm + hand off | Markdown skill (instructions for the agent, no Python tooling) |
-| `tests/test_tdd_guard_hook.py` (75 tests) | Hook behavior end-to-end (subprocess-invoked) | Stdin JSON fixtures + tmp_path-isolated git repos for `[no-tdd]` cases |
+| `tests/unit/test_tdd_guard_hook.py` (75 tests) | Hook behavior end-to-end (subprocess-invoked) | Stdin JSON fixtures + tmp_path-isolated git repos for `[no-tdd]` cases |
 | `tests/CLAUDE.md` | Workflow expectation, bypass markers, failure-modes table, subagent isolation | Documentation |
 | `Makefile` test-fast recipe | Hook tests run in `make test-fast` (~3s) | Added to enumerated file list |
 | Root `CLAUDE.md` skill table | `/test-writer` discoverable via /-routing | New row |
@@ -110,14 +110,14 @@ Numbered continuing the modularization-track sequence (last was L53 in Pillar 3 
 NEW
   .claude/hooks/tdd_guard.py                                                 (~215 LOC)
   .claude/skills/test-writer/SKILL.md                                        (~140 LOC)
-  tests/test_tdd_guard_hook.py                                               (~1080 LOC, 75 tests)
+  tests/unit/test_tdd_guard_hook.py                                               (~1080 LOC, 75 tests)
   kb/decisions/testing-foundation-pillar-4-shipped-may09.md                  (this doc)
 
 MODIFIED
   .claude/settings.json                                                      (+15/-0; PreToolUse Edit|Write|MultiEdit hook with cwd-relative + $CLAUDE_PROJECT_DIR fallback)
   tests/CLAUDE.md                                                            (+62/-0; TDD-with-hook section, bypass markers, failure-modes table, subagent isolation)
   CLAUDE.md                                                                  (+1/-0; /test-writer in skill-routing table)
-  Makefile                                                                   (+1/-1; tests/test_tdd_guard_hook.py in test-fast)
+  Makefile                                                                   (+1/-1; tests/unit/test_tdd_guard_hook.py in test-fast)
 ```
 
 ## Followups (deferred)

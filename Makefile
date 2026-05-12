@@ -7,7 +7,7 @@
 #
 # Make's "missing separator" error on a tab/space mistake is opaque, so
 # all recipe lines below MUST be indented with a literal TAB.
-# tests/test_makefile.py pins this contract so an editor-on-save
+# tests/unit/test_makefile.py pins this contract so an editor-on-save
 # expand-tab can't silently break the file.
 #
 # Tested with GNU Make 3.81 (macOS default) and 4.x (Linux). No Make
@@ -36,7 +36,7 @@ PYTHON ?= python3
 # Resolve ruff at parse time (`:=` not `?=` so the `$(shell ...)` runs
 # exactly once, regardless of how many times the var is expanded).
 # Prefer PATH, fall back to venv/bin/ruff — mirrors
-# tests/test_pyproject.py::test_extend_exclude_actually_excludes. If
+# tests/unit/test_pyproject.py::test_extend_exclude_actually_excludes. If
 # neither exists, the lint recipe fails with a clear "ruff: command not
 # found"; remedy is `make install` (which is a SUPERSET of CI's
 # requirements.txt install — CI doesn't bring in ruff/tomli).
@@ -74,35 +74,16 @@ LINT_IMPORTS := $(shell command -v lint-imports 2>/dev/null || echo $(HOME)/Libr
 # ignore-list is the exact complement (single source of truth — adding
 # a file to a tier auto-removes it from integration). Update both lists
 # AND tests/CLAUDE.md when the classification grows.
-UNIT_FILES := \
-	tests/test_pyproject.py \
-	tests/test_repo_hygiene.py \
-	tests/test_makefile.py \
-	tests/test_agents_md_symlink.py \
-	tests/test_claude_md_size.py \
-	tests/test_no_root_test_files.py \
-	tests/test_ops_systemd_unit_matches_repo.py \
-	tests/test_post_deploy_scan_gate.py \
-	tests/test_tdd_guard_hook.py
+# Bit 12.2 (Sprint 12, 2026-05-11): UNIT_FILES + CONTRACT_FILES are now
+# directory globs. Pre-12.2 they were enumerated file lists at tests/
+# root — relocated into tests/unit/ and tests/contracts/ so the tier
+# is visible from the tree (Hypothesis cover/nocover pattern).
+UNIT_FILES := tests/unit
 
 # `tests/contracts` is a directory — passing a dir to pytest collects
 # the whole subtree (Pillar 1 + Pillar 2 + future contract tests) so
 # new entries land in the contract tier automatically.
-CONTRACT_FILES := \
-	tests/contracts \
-	tests/test_call_sites.py \
-	tests/test_config_consistency.py \
-	tests/test_constants_extraction.py \
-	tests/test_db_signatures.py \
-	tests/test_decided_contract.py \
-	tests/test_engines_extraction.py \
-	tests/test_feeds_extraction.py \
-	tests/test_fetchers_extraction.py \
-	tests/test_helpers_extraction.py \
-	tests/test_kalshi_client_extraction.py \
-	tests/test_logger_extraction.py \
-	tests/test_notifier_extraction.py \
-	tests/test_order_outcome_vocab.py
+CONTRACT_FILES := tests/contracts
 
 # Integration ignores = unit + contract + equivalence + the
 # Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
@@ -110,7 +91,7 @@ CONTRACT_FILES := \
 INTEGRATION_IGNORES := \
 	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
 	--ignore=tests/equivalence \
-	--ignore=tests/test_calmlp_sigma_winsorize.py
+	--ignore=tests/integration/test_calmlp_sigma_winsorize.py
 
 # Ticket 86b9vgh1a — cross-platform exclusive-lock guard.
 #
@@ -268,7 +249,7 @@ test-unit:
 # failure (more lines of output to read).
 #
 # `-m "not fragile"` matters in test-contract-pytest:
-# tests/test_decided_contract.py (in CONTRACT_FILES) ships 7
+# tests/contracts/test_decided_contract.py (in CONTRACT_FILES) ships 7
 # @pytest.mark.fragile tests. Without this filter, a fragile-test
 # flake would block deploys via deploy.yml's blocking contract step
 # (R1 C1 fix, preserved across the split).
@@ -316,7 +297,7 @@ test-integration:
 # in the equivalence dir changed). Equivalence stays in its own tier
 # and runs as a dedicated CI step.
 test-affected:
-	$(PYTHON) -m pytest --testmon -m "not fragile" --ignore=tests/equivalence --ignore=tests/test_calmlp_sigma_winsorize.py
+	$(PYTHON) -m pytest --testmon -m "not fragile" --ignore=tests/equivalence --ignore=tests/integration/test_calmlp_sigma_winsorize.py
 
 # Alias for the user's preferred name (per Pillar 5 remote-control
 # spec). Both names hit the same recipe so either docs / muscle memory
@@ -325,7 +306,7 @@ test-changed: test-affected
 
 # Legacy alias — Bit 1.2 shipped `test-fast` as the curated 8-file
 # dev-tooling invariant set (== UNIT_FILES); Pillar 4 added
-# tests/test_tdd_guard_hook.py to the unit tier (folded into
+# tests/unit/test_tdd_guard_hook.py to the unit tier (folded into
 # UNIT_FILES on rebase). Kept as `test-unit` alias so existing
 # scripts / docs / hooks that call `make test-fast` don't break.
 test-fast: test-unit
@@ -389,7 +370,7 @@ api-snapshot-regen:
 # (extractions, new modules, etc.) — not in CI, not in pre-commit
 # (output is local-only convention, agent_docs/ is kept tracked but
 # regen is human-driven per `Don't write tests unsolicited` discipline).
-# Contract pin: tests/test_makefile.py::test_bit_13_3_refresh_map_target.
+# Contract pin: tests/unit/test_makefile.py::test_bit_13_3_refresh_map_target.
 refresh-map:
 	$(PYTHON) scripts/refresh_repo_map.py
 
@@ -407,7 +388,7 @@ refresh-map:
 # `weather-audit`, `sports-audit`, `hourly-alpha`, `spx-alpha`,
 # `weather-alpha`, `sports-alpha`, `calibrator-health`,
 # `quiet-monitor`) deferred to follow-up Bit. Contract pin:
-# tests/test_makefile.py::test_bit_11_3_targets_point_to_real_scripts.
+# tests/unit/test_makefile.py::test_bit_11_3_targets_point_to_real_scripts.
 
 data-health:
 	$(PYTHON) scripts/data_health_monitor.py --db /tmp/state.db --verbose
@@ -437,7 +418,7 @@ no-side:
 #                        scripts/doc_drift_check.py — walks
 #                        SOURCE_FILES × DOC_FILES for config-constant
 #                        ↔ README/whitepaper/CLAUDE.md consistency)
-#   - iCloud-dup       → tests/test_repo_hygiene.py::test_no_icloud_*
+#   - iCloud-dup       → tests/unit/test_repo_hygiene.py::test_no_icloud_*
 #                        (collected by `make test-unit`)
 #   - import-linter    → make test-contract (lint-imports + AST guards)
 # This target chains the five cheap-tier checks (<30s wall-clock total)
@@ -452,7 +433,7 @@ no-side:
 # lint is next (~5s); doc-drift (~2s); test-unit is invariant tests
 # <10s; test-contract is AST + lint-imports <15s on Mac. Fail-fast on
 # the cheapest gate.
-# Contract pin: tests/test_makefile.py::test_bit_12_4_pre_commit_checks_*.
+# Contract pin: tests/unit/test_makefile.py::test_bit_12_4_pre_commit_checks_*.
 pre-commit-checks: ast-check lint doc-drift test-unit test-contract
 	@echo "✓ pre-commit-checks (ast-check + lint + doc-drift + test-unit + test-contract)"
 
@@ -476,7 +457,7 @@ pre-commit-checks: ast-check lint doc-drift test-unit test-contract
 # the non-data-health wrappers would exit 1 and be misclassified as
 # WARN-pass; the alternative (per-wrapper exit-code policy) is too brittle.
 # Findings + audit ship doc: kb/findings/skill-audit-may11-bit-11.1b.md.
-# Test pin: tests/test_makefile.py::test_bit_11_1b_skill_smoke_target_exit_code_policy.
+# Test pin: tests/unit/test_makefile.py::test_bit_11_1b_skill_smoke_target_exit_code_policy.
 skill-smoke:
 	@for t in data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side; do \
 		log=/tmp/skill_smoke_$$t.log; \

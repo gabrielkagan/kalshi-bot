@@ -139,7 +139,7 @@ jobs:
             # scan over both bot source files per Bit 3.1. Pinning the flag
             # to either single file would silently skip the 4 gating-flag
             # checks (WEATHER_NO_SIDE_LIVE etc. live in bot/constants.py
-            # post-extraction). Regression: tests/test_constants_extraction.py
+            # post-extraction). Regression: tests/contracts/test_constants_extraction.py
             # ::test_post_deploy_verify_yml_does_not_pin_bot_impl_only.
             venv/bin/python3 scripts/postdeploy_verify.py --db state.db --env .env
             echo "  OK: postdeploy_verify completed"

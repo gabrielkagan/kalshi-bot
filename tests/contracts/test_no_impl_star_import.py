@@ -12,7 +12,7 @@ site, defeating the whole point of the bot._impl/proxy split — but
 import-linter's graph-level "forbidden" type can't tell them apart.
 A targeted AST guard is the only reliable enforcement.
 
-Sister to ``tests/test_helpers_extraction.py::test_no_circular_bot_
+Sister to ``tests/contracts/test_helpers_extraction.py::test_no_circular_bot_
 impl_imports_in_helpers`` (which bans bot._impl imports of any kind in
 ``bot/helpers/``); this one is broader-scope (bans the wildcard form
 across the whole repo, including tests/scripts).

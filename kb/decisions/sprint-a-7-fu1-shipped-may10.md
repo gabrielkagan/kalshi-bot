@@ -41,7 +41,7 @@ For Phase 0a to legitimately import `_snap.take_snapshot()`, the helper would ne
 | `force=False` overwrite-guard | unconditional overwrite | new signature param; breaks A.7 (relies on `tempfile.TemporaryDirectory` for uniqueness) |
 | NO WAL→DELETE flip (snapshot is uploaded-then-discarded) | mandatory flip | optional flag; orthogonal — adds branch the helper doesn't need |
 | Return type `None` (Phase 0a discards) | returns `str` (SHA-256) | accept and ignore — minor |
-| `tests/test_state_db_s3_backup.py::test_backup_uses_yielding_pages_constants` pins `_BACKUP_PAGES_PER_STEP` | constants live on Phase 0a module | helper-side constants OR keep Phase 0a wrapper that adds them |
+| `tests/integration/test_state_db_s3_backup.py::test_backup_uses_yielding_pages_constants` pins `_BACKUP_PAGES_PER_STEP` | constants live on Phase 0a module | helper-side constants OR keep Phase 0a wrapper that adds them |
 
 The drop-in is NOT XS. It mutates the A.7 helper's signature for needs A.7 doesn't have, then adds a Phase 0a wrapper to translate back. Net LOC delta is POSITIVE, not negative — and it forces the helper to grow toward Phase 0a's VPS-safety constraints that A.7 (extract-time) does not share.
 
@@ -58,18 +58,18 @@ The ticket was filed during the A.7 ship pass (see MEMORY.md "NEW shared helper 
 | AC | Status | Note |
 |---|---|---|
 | Inline `take_snapshot/compress/compute_sha256/integrity_check` removed from `scripts/state_db_s3_backup.py` | N/A — none are inlined there. Phase 0a has `snapshot_sqlite/compress/decompress` (different signatures, different runtime constraints). | See RCA above. |
-| All 73 Phase 0a tests + 21 A.7 tests pass post-refactor | GREEN baseline confirmed: 61 passed + 2 skipped on `tests/test_state_db_s3_backup.py` + `tests/test_state_db_snapshot.py` (41 + 22 collected; counts diverge from ticket's 73+21 due to consolidation since ship). No refactor → no regression. | Pre-ship pytest run logged below. |
+| All 73 Phase 0a tests + 21 A.7 tests pass post-refactor | GREEN baseline confirmed: 61 passed + 2 skipped on `tests/integration/test_state_db_s3_backup.py` + `tests/integration/test_state_db_snapshot.py` (41 + 22 collected; counts diverge from ticket's 73+21 due to consolidation since ship). No refactor → no regression. | Pre-ship pytest run logged below. |
 | KB closeout same commit | This file. | — |
 | Effort XS | XS (KB only). | — |
 
 ## Pre-ship pytest baseline (GREEN, both consumers)
 
 ```
-$ python3 -m pytest tests/test_state_db_s3_backup.py tests/test_state_db_snapshot.py -x -q
+$ python3 -m pytest tests/integration/test_state_db_s3_backup.py tests/integration/test_state_db_snapshot.py -x -q
 collected 63 items
-tests/test_state_db_s3_backup.py ....................................... [ 61%]
+tests/integration/test_state_db_s3_backup.py ....................................... [ 61%]
 .s                                                                       [ 65%]
-tests/test_state_db_snapshot.py ....s.................                   [100%]
+tests/integration/test_state_db_snapshot.py ....s.................                   [100%]
 ======================== 61 passed, 2 skipped in 0.71s =========================
 ```
 
@@ -142,7 +142,7 @@ Zero LOC delta in `scripts/`. Zero LOC delta in `tests/`.
 ## Verification chain
 
 - `git status` clean on branch entry → baseline pinned at 2d10053
-- `python3 -m pytest tests/test_state_db_s3_backup.py tests/test_state_db_snapshot.py -x -q` → 61 passed + 2 skipped (zstd-conditional) BEFORE ANY EDIT
+- `python3 -m pytest tests/integration/test_state_db_s3_backup.py tests/integration/test_state_db_snapshot.py -x -q` → 61 passed + 2 skipped (zstd-conditional) BEFORE ANY EDIT
 - This KB doc is the only file added/changed
 - Atomic commit message ends with `[86b9vgga7]` per ticket convention
 - DO NOT push (reviewer agent runs next)

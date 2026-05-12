@@ -58,7 +58,7 @@ CalibrationEngine has no feature-derivation code (no
 ``SIGMA_WINSOR_ABS_CAP``, no ``hour_sin``/``hour_cos``, no
 ``prob_breakeven_gap``, no sigma derivation). Features go INTO this
 class via ``add_observation()``/``load_training_data_from_db()`` from
-upstream consumers. Regression seal: ``tests/test_calmlp_*`` (12 files)
+upstream consumers. Regression seal: ``tests/integration/test_calmlp_*`` (12 files)
 pass post-extraction without retargets.
 
 Imports are deliberate: stdlib (``math``, ``json``, ``os``, ``time``,
@@ -73,7 +73,7 @@ the L39 partition was the Plan-agent CRITICAL catch in pre-flight) +
 ``market_config`` (``get_cal_excluded_types``) + ``models``
 (``calculate_taker_fee``). Strict ban: numpy / scipy / torch / sklearn
 / pandas (none used). The forbidden-imports gate in
-``tests/test_engines_extraction.py`` enforces this.
+``tests/contracts/test_engines_extraction.py`` enforces this.
 
 The ``state: "StateManager"`` annotation on
 ``load_training_data_from_db`` is a **string-quoted forward ref**;

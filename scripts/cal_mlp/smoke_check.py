@@ -5,7 +5,7 @@ Runs the full pipeline end-to-end against a tiny synthetic dataset and
 verifies the artifacts round-trip cleanly. Exit 0 = ready for real deploy;
 exit non-zero = something is wrong with the rebuild on this environment.
 
-This is the SECOND line of defense after `tests/test_cal_mlp_invariants.py`
+This is the SECOND line of defense after `tests/integration/test_cal_mlp_invariants.py`
 (which uses stdlib only). The smoke check requires torch + pandas + pyarrow
 + psutil, so it runs on the VPS but not on a torch-less local env.
 

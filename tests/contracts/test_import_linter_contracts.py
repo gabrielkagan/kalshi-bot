@@ -73,7 +73,7 @@ EXPECTED_CONTRACTS = (
     # was DELETED — the contract's forbidden_modules list (only bot._impl)
     # became empty, which import-linter rejects as malformed. The
     # anti-regression seal moves to
-    # tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
+    # tests/integration/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
     # and test_bot_impl_module_import_fails — if bot/_impl.py is ever
     # re-created, those pins fail loudly with a more direct message.
     "fetchers-no-engines",
@@ -84,7 +84,7 @@ EXPECTED_CONTRACTS = (
     # to clean-leaf bot/boot.py, and bot/state.py top-imports it directly.
     # The carve-out is no longer needed and is REMOVED from .importlinter.
     # The 3 anti-regression tests in this file (sections 2.5 and 4) were
-    # retired in the same atomic commit; see tests/test_bit_9_3_iii_a_boot_relocation.py
+    # retired in the same atomic commit; see tests/integration/test_bit_9_3_iii_a_boot_relocation.py
     # for the replacement claim (stronger: zero bot._impl edges, not just no top-level).
     # Bit 12.3 (Sprint 12, 2026-05-11) — heavyweight numerical libs.
     # CLAUDE.md sacred rule: cal_mlp/integration.py is the SINGLE
@@ -93,7 +93,7 @@ EXPECTED_CONTRACTS = (
     # pandas directly routes around the bot._thread_env-pinned chain
     # and reproduces the 2026-04-29 cal_mlp_torch_thread_contention
     # incident class. The existing AST regression in
-    # tests/test_cal_mlp_invariants.py guards bot/_impl.py
+    # tests/integration/test_cal_mlp_invariants.py guards bot/_impl.py
     # specifically; these contracts generalize to ALL bot.* modules.
     "bot-no-torch",
     "bot-no-pandas",
@@ -282,7 +282,7 @@ def test_importlinter_engines_no_impl_has_no_carve_out_post_bit_6_3():
         f"9.3-iii.c retired it because bot/_impl.py was deleted. If "
         f"someone re-created bot/_impl.py and reintroduced this "
         f"contract, the deletion regression is a bigger concern; see "
-        f"tests/test_bit_9_3_iii_c_impl_deletion.py for the primary seal."
+        f"tests/integration/test_bit_9_3_iii_c_impl_deletion.py for the primary seal."
     )
 
 
@@ -339,7 +339,7 @@ def test_helpers_leaf_forbidden_modules_covers_all_bot_top_level():
 # and bot/state.py now top-imports it — zero bot._impl edges. The original pin
 # (helper exists + helper contains bot._impl late-binding import) is INVERTED:
 # the helper must NOT exist, and bot/state.py must have zero bot._impl
-# references at any scope. See tests/test_bit_9_3_iii_a_boot_relocation.py for
+# references at any scope. See tests/integration/test_bit_9_3_iii_a_boot_relocation.py for
 # the primary contract; the assertion below is the peer-pin at the contract layer.
 
 
@@ -671,7 +671,7 @@ def test_lint_imports_fails_when_engines_to_impl_edge_re_introduced(
     retired in the same Bit because bot/_impl.py was DELETED — the contract
     became empty (forbidden_modules listed only bot._impl) and import-linter
     rejects empty contracts. The anti-regression seal moves to
-    tests/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
+    tests/integration/test_bit_9_3_iii_c_impl_deletion.py::test_bot_impl_py_file_absent
     (if someone re-creates bot/_impl.py, that pin fails).
 
     This regression-injection test is preserved as a stub for the discipline

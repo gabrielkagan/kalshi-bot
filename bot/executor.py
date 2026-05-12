@@ -3588,7 +3588,7 @@ class OrderExecutor:
         # ladder — no_bid stays unchanged on fail) from HYP B (Kalshi
         # matches both, no_bid sniped before our IOC arrives — no_bid
         # qty drops between pre and post). R-review [A1] fix.
-        # See tests/test_ioc_submit_ladder_diag.py.
+        # See tests/integration/test_ioc_submit_ladder_diag.py.
         _diag_pre = None
         try:
             _diag_pre = OrderExecutor._compute_ladder_diag(_live_ob)

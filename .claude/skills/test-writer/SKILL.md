@@ -31,10 +31,16 @@ Scaffolds a failing test file for a new bot extraction or new behavior, then run
 
 | Form | Example | Mirror destination |
 |---|---|---|
-| Module | `bot/engines/calibration.py` | `tests/test_calibration_engine.py` (or extend `tests/test_engines_extraction.py`) |
+| Module | `bot/engines/calibration.py` | `tests/integration/test_calibration_engine.py` (or extend `tests/contracts/test_engines_extraction.py`) |
 | Class | `bot/engines/calibration.py::CalibrationEngine` | same as module |
 | Method | `bot/engines/calibration.py::CalibrationEngine.compute` | same as module — adds a new `test_compute_*` test there |
-| Behavior | `"low-band passthrough must round-trip 0.5"` | author picks the right file based on intent |
+| Behavior | `"low-band passthrough must round-trip 0.5"` | author picks the right tier dir based on intent |
+
+**Tier-aware destinations (post-Bit-12.2, 2026-05-11):**
+- AST guards / negative-pin extraction tests / public_api / import-linter → `tests/contracts/`
+- Pure repo/Makefile/pyproject invariants → `tests/unit/`
+- Behavioral / multi-module / real-DB → `tests/integration/`
+- Engine equivalence snapshots → `tests/equivalence/` (Pillar 3; regen is human-only)
 
 ## Steps
 
@@ -43,21 +49,21 @@ Scaffolds a failing test file for a new bot extraction or new behavior, then run
 Read 2-3 sibling tests of the target's neighborhood to discover the existing convention:
 
 ```bash
-ls tests/ | grep -i <target-keyword>
+ls tests/integration tests/contracts | grep -i <target-keyword>
 ```
 
-If a matching `tests/test_<X>.py` already exists, **prefer extending it** over creating a new one. The Pillar 4 hook's "any test edit in this session" semantics means an Edit to an existing test file is enough — no need to scaffold from scratch.
+If a matching test already exists, **prefer extending it** over creating a new one. The Pillar 4 hook's "any test edit in this session" semantics means an Edit to an existing test file is enough — no need to scaffold from scratch.
 
-If no obvious mirror exists, follow the project convention: `bot/<subpkg>/<module>.py → tests/test_<module>_<subpkg>.py` (e.g., `bot/engines/calibration.py → tests/test_calibration_engine.py`).
+If no obvious mirror exists, follow the project convention: `bot/<subpkg>/<module>.py → tests/integration/test_<module>_<subpkg>.py` (behavioral) or `tests/contracts/test_<module>_extraction.py` (AST/import contract).
 
 ### 2. Choose the right base patterns
 
 Read these reference tests to copy fixture + heavy-mod patterns:
 
-- `tests/test_engines_extraction.py` — AST/import-contract patterns for new `bot/engines/` extractions
-- `tests/test_calibration_engine.py` — heavy-dep mocking pattern (`websockets`, `cryptography`, etc.) for tests that import `bot/_impl.py`
+- `tests/contracts/test_engines_extraction.py` — AST/import-contract patterns for new `bot/engines/` extractions
+- `tests/integration/test_calibration_engine.py` — heavy-dep mocking pattern (`websockets`, `cryptography`, etc.)
 - `tests/equivalence/conftest.py` — calibration-singleton isolation pattern (autouse fixture nullifying `_CALIBRATION_ENGINE`)
-- `tests/test_volatility_engine.py` (if present) or `tests/test_engines_extraction.py` — pure-math static-method test patterns
+- `tests/integration/test_volatility_engine.py` or `tests/contracts/test_engines_extraction.py` — pure-math static-method test patterns
 
 ### 3. Draft the test file
 
@@ -96,7 +102,7 @@ for _m in _HEAVY:
     sys.modules.setdefault(_m, MagicMock())
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]  # tests/<tier>/X.py → repo root
 TARGET_PY = REPO_ROOT / "bot" / "<path>.py"
 
 
@@ -114,7 +120,7 @@ def test_<target_class>_will_extract_to_<path>():
 ### 4. Run the test to confirm RED
 
 ```bash
-python3 -m pytest tests/test_<X>.py -x 2>&1 | tail -20
+python3 -m pytest tests/<tier>/test_<X>.py -x 2>&1 | tail -20
 ```
 
 Expected: 1 failed, 0 passed. If it passes accidentally (e.g., the behavior already exists), the assertion is wrong — rewrite it.
@@ -123,7 +129,7 @@ Expected: 1 failed, 0 passed. If it passes accidentally (e.g., the behavior alre
 
 State to the user:
 
-> Test scaffolded at `tests/test_<X>.py`, RED on `<assertion>`. Ready for the implementation pass — the `tdd_guard` hook will allow edits to `bot/<path>.py` for the rest of this session.
+> Test scaffolded at `tests/<tier>/test_<X>.py`, RED on `<assertion>`. Ready for the implementation pass — the `tdd_guard` hook will allow edits to `bot/<path>.py` for the rest of this session.
 
 The session-transcript scan in `tdd_guard.py` recognizes the test edit, so subsequent `bot/` edits go through.
 

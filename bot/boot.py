@@ -89,7 +89,7 @@ import sys
 # a depth issue; bumping sys.setrecursionlimit doesn't help). The runtime
 # `__import__()` form bypasses griffe's static walk while preserving the
 # identical side-effect (OMP_NUM_THREADS=1 set before numpy loads). AST regression:
-# tests/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_boot.
+# tests/integration/test_cal_mlp_invariants.py::test_thread_env_imported_before_numerical_libs_in_bot_boot.
 __import__("bot._thread_env")  # noqa: E402
 
 import logging  # noqa: E402

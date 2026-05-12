@@ -54,7 +54,7 @@ Imports (5/3/1/1/5/2 partition):
     migrate_schema, parity_assert (path-A++), sizing_parity_assert (path-A++)
   - models: calculate_fee, strategy_to_group
 
-Forbidden-imports (per tests/test_state_extraction.py::STATE_FORBIDDEN_IMPORTS):
+Forbidden-imports (per tests/integration/test_state_extraction.py::STATE_FORBIDDEN_IMPORTS):
   numpy, scipy, torch, sklearn, pandas — strict ban. StateManager is pure
   stdlib + sqlite3.
 
@@ -106,7 +106,7 @@ from bot.engines import calibration as _cal_state  # Bit 6.3 path-B alias
 # at extraction time. Pre-flight free-variable scan missed these because
 # the scan only checked module-level *definitions* in bot/_impl.py, not
 # *imported* names. Found via post-extraction NameError fallout in
-# tests/test_tm_sweep_shadow.py + tests/test_orderbook_logging_schema.py.
+# tests/integration/test_tm_sweep_shadow.py + tests/integration/test_orderbook_logging_schema.py.
 from bot.helpers import (
     compute_derived_features,
     compute_time_regime_features,
@@ -2246,7 +2246,7 @@ class StateManager:
             except Exception:
                 pass
             # RCA instrumentation (2026-05-09): structured failure context.
-            # See `_be_err_repr` capture above + tests/test_db_locked_instrumentation.py.
+            # See `_be_err_repr` capture above + tests/integration/test_db_locked_instrumentation.py.
             # 2026-05-08 follow-up: includes active_writers=... snapshot from
             # bot.db_writer_registry so the operator can see which OTHER
             # connection was holding the writer lock when this insert failed.

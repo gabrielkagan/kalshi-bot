@@ -51,7 +51,7 @@ DOC_FILES = [
     # is what catches divergence between the portable and Claude-specific
     # surfaces. Plan reference: line 897 ("doc_drift_check.py extended to
     # detect symlink target drift"). Pinned by
-    # tests/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
+    # tests/unit/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
     "AGENTS.md",
     # R-p7-deploy-r11 R6: agent_docs/config_reference.md mirrors many
     # of the same constants; without it in DOC_FILES the drift-check
@@ -644,7 +644,7 @@ def main():
         # to two-file mode (plan line 891), AGENTS.md becomes a regular
         # file and this skip falls through naturally, activating the
         # DOC_FILES entry's divergence-detection purpose. Pinned by
-        # tests/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
+        # tests/unit/test_agents_md_symlink.py::test_doc_drift_check_includes_agents_md.
         if doc_path.is_symlink():
             continue
         claims = scan_doc_for_claims(doc_path, patterns)

@@ -14,7 +14,7 @@ description = "Cryptocurrency prediction market trading bot for Kalshi (15-minut
 readme = "README.md"
 requires-python = ">=3.9,<4"
 # Runtime deps. Mirror requirements.txt EXACTLY (bidirectional) —
-# tests/test_pyproject.py asserts the symmetric difference is empty so the
+# tests/unit/test_pyproject.py asserts the symmetric difference is empty so the
 # two cannot drift. requirements.txt remains the CI / VPS install path
 # (see .github/workflows/test.yml + start.sh); pyproject deps are the
 # packaging-tool view of the same set.
@@ -140,7 +140,7 @@ ml = [
 # `namespaces = false`: defense-in-depth — gates discovery on __init__.py
 # existence so a future include-pattern broadening can't silently sweep in
 # a PEP 420 namespace dir.
-# Pinned by tests/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot.
+# Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot.
 [tool.setuptools.packages.find]
 include = ["bot", "bot.*"]
 namespaces = false
@@ -199,7 +199,7 @@ addopts = ["-v", "--tb=short", "--ignore=venv"]
 # `Path(p).exists()` and does NOT strip whitespace, so a cosmetic edit
 # to the string form (e.g., "a.py, b.py" with one space) silently drops
 # the second entry. The list form sidesteps the whitespace fragility
-# entirely. Pinned by `tests/test_pyproject.py::test_pyproject_mutmut_targets_engines`.
+# entirely. Pinned by `tests/unit/test_pyproject.py::test_pyproject_mutmut_targets_engines`.
 [tool.mutmut]
 paths_to_mutate = ["bot/engines/volatility.py", "bot/engines/probability.py"]
 runner = "python3 -m pytest -x tests/equivalence/test_volatility_engine.py tests/equivalence/test_probability_engine.py"
@@ -216,7 +216,7 @@ line-length = 120
 # `research/` deliberately NOT excluded — autoresearch (per
 # kb/decisions/autoresearch-design-may05.md) ships Python under research/
 # and we want it linted when it lands.
-# Regression: tests/test_pyproject.py::test_extend_exclude_actually_excludes
+# Regression: tests/unit/test_pyproject.py::test_extend_exclude_actually_excludes
 # verifies these patterns are functional, not just declarative.
 extend-exclude = [
     ".smart-env",
@@ -246,7 +246,7 @@ fixable = []
 # Bit 1.5 consolidated root test_*.py files into tests/regression/, so
 # the legacy `test_*.py` pattern (originally a second entry alongside
 # `tests/**`) was dropped. The repo-root invariant is enforced by
-# tests/test_no_root_test_files.py.
+# tests/unit/test_no_root_test_files.py.
 "tests/**" = ["E501", "F401", "F811"]
 "conftest.py" = ["E501", "F401", "F811"]
 # research/scratch/ is reference-only space (Bit 1.5 landed dead-code

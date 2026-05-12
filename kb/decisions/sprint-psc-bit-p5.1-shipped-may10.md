@@ -5,7 +5,7 @@
 **Branch:** `86b9vgx5d-psc-lock-infra` (NOT pushed; reviewer agent gate next)
 **Files (post-R4 HEAD):**
 - `scripts/_session_lock.py` (new, 729 LOC, stdlib-only)
-- `tests/test_session_lock.py` (new, 1136 LOC, 47 tests)
+- `tests/integration/test_session_lock.py` (new, 1136 LOC, 47 tests)
 - `tests/contracts/test_session_lock_gitignore.py` (new, 123 LOC, 8 tests)
 - `.gitignore` (4 patterns added under Sprint PSC Bit P5.1 block)
 - `kb/decisions/sprint-psc-bit-p5.1-shipped-may10.md` (this file)
@@ -36,7 +36,7 @@ P5.4 (SessionStart heartbeat probe) and P5.5 (`/pickup` CAS + worktree-default) 
 
 ## TDD discipline
 
-1. **R0 RED:** wrote `tests/test_session_lock.py` first; `pytest tests/test_session_lock.py` failed at import (`scripts._session_lock` did not exist). 1 collection error, 0 passes.
+1. **R0 RED:** wrote `tests/integration/test_session_lock.py` first; `pytest tests/integration/test_session_lock.py` failed at import (`scripts._session_lock` did not exist). 1 collection error, 0 passes.
 2. Implemented `scripts/_session_lock.py` (~250 LOC pre-fix).
 3. **First green:** 27/28 PASS, 1 FAIL (`test_lockfile_persists_after_kill_then_reclaim_recovers`).
 4. **Root cause:** the heartbeat thread fired immediately on start, racing the test's backdate write. The `_heartbeat_loop` had `try-tick → wait` ordering. Inverted to `wait → try-tick`: lockfile is fresh from `acquire_raw` so an immediate first tick is wasted I/O AND introduces a race window.
@@ -89,7 +89,7 @@ Test `TestICloudSuffix::test_icloud_collision_sibling_is_ignored` pins this cont
 - [x] Concurrent acquire from 2nd PID raises `LockHeldError` with held-by metadata (subprocess test)
 - [x] Stale lock (`last_heartbeat > 180 s`) reclaimable with audit log entry (`RECLAIM_STALE` event in `.claude/locks/reclaim.log`)
 - [x] All call sites grep-checked: `git ls-files | grep -i lock` → zero collisions with existing infra (only test files reference `lock` semantically)
-- [x] Tests pass: `pytest tests/test_session_lock.py` → 28 passed in ~2.7 s
+- [x] Tests pass: `pytest tests/integration/test_session_lock.py` → 28 passed in ~2.7 s
 - [x] R0 self-review complete; 4 issues caught (3 fixed, 1 documented)
 - [x] No `bot/` or `bot.constants` import — pure stdlib helper
 - [x] KB closeout commit (this file)
@@ -136,7 +136,7 @@ R2 (fresh-eyes reviewer agent) verified ALL R1 fixes (C1, C2, M1-M5) as REAL_FIX
 | File | Tests | Purpose |
 |---|---|---|
 | `tests/contracts/test_session_lock_gitignore.py` (new) | 8 | M6 contract: 5 lockfile-artifact patterns ignored, `.gitkeep` NOT ignored + still tracked, `_check_ignore` polarity smoke |
-| `tests/test_session_lock.py::TestWorktreeRepoRoot::test_relative_gitdir_*` (2 new) | 2 | M7 regression: relative gitdir resolves correctly + collides with main checkout |
+| `tests/integration/test_session_lock.py::TestWorktreeRepoRoot::test_relative_gitdir_*` (2 new) | 2 | M7 regression: relative gitdir resolves correctly + collides with main checkout |
 
 Total post-R2: 47 tests (37 session_lock + 8 gitignore contract + 2 new worktree). Triple-rerun stability on the concurrency-heavy suite (TestConcurrentAcquire + TestTOCTOU + TestStress + TestProcessDeathCleanup): 3-of-3 PASS at 7 tests each. Contract tier: 32 pass (up from 24, +8 from new contract file). Unit tier: 654 pass.
 
@@ -195,9 +195,9 @@ direct collision but leaves boundary-straddling collision open.
 
 | File | Tests | Purpose |
 |---|---|---|
-| `tests/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_components_rejected` | 8 (parametrized) | R4 M1 — reject the 8 canonical boundary-straddle inputs: the original collision-pair witness (`a__SLASH/b` + `a/SLASH__b`), plus 6 mirror variants covering both `endswith("__SLASH")` and `startswith("SLASH__")` at different positions. |
-| `tests/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_demonstrated_collision_is_blocked` | 1 | R4 M1 — pin the explicit collision pair from the reviewer's demo + assert benign mid-component `SLASH__` / `__SLASH` substrings still flatten. |
-| `tests/test_session_lock.py::TestPathFlatten::test_flatten_unflatten_property_random` | 1 | R4 defense-in-depth — random property test over 20 multi-component paths drawn from a probe space with mixed benign + adversarial components, asserting every `flatten` output either raises `ValueError` or `unflatten` is identity. Vacuity guards: at least one of each outcome must occur. Also exhaustively covers 9 adversarial pairs from the 3×3 cartesian product of `{benign, ends-with-__SLASH, starts-with-SLASH__}`. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_components_rejected` | 8 (parametrized) | R4 M1 — reject the 8 canonical boundary-straddle inputs: the original collision-pair witness (`a__SLASH/b` + `a/SLASH__b`), plus 6 mirror variants covering both `endswith("__SLASH")` and `startswith("SLASH__")` at different positions. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_partial_slash_marker_demonstrated_collision_is_blocked` | 1 | R4 M1 — pin the explicit collision pair from the reviewer's demo + assert benign mid-component `SLASH__` / `__SLASH` substrings still flatten. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_flatten_unflatten_property_random` | 1 | R4 defense-in-depth — random property test over 20 multi-component paths drawn from a probe space with mixed benign + adversarial components, asserting every `flatten` output either raises `ValueError` or `unflatten` is identity. Vacuity guards: at least one of each outcome must occur. Also exhaustively covers 9 adversarial pairs from the 3×3 cartesian product of `{benign, ends-with-__SLASH, starts-with-SLASH__}`. |
 
 Total post-R4: 55 tests (47 session_lock + 8 gitignore contract). Triple-rerun
 stability on the concurrency-heavy suite (TestConcurrentAcquire +
@@ -333,11 +333,11 @@ p2 = 'X/_SLASH___Y'  parts=['X', '_SLASH___Y']  → 'X__SLASH___SLASH___Y'  (rig
 
 | File | Tests | Purpose |
 |---|---|---|
-| `tests/test_session_lock.py::TestPathFlatten::test_left_straddle_class_k_rejected` | 8 (parametrized k=1..8) | C5-1 left-straddle enumeration — for each k, `A{M[:k]}/{M[k:]}B` must raise. |
-| `tests/test_session_lock.py::TestPathFlatten::test_right_straddle_class_k_rejected` | 2 (parametrized k=7,8) | C5-1 right-straddle enumeration — for each self-overlap k, `safe/{M[len-k:]}rest` must raise. |
-| `tests/test_session_lock.py::TestPathFlatten::test_r5_witness_pair_both_rejected` | 2 (parametrized pairs) | C5-1 explicit witness — both halves of the R5 reviewer's pair AND the R4 originals must raise. Pre-R5: one half of each was accepted. |
-| `tests/test_session_lock.py::TestPathFlatten::test_self_overlap_constant_is_correct_for_current_marker` | 1 | Constant sanity-pin — `_SLASH_MARKER_SELF_OVERLAP_KS` matches a fresh recomputation. Forces regen + manual review if the marker ever changes. |
-| `tests/test_session_lock.py::TestPathFlatten::test_str_replace_overlap_semantics_for_marker` | 1 | m5-1 — pin `str.replace` left-to-right non-overlapping scan + 6 round-trip cases. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_left_straddle_class_k_rejected` | 8 (parametrized k=1..8) | C5-1 left-straddle enumeration — for each k, `A{M[:k]}/{M[k:]}B` must raise. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_right_straddle_class_k_rejected` | 2 (parametrized k=7,8) | C5-1 right-straddle enumeration — for each self-overlap k, `safe/{M[len-k:]}rest` must raise. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_r5_witness_pair_both_rejected` | 2 (parametrized pairs) | C5-1 explicit witness — both halves of the R5 reviewer's pair AND the R4 originals must raise. Pre-R5: one half of each was accepted. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_self_overlap_constant_is_correct_for_current_marker` | 1 | Constant sanity-pin — `_SLASH_MARKER_SELF_OVERLAP_KS` matches a fresh recomputation. Forces regen + manual review if the marker ever changes. |
+| `tests/integration/test_session_lock.py::TestPathFlatten::test_str_replace_overlap_semantics_for_marker` | 1 | m5-1 — pin `str.replace` left-to-right non-overlapping scan + 6 round-trip cases. |
 
 Total post-R5: **69 tests** (61 session_lock + 8 gitignore contract). Triple-rerun
 stability on the concurrency-heavy suite (TestConcurrentAcquire +
@@ -365,7 +365,7 @@ TestTOCTOU + TestStress + TestProcessDeathCleanup + TestStaleReclaim):
     invariant is per-component-positional (non-last → left-check;
     non-first → right-check) over the full overlap set.
 
-- `tests/test_session_lock.py`: pool rewrite + 14 new parametrized
+- `tests/integration/test_session_lock.py`: pool rewrite + 14 new parametrized
   tests (8 + 2 + 2 + 1 + 1). R4-era message-regex `"straddles
   slash-marker"` updated to `"marker (prefix|suffix)"` to match the
   more-specific R5 error messages while still passing for both flavors.

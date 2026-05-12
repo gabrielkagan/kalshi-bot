@@ -10,7 +10,7 @@ ingest boundary when Kalshi silently renames wire fields. Precedents:
 
 Consumed exclusively by the ``KalshiFeed`` class (sibling module
 ``bot/feeds/kalshi.py``, Bit 4.5b 2026-05-09). Contract tests in
-``tests/test_kalshi_ws_contracts.py`` pin the expected schema.
+``tests/integration/test_kalshi_ws_contracts.py`` pin the expected schema.
 """
 
 from __future__ import annotations
@@ -23,6 +23,6 @@ class OrderbookSchemaError(Exception):
     fields (precedent: Mar 2026 REST orderbook_fp migration — 37-day sports
     outage; Apr 2026 WS orderbook_snapshot/delta migration — 5+ weeks of silent
     95%-NULL bid-side feature data). Contract tests in
-    tests/test_kalshi_ws_contracts.py pin the expected schema.
+    tests/integration/test_kalshi_ws_contracts.py pin the expected schema.
     """
     pass
