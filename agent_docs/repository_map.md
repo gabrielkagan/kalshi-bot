@@ -2,7 +2,7 @@
 
 **DO NOT EDIT MANUALLY.** Regenerate with `make refresh-map` (invokes `scripts/ops/refresh_repo_map.py`).
 
-Generated: 2026-05-12T13:20:23Z (HEAD: `bb52aab`).
+Generated: 2026-05-12T14:12:24Z (HEAD: `f3918e1`).
 
 ## Summary
 - Modules: 60 .py files under `bot/`

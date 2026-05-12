@@ -1,5 +1,5 @@
 {
-  "bootstrap_method": "server-side stratified SQL via kalshi-vps MCP. Per-stratum LCG hash on (id*1103515245+12345+42)%2^31, ROW_NUMBER over (asset,product_type,vol_regime), rn<=40 LIMIT 1000 ORDER BY rn. Future regens use scripts/sample_engine_inputs.py against state.db (different sampler \u2014 first regen will produce a non-zero diff; review distributions, not byte-equality).",
+  "bootstrap_method": "server-side stratified SQL via kalshi-vps MCP. Per-stratum LCG hash on (id*1103515245+12345+42)%2^31, ROW_NUMBER over (asset,product_type,vol_regime), rn<=40 LIMIT 1000 ORDER BY rn. Future regens use scripts/ops/sample_engine_inputs.py against state.db (different sampler \u2014 first regen will produce a non-zero diff; review distributions, not byte-equality).",
   "days_window": 30,
   "n_rows": 1000,
   "seed": 42,
