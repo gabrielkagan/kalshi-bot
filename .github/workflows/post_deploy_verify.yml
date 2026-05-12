@@ -74,9 +74,42 @@ jobs:
             #   (commit ea51c41 / kb/failures/scan-loop-stall-window-rotation-
             #   2026-04-26.md). Each event emits 2 lines (WS_RAW_IN raw frame +
             #   WS_ERROR_FRAME warning); both match `Unknown subscription ID`.
+            # - `API error:.*-> 5[0-9][0-9]`: transient Kalshi 5xx
+            #   (500/502/503/504) emitted by bot/kalshi_client.py:167 when the
+            #   upstream returns a server error. The client retries via
+            #   requests/urllib3; if the retry eventually succeeds the bot is
+            #   healthy. ClickUp 86b9w1r95: deploy-verify was false-failing on
+            #   transient Kalshi 5xx noise during 2-min log windows that
+            #   coincided with brief upstream incidents.
+            # - `API error:.*-> (HTTPSConnectionPool|ConnectTimeoutError|`
+            #   `ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|`
+            #   `MaxRetryError|HTTPConnectionPool|Timeout)`: network-layer
+            #   transients from the same logger path (bot/kalshi_client.py:171
+            #   catches requests exceptions and logs `API error: ... ->
+            #   <exception>`). The keyword alternation is ANCHORED to right
+            #   after `-> ` — exception serializations from requests/urllib3
+            #   always START with the class name as the first token after the
+            #   arrow. This deliberately excludes the status-code path
+            #   (`-> 401 body=...`) where a 4xx response body may happen to
+            #   contain "ConnectionError" or "Timeout" tokens — those are
+            #   genuine 4xx failures the gate must still trip on. R1
+            #   adv-reviewer M1 (86b9w1r95): pre-fix greedy `.*` swallowed
+            #   401/403/422 errors with keyword-containing bodies. Bot
+            #   retries; if the retry eventually succeeds the line is noise.
+            # - `Retrying.*after connection broken`: urllib3 retry warning
+            #   emitted by the underlying HTTP adapter when a connection is
+            #   reset. Always paired with an eventual success or a final
+            #   `API error: ... -> ...` line which the rules above already
+            #   handle.
+            # NOTE: genuine `Traceback`, internal `AssertionError`, sqlite3
+            # errors, scanner/executor exceptions, and Kalshi non-events 4xx
+            # responses all still trip the gate. Bare `CRITICAL` log-level
+            # alone (without an `error|traceback|exception` token) is a
+            # pre-existing ERROR_PATTERN gap — out of scope for this Bit; file
+            # a followup ticket if it surfaces.
             echo "[3/6] Checking recent logs for errors..."
             ERROR_PATTERN="error|traceback|exception"
-            BENIGN_PATTERN="API error.*events.*400|Unknown subscription ID"
+            BENIGN_PATTERN="API error.*events.*400|Unknown subscription ID|API error:.*-> 5[0-9][0-9]|API error:.*-> (HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout)|Retrying.*after connection broken"
             ERROR_COUNT=$(journalctl -u kalshi-bot --since "2 minutes ago" --no-pager 2>/dev/null \
               | grep -iE "$ERROR_PATTERN" \
               | grep -ivE "$BENIGN_PATTERN" \

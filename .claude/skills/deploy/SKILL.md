@@ -68,10 +68,11 @@ Push to main and verify the bot is running correctly on VPS after auto-deploy.
    ssh botuser@45.55.181.30 "systemctl is-active kalshi-bot && journalctl -u kalshi-bot --no-pager -n 20 --since '1 min ago'"
    ```
 
-5. **Check for startup errors** (crash loops, import errors, assertion failures):
+5. **Check for startup errors** (crash loops, import errors, assertion failures). Filter known-benign noise — transient Kalshi 5xx + network timeouts the bot retries through, plus the pre-existing `events.*400` and `Unknown subscription ID` whitelist (see `.github/workflows/post_deploy_verify.yml` step [3/6] for the canonical regex; ClickUp 86b9w1r95 widened this on 2026-05-11). Operator-side inclusion regex is intentionally slightly wider than CI (`assert|crash|restart` added) for manual triage — CI uses the stricter `error|traceback|exception` to keep its noise floor low:
    ```bash
-   ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 --since '2 min ago' | grep -iE 'error|exception|traceback|assert|crash|restart'"
+   ssh botuser@45.55.181.30 "journalctl -u kalshi-bot --no-pager -n 50 --since '2 min ago' | grep -iE 'error|exception|traceback|assert|crash|restart' | grep -ivE 'API error.*events.*400|Unknown subscription ID|API error:.*-> 5[0-9][0-9]|API error:.*-> (HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout)|Retrying.*after connection broken'"
    ```
+   Lines that should STILL fail verify (uncovered by the exclusion): real Python `Traceback`, terminal exception lines (`ValueError`, `AssertionError`, etc.), internal `sqlite3.OperationalError`, scanner/executor exception logs, Kalshi non-events 4xx responses (including 401/403/422 whose body may contain keyword tokens like `ConnectionError` or `Timeout`). The regex anchors each suppression branch immediately after the literal `-> ` separator: the 5xx branch requires a `5XX` status code there, the network-transient branch requires one of the explicit exception class names (`HTTPSConnectionPool|ConnectTimeoutError|ConnectionError|ReadTimeout|ConnectTimeout|RemoteDisconnected|MaxRetryError|HTTPConnectionPool|Timeout`) there. A `-> 401 body={...ConnectionError...}` line cannot match either branch (the `4` is neither `5XX` nor in the class-name alternation), so the gate trips correctly even when keyword tokens appear inside the response body. Regression test: `tests/test_post_deploy_verify_benign_regex.py`.
 
 6. **Verify bot is scanning** (look for recent scan activity):
    ```bash
