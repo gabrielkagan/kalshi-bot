@@ -1,13 +1,15 @@
 """Regression tests pinning analyst.CURRENT_CONFIG to bot.constants values.
 
-analyst.py is a standalone script that does not import bot/_impl.py — it ships
-a manually-maintained CURRENT_CONFIG snapshot used as system-prompt context for
-the param-optimizer LLM call (see analyst.py:1168). When bot constants drift
-from this snapshot, the LLM gets stale numbers and emits stale recommendations.
+bot/ai/analyst.py (relocated from repo root in Sprint 10.3, 2026-05-12) is a
+standalone script that does not import bot/_impl.py — it ships a manually-
+maintained CURRENT_CONFIG snapshot used as system-prompt context for the
+param-optimizer LLM call (see bot/ai/analyst.py:1168). When bot constants
+drift from this snapshot, the LLM gets stale numbers and emits stale
+recommendations.
 
 CURRENT_CONFIG is read via AST (not import), so these tests work on any Python
-checkout — analyst.py top-level imports anthropic / requests / pydantic which
-may not be installed on a developer machine.
+checkout — bot/ai/analyst.py top-level imports anthropic / requests / pydantic
+which may not be installed on a developer machine.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import bot.constants  # noqa: F401
 import bot.config as config  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-ANALYST_PATH = REPO_ROOT / "analyst.py"
+ANALYST_PATH = REPO_ROOT / "bot" / "ai" / "analyst.py"
 
 
 def _load_literal_via_ast(name: str, source: str):
@@ -33,7 +35,7 @@ def _load_literal_via_ast(name: str, source: str):
     assignment to `name` (feature-flag branch, conditional override, etc.),
     the test pins the effective value, not the first definition.
 
-    Avoids importing analyst.py (which pulls in `anthropic` etc.). Pattern
+    Avoids importing bot/ai/analyst.py (which pulls in `anthropic` etc.). Pattern
     matches Bit 1.3 R3 lessons (handle annotated targets so type-hint adoption
     doesn't silently disable the test).
     """
@@ -147,7 +149,7 @@ def test_current_config_scalar_matches_bot_constants(current_config, bot_module,
     bot_value = getattr(bot_module, key)
     assert snapshot_value == bot_value, (
         f"analyst.CURRENT_CONFIG[{key!r}] = {snapshot_value!r} drifted from "
-        f"bot.{key} = {bot_value!r}. Update analyst.py CURRENT_CONFIG in the "
+        f"bot.{key} = {bot_value!r}. Update bot/ai/analyst.py CURRENT_CONFIG in the"
         f"same commit that changed bot.constants."
     )
 
@@ -215,7 +217,7 @@ def test_current_config_keys_unchanged(current_config):
     assert set(current_config.keys()) == expected, (
         f"analyst.CURRENT_CONFIG key set drifted. Expected: {sorted(expected)}, "
         f"got: {sorted(current_config.keys())}. Update SCALAR_KEYS in this "
-        f"test or remove the obsolete key from analyst.py."
+        f"test or remove the obsolete key from bot/ai/analyst.py."
     )
 
 
@@ -239,7 +241,7 @@ def test_edge_counterfactual_price_band_uses_current_config():
         ),
         None,
     )
-    assert func is not None, "compute_edge_stats not found in analyst.py"
+    assert func is not None, "compute_edge_stats not found in bot/ai/analyst.py"
     func_src = ast.get_source_segment(src, func) or ""
     # Both gates use CURRENT_CONFIG (count both quote styles).
     min_refs = func_src.count('CURRENT_CONFIG["MIN_ENTRY_PRICE"]') + func_src.count(
@@ -286,7 +288,7 @@ def test_price_bucket_lower_label_matches_min_entry_price():
         ),
         None,
     )
-    assert func is not None, "_price_bucket not found in analyst.py"
+    assert func is not None, "_price_bucket not found in bot/ai/analyst.py"
     func_src = ast.get_source_segment(src, func) or ""
     assert (
         'CURRENT_CONFIG["MIN_ENTRY_PRICE"]' in func_src

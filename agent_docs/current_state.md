@@ -46,7 +46,7 @@
 - Python 3, virtualenv
 - DigitalOcean droplet (45.55.181.30), Ubuntu 24.04, `botuser`, systemd `kalshi-bot`
 - Dashboard: Supabase Realtime (`dashboard_state` table)
-- Analyst: Claude API via `analyst.py` → Telegram (high-confidence only)
+- Analyst: Claude API via `bot/ai/analyst.py` → Telegram (high-confidence only)
 
 ## Kalshi API
 

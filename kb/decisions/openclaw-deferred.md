@@ -15,7 +15,7 @@ An open-source personal AI assistant (TypeScript/Node.js) with a Gateway/WebSock
 ## What Was Evaluated
 - OpenClaw as Telegram-based ops interface (replace manual Claude Code sessions)
 - Gemma 3 4B (local via Ollama) for analysis/summarization of audit results
-- Scheduled Gemma-powered daily briefings replacing researcher.py
+- Scheduled Gemma-powered daily briefings replacing bot/ai/researcher.py
 - News/event regime detection via RSS + Gemma classification
 - Anomaly detection + self-healing via log monitoring
 
@@ -34,8 +34,8 @@ An open-source personal AI assistant (TypeScript/Node.js) with a Gateway/WebSock
 8. **Gemma << Claude for complex analysis.** Wrong initial diagnosis is already the #1 friction point with Claude Opus. Gemma 4B would be worse.
 
 ### Most of the value already exists
-- Scheduled reports: `researcher.py` runs 3x/day via cron
-- Anomaly detection: `auditor.py` runs hourly via cron
+- Scheduled reports: `bot/ai/researcher.py` runs 3x/day via cron
+- Anomaly detection: `bot/ai/auditor.py` runs hourly via cron
 - Audit automation: 17 Claude Code skills already built
 - The only genuine gap: news monitoring and mobile ops interface
 

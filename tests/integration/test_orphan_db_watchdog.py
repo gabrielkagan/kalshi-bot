@@ -118,7 +118,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
 ):
     """C-1 (HIGH from adversarial review): the live VPS has several
     legitimate processes that hold state.db open at any moment —
-    `watchdog.py` (every 2 min cron), `auditor.py` (hourly),
+    `watchdog.py` (every 2 min cron), `bot/ai/auditor.py` (hourly),
     `audit_cron.py` (every 30 min systemd timer), `dashboard_snapshot.py`
     (manual). Pre-fix watchdog would have alerted on every collision,
     habituating the operator to ignore the channel. Post-fix:

@@ -26,7 +26,7 @@ Real caller imports:
 Deferred from Sprint 10.5 (filed as separate Bits):
   - 10.5b: models.py (8 prod + 6 test import sites — larger surface)
   - 10.5c: watchdog.py (__file__-derived paths + CLI invocation, same
-    risk class as Sprint 10.3 ai/ auditor.py + researcher.py)
+    risk class as Sprint 10.3 ai/ bot/ai/auditor.py + bot/ai/researcher.py)
 """
 from __future__ import annotations
 

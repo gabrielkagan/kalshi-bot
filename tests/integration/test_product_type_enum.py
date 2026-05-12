@@ -39,14 +39,14 @@ sys.path.insert(0, PROJECT_ROOT)
 # data where old product_type values (e.g., NULL) are expected.
 PRODUCTION_FILES = [
     "bot/_impl.py",
-    "analyst.py",
-    "auditor.py",
+    "bot/ai/analyst.py",  # Sprint 10.3 (2026-05-12)
+    "bot/ai/auditor.py",  # Sprint 10.3 (2026-05-12)
     "bot/infra/capital_allocator.py",  # Sprint 10.5a (2026-05-11)
     "bot/snapshots/dashboard_snapshot.py",  # Sprint 10 Bit 10.4 (2026-05-12)
     "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     "market_config.py",
-    "researcher.py",
+    "bot/ai/researcher.py",  # Sprint 10.3 (2026-05-12)
     "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
     "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)

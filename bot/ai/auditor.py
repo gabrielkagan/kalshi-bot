@@ -6,10 +6,10 @@ Runs hourly via cron. Queries state.db (read-only), sends alerts to Telegram.
 No external AI APIs. No writes to state.db.
 
 Usage:
-    python3 auditor.py              # Run all checks
-    python3 auditor.py --verbose    # Print all check results to stdout
-    python3 auditor.py --check performance  # Run only one category
-    python3 auditor.py --test-telegram      # Send a test message
+    python3 bot/ai/auditor.py              # Run all checks
+    python3 bot/ai/auditor.py --verbose    # Print all check results to stdout
+    python3 bot/ai/auditor.py --check performance  # Run only one category
+    python3 bot/ai/auditor.py --test-telegram      # Send a test message
 
 Adding new checks:
     1. Write a function: def check_something(db, verbose) -> list[str]
@@ -39,7 +39,10 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR = Path(__file__).resolve().parent
+# Bit 10.3 (2026-05-12): relocated from repo root → bot/ai/.
+# `Path(__file__).resolve().parent.parent.parent` walks ai/ → bot/ → repo/.
+# DO NOT shorten the chain — it would re-anchor data files under bot/ai/.
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 STATE_DB_PATH = SCRIPT_DIR / "state.db"
 AUDITOR_DB_PATH = SCRIPT_DIR / "auditor_state.db"
 ENV_PATH = SCRIPT_DIR / ".env"
@@ -1356,7 +1359,7 @@ def run_checks(
             remaining = len(new_alerts) - (MAX_TG_MESSAGES - 1)
             summary = (
                 f"🔍 *AUDITOR: +{remaining} more alerts*\n\n"
-                f"Run `python3 auditor.py --verbose` to see all {len(new_alerts)} alerts."
+                f"Run `python3 bot/ai/auditor.py --verbose` to see all {len(new_alerts)} alerts."
             )
             if send_telegram(summary, tg_token, tg_chat):
                 sent += 1

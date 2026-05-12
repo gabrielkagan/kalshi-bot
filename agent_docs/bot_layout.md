@@ -7,6 +7,20 @@ the package surface is the set of canonical submodules listed in the "Project
 file map" section below.
 
 **Historical trail (most recent first):**
+- Bit 10.3 (2026-05-12) — `bot/ai/` subpackage created. 3 files relocated
+  from repo root to `bot/ai/`: analyst.py + auditor.py + researcher.py
+  (~4,114 LOC). 2 `__file__`-derived path sites (auditor.py `SCRIPT_DIR`
+  anchoring state.db / auditor_state.db / .env / scan_journal.jsonl /
+  opportunity_journal.jsonl; researcher.py `SCRIPT_DIR` anchoring state.db /
+  auditor_state.db / researcher_state.db / .env) extended to a 3-level
+  dirname chain (`Path(__file__).resolve().parent.parent.parent`) so they
+  re-anchor to repo root from `bot/ai/`. analyst.py uses CWD-relative
+  `state.db` literal — VPS cron invokes from repo root, behavior
+  unchanged. Zero Python `import analyst|auditor|researcher` sites pre-
+  or post-move (these are standalone CLI entrypoints, not modules). No
+  `.importlinter` carve-out (no `bot/helpers/*.py` references them); net
+  contracts unchanged at 5. VPS crontab retarget (`python3 bot/ai/X.py`)
+  is operator concern, filed as followup ticket.
 - Bit 10.4 (2026-05-12) — `bot/snapshots/` subpackage created. 4 files
   relocated from repo root to `bot/snapshots/`: dashboard_snapshot.py +
   bot_state_snapshot.py + market_observations_snapshotter.py + supabase_sync.py.
@@ -206,8 +220,10 @@ Shadows (observation-only):
 - `bot/shadows/hourly_alt_shadow.py` — hourly alternate sims (relocated Sprint 10.2, 2026-05-11)
 - `bot/shadows/spx_harrv_shadow.py` — SPX HAR-RV shadow (relocated Sprint 10.2, 2026-05-11)
 
-AI helpers:
-- `analyst.py`, `auditor.py`, `researcher.py` — Telegram-driven analysis
+AI helpers (`bot/ai/`, relocated Sprint 10.3, 2026-05-12; standalone Telegram-driven entrypoints, NOT imported by bot runtime hot path; `auditor.py` + `researcher.py` anchor `__file__`-derived paths — `state.db`, `auditor_state.db`, `researcher_state.db`, `.env`, journals — to repo root via a 3-level dirname chain mirroring `bot/snapshots/supabase_sync.py:30`; `analyst.py` uses CWD-relative `state.db` literal — VPS cron invokes from repo root, so the literal still resolves there post-move; same risk class as Sprint 10.5c `watchdog.py` deferral):
+- `bot/ai/analyst.py` — Claude API loss analysis + news sentiment
+- `bot/ai/auditor.py` — hourly deterministic health checks → Telegram alerts
+- `bot/ai/researcher.py` — 3×/day performance reports → Telegram
 
 Snapshots/sync (`bot/snapshots/`, relocated Sprint 10.4, 2026-05-12; helpers-leaf-listed as a forbidden subpackage; each module anchors `__file__`-derived paths — `dist_config.json`, `state.db`, `.supabase_kill_switch` — to repo root via a 3-level dirname chain mirroring `bot/engines/weather_engine.py:806-807`):
 - `bot/snapshots/dashboard_snapshot.py` — Supabase syncer (paired with `dashboard/index.html` on `gh-pages`)

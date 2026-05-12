@@ -86,7 +86,7 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
     monkeypatch, tmp_path,
 ):
     """Same positive-list as Layer 3 — must NOT alert on the bot's
-    own state.db conn or on the watchdog itself or on auditor.py /
+    own state.db conn or on the watchdog itself or on bot/ai/auditor.py /
     audit_cron.py / dashboard_snapshot.py."""
     import watchdog
     db = tmp_path / "state.db"
@@ -95,7 +95,7 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
     legit_pids = {
         2001: "venv/bin/python3 bot/_impl.py",
         2002: "venv/bin/python3 watchdog.py",
-        2003: "venv/bin/python3 auditor.py",
+        2003: "venv/bin/python3 bot/ai/auditor.py",
         2004: "venv/bin/python3 scripts/audit_cron.py --db state.db",
         2005: "venv/bin/python3 dashboard_snapshot.py",
     }

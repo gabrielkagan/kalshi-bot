@@ -7,11 +7,11 @@ Compiles trading reports from state.db and auditor findings, sends to Telegram.
 No external AI APIs. Read-only access to state.db.
 
 Usage:
-    python3 researcher.py                    # Auto-detect report type from current ET time
-    python3 researcher.py --cron             # Cron mode: run if it's report time, else exit
-    python3 researcher.py --verbose          # Print report to stdout
-    python3 researcher.py --type morning     # Force a specific report type
-    python3 researcher.py --test-telegram    # Send a test message
+    python3 bot/ai/researcher.py                    # Auto-detect report type from current ET time
+    python3 bot/ai/researcher.py --cron             # Cron mode: run if it's report time, else exit
+    python3 bot/ai/researcher.py --verbose          # Print report to stdout
+    python3 bot/ai/researcher.py --type morning     # Force a specific report type
+    python3 bot/ai/researcher.py --test-telegram    # Send a test message
 
 Report schedule (ET):
     7:30am  — Morning Briefing (overnight recap, 12h window)
@@ -47,7 +47,10 @@ logging.basicConfig(
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_DIR = Path(__file__).resolve().parent
+# Bit 10.3 (2026-05-12): relocated from repo root → bot/ai/.
+# `Path(__file__).resolve().parent.parent.parent` walks ai/ → bot/ → repo/.
+# DO NOT shorten the chain — it would re-anchor data files under bot/ai/.
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 STATE_DB_PATH = SCRIPT_DIR / "state.db"
 AUDITOR_DB_PATH = SCRIPT_DIR / "auditor_state.db"
 RESEARCHER_DB_PATH = SCRIPT_DIR / "researcher_state.db"

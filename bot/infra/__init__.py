@@ -17,7 +17,7 @@ circuit_breaker, watchdog, models". Sprint 10.5 split into:
     bot.helpers.breakers -> bot.infra.circuit_breaker pattern).
 
   - 10.5c (DEFERRED): watchdog.py
-    Same risk class as Sprint 10.3 ai/ auditor.py + researcher.py — has
+    Same risk class as Sprint 10.3 ai/ bot/ai/auditor.py + bot/ai/researcher.py — has
     `__file__`-derived load-bearing paths (STATE_FILE + DB_PATH at lines
     23-24) AND is a standalone CLI (likely invoked via VPS crontab).
     Requires coordinated VPS crontab update post-deploy.

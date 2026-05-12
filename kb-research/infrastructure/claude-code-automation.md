@@ -16,14 +16,14 @@ Use Claude Code (Opus) as an autonomous research and maintenance agent. Runs on 
 ## Architecture Questions Resolved
 
 ### How often does Opus run?
-- researcher.py already runs 3x daily digests (existing infrastructure)
+- bot/ai/researcher.py already runs 3x daily digests (existing infrastructure)
 - Opus deeper analysis: weekly (e.g., every Sunday full-week review)
-- auditor.py: 17 deterministic checks hourly (existing infrastructure)
+- bot/ai/auditor.py: 17 deterministic checks hourly (existing infrastructure)
 
 ### How does Opus interact with the codebase?
 
 **Option A: API call with curated context**
-- researcher.py packages data + code snippets → send to Opus API → get analysis + code back
+- bot/ai/researcher.py packages data + code snippets → send to Opus API → get analysis + code back
 - You control exactly what Opus sees
 - Cheaper, more predictable
 - Opus can't explore on its own
@@ -61,8 +61,8 @@ Use Claude Code (Opus) as an autonomous research and maintenance agent. Runs on 
 - New strategy deployment
 
 ## Current Automation Layer (what exists)
-- researcher.py: 3x daily digests with performance summaries, Telegram delivery
-- auditor.py: 17 hourly deterministic checks, Telegram alerts on failures
+- bot/ai/researcher.py: 3x daily digests with performance summaries, Telegram delivery
+- bot/ai/auditor.py: 17 hourly deterministic checks, Telegram alerts on failures
 - watchdog: 4 cron checks for bot health
 - GitHub Actions CI/CD: automated testing and deployment
 

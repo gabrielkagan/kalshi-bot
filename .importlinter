@@ -111,6 +111,7 @@ source_modules =
     bot.helpers
 forbidden_modules =
     bot._thread_env
+    bot.ai
     bot.boot
     bot.config
     bot.engines

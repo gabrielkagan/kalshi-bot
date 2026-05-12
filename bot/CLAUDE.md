@@ -5,7 +5,7 @@ These rules apply to the bot runtime — primarily `bot/main_loop.py`,
 `bot/state.py`, `bot/order_flow.py`, `bot/boot.py`, `bot/runtime_config.py`,
 and the engine modules (`bot/engines/spx_engine.py`,
 `bot/engines/weather_engine.py`, `bot/engines/sports_engine.py`,
-`bot/shadows/fifteenm_shadow.py`, `analyst.py`). **Bit 9.3-iii.c (2026-05-11)
+`bot/shadows/fifteenm_shadow.py`, `bot/ai/analyst.py`). **Bit 9.3-iii.c (2026-05-11)
 DELETED `bot/_impl.py`** — the rules historically attributed to that file
 now apply cross-cutting to the bot/ package. The first seven sections
 (Threading, cal_mlp feature-transform lock-step, Cell-block, SQLite, `_shadow_diag`,
@@ -111,8 +111,8 @@ Confirmed-affected (Apr 30): `scripts/15m_live_audit.py`,
 `scripts/alpha_audit.py` (`/alpha-audit`),
 `scripts/data_health_monitor.py`, `scripts/generate_whitepaper_stats.py`,
 `scripts/maker_opportunity_cost.py`, `scripts/quiet_market_monitor.py`,
-`bot/snapshots/dashboard_snapshot.py` (Sprint 10.4, 2026-05-12), `analyst.py`, `auditor.py`,
-`researcher.py`, `.claude/skills/status/SKILL.md` (`/status` skill).
+`bot/snapshots/dashboard_snapshot.py` (Sprint 10.4, 2026-05-12), `bot/ai/analyst.py`, `bot/ai/auditor.py`,
+`bot/ai/researcher.py` (Sprint 10.3, 2026-05-12), `.claude/skills/status/SKILL.md` (`/status` skill).
 Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.
 
 ## SQLite (WAL, pragmas, batch sizes)

@@ -309,7 +309,7 @@ class TestConfigSync:
 
 class TestBusyTimeout:
     """Every sqlite3.connect in production code must set busy_timeout.
-    PM-001 (Mar 9 2026): analyst.py was missed by the old hardcoded list.
+    PM-001 (Mar 9 2026): analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3) was missed by the old hardcoded list.
     Now scans ALL .py files automatically."""
 
     # Files exempt from busy_timeout (test files, one-off scripts, in-memory DBs)

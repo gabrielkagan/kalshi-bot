@@ -32,7 +32,7 @@ MULTI_THREAD_FILES = [
 # All production .py files (exclude venv, tests, scripts, migration utilities)
 PRODUCTION_FILES = [
     "bot/_impl.py",
-    "analyst.py",
+    "bot/ai/analyst.py",  # Sprint 10.3 (2026-05-12)
     "bot/snapshots/dashboard_snapshot.py",  # Sprint 10 Bit 10.4 (2026-05-12)
     "bot/shadows/fifteenm_shadow.py",  # Sprint 10.2 (2026-05-11)
     "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
@@ -306,7 +306,7 @@ class TestSyntaxCheck:
         "bot/_impl.py",
         "market_config.py",
         "bot/snapshots/dashboard_snapshot.py",  # Sprint 10 Bit 10.4 (2026-05-12)
-        "analyst.py",
+        "bot/ai/analyst.py",  # Sprint 10.3 (2026-05-12)
         "bot/snapshots/supabase_sync.py",  # Sprint 10 Bit 10.4 (2026-05-12)
         "bot/engines/spx_engine.py",  # Sprint 10.1b sibling-reorg (2026-05-11)
         "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)

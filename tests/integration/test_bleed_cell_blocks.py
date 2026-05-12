@@ -838,7 +838,7 @@ def test_filter_stage_value_consistency_across_files():
     Manual-cutover (kb decision doc warns operators; not enforced):
       - scripts/{15m_live_audit, 15m_alpha_research, alpha_audit,
         data_health_monitor, maker_opportunity_cost, quiet_market_monitor}.py
-      - dashboard_snapshot.py, analyst.py, auditor.py, researcher.py
+      - dashboard_snapshot.py, bot/ai/analyst.py, bot/ai/auditor.py, bot/ai/researcher.py
       - .claude/skills/status/SKILL.md
 
     If anyone renames a constant's value, bot/_impl.py keeps working (uses

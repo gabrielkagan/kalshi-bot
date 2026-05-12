@@ -16,8 +16,8 @@ Five separate database contention incidents across March 2-16, 2026. Multiple th
 
 ## Incident 2: analyst.py Missing busy_timeout (Mar 9)
 **Symptom:** Intermittent locked errors from analyst thread, contributing to overall contention.
-**Root cause:** Same as Incident 1 -- analyst.py opened its own connection without busy_timeout.
-**Fix:** Added `PRAGMA busy_timeout=10000` to analyst.py. Established rule: every new `sqlite3.connect()` must include WAL + busy_timeout.
+**Root cause:** Same as Incident 1 -- analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3) opened its own connection without busy_timeout.
+**Fix:** Added `PRAGMA busy_timeout=10000` to analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3). Established rule: every new `sqlite3.connect()` must include WAL + busy_timeout.
 
 ## Incident 3: Per-Row Commits in Loop (Mar 9, PM-001)
 **Symptom:** "database is locked" burst + CPU spike during `_poll_evaluated_opportunities()`.
@@ -49,13 +49,13 @@ state.db is shared by 5+ concurrent threads/processes:
 - bot.py main thread (scan loop, settlement, position tracking)
 - supabase_sync.py (192 SELECTs every 30s, plus UPSERTs to Supabase)
 - sports_engine.py (shadow evaluations, game state)
-- analyst.py (news sentiment, loss analysis)
+- bot/ai/analyst.py (news sentiment, loss analysis)
 - fifteenm_shadow.py (shadow signal writes)
 
 All five must have WAL + busy_timeout. Any new sqlite3.connect() call added anywhere in the codebase must follow the same pattern.
 
 ## Detection
-Grep syslog for "database is locked". Dashboard rate_limits panel shows contention spikes. auditor.py checks for locked error rates.
+Grep syslog for "database is locked". Dashboard rate_limits panel shows contention spikes. `bot/ai/auditor.py` checks for locked error rates.
 
 ## Current Timeouts
 | Component | busy_timeout |
@@ -63,7 +63,7 @@ Grep syslog for "database is locked". Dashboard rate_limits panel shows contenti
 | bot.py | 10s |
 | supabase_sync.py | 5s |
 | sports_engine.py | 10s |
-| analyst.py | 10s |
+| bot/ai/analyst.py | 10s |
 | fifteenm_shadow.py | 10s |
 
 ## Related

@@ -30,15 +30,15 @@ This collided with `supabase_sync.py` running **165 SQL queries every 10 seconds
 1. **Deduped API calls:** Group pending rows by ticker, call `get_market()` once per unique ticker (91 → 30 calls).
 2. **Batched commits:** All `mark_evaluated_opportunity_settled()` calls use `commit=False`, single `COMMIT` at end (91 → 1 commits).
 3. **Shadow settles per-ticker:** `settle_signals()` calls (fifteenm, hourly_alt, spx_harrv, sol_pathc) moved from per-row to per-ticker — they're idempotent per ticker.
-4. **Added `busy_timeout=5000` to `analyst.py`** (`_open_db()` line 212) — was the only production file missing it.
+4. **Added `busy_timeout=5000` to `analyst.py`** (`_open_db()` line 212) — was the only production file missing it. *(Sprint 10.3, 2026-05-12: relocated to `bot/ai/analyst.py`.)*
 
 ### Gaps Exposed
 
 | Gap | Proposed Rule |
 |-----|---------------|
-| analyst.py missing busy_timeout | **Already had rule** in CLAUDE.md (line 106) — wasn't applied to analyst.py. Need a regression test. |
+| analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3) missing busy_timeout | **Already had rule** in CLAUDE.md (line 106) — wasn't applied to analyst.py. Need a regression test. |
 | Per-row commits in settlement loop | **New rule:** Never commit inside a loop — always batch. |
 | No WAL requirement documented | **New rule:** All `sqlite3.connect()` calls on state.db must set `PRAGMA journal_mode=WAL`. |
 | supabase_sync runs 165 queries/10s | **Audit needed:** Reduce query count or increase sync interval. Not urgent but contributes to contention window. |
 | Weather observation flooding evaluated_opportunities | **Monitor:** 79 rows per settlement cycle from weather alone. If this grows, add a cleanup policy or reduce observation granularity. |
-| Missing busy_timeout not caught pre-deploy | `TestBusyTimeout` regression test exists but didn't cover analyst.py. Now it should. |
+| Missing busy_timeout not caught pre-deploy | `TestBusyTimeout` regression test exists but didn't cover analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3). Now it should. |

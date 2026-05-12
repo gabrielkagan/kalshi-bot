@@ -22,4 +22,4 @@ Audit, research, and one-off analysis scripts. Read-only against `state.db` unle
 - `STATE_DB_BACKUP_SETUP.md` — operator runbook for one-time bucket + IAM + lifecycle (steps 1–6). Run once per VPS lifecycle.
 
 ## DB connections
-Any new `sqlite3.connect()` here must include both `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=10000`. The bot, `supabase_sync`, sports, analyst all share `state.db`.
+Any new `sqlite3.connect()` here must include both `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=10000`. The bot, `bot/snapshots/supabase_sync.py`, sports, `bot/ai/analyst.py` all share `state.db`.

@@ -11,7 +11,7 @@ Critical invariants enforced:
 - New columns default to NULL on legacy rows (no data backfill side-effect)
 - New table inherits WAL + busy_timeout from parent connection (no
   separate sqlite3.connect that would need its own pragmas — see CLAUDE.md
-  rule about analyst.py / sports_engine.py contention bugs)
+  rule about bot/ai/analyst.py / sports_engine.py contention bugs)
 - Index exists on order_lifecycle_snapshots for query patterns we'll use
   (lookup by ticker for forensic dive, by order_id for trade-lifecycle replay)
 """
@@ -222,7 +222,7 @@ class TestTableInsideCreateTables(_TempDB):
     """Sanity: the new table must be created inside StateManager._create_tables
     so it inherits the parent connection (WAL + busy_timeout=30000 set in
     __init__). Any new sqlite3.connect() touching this table MUST set its
-    own PRAGMAs per CLAUDE.md (analyst.py / sports_engine.py contention bugs)."""
+    own PRAGMAs per CLAUDE.md (bot/ai/analyst.py / sports_engine.py contention bugs)."""
 
     def test_create_table_lives_in_create_tables(self):
         # Bit 7.1 retarget (2026-05-10): StateManager._create_tables moved to

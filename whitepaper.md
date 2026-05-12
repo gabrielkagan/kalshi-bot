@@ -467,7 +467,7 @@ An EWMA bias tracker ($\lambda = 0.90$, 7-day half-life) maintains per-city fore
 
 The sports engine monitors live games across 28 leagues for Bayesian comeback signals — identifying situations where a pregame favorite is trailing but statistically likely to recover.
 
-> **Research status:** ALPHA DETECTED (per-sport breakdown). Basketball is the clear alpha source — best-robust-filter is the NBA strong-config (pregame ≥60%, price ≤70c, time remaining >85%). Tennis is a drag (negative PnL). Per-sport-group CalEngines are learning in shadow. Overall SPRT has not converged — see `kb/decisions/sports-promotion-criteria.md` for current promotion gates and most-recent counts (refreshed by `researcher.py` 3× daily).
+> **Research status:** ALPHA DETECTED (per-sport breakdown). Basketball is the clear alpha source — best-robust-filter is the NBA strong-config (pregame ≥60%, price ≤70c, time remaining >85%). Tennis is a drag (negative PnL). Per-sport-group CalEngines are learning in shadow. Overall SPRT has not converged — see `kb/decisions/sports-promotion-criteria.md` for current promotion gates and most-recent counts (refreshed by `bot/ai/researcher.py` 3× daily).
 
 ### Supported Leagues
 
@@ -698,7 +698,7 @@ Per-asset 2-hour lockout after any 15M loss. Triggered Apr 11 after data showed 
 
 ## 3.10 AI Analyst System
 
-The analyst engine (`analyst.py`) uses the Claude API to provide automated post-trade analysis:
+The analyst engine (`bot/ai/analyst.py`) uses the Claude API to provide automated post-trade analysis:
 
 - **Loss root-cause analysis**: After every losing trade, the analyst examines market conditions, volatility regime, entry timing, and model state to identify the cause
 - **Pattern detection**: Identifies recurring loss patterns across assets, time windows, and market conditions
@@ -892,8 +892,8 @@ Append-only journal files provide a complete audit trail:
 
 | Component | Schedule | Purpose |
 |---|---|---|
-| `auditor.py` | Hourly (cron) | Deterministic health checks — data freshness, schema integrity, settlement gaps. Telegram alerts on anomalies. |
-| `researcher.py` | 3× daily (7:30am, 12:30pm, 7:30pm ET) | Performance reports to Telegram — regime-filtered stats, per-asset breakdown, shadow summaries. |
+| `bot/ai/auditor.py` | Hourly (cron) | Deterministic health checks — data freshness, schema integrity, settlement gaps. Telegram alerts on anomalies. |
+| `bot/ai/researcher.py` | 3× daily (7:30am, 12:30pm, 7:30pm ET) | Performance reports to Telegram — regime-filtered stats, per-asset breakdown, shadow summaries. |
 | `watchdog.py` | Continuous | Process health monitoring |
 
 ## Test Suite

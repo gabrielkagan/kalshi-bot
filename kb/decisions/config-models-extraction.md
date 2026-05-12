@@ -20,7 +20,7 @@ bot.py had grown to ~14,000 lines with all trading constants and pure-math model
 ### 1. Full modular refactor (split bot.py into 10+ files)
 - Would reduce bot.py from 14K to ~3K lines
 - **Rejected**: systemd service, `start.sh`, and the deploy pipeline (`deploy.yml`) all depend on the single-file `bot.py` structure. Changing this requires coordinated updates to VPS systemd units, GitHub Actions, and startup scripts. The risk of a broken deploy on a live trading bot is unacceptable.
-- Engines (spx_engine.py, weather_engine.py, analyst.py, sports_engine.py) are exceptions because they run as separate threads/processes with their own entry points.
+- Engines (spx_engine.py, weather_engine.py, bot/ai/analyst.py, sports_engine.py) are exceptions because they run as separate threads/processes with their own entry points.
 
 ### 2. Extract only shared constants into config.py
 - Solves the duplication problem

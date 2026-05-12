@@ -57,7 +57,7 @@ Alternatives considered:
 ## Operational
 - Runs once per `SupabaseSyncer.start()` — i.e., every bot restart
 - Fails silent (logs WARNING, continues) if OpenAPI fetch itself fails
-- Should be surfaced to Telegram via auditor.py if any drift is detected — TODO for a future commit
+- Should be surfaced to Telegram via bot/ai/auditor.py if any drift is detected — TODO for a future commit
 
 ## Related
 - [[failures/supabase-sync-silent-failure.md]] — the precedent that motivated explicit column lists (2026-04-04)

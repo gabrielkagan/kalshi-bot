@@ -25,7 +25,7 @@ T1 is ONE commit. Splitting "registry edits" from "shadow gate wiring" breaks th
 6. Extend `bot/executor.py:_HOURLY_SERIES_PREFIXES`
 7. Extend `market_config.py:117` to match new HOURLY_EXCLUDED_ASSETS (startup-assertion mirror)
 8. Extend `bot/constants.py` registries: SERIES_TICKERS, HOURLY_SERIES_TICKERS, COINBASE_PRODUCTS
-9. Extend all downstream lists/tuples (dashboard, supabase, snapshot, auditor, fifteenm_shadow, scripts)
+9. Extend all downstream lists/tuples (dashboard, supabase, snapshot, bot/ai/auditor.py, fifteenm_shadow, scripts)
 10. Refactor log-format sites (cosmetic, but needed for clean observation log lines)
 11. **LAST: extend `config.py:ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]`** — activation lever
 12. Update test fixtures + assertions + add regression tests
@@ -92,7 +92,7 @@ Bits 8.1 / 9.1 / 9.2 / 9.3-i shipped between spike (2026-05-09) and now (2026-05
 | Supabase ASSETS | `supabase_sync.py:22` | extend |
 | Supabase display-name triple | `supabase_sync.py:324-327` | add `("HYPE","Hyperliquid","KXHYPE15M")`, `("DOGE","Dogecoin","KXDOGE15M")` |
 | bot_state_snapshot ASSETS | `bot_state_snapshot.py:127` | extend |
-| auditor active_assets | `auditor.py:269` | extend |
+| auditor active_assets | `bot/ai/auditor.py:269` | extend |
 | fifteenm_shadow DEFAULT_TEMPERATURES | `fifteenm_shadow.py:48` | add HYPE/DOGE entries (1.00 neutral) |
 | fifteenm_shadow DEFAULT_BLEND_W | `fifteenm_shadow.py:50` | add (0.50 neutral) |
 | fifteenm_shadow DEFAULT_DEBIAS | `fifteenm_shadow.py:52` | add (0.00 neutral) |

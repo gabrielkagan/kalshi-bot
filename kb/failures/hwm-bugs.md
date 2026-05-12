@@ -31,7 +31,7 @@ Additional edge cases found during adversarial testing. Documented in CLAUDE.md 
 All five share: **drawdown scaler in unexpected state relative to actual performance.** Canonical check: compare scaler value to manual calculation from known balance.
 
 ## Prevention
-- `auditor.py` hourly HWM consistency check
+- `bot/ai/auditor.py` hourly HWM consistency check
 - Adversarial test scenarios cover all five variants
 - CLAUDE.md documents each as known failure mode
 
