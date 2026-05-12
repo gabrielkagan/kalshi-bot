@@ -45,8 +45,8 @@ MIN_SETTLED_FOR_PARAM_OPTIMIZER = 500
 # !! Keep in sync with the `bot` package — last verified 2026-05-08 (Bit 4.2.5.1 sweep) !!
 # Source of truth lives in bot/constants.py (Bit 3.1) — reach via
 # `import bot.constants; bot.constants.<NAME>`. Constants that historically
-# lived in `config.py` (MAX_RISK_PER_TRADE, MARKET_BLEND_W, HOURLY_KELLY_FRACTION)
-# reach via `import config; config.<NAME>` directly.
+# lived in `bot/config.py` (MAX_RISK_PER_TRADE, MARKET_BLEND_W, HOURLY_KELLY_FRACTION)
+# reach via `import bot.config; bot.config.<NAME>` directly.
 # Post-Bit-9.3-iii.b (2026-05-11) the legacy `bot.<NAME>` proxy form is RETIRED.
 # Pinned by tests/integration/test_analyst_current_config_sync.py (AST-based; fails on drift).
 CURRENT_CONFIG = {

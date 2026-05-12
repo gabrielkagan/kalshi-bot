@@ -380,7 +380,7 @@ class TestAtomicActivationT15(unittest.TestCase):
     feature columns for HYPE/DOGE while BTC/ETH/SOL/XRP have them."""
 
     def test_hype_in_assets_implies_external_feed_registration(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not in ASSETS yet")
         from bot.constants import CROSS_EXCHANGE_SYMBOLS, COINGLASS_SYMBOLS
@@ -408,7 +408,7 @@ class TestAtomicActivationT15(unittest.TestCase):
         self.assertIn("HYPE", backfill.COINBASE_PRODUCTS)
 
     def test_doge_in_assets_implies_external_feed_registration(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not in ASSETS yet")
         from bot.constants import CROSS_EXCHANGE_SYMBOLS, COINGLASS_SYMBOLS

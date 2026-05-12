@@ -12,7 +12,7 @@ and ``CROSS_EXCHANGE_CONSENSUS_MIN`` is auto-lowered to 2 so Kraken+Bybit
 can still trip consensus.
 
 Imports are deliberate: stdlib + ``websockets`` + ``bot.constants``
-(9 explicit names) + ``ASSETS`` from ``config.py`` + sibling
+(9 explicit names) + ``ASSETS`` from ``bot/config.py`` + sibling
 ``CoinbaseFeed`` for the constructor type hint and ``.get_price()`` calls.
 Does NOT import ``bot._impl`` (would create a circular import).
 """
@@ -42,7 +42,7 @@ from bot.constants import (
     KRAKEN_WS_URL,
 )
 from bot.feeds.coinbase import CoinbaseFeed
-from config import ASSETS
+from bot.config import ASSETS
 
 
 class CrossExchangeFeed:

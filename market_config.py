@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Optional
 import bot.constants  # noqa: F401
-import config  # noqa: F401
+import bot.config as config  # noqa: F401
 
 
 def _bot_hourly_live() -> bool:

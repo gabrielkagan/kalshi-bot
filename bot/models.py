@@ -1,7 +1,7 @@
 """Pure-math model classes extracted from bot/_impl.py.
 
 These classes have zero side effects (no API calls, no DB, no websockets).
-They depend only on config.py constants and standard library + scipy.
+They depend only on bot/config.py constants and standard library + scipy.
 
 Consumers import these via `from bot.models import ...` (Sprint 10.5b 2026-05-11
 relocation; pre-relocation path was repo-root `models.py`).
@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
-from config import (
+from bot.config import (
     ASSETS,
     HWM_LOOKBACK_SECONDS,
     EGARCH_ALPHA_BOUNDS,

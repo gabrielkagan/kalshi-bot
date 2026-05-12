@@ -9,7 +9,7 @@ pipeline:
   HYPE not listed on Deribit per T1.5 verification) via REST every
   ``DVOL_FETCH_INTERVAL`` seconds.
 - ``CoinGlassFetcher`` — CoinGlass funding-rate API for every
-  symbol in ``config.ASSETS`` (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1
+  symbol in ``bot.config.ASSETS`` (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1
   2026-05-10) via authenticated REST every
   ``COINGLASS_FETCH_INTERVAL`` seconds.
 

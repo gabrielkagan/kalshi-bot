@@ -2,7 +2,7 @@
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.4 (2026-05-08). Daemon
 thread that fetches the average funding rate across exchanges from
-the CoinGlass v3 API for every symbol in ``config.ASSETS``
+the CoinGlass v3 API for every symbol in ``bot.config.ASSETS``
 (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10) every
 ``COINGLASS_FETCH_INTERVAL`` seconds (10 min by default — 100
 calls/day budget). Cache stales after ``COINGLASS_CACHE_TTL``.

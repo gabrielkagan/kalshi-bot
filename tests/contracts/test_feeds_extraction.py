@@ -230,11 +230,11 @@ def test_coinbase_constants_resolve_from_bot_constants(name):
 
 
 def test_coinbase_assets_from_config():
-    """ASSETS lives in config.py (not bot.constants). Pin the source so a
+    """ASSETS lives in bot/config.py (not bot.constants). Pin the source so a
     future maintainer doesn't try to re-import from bot.constants and
     silently break. Same drift class as Bit 4.4's DVOL_ANNUALIZED_TO_5S."""
     import bot.feeds.coinbase as bfc
-    import config
+    import bot.config as config
     assert bfc.ASSETS is config.ASSETS or bfc.ASSETS == config.ASSETS
 
 

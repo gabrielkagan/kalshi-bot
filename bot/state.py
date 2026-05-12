@@ -7,7 +7,7 @@ track at ~2,607 lines (38 methods, 2 staticmethods).
 This is **path-A++ extraction**, not byte-for-byte path-A. Two `globals()`
 call sites inside StateManager.__init__ pre-extraction (bot/_impl.py:615-616)
 resolved to bot._impl's namespace, which laundered the constants surface via
-`from config import *` (line 47) + `from bot.constants import *` (line 83).
+`from bot.config import *` (historical bot/_impl.py line 47, retargeted in Bit 12.1) + `from bot.constants import *` (historical bot/_impl.py line 83).
 Path-A would have preserved the smell with a `_bot_impl_globals()` wrapper.
 Path-A++ (user-authorized 2026-05-10 mid-Bit-7.1, per the modularization
 strategic goal of reducing code smells) refactored

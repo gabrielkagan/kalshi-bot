@@ -43,7 +43,7 @@ from hypothesis import example, given, settings, strategies as st
 # `import bot._impl` below pre-loads star-imports the equivalence harness
 # needs via the residual shim (kept until Bit 9.3-iii.c).
 from bot.engines.probability import ProbabilityEngine
-from config import MAX_EFFECTIVE_PROB
+from bot.config import MAX_EFFECTIVE_PROB
 
 
 # ─────────────────────────────────────────────────────────────────────

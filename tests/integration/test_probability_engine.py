@@ -25,7 +25,7 @@ for _mod in ["websockets", "websocket", "requests",
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
 
-from config import BETA_SLOPE, STUDENT_T_DF, MAX_EFFECTIVE_PROB
+from bot.config import BETA_SLOPE, STUDENT_T_DF, MAX_EFFECTIVE_PROB
 import bot.engines  # noqa: F401
 
 
@@ -156,13 +156,13 @@ class TestCdfComplement(unittest.TestCase):
         Patches ``bot.engines.probability.DIST_CONFIG`` directly because
         ``ProbabilityEngine._cdf_complement`` lives in
         ``bot/engines/probability.py`` post-Bit-6.2 and reads its own
-        module-local binding (`from config import DIST_CONFIG` at the
+        module-local binding (`from bot.config import DIST_CONFIG` at the
         top of the file). Patching `config.DIST_CONFIG` (which routes
         through `_BotProxy.__setattr__` to `bot._impl.DIST_CONFIG`)
         no longer reaches the probability module's namespace because
         the extraction created a separate module-level binding.
         Pre-Bit-6.2 the patch worked transitively via
-        `bot/_impl.py:47 from config import *`.
+        `bot/_impl.py:47 from config import *` (historical — Bit 9.3-iii.c deleted bot/_impl.py and Bit 12.1 retargeted `config` → `bot.config`).
         """
         from scipy.stats import t as student_t
         z = 2.0

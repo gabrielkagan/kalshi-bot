@@ -30,7 +30,7 @@ from bot.constants import (
     DVOL_HOURLY_AVG_MIN,
     DVOL_REQUEST_TIMEOUT,
 )
-from config import DVOL_ANNUALIZED_TO_5S
+from bot.config import DVOL_ANNUALIZED_TO_5S
 
 
 class DeribitDVOLFetcher:

@@ -525,7 +525,7 @@ def test_scanner_constants_resolve_from_bot_constants(name):
 @pytest.mark.parametrize("name", SCANNER_CONFIG_CONSTANTS)
 def test_scanner_constants_resolve_from_config(name):
     """Each name in SCANNER_CONFIG_CONSTANTS is importable from config (NOT bot.constants)."""
-    import config as cfg
+    import bot.config as cfg
     assert hasattr(cfg, name), f"{name} not in config"
 
 
@@ -548,9 +548,9 @@ def test_scanner_imports_explicit_bot_constants():
 def test_scanner_imports_explicit_config():
     """bot/scanner/__init__.py uses explicit per-name imports from config (NOT star-import)."""
     src = _read_scanner_source()
-    assert "from config import *" not in src
-    assert re.search(r"^from config import\b", src, re.MULTILINE), (
-        "bot/scanner missing explicit `from config import ...` block"
+    assert "from bot.config import *" not in src
+    assert re.search(r"^from bot\.config import\b", src, re.MULTILINE), (
+        "bot/scanner missing explicit `from bot.config import ...` block"
     )
 
 

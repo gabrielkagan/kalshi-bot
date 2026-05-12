@@ -34,7 +34,7 @@ from bot.constants import (
     JUMP_ADAPTIVE_DECAY_CAP, JUMP_ADAPTIVE_MAG_SCALE_BASE,
     JUMP_ADAPTIVE_MAG_CAP, JUMP_ADAPTIVE_MAX_HISTORY,
 )
-from config import VOL_RETURN_INTERVAL, ASSETS
+from bot.config import VOL_RETURN_INTERVAL, ASSETS
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

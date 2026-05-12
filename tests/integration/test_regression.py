@@ -16,7 +16,7 @@ import textwrap
 import pytest
 import bot.engines  # noqa: F401
 import bot.helpers  # noqa: F401
-import config  # noqa: F401
+import bot.config as config  # noqa: F401
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2110,7 +2110,7 @@ class TestRollingHWM:
         """Old peaks beyond lookback should not count."""
         import time as _time
         from bot.models import PositionSizer
-        from config import HWM_LOOKBACK_SECONDS
+        from bot.config import HWM_LOOKBACK_SECONDS
         sizer = PositionSizer(starting_balance_cents=10000)
         # Complete warmup first
         for _ in range(5):
@@ -2146,7 +2146,7 @@ class TestRollingHWM:
         """After withdrawal, drawdown scaler should recover when old peak ages out."""
         import time as _time
         from bot.models import PositionSizer
-        from config import HWM_LOOKBACK_SECONDS
+        from bot.config import HWM_LOOKBACK_SECONDS
         sizer = PositionSizer(starting_balance_cents=55000)
         # Complete warmup at post-withdrawal balance
         for _ in range(5):

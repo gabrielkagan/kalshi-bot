@@ -249,7 +249,7 @@ def _probe_runtime_proxy_attrs(out: dict[str, Any]) -> None:
 
     Pre-retirement: snapshotted public names accessible via ``getattr(bot, name)``
     that the ``_BotProxy`` in ``bot/__init__.py`` forwarded to ``bot._impl``'s
-    namespace (which included ``from config import *`` and ``from bot.constants
+    namespace (which included ``from bot.config import *`` and ``from bot.constants
     import *`` star-imports). griffe (static) couldn't see that dynamic resolution;
     the runtime probe could.
 

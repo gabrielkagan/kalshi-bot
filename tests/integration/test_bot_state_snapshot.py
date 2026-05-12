@@ -175,7 +175,7 @@ def test_snapshot_no_unbounded_growth():
 
     # api_error_counts: at most len(ASSETS) keys (one per canonical asset).
     # T1 (2026-05-10): ASSETS now 6 (added HYPE/DOGE for shadow observation).
-    from config import ASSETS
+    from bot.config import ASSETS
     assert len(snap["api_error_counts"]) <= len(ASSETS)
     assert len(snap["ws_cache_age_ms"]) <= len(ASSETS)
     assert len(snap["active_cooldowns"]) <= len(ASSETS)
@@ -499,25 +499,24 @@ def test_compute_raises_on_unknown_product_type_filter():
 
 def test_default_assets_matches_bot_py():
     """Round-4 critique #2: drift guard — `_DEFAULT_ASSETS` must mirror
-    bot/_impl.py's canonical asset list (sourced from `config.py:ASSETS`).
+    the canonical asset list (sourced from `bot/config.py:ASSETS`).
 
-    bot/_impl.py imports `ASSETS` via `from config import *` (bot/_impl.py:44), so
-    the canonical literal lives in `config.py`. AST-parse `config.py` to
-    extract its `ASSETS = [...]` literal at module scope and assert that
-    the helper's `_DEFAULT_ASSETS` tuple matches.
+    Bit 12.1 (2026-05-12) relocated `config.py` → `bot/config.py`. AST-parse
+    `bot/config.py` to extract its `ASSETS = [...]` literal at module scope
+    and assert that the helper's `_DEFAULT_ASSETS` tuple matches.
 
     Why AST not import: importing `bot` would pull in requests / websocket /
     cryptography and is slow — for a literal-equality check we just walk
-    the AST of `config.py` (the upstream-of-bot single source of truth).
+    the AST of `bot/config.py` (the upstream-of-bot single source of truth).
 
-    If `ASSETS` ever grows from 4 → 5 (e.g. add DOGE), this test fires
+    If `ASSETS` ever grows from 6 → 7 (e.g. add a new asset), this test fires
     BEFORE production data has wrong/missing per-asset microstate buckets.
     """
     import ast as _ast
 
     from bot.snapshots.bot_state_snapshot import _DEFAULT_ASSETS
 
-    config_path = os.path.join(PROJECT_ROOT, "config.py")
+    config_path = os.path.join(PROJECT_ROOT, "bot", "config.py")
     with open(config_path) as fh:
         tree = _ast.parse(fh.read())
 
@@ -533,13 +532,13 @@ def test_default_assets_matches_bot_py():
             break
 
     assert canonical is not None, (
-        "Canonical ASSETS literal not found in config.py at module scope. "
+        "Canonical ASSETS literal not found in bot/config.py at module scope. "
         "If it moved, update this drift guard to point at the new home."
     )
-    # Coerce both to tuples for comparison (config.py uses a list).
+    # Coerce both to tuples for comparison (bot/config.py uses a list).
     assert tuple(_DEFAULT_ASSETS) == tuple(canonical), (
         f"_DEFAULT_ASSETS drift: helper has {_DEFAULT_ASSETS!r}, "
-        f"config.py has {canonical!r}. Update _DEFAULT_ASSETS in "
+        f"bot/config.py has {canonical!r}. Update _DEFAULT_ASSETS in "
         "bot_state_snapshot.py to match."
     )
 

@@ -31,7 +31,7 @@ for _mod in ["websockets", "websocket", "requests",
         sys.modules[_mod] = MagicMock()
         _MOCKED.append(_mod)
 
-from config import BETA_SLOPE, MAX_EFFECTIVE_PROB, NUMERICAL_SAFETY_CEILING
+from bot.config import BETA_SLOPE, MAX_EFFECTIVE_PROB, NUMERICAL_SAFETY_CEILING
 import bot.engines  # noqa: F401
 
 

@@ -14,7 +14,7 @@ import bot.constants  # noqa: F401
 import bot.executor  # noqa: F401
 import bot.main_loop  # noqa: F401
 import bot.scanner  # noqa: F401
-import config  # noqa: F401
+import bot.config as config  # noqa: F401
 
 # Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))

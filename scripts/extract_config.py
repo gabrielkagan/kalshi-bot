@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Extract trading config constants from bot/_impl.py via AST parsing.
+"""Extract trading config constants via AST parsing.
 
 Outputs JSON that can feed into doc templates, ensuring docs always
-reflect the actual code. No imports of bot/_impl.py — pure static analysis.
+reflect the actual code. No imports of bot.* — pure static analysis.
 
-Also parses bot/engines/weather_engine.py and bot/engines/sports_data.py for cross-file data.
+Sources (post-Bit-12.1, 2026-05-12):
+    - bot/constants.py      (canonical home, Bit 3.1)
+    - bot/config.py         (probability/EGARCH/sizing constants, Bit 12.1)
+    - bot/engines/weather_engine.py
+    - bot/engines/sports_data.py
 
 Usage:
     python3 scripts/extract_config.py > config.json
@@ -20,8 +24,8 @@ from datetime import datetime, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.join(SCRIPT_DIR, "..")
-BOT_PATH = os.path.join(REPO_DIR, "bot/_impl.py")
 CONSTANTS_PATH = os.path.join(REPO_DIR, "bot/constants.py")
+CONFIG_PY_PATH = os.path.join(REPO_DIR, "bot/config.py")  # Bit 12.1 (2026-05-12): relocated from repo root
 WEATHER_PATH = os.path.join(REPO_DIR, "bot", "engines", "weather_engine.py")  # Sprint 10.1c (2026-05-11)
 SPORTS_PATH = os.path.join(REPO_DIR, "bot", "engines", "sports_data.py")  # Sprint 10.1a (2026-05-11)
 
@@ -104,7 +108,8 @@ TRACKED_CONSTANTS = {
 
 
 def extract_constants(source: str) -> dict:
-    """Parse bot/_impl.py AST and extract module-level constant assignments."""
+    """Parse a combined module source (bot/constants.py + bot/config.py post-Bit-12.1)
+    AST and extract module-level constant assignments."""
     tree = ast.parse(source)
     constants = {}
 
@@ -218,7 +223,11 @@ def extract_compound_constants(source: str) -> dict:
 
 
 def extract_exchange_feeds(source: str) -> list:
-    """Extract exchange feed class names from bot/_impl.py (CoinbaseFeed, etc.)."""
+    """Extract exchange feed class names from the given module source (CoinbaseFeed, etc.).
+    Post-Bit-9.3-iii.c bot/_impl.py is deleted; feed classes live in bot/feeds/.
+    Today this function returns [] because the combined-source it scans is
+    bot/constants.py + bot/config.py (constants only). Kept for output-schema
+    stability against existing downstream consumers."""
     tree = ast.parse(source)
     feeds = []
     for node in ast.walk(tree):
@@ -320,34 +329,33 @@ def diff_configs(current: dict, previous_path: str) -> list:
 
 
 def main():
-    # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. The tracked-constants
-    # extraction now reads from bot/constants.py (canonical home post-Bit-3.1).
-    # bot_source is empty when bot/_impl.py is absent; the combined-source
-    # concatenation still yields the right answer because bot.constants.py
-    # holds every TRACKED_CONSTANTS entry.
-    bot_source = ""
-    if os.path.exists(BOT_PATH):
-        with open(BOT_PATH) as f:
-            bot_source = f.read()
-
-    # Bit 3.1: module-level constants live in bot/constants.py. Concatenate
-    # both files so extract_constants() / extract_compound_constants()
-    # find every TRACKED_CONSTANTS entry regardless of which file it lives
-    # in. extract_exchange_feeds() (class-scan) keeps its bot_source-only
-    # input — classes don't move.
+    # Bit 3.1 + Bit 12.1: module-level constants live in bot/constants.py
+    # (canonical) and bot/config.py (probability/EGARCH/sizing peer).
+    # Concatenate both files so extract_constants() / extract_compound_constants()
+    # find every TRACKED_CONSTANTS entry regardless of which file holds it.
+    # bot/_impl.py was DELETED in Bit 9.3-iii.c (2026-05-11); the prior
+    # bot_source read was retired in Bit 12.1.
     constants_source = ""
     if os.path.exists(CONSTANTS_PATH):
         with open(CONSTANTS_PATH) as f:
             constants_source = f.read()
-    combined_source = bot_source + "\n" + constants_source
+    config_source = ""
+    if os.path.exists(CONFIG_PY_PATH):
+        with open(CONFIG_PY_PATH) as f:
+            config_source = f.read()
+    combined_source = constants_source + "\n" + config_source
 
-    line_count = len(bot_source.splitlines())
+    line_count = len(combined_source.splitlines())
     constants = extract_constants(combined_source)
     compounds = extract_compound_constants(combined_source)
     constants.update(compounds)
 
-    # Extract exchange feed classes (still bot/_impl.py only — classes stay)
-    exchange_feeds = extract_exchange_feeds(bot_source)
+    # extract_exchange_feeds() walks class bodies; CoinbaseFeed +
+    # CrossExchangeFeed live in bot/feeds/ post-Bit-4.5a/b. Their class-scan
+    # source is now bot/feeds/* — for now this returns {} until the helper
+    # is retargeted; non-blocking because the only consumer is the
+    # `_exchange_feeds` JSON key (informational, no template depends on it).
+    exchange_feeds = extract_exchange_feeds(combined_source)
 
     # Cross-file extractions
     weather_data = extract_weather_cities()
@@ -355,10 +363,10 @@ def main():
 
     output = {
         "constants": constants,
-        "_bot_lines": line_count,
+        "_combined_source_lines": line_count,
         "_exchange_feeds": exchange_feeds,
         "_extracted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "_bot_path": os.path.abspath(BOT_PATH),
+        "_sources": [os.path.abspath(CONSTANTS_PATH), os.path.abspath(CONFIG_PY_PATH)],
     }
 
     # Merge cross-file data into top-level (not under constants — these aren't bot/_impl.py constants)

@@ -52,7 +52,7 @@ def _import_bot():
     Bit 9.3-iii.b (2026-05-11): pre-retirement this returned the `bot` package
     with _BotProxy.__getattr__ falling through to bot._impl. Post-retirement we
     explicitly search bot.constants → bot.helpers.cell_blocks → bot.helpers.validators
-    → bot.helpers → config in priority order.
+    → bot.helpers → bot.config in priority order.
     """
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
@@ -60,7 +60,7 @@ def _import_bot():
     import bot.helpers
     import bot.helpers.cell_blocks
     import bot.helpers.validators
-    import config
+    import bot.config as config
 
     class _BotLookup:
         constants = bot.constants

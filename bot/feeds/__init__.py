@@ -5,7 +5,7 @@ real-time price/orderbook/fill data for the bot's volatility,
 calibration, and execution pipelines:
 
 - ``CoinbaseFeed`` (`coinbase` submodule, Bit 4.5a) — Coinbase WS
-  feed for every symbol in ``config.ASSETS`` spot prices
+  feed for every symbol in ``bot.config.ASSETS`` spot prices
   (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10) with persistent
   30-min snapshot buffer.
 - ``OrderbookSchemaError`` (`orderbook_schema` submodule, Bit 4.5a)

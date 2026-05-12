@@ -19,7 +19,7 @@ Imports are deliberate: stdlib (``json``, ``logging``, ``math``,
 ``os``, ``time``, ``collections.deque``, ``typing``) +
 ``bot.constants`` (35 explicit names — every RK / JUMP / VOL /
 DERIBIT / IV / BETA tunable) + ``config`` (``ASSETS`` plus the 3
-EGARCH_* names that still live in ``config.py`` because the EGARCH
+EGARCH_* names that still live in ``bot/config.py`` because the EGARCH
 blend predates Bit 3.1 constant-extraction) + ``models``
 (``compute_tv_rk_weights``, the time-varying RK-weight schedule
 that ships with the EGARCH model family) + sibling
@@ -96,7 +96,7 @@ from bot.constants import (
     VOL_WINDOW_1MIN,
     VOL_WINDOW_5MIN,
 )
-from config import (
+from bot.config import (
     ASSETS,
     EGARCH_BLEND_LOG_INTERVAL,
     EGARCH_BLEND_SHADOW_MODE,

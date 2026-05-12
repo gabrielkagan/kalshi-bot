@@ -175,7 +175,7 @@ def test_runtime_config_dual_probe_reads_config():
 
     Tests with MAX_RISK_PER_TRADE which lives in config (not bot.constants).
     """
-    import config
+    import bot.config as config
     import bot.runtime_config
 
     expected = config.MAX_RISK_PER_TRADE

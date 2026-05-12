@@ -59,7 +59,7 @@ class TestPublicAPIImports:
         import bot.helpers
         import bot.models
         import bot.state
-        import config
+        import bot.config as config
 
         # (name, canonical_module) pairs
         required_attrs = [
@@ -87,7 +87,7 @@ class TestPublicAPIImports:
         not bot.constants.
         """
         import bot.constants
-        import config
+        import bot.config as config
 
         hourly_constants = [
             "HOURLY_OBSERVATION_ONLY",
@@ -113,7 +113,7 @@ class TestPublicAPIImports:
     def test_bot_exports_spx_constants(self):
         """bot.constants + config export all SPX constants market_config.py validates against."""
         import bot.constants
-        import config
+        import bot.config as config
 
         # SPX_HOURLY_* — all in bot.constants per Sprint 3 Bit 3.1 extraction.
         spx_constants = [
@@ -139,7 +139,7 @@ class TestPublicAPIImports:
     def test_bot_exports_weather_constants(self):
         """bot.constants + config export all weather constants market_config.py validates against."""
         import bot.constants
-        import config
+        import bot.config as config
 
         weather_constants = [
             "WEATHER_OBSERVATION_ONLY",

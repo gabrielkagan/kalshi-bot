@@ -33,8 +33,9 @@ the residual shim is GONE. Production reaches names via canonical submodules:
 - The proxy fall-through that previously made `bot.X → bot._impl.X` resolve was retired (Bit 9.3-iii.b)
 - `bot/snapshots/dashboard_snapshot.py` + `bot/snapshots/supabase_sync.py` read runtime
   config via `import bot.runtime_config as _bot_mod` (PEP 562 dual-probe of
-  bot.constants → config; Bit 9.3-iii.c — replaces bot._impl as the getattr target;
-  modules relocated under bot/snapshots/ in Bit 10.4, 2026-05-12).
+  bot.constants → bot.config; Bit 9.3-iii.c — replaces bot._impl as the getattr target;
+  modules relocated under bot/snapshots/ in Bit 10.4, 2026-05-12; Bit 12.1 (2026-05-12)
+  retargeted the second probe leg from repo-root `config.py` → `bot/config.py`).
 
 The body of this `__init__.py` is intentionally empty — Python's default
 package import semantics auto-create `sys.modules['bot']` as a plain

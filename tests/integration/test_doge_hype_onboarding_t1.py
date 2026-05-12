@@ -56,13 +56,13 @@ class TestTickerParserHypeDoge(unittest.TestCase):
 
 class TestAtomicActivationSafety(unittest.TestCase):
     def test_assets_registry_contains_hype_doge(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         self.assertIn("HYPE", ASSETS, "HYPE missing from config.ASSETS")
         self.assertIn("DOGE", ASSETS, "DOGE missing from config.ASSETS")
 
     def test_hype_in_assets_implies_shadow_flag_on(self):
         """If HYPE is active, HYPE_15M_SHADOW must be True (no live trades)."""
-        from config import ASSETS
+        from bot.config import ASSETS
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not yet in ASSETS")
         from bot.constants import HYPE_15M_SHADOW
@@ -75,7 +75,7 @@ class TestAtomicActivationSafety(unittest.TestCase):
         )
 
     def test_doge_in_assets_implies_shadow_flag_on(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not yet in ASSETS")
         from bot.constants import DOGE_15M_SHADOW
@@ -89,7 +89,7 @@ class TestAtomicActivationSafety(unittest.TestCase):
 
     def test_hype_in_assets_implies_hourly_excluded(self):
         """If HYPE is active, hourly YES-side must be excluded (no per-asset risk)."""
-        from config import ASSETS
+        from bot.config import ASSETS
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not yet in ASSETS")
         from bot.constants import HOURLY_EXCLUDED_ASSETS
@@ -100,7 +100,7 @@ class TestAtomicActivationSafety(unittest.TestCase):
         )
 
     def test_doge_in_assets_implies_hourly_excluded(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not yet in ASSETS")
         from bot.constants import HOURLY_EXCLUDED_ASSETS
@@ -108,7 +108,7 @@ class TestAtomicActivationSafety(unittest.TestCase):
 
     def test_hype_in_assets_implies_no_side_excluded(self):
         """NO-side hourly belt: HYPE must also be in HOURLY_NO_EXCLUDED_ASSETS."""
-        from config import ASSETS
+        from bot.config import ASSETS
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not yet in ASSETS")
         from bot.constants import HOURLY_NO_EXCLUDED_ASSETS
@@ -119,7 +119,7 @@ class TestAtomicActivationSafety(unittest.TestCase):
         )
 
     def test_doge_in_assets_implies_no_side_excluded(self):
-        from config import ASSETS
+        from bot.config import ASSETS
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not yet in ASSETS")
         from bot.constants import HOURLY_NO_EXCLUDED_ASSETS
@@ -148,7 +148,7 @@ class TestRegistryCompleteness(unittest.TestCase):
     def test_all_registries_have_same_asset_keys(self):
         """Cross-registry consistency: any asset in ASSETS must be in all
         feed registries."""
-        from config import ASSETS
+        from bot.config import ASSETS
         from bot.constants import (
             SERIES_TICKERS,
             HOURLY_SERIES_TICKERS,

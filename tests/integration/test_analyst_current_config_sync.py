@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 import bot.constants  # noqa: F401
-import config  # noqa: F401
+import bot.config as config  # noqa: F401
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ANALYST_PATH = REPO_ROOT / "analyst.py"
@@ -91,14 +91,14 @@ def bot_module():
 
     Bit 9.3-iii.b (2026-05-11): pre-retirement this was `import bot` which routed
     `bot.X` through `_BotProxy.__getattr__` → `bot._impl.X` (resolved via either
-    `from bot.constants import *` or `from config import *`). Post-retirement the
+    `from bot.constants import *` or `from bot.config import *`). Post-retirement the
     proxy is gone, so this fixture explicitly searches the same two canonical homes
     in the same priority order (bot.constants first — it's the canonical home for
     constants extracted in Bit 3.1; config second — shared constants like
     MAX_RISK_PER_TRADE / HOURLY_KELLY_FRACTION live there).
     """
     import bot.constants
-    import config
+    import bot.config as config
 
     class _ConstantLookup:
         def __getattr__(self, name):

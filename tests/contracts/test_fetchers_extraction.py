@@ -16,11 +16,11 @@ atomic commit (regen via the recipe in the doc preamble).
 
 L31 (Bit 4.2.5.1): pre-flight grep for whole-file drift surfaces — the
 two fetchers reference module-level constants that span bot/constants.py
-(DERIBIT_DVOL_*, DVOL_*, COINGLASS_*) AND config.py (DVOL_ANNUALIZED_TO_5S).
+(DERIBIT_DVOL_*, DVOL_*, COINGLASS_*) AND bot/config.py (DVOL_ANNUALIZED_TO_5S).
 Both import paths are pinned by tests below.
 
 L32 (Bit 4.3): Plan-agent-style pre-emptive findings baked in — the
-DVOL_ANNUALIZED_TO_5S constant lives in config.py (not bot/constants.py),
+DVOL_ANNUALIZED_TO_5S constant lives in bot/config.py (not bot/constants.py),
 which would silently break if the new module imported only from
 bot.constants.
 """
@@ -167,7 +167,7 @@ def test_deribit_constants_resolve_from_bot_constants(name):
 
 def test_dvol_annualized_to_5s_from_config():
     """DVOL_ANNUALIZED_TO_5S is one of the few constants that DID NOT move
-    to bot/constants.py in Bit 3.1 — it remains in config.py because it's
+    to bot/constants.py in Bit 3.1 — it remains in bot/config.py because it's
     derived from VOL_RETURN_INTERVAL + SECONDS_PER_YEAR which also stayed
     there. The deribit module imports it directly from config.
 
@@ -175,7 +175,7 @@ def test_dvol_annualized_to_5s_from_config():
     in bot/constants.py and miss this. Pin the actual location.
     """
     import bot.fetchers.deribit as bfd
-    import config
+    import bot.config as config
     assert bfd.DVOL_ANNUALIZED_TO_5S == config.DVOL_ANNUALIZED_TO_5S
 
 

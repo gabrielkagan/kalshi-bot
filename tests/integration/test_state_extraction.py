@@ -10,7 +10,7 @@ This bit is the largest single leaf-class extraction yet (~2,607 lines, 38
 methods, 2 staticmethods). It is **NOT byte-for-byte path-A**: two `globals()`
 call sites inside `__init__` (lines 615-616 of bot/_impl.py pre-extraction)
 required intervention because they resolved to bot._impl's namespace which
-holds the laundered constants surface (`from config import *` at line 47 +
+holds the laundered constants surface (historically `from config import *` at line 47, retargeted to `from bot.config import *` in Bit 12.1 +
 `from bot.constants import *` at line 83). Path-A's resolution would have
 been a `_bot_impl_globals()` wrapper preserving the smell. Path-A++ (the
 shipped variant, user-authorized 2026-05-10) refactored
@@ -416,14 +416,14 @@ def test_parity_assert_imports_from_bot_constants_and_config():
         f"parity_assert body should `from bot.constants import ...` "
         f"directly per path-A++. Found imports inside the function:\n{flat}"
     )
-    assert "from config import" in flat, (
-        f"parity_assert body should `from config import ...` directly per "
+    assert "from bot.config import" in flat, (
+        f"parity_assert body should `from bot.config import ...` directly per "
         f"path-A++. Found imports inside the function:\n{flat}"
     )
 
 
 def test_parity_assert_drawdown_halt_floor_fallback_preserved():
-    """DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor config.py at the
+    """DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor bot.config at the
     time of Bit 7.1 ship. Pre-refactor used `bot_globals.get('DRAWDOWN_HALT_FLOOR', 0.10)`.
     Post-refactor must preserve the same 0.10 fallback semantics (no
     behavioral change)."""

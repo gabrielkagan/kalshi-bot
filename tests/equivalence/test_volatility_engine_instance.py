@@ -81,7 +81,7 @@ from bot.constants import (
     JUMP_MAX_HISTORY,
     VOL_WINDOW_15MIN,
 )
-from config import ASSETS
+from bot.config import ASSETS
 
 
 # ─────────────────────────────────────────────────────────────────────

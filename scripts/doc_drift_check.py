@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Documentation drift detection — compares config values in code vs docs.
 
-Extracts "facts" from the codebase (bot/_impl.py, config.py, market_config.py, etc.)
+Extracts "facts" from the codebase (bot/constants.py, bot/config.py, market_config.py, etc.)
 and compares them against claims in documentation files. Reports DRIFT when a
 doc claims a value that differs from the code.
 
@@ -31,8 +31,10 @@ from typing import Any, Dict, List, Optional, Tuple
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Source files to extract facts from
+# Sprint 12 Bit 12.1 (2026-05-12): `config.py` → `bot/config.py`. Stale
+# `bot/_impl.py` entry (deleted in 9.3-iii.c) dropped in same atomic commit.
 SOURCE_FILES = [
-    "bot/_impl.py", "bot/constants.py", "config.py", "market_config.py", "bot/models.py",  # Sprint 10.5b (2026-05-11): models relocated
+    "bot/constants.py", "bot/config.py", "market_config.py", "bot/models.py",  # Sprint 10.5b (2026-05-11): models relocated; Sprint 12 Bit 12.1 (2026-05-12): config.py relocated to bot/config.py
     "bot/engines/spx_engine.py", "bot/engines/weather_engine.py", "bot/engines/sports_engine.py",  # Sprint 10.1b/c/d sibling-reorg (2026-05-11): all 3 main engines relocated
     "bot/shadows/fifteenm_shadow.py", "bot/shadows/hourly_alt_shadow.py",  # Sprint 10.2 (2026-05-11)
     # R-p7-deploy-r11 R5: cal_mlp constants live here. Without this entry,
@@ -184,12 +186,11 @@ def normalize_value(raw: str) -> str:
 
 
 def get_line_count() -> int:
-    """Get bot/_impl.py line count."""
-    bot_path = REPO_ROOT / "bot" / "_impl.py"
-    if not bot_path.exists():
-        return 0
-    with open(bot_path) as f:
-        return sum(1 for _ in f)
+    """Returns 0 post-Bit-9.3-iii.c (bot/_impl.py was deleted).
+    Retained as a no-op so the call site at L258 + downstream BOT_LINE_COUNT
+    consumers (whitepaper template) don't break — `if lc:` falls through to skip
+    the fact emission. Out-of-scope cleanup tracked in followup."""
+    return 0
 
 
 def get_test_count() -> Optional[int]:
@@ -252,11 +253,14 @@ def extract_all_facts(source_lines: Dict[str, List[str]]) -> Dict[str, Any]:
                 "raw": raw,
             }
 
-    # Structural facts
+    # Structural facts — `get_line_count()` is a no-op post-Bit-9.3-iii.c
+    # (bot/_impl.py deleted). `lc` is always 0; the block is reachable but
+    # falls through. Kept for output-schema stability against any downstream
+    # consumer of BOT_LINE_COUNT.
     lc = get_line_count()
     if lc:
         facts["BOT_LINE_COUNT"] = {
-            "label": "bot/_impl.py line count",
+            "label": "bot.* combined line count (deprecated; was bot/_impl.py pre-9.3-iii.c)",
             "value": str(lc),
             "raw": str(lc),
         }

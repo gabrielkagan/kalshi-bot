@@ -14,7 +14,7 @@ Computes ``P(price stays above threshold)`` for a Kalshi YES bet given
 spot, threshold, ``seconds_remaining``, and a blended realized vol
 (per-5-second log-return scale). Supports per-asset distribution
 selection via ``dist_config.json`` (loaded once at import in
-``config.py``): Student-t with configurable ``df`` (default 4) or
+``bot/config.py``): Student-t with configurable ``df`` (default 4) or
 Normal-Inverse-Gaussian with fitted ``(a, b, loc, scale)``. Falls back
 to ``Student-t(df=4)`` when no per-asset config is present.
 
@@ -106,7 +106,7 @@ from bot.constants import (
     FIFTEEN_M_CALIBRATION_ENABLED,
     HOURLY_DYNAMIC_CAP_SCHEDULE,
 )
-from config import (
+from bot.config import (
     BETA_SLOPE,
     DIST_CONFIG,
     MAX_EFFECTIVE_PROB,

@@ -9,7 +9,7 @@ import tempfile
 import time
 import pytest
 
-from config import (
+from bot.config import (
     EGARCH_E_ABS_Z,
     EGARCH_LOG_VAR_CEILING,
     EGARCH_LOG_VAR_FLOOR,

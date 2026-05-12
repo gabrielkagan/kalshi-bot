@@ -2,7 +2,7 @@
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.5a (2026-05-08). Daemon
 thread that subscribes to Coinbase ticker channel for every symbol in
-`config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10 —
+`bot.config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10 —
 ASSETS is the canonical source; see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md
 + bit-1-5-shipped-may10.md). Maintains a 1-second-resolution rolling
 buffer (PRICE_BUFFER_SIZE), and persists the buffer to disk every
@@ -14,7 +14,7 @@ done-callback for the off-loop persist task. It moved here from
 bot/_impl.py because CoinbaseFeed is its sole consumer.
 
 Imports are deliberate: stdlib + ``websockets`` + ``bot.constants``
-(5 explicit names) + ``ASSETS`` from ``config.py`` (left there in
+(5 explicit names) + ``ASSETS`` from ``bot/config.py`` (left there in
 Bit 3.1 because it's used by models.py + tests outside the bot
 package). Does NOT import ``bot._impl`` (would create a circular
 import — `_impl` imports this module).
@@ -42,7 +42,7 @@ from bot.constants import (
     SPOT_BUFFER_PERSIST_INTERVAL_S,
     SPOT_BUFFER_PERSIST_PATH,
 )
-from config import ASSETS
+from bot.config import ASSETS
 
 
 def _swallow_persist_exception(fut):

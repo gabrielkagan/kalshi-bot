@@ -406,7 +406,7 @@ def build_replacements(stats, config=None):
             r["DRAWDOWN_HALT_PCT"] = f"{dd_halt * 100:.0f}"
 
         # Bot line count
-        bot_lines = config.get("_bot_lines")
+        bot_lines = config.get("_combined_source_lines")
         if bot_lines is not None:
             r["BOT_LINE_COUNT"] = f"{bot_lines:,}"
 

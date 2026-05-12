@@ -712,7 +712,7 @@ SPOT_BUFFER_PERSIST_PATH = "state/spot_buffer.json"  # R-p7-deploy-r11: persist
 SPOT_BUFFER_PERSIST_INTERVAL_S = 30  # flush cadence
 
 # ─── Volatility Engine ───────────────────────────────────────────────────────
-# VOL_RETURN_INTERVAL → config.py
+# VOL_RETURN_INTERVAL → bot/config.py (relocated from repo root in Bit 12.1)
 VOL_WINDOW_1MIN = 12              # 60s / 5s = 12 returns
 
 VOL_WINDOW_5MIN = 60              # 300s / 5s = 60 returns

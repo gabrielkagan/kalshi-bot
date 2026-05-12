@@ -176,7 +176,7 @@ MAIN_LOOP_BOT_CONSTANTS_NAMES = (
     "WS_PERIODIC_RESNAPSHOT_INTERVAL_S",
 )
 
-# 1 from config (Bit 3.1 left in config.py)
+# 1 from config (Bit 3.1 left in bot/config.py)
 MAIN_LOOP_CONFIG_NAMES = ("ASSETS",)
 
 # 1 from market_config
@@ -412,8 +412,8 @@ def test_main_loop_constant_partitioned_to_bot_constants(const_name: str):
 
 @pytest.mark.parametrize("const_name", MAIN_LOOP_CONFIG_NAMES)
 def test_main_loop_constant_partitioned_to_config(const_name: str):
-    """L39 — ASSETS lives in config.py (Bit 3.1 left-in-config)."""
-    import config
+    """L39 — ASSETS lives in bot/config.py (Bit 3.1 left-in-config)."""
+    import bot.config as config
     assert hasattr(config, const_name), f"{const_name} not in config"
 
 
@@ -430,8 +430,8 @@ def test_main_loop_imports_constants_explicitly_not_via_star():
     assert "from bot.constants import *" not in src, (
         "bot/main_loop.py uses `from bot.constants import *` — replace with explicit imports per L40"
     )
-    assert "from config import *" not in src, (
-        "bot/main_loop.py uses `from config import *` — explicit names only per L40"
+    assert "from bot.config import *" not in src, (
+        "bot/main_loop.py uses `from bot.config import *` — explicit names only per L40"
     )
     assert "from bot.helpers import *" not in src, (
         "bot/main_loop.py uses `from bot.helpers import *` — explicit names only per L40"

@@ -404,14 +404,14 @@ def parity_assert(conn) -> tuple:
         STC_EXTENDED_BUFFER_RESCUE,
         HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
     )
-    from config import (
+    from bot.config import (
         SIZING_TIERS, MAX_RISK_PER_TRADE,
         DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD, DRAWDOWN_HALT_THRESHOLD,
     )
-    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor config.py at the
+    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor bot.config at the
     # time of Bit 7.1 ship. The literal 0.10 mirrors the pre-refactor
     # `bot_globals.get('DRAWDOWN_HALT_FLOOR', 0.10)` fallback semantics.
-    # (Operator may promote DRAWDOWN_HALT_FLOOR=0.10 to config.py in a
+    # (Operator may promote DRAWDOWN_HALT_FLOOR=0.10 to bot.config in a
     # future bit; this fallback then becomes a no-op redundancy.)
     DRAWDOWN_HALT_FLOOR = 0.10
 
@@ -581,15 +581,15 @@ def make_compute_for_15m_main_path():
         SOL_MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE,
         STC_SIZING_SCALER_KNEE, STC_SIZING_SCALER_ENABLED,
     )
-    from config import (
+    from bot.config import (
         SIZING_TIERS, MAX_RISK_PER_TRADE,
         DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD, DRAWDOWN_HALT_THRESHOLD,
     )
-    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor config.py. The
+    # DRAWDOWN_HALT_FLOOR is in NEITHER bot.constants nor bot.config. The
     # literal 0.10 mirrors the pre-refactor `bot_globals.get('DRAWDOWN_HALT_FLOOR',
     # 0.10)` fallback semantics AND the matching literal inside
     # `parity_assert` (above). If an operator promotes DRAWDOWN_HALT_FLOOR
-    # to config.py in a future bit, this literal becomes a redundancy to
+    # to bot.config in a future bit, this literal becomes a redundancy to
     # remove (parity_assert's _check on this name will start failing if
     # the literal drifts from the promoted config value).
     DRAWDOWN_HALT_FLOOR = 0.10

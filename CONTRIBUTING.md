@@ -52,11 +52,14 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   `bot/order_flow.py`, `bot/orphan_db_watchdog.py`, `bot/engines/`,
   `bot/feeds/`, `bot/fetchers/`, `bot/helpers/`, `bot/notifier.py`,
   `bot/logger.py`, `bot/state.py`, `bot/kalshi_client.py`,
-  `bot/infra/`, `bot/shadows/`, `bot/models.py`, `migrations/`
-  (top-level, Sprint 10.6). `bot/_impl.py` was DELETED in Bit 9.3-iii.c
-  (2026-05-11) — Sprint 9 main modularization is CLOSED. New code goes
-  in canonical submodules; `bot/runtime_config.py` (PEP 562 dual-probe)
-  is the runtime-config view for bot/snapshots/dashboard_snapshot.py + bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12).
+  `bot/infra/`, `bot/shadows/`, `bot/models.py`, `bot/config.py`,
+  `migrations/` (top-level, Sprint 10.6). `bot/_impl.py` was DELETED in
+  Bit 9.3-iii.c (2026-05-11) — Sprint 9 main modularization is CLOSED.
+  New code goes in canonical submodules; `bot/runtime_config.py`
+  (PEP 562 dual-probe of `bot.constants` → `bot.config`) is the
+  runtime-config view for bot/snapshots/dashboard_snapshot.py +
+  bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12; Bit 12.1
+  2026-05-12 relocated `config.py` from repo root → `bot/config.py`).
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
   Direct `import torch` / `import pandas` anywhere under `bot/` is
   blocked by `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`).

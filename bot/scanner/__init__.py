@@ -282,7 +282,7 @@ from bot.constants import (
     XRP_MIN_ENTRY_PRICE,
     XRP_SHADOW_MIN_PRICE,
 )
-from config import (
+from bot.config import (
     ASSETS,
     DRAWDOWN_HALF_THRESHOLD,
     DRAWDOWN_HALT_THRESHOLD,
@@ -977,7 +977,7 @@ class OpportunityScanner:
         """
         # Single get_all_prices() acquires the feed lock once vs 4
         # acquires for per-asset get_price (Phase F adversarial round 2 LOW-2).
-        # ASSETS is the module-level constant from config.py (NOT an
+        # ASSETS is the module-level constant from bot/config.py (NOT an
         # OpportunityScanner attribute) — Phase F adversarial round 4
         # caught a `self.ASSETS` typo that would have silently NULL'd
         # all 4 cross-asset spot columns in production (the per-helper

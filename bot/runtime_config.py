@@ -2,7 +2,7 @@
 
 Replaces the deleted `bot/_impl.py` residual shim's role as a single getattr
 target for runtime-config introspection. Provides PEP 562 module-level
-`__getattr__` that dual-probes `bot.constants` then `config` on EACH access —
+`__getattr__` that dual-probes `bot.constants` then `bot.config` on EACH access —
 which preserves mutation freshness for runtime-mutable flags (the scanner
 kill-switch writes target `bot.constants.X`; this module reads through to that
 same module attribute on the dashboard's next snapshot tick).
@@ -18,11 +18,12 @@ The `getattr(_bot_mod, NAME, default)` form survives missing names: PEP 562
 `__getattr__` raises `AttributeError`, Python's `getattr` catches it and
 returns the caller-provided default. This matches the pre-Bit-9.3-iii.c
 behavior of `getattr(bot._impl, NAME, default)` against the bot._impl
-namespace populated by `from bot.constants import *` + `from config import *`.
+namespace populated by `from bot.constants import *` + `from bot.config import *`
+(Bit 12.1 retargeted `config` → `bot.config`).
 
 ## Why a new module instead of importing bot.constants directly
 
-bot.constants does not re-export config.py constants (and shouldn't — they have
+bot.constants does not re-export bot.config constants (and shouldn't — they have
 different home modules per the Bit 3.1 / Sprint 4 layering). The dashboard
 needs both sets reachable from a single getattr target without per-name
 retargets. PEP 562 dual-probe is the minimum-edit-distance shim that delivers
@@ -35,16 +36,17 @@ pre-Bit-9.3-iii.c kill-switch fix. Module-level `__getattr__` reads the
 underlying module's attribute on each call — that's what gives mutation
 freshness.
 
-Bit 9.3-iii.c (2026-05-11).
+Bit 9.3-iii.c (2026-05-11); Bit 12.1 (2026-05-12) retargeted `config` → `bot.config`
+after the config.py relocation.
 """
 from __future__ import annotations
 
+import bot.config as _cf
 import bot.constants as _bc
-import config as _cf
 
 
 def __getattr__(name: str):
-    """PEP 562 dual-module probe: bot.constants → config → AttributeError."""
+    """PEP 562 dual-module probe: bot.constants → bot.config → AttributeError."""
     if hasattr(_bc, name):
         return getattr(_bc, name)
     if hasattr(_cf, name):

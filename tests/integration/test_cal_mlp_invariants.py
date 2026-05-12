@@ -237,7 +237,7 @@ def test_drawdown_halt_floor_literal_matches_expected():
     """R-p7-spec-r1#C1: bot/_impl.py hardcodes DRAWDOWN_HALT_FLOOR=0.10 inline
     inside bot.models.PositionSizer; the make_compute_for_15m_main_path closure
     mirrors that literal so the XRP halt path (parity vec 4) is reachable
-    without a config.py edit.
+    without a bot/config.py edit.
 
     Smell 4 refactor (ticket 86b9vhccw): pre-refactor, the closure used
     `g.get('DRAWDOWN_HALT_FLOOR', 0.10)` to fall back to 0.10 when the

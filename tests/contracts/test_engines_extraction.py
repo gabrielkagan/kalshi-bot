@@ -234,11 +234,11 @@ VOLATILITY_CONFIG_CONSTANTS = (
 
 @pytest.mark.parametrize("name", VOLATILITY_CONFIG_CONSTANTS)
 def test_volatility_config_constants_resolve_from_config(name):
-    """ASSETS, EGARCH_*, and VOL_RETURN_INTERVAL live in config.py (not
+    """ASSETS, EGARCH_*, and VOL_RETURN_INTERVAL live in bot/config.py (not
     bot.constants — pre-Bit-3.1 EGARCH blend; ASSETS is a primitive). Pin
     the source so a future maintainer doesn't accidentally re-import from
     bot.constants and silently shadow."""
-    import config
+    import bot.config as config
     import bot.engines.volatility as bev
     assert getattr(bev, name) is getattr(config, name), (
         f"bot.engines.volatility.{name} drifted from config.{name}."
@@ -694,12 +694,12 @@ PROBABILITY_CONFIG_CONSTANTS = (
 
 @pytest.mark.parametrize("name", PROBABILITY_CONFIG_CONSTANTS)
 def test_probability_config_constants_resolve_from_config(name):
-    """BETA_SLOPE, MAX_EFFECTIVE_PROB, STUDENT_T_DF live in config.py
+    """BETA_SLOPE, MAX_EFFECTIVE_PROB, STUDENT_T_DF live in bot/config.py
     (pre-Bit-3.1, predate constant extraction); DIST_CONFIG is loaded
     from dist_config.json by config._load_dist_config(). All four
     must resolve from config, NOT bot.constants. L39 catch from
     Bit 6.2 pre-flight: getting this wrong is exactly the failure mode."""
-    import config
+    import bot.config as config
     import bot.engines.probability as bep
     assert getattr(bep, name) is getattr(config, name), (
         f"bot.engines.probability.{name} drifted from config.{name}. "
@@ -1112,10 +1112,11 @@ CALIBRATION_CONFIG_CONSTANTS = (
 @pytest.mark.parametrize("name", CALIBRATION_CONFIG_CONSTANTS)
 def test_calibration_config_constants_resolve_from_config(name):
     """BETA_SLOPE, MAX_EFFECTIVE_PROB, NUMERICAL_SAFETY_CEILING live in
-    config.py (pre-Bit-3.1, predate constant extraction). All three must
-    resolve from config, NOT bot.constants. L39 catch from Bit 6.3
-    pre-flight: this exactly mirrors the Bit 6.2 partition lesson."""
-    import config
+    bot/config.py (pre-Bit-3.1, predate constant extraction; relocated from
+    repo-root config.py in Bit 12.1). All three must resolve from bot.config,
+    NOT bot.constants. L39 catch from Bit 6.3 pre-flight: this exactly mirrors
+    the Bit 6.2 partition lesson."""
+    import bot.config as config
     import bot.engines.calibration as bec
     assert getattr(bec, name) is getattr(config, name), (
         f"bot.engines.calibration.{name} drifted from config.{name}. "

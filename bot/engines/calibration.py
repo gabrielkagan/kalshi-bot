@@ -117,7 +117,7 @@ from bot.constants import (
     SHADOW_BLEND_W,
     SHADOW_CAL_PIPELINE,
 )
-from config import (
+from bot.config import (
     BETA_SLOPE,
     MAX_EFFECTIVE_PROB,
     NUMERICAL_SAFETY_CEILING,

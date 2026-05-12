@@ -112,6 +112,7 @@ source_modules =
 forbidden_modules =
     bot._thread_env
     bot.boot
+    bot.config
     bot.engines
     bot.executor
     bot.feeds

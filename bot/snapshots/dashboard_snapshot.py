@@ -931,7 +931,7 @@ class DashboardSnapshotBuilder:
 
         # ── trading config values ──────────────────────────────────────
         try:
-            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
             snap["trading_config"] = {
                 "min_edge_by_price": getattr(_bot_mod, "MIN_EDGE_BY_PRICE", []),
                 "market_blend_w": getattr(_bot_mod, "MARKET_BLEND_W", None),
@@ -1025,7 +1025,7 @@ class DashboardSnapshotBuilder:
         try:
             mz = getattr(self._ml, "mz_tracker", None)
             if mz:
-                import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+                import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
                 snap["egarch_blend"] = {
                     "shadow_mode": getattr(_bot_mod, "EGARCH_BLEND_SHADOW_MODE", True),
                     "weights": {a: mz.get_weight(a) for a in ASSETS},
@@ -1271,7 +1271,7 @@ class DashboardSnapshotBuilder:
         try:
             koft = getattr(self._ml, "kalshi_oft", None)
             if koft:
-                import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+                import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
                 koft_data = {
                     "shadow_mode": getattr(_bot_mod, "KALSHI_OFT_SHADOW_MODE", True),
                     "tracked_tickers": koft.get_tracked_count(),
@@ -1435,7 +1435,7 @@ class DashboardSnapshotBuilder:
             if hourly_obs_cand == 0 and total_orders > 0:
                 # Scanner doesn't track hourly separately; check if hourly obs is active
                 try:
-                    import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+                    import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
                     if getattr(_bot_mod, "HOURLY_OBSERVATION_ENABLED", False) and \
                        getattr(_bot_mod, "HOURLY_OBSERVATION_ONLY", True):
                         # Can't distinguish 15m vs hourly candidates, suppress this alert
@@ -1457,7 +1457,7 @@ class DashboardSnapshotBuilder:
 
         # ── Shadow calibration pipeline ─────────────────────────────────
         try:
-            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
             cal_engine = getattr(self._ml, "calibration", None)
             if cal_engine:
                 snap["shadow_cal_pipeline"] = {
@@ -1474,7 +1474,7 @@ class DashboardSnapshotBuilder:
 
         # ── Hourly observation mode ──────────────────────────────────────
         try:
-            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
+            import bot.runtime_config as _bot_mod  # Bit 9.3-iii.c (2026-05-11): bot.runtime_config is a PEP 562 __getattr__ dual-probe of bot.constants then bot.config — preserves getattr-fallback semantics + mutation freshness for runtime-mutable kill-switch flags. See bot/runtime_config.py.
             hourly_enabled = getattr(_bot_mod, "HOURLY_OBSERVATION_ENABLED", False)
             if hourly_enabled:
                 hourly_data = {

@@ -174,7 +174,7 @@ from bot.scanner import OpportunityScanner
 from bot.settlement import SettlementTracker, discover_active_windows
 
 # Pre-Bit-3.1 leftover-in-config + market_config + models
-from config import ASSETS
+from bot.config import ASSETS
 from market_config import MARKET_CONFIGS
 from bot.models import (
     EGARCHEstimator,

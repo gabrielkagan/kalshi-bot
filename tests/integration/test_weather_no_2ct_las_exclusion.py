@@ -28,7 +28,7 @@ def _import_bot():
 
     Bit 9.3-iii.b (2026-05-11): pre-retirement this returned the `bot` package
     with _BotProxy.__getattr__ falling through to bot._impl. Post-retirement we
-    explicitly search bot.constants → bot.helpers.cell_blocks → config in priority
+    explicitly search bot.constants → bot.helpers.cell_blocks → bot.config in priority
     order, which matches the same set of names the proxy used to surface.
     """
     if str(REPO) not in sys.path:
@@ -48,7 +48,7 @@ def _import_bot():
     import bot.executor
     import bot.helpers
     import bot.helpers.cell_blocks
-    import config
+    import bot.config as config
 
     class _BotLookup:
         constants = bot.constants

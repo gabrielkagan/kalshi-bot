@@ -6,10 +6,10 @@ handlers, etc.). Phase 6 SHIP PRECONDITION (lands in same commit as Phase 7
 deploy): bot.py adds a startup-time parity-assert that its inline sizing
 logic matches `sizing.compute_size(...)` on a fixed test vector.
 
-This file mirrors the logic in `config.py` (SIZING_TIERS, drawdown
+This file mirrors the logic in `bot/config.py` (SIZING_TIERS, drawdown
 thresholds, MAX_RISK_PER_TRADE), `bot.py` STC_SIZING_SCALER, and per-asset
 ASSET_MAX_RISK_PER_TRADE caps from bot.py:226-229.
-Doc-drift rule: if config.py / bot.py change, update here in same commit.
+Doc-drift rule: if bot/config.py / bot/__main__.py change, update here in same commit.
 
 R-p6-impl-2#C1 / R-p6-impl-4#C3: SIZING_TIERS as fraction-tuples, drawdown
 0.85/0.75/0.65 ladder, MAX_RISK_PER_TRADE=0.25 cap, STC_SIZING_SCALER
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# config.py:134-148 — units are FRACTIONS (e.g., 0.04 = 4% edge).
+# bot/config.py:172-181 (post-Bit-12.1) — units are FRACTIONS (e.g., 0.04 = 4% edge).
 SIZING_TIERS = [
     (0.04,   0.25),
     (0.025,  0.20),
@@ -112,7 +112,7 @@ def compute_drawdown_scaler(
     current_balance_cents: int,
     hwm_cents: int,
 ) -> float:
-    """config.py drawdown ladder: halve at 0.85, quarter at 0.75, halt floor
+    """bot/config.py drawdown ladder: halve at 0.85, quarter at 0.75, halt floor
     at 0.65 (returns DRAWDOWN_HALT_FLOOR=0.10 — bot.py doesn't fully halt in
     sim; tiny floor preserves replay continuity)."""
     if hwm_cents <= 0:
