@@ -28,7 +28,7 @@ Architecture (one nightly run, 06:00 UTC, post H-4 cron chain):
   1. Pre-flight df check (need ~2x state.db worth of free tmp space).
   2. Snapshot live state.db -> /tmp/state-db-snapshot-<ts>.db via
      sqlite3.Connection.backup().
-  3. Compress with `zstd -19` (fallback `gzip -9` if zstd missing).
+  3. Compress with `zstd -6` (fallback `gzip -9` if zstd missing).
   4. `rclone copyto --checksum LOCAL s3prod:bucket/daily/state-db-<date>.db.zst`.
   5. Cleanup tmp files (always, even on failure).
   6. Exit 0; non-zero triggers Telegram alert via h4_run_with_alert.py
@@ -204,13 +204,21 @@ def compress(src: Path, dst: Path, algorithm: str = DEFAULT_ALGORITHM) -> None:
         if dst.suffix == ".zst":
             dst = dst.with_suffix(".gz")
     if algorithm == "zstd":
-        # `-19` is high compression; SQLite's sparse pages compress 4-6x.
+        # `-6` is zstd's balanced level (ticket 86b9xgu9c). The original
+        # Phase 0a script used `-19` (highest compression) which took
+        # ~11 min wall-clock on the first manual VPS backup — unacceptable
+        # for a 06:00 UTC daily cron that overlaps the next H-4 chain. -6
+        # produces ~10-15% larger output for ~5-15× faster compression
+        # (Silesia-corpus benchmark; SQLite sparse pages tend toward the
+        # tighter end of both ranges). Pinned by
+        # tests/integration/test_state_db_s3_backup.py::TestCompression::
+        # test_zstd_compression_level_pinned_at_6 — do NOT revert to -19.
         # `-T0` uses all cores (1 on the VPS, harmless on a Mac).
         # `-q` suppresses the compression-ratio progress chatter.
         # No `--rm` — we cleanup the source explicitly in run_backup so a
         # failed compress + retry doesn't lose the original snapshot.
         subprocess.run(
-            ["zstd", "-19", "-T0", "-q", "-o", str(dst), str(src)],
+            ["zstd", "-6", "-T0", "-q", "-o", str(dst), str(src)],
             check=True,
         )
     elif algorithm == "gzip":

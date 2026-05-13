@@ -324,6 +324,55 @@ class TestCompression:
         with pytest.raises(ValueError, match="algorithm"):
             backup_module.compress(snap, tmp_path / "x.bz2", algorithm="bzip2")
 
+    def test_zstd_compression_level_pinned_at_6(
+        self, live_db, tmp_path, backup_module, monkeypatch
+    ):
+        """Pin the zstd compression level at -6 (ticket 86b9xgu9c).
+
+        The original Phase 0a script used `zstd -19` (highest compression),
+        which took ~11 min wall-clock on the first manual VPS backup. -6 is
+        zstd's balanced default — ~10-15% larger output for ~5-15× faster
+        compression (Silesia-corpus benchmark; SQLite sparse pages tend
+        toward the tighter end of both ranges). On the daily 06:00 UTC
+        cron the prior 11-min spike was unacceptable (overlapped the next
+        H-4 chain). This test catches an accidental revert to -19 (or
+        upward drift to -22 / --ultra).
+        """
+        captured = []
+
+        def fake_run(cmd, *args, **kwargs):
+            captured.append(list(cmd))
+            # Write a stub output file so caller's subsequent reads don't fail.
+            for i, tok in enumerate(cmd):
+                if tok == "-o" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_bytes(b"stub")
+            class _CP:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return _CP()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        snap = tmp_path / "snap.db"
+        snap.write_bytes(b"x" * 4096)
+        out = tmp_path / "snap.db.zst"
+        backup_module.compress(snap, out, algorithm="zstd")
+
+        assert captured, "subprocess.run never invoked"
+        argv = captured[0]
+        assert argv[0] == "zstd", f"expected zstd binary, got {argv!r}"
+        assert "-6" in argv, (
+            f"zstd level -6 not in argv {argv!r}; ticket 86b9xgu9c pins -6 "
+            "to keep daily backup wall-clock under 2 min"
+        )
+        # Guard against accidental high-level reverts.
+        for forbidden in ("-19", "-20", "-21", "-22", "--ultra"):
+            assert forbidden not in argv, (
+                f"zstd {forbidden} reintroduced — daily backup will regress "
+                "to ~11 min wall-clock. See ticket 86b9xgu9c."
+            )
+
 
 # ── object key routing ─────────────────────────────────────────────────
 
