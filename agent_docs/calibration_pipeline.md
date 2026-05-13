@@ -4,7 +4,7 @@
 2. Beta calibration (`CalibrationEngine` — trained on 15M data only, hourly excluded)
 3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
 4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling). Cap schedule only applies during startup before training.
-5. Market blend: 40% weight toward market price (60% model)
+5. Market blend: per-asset 15M weights `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (P2.1.d, 2026-05-13); HYPE/DOGE shadow + non-15M paths fall back to the scalar MARKET_BLEND_W = 0.40 (legacy 60/40 blend)
 6. Fee-adjusted edge check: price-dependent minimum (0.25% at 80-90c up to 1.0% at 97c+)
 
 ## Hourly Three-Layer Optimization
@@ -34,7 +34,7 @@ Per-asset M=5 ensemble residual calibrator + Mondrian conformal. v1 LIVE shadow-
 
 ### Sigma winsorize (R-p7-deploy-r11)
 
-`spot_distance_to_strike_sigma` blows up to ±3,000+ at terminal STC (T→0 in denominator). Without clipping, z-scoring across the column inflates std 100×+ and collapses real signal. Fix: `features.SIGMA_WINSOR_ABS_CAP = 25.0`, applied via `features.apply_sigma_winsor(sd)`. The canonical enumeration of all surfaces (including sister-script drift sites surfaced in 2026-05-12 R2 adv review) is below in **"cal_mlp feature transforms (lock-step)"**. Cross-reference that section as the source of truth.
+`spot_distance_to_strike_sigma` blows up to ±3,000+ at terminal STC (T→0 in denominator). Without clipping, z-scoring across the column inflates std 100×+ and collapses real signal. Fix: `features.SIGMA_WINSOR_ABS_CAP = 25.0` applied via `features.apply_sigma_winsor(sd)`. The canonical enumeration of all surfaces (including sister-script drift sites surfaced in 2026-05-12 R2 adv review) is below in **"cal_mlp feature transforms (lock-step)"**. Cross-reference that section as the source of truth.
 
 Constant lives in `features.py`. cfg_fp captures `sigma_winsor_abs_cap`. Regression tests in `tests/integration/test_calmlp_sigma_winsorize.py` lock that all serve paths see ≤25; cross-site AST + runtime parity guard in `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a 2026-05-12).
 
@@ -53,8 +53,8 @@ The three pipelines use the SAME formulas. Any drift = silent training-distribut
 
 | Cohort | Activated | Used by |
 |---|---|---|
-| v1 (8 features) | features active since 2026-02-22; CURRENT bundles trained 2026-04-28 | LIVE bundle, cfg_fp `178d14020bd21beb` (commit `7122693`) |
-| v1.1 candidate (same 8 features; adds `sigma_winsor_abs_cap` to canonical dict) | Recipe shipped 2026-04-29 commit `7ad2464` | v1.1 retrain target, cfg_fp `345978797274721f` (current HEAD with default flags); Money Printer Roadmap Phase 2 (`86b9wuhhr`) |
+| v1 (8 features) | features active since 2026-02-22; bundles trained 2026-04-28 | Prior LIVE bundle, cfg_fp `178d14020bd21beb` (commit `7122693`). Superseded by v1.1 on 2026-05-13 via P2.1.d. |
+| v1.1 (same 8 features; adds `sigma_winsor_abs_cap` to canonical dict) | Recipe shipped 2026-04-29 commit `7ad2464`; retrained 2026-05-12 (P2.1.b); LIVE 2026-05-13 (P2.1.d) | **CURRENT LIVE** bundle for BTC/ETH/SOL/XRP, cfg_fp `345978797274721f`. Shipped atomically with per-asset `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (canonical doc-drift form) from the P2.1.c-fu1 4×6 sim-PnL sweep. Money Printer Roadmap Phase 2 (`86b9wuhhr` / `86b9xfwkg`). |
 | v2 (+8 features: momentum, buffer, BTC RV) | 2026-04-19 | K=1 train target 2026-05-19 |
 | v3 (+3 features: spread, flow, CB-Kraken gap) | 2026-04-23 | K=2 train target 2026-06-22 |
 | External market data (OKX funding+OI, Deribit DVOL) | 2026-04-29 (commit `7ad2464`) | Earliest v3 use 2026-06-22 |
@@ -139,11 +139,14 @@ and requires a sister anchor in the dispatch test):
   size receive recipe-derived `cont_feature_cols` /
   `cont_feature_transforms` / `missing_indicator_cols` /
   input_continuous_dim — not module-globals.
-- `train.py`: `model_def` now stamps `recipe_namespace`. The existing
-  v2 ETH `phase1b_verify_eth_v2.py::EXPECTED_MODEL_DEF_FIELDS`
-  whitelist deliberately does NOT include the new key — the pinned
-  on-disk v2 bundle predates fu1 — and will be added at next ETH
-  retrain via a separate verifier-update Bit.
+- `train.py`: `model_def` stamps `recipe_namespace`. `phase1b_verify_eth_v2.py::EXPECTED_MODEL_DEF_FIELDS`
+  pins `recipe_namespace: "v1.1_production"` as the 17th field (added
+  P2.1.d, 2026-05-13, ClickUp `86b9xd9pp`, atomically with the v1.1 ETH
+  bundle retarget — `V2_ETH_TRAIN_ID` bumped to
+  `2026-05-12T11:59:31.654442Z-b6eb2704`, `V2_ETH_EXPECTED_CFG_FP` bumped to
+  `345978797274721f`, `EXPECTED_N_VOCAB` bumped to 2876). The variable
+  names retain the `V2_*` prefix as legacy but encode v1.1 values per
+  the in-place-bump path.
 - `validate.py`: replay-namespace bundles SKIP the sim_pnl
   counterfactual replay block. Replay corpus rows live in
   `data/replay/state.db::historical_replay_calmlp`, not the production

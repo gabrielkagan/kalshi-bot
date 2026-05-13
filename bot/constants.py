@@ -958,7 +958,24 @@ HOURLY_DYNAMIC_CAP_SCHEDULE = [
     (0,    0.999), # < 1 min
 ]
 
-MARKET_BLEND_W = 0.40             # 60% model, 40% market (data: model underconfident 0.8-2.1pp at 90%+)
+MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for HYPE/DOGE shadow paths + non-15M product types. P2.1.d (2026-05-13) supersedes this for the 4 production 15M assets via MARKET_BLEND_W_BY_ASSET (per-asset interior-pulled argmaxes from 4×6 cal_mlp v1.1 sweep, ClickUp 86b9xfwkg).
+
+# ─── 15M per-asset market blend weights (P2.1.d, 2026-05-13) ────────────────
+# Each value chosen from the 4-asset × 6-weight sim PnL sweep in P2.1.c-fu1
+# against cal_mlp v1.1 candidate bundles. BTC + XRP pulled off corner argmaxes
+# (0.0 → 0.10; 1.0 → 0.90) for robustness; ETH + SOL kept at interior argmaxes
+# (0.20 and 0.80 respectively). Rationale + raw sweep data:
+#   kb/findings/p2-1-c-fu1-blend-weight-sweep-resolves-eth-may13.md
+#   .p2_1_c_run/cross_sweep_summary.txt
+# HYPE/DOGE are NOT in the map (they're in shadow observation; per
+# CLAUDE.md don't merge per-asset weights with shadow paths). Fallback for
+# unknown assets is MARKET_BLEND_W above (legacy 0.40).
+MARKET_BLEND_W_BY_ASSET: dict = {
+    "BTC": 0.10,
+    "ETH": 0.20,
+    "SOL": 0.80,
+    "XRP": 0.90,
+}
 
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -213,11 +214,65 @@ def test_current_config_sizing_tiers_renders_actual_tiers(current_config, bot_mo
 
 def test_current_config_keys_unchanged(current_config):
     """If the key set changes, the test must be updated alongside the change."""
-    expected = set(SCALAR_KEYS) | {"MIN_EDGE_BY_PRICE", "SIZING_TIERS"}
+    expected = set(SCALAR_KEYS) | {
+        "MIN_EDGE_BY_PRICE",
+        "SIZING_TIERS",
+        # P2.1.d (2026-05-13): per-asset 15M blend-weight map rendered
+        # as a display string in CURRENT_CONFIG (sibling pattern to
+        # MIN_EDGE_BY_PRICE / SIZING_TIERS — pre-rendered for the LLM).
+        "MARKET_BLEND_W_BY_ASSET",
+    }
     assert set(current_config.keys()) == expected, (
         f"analyst.CURRENT_CONFIG key set drifted. Expected: {sorted(expected)}, "
         f"got: {sorted(current_config.keys())}. Update SCALAR_KEYS in this "
         f"test or remove the obsolete key from bot/ai/analyst.py."
+    )
+
+
+def test_current_config_market_blend_w_by_asset_renders_actual_map(
+    current_config, bot_module
+):
+    """P2.1.d (2026-05-13): every (asset, weight) pair in
+    bot.constants.MARKET_BLEND_W_BY_ASSET MUST appear in the
+    CURRENT_CONFIG['MARKET_BLEND_W_BY_ASSET'] display string AND the
+    parsed dict MUST equal the constant (bidirectional lockstep).
+
+    Without bidirectional check, substring matching would let drift
+    pass: snapshot `SOL:0.85` contains the marker `SOL:0.8` from a
+    constant `SOL=0.80` rendered as float `0.8` — false-positive on
+    the "constant unchanged, snapshot drifted" direction. Parse the
+    snapshot via regex + float-compare to close the gap (R2-M1
+    adversarial finding, 2026-05-13)."""
+    snapshot = current_config["MARKET_BLEND_W_BY_ASSET"]
+    per_asset = bot_module.MARKET_BLEND_W_BY_ASSET
+
+    # Parse all `ASSET:float` pairs from the snapshot string.
+    parsed_pairs = re.findall(r"([A-Z]+):\s*(\d+(?:\.\d+)?)", snapshot)
+    assert parsed_pairs, (
+        f"MARKET_BLEND_W_BY_ASSET snapshot string parses to ZERO "
+        f"asset:weight pairs — the display string is not in the "
+        f"expected `ASSET:N.NN` form. Snapshot: {snapshot!r}"
+    )
+    parsed_dict = {asset: float(weight) for asset, weight in parsed_pairs}
+
+    # Bidirectional: snapshot must contain every asset in the constant,
+    # AND every parsed asset must match the constant's value exactly.
+    for asset, weight in per_asset.items():
+        assert asset in parsed_dict, (
+            f"Snapshot parsed dict missing asset {asset!r}. "
+            f"Parsed: {parsed_dict!r}; constant: {dict(per_asset)!r}"
+        )
+        assert parsed_dict[asset] == pytest.approx(weight), (
+            f"Snapshot weight for {asset!r} = {parsed_dict[asset]} drifted "
+            f"from bot.constants.MARKET_BLEND_W_BY_ASSET[{asset!r}] = {weight}. "
+            f"Snapshot: {snapshot!r}"
+        )
+    # Reverse direction: no extra asset claims in the snapshot beyond
+    # what the constant declares.
+    extras = set(parsed_dict) - set(per_asset)
+    assert not extras, (
+        f"Snapshot has extra asset claims {extras} not present in "
+        f"bot.constants.MARKET_BLEND_W_BY_ASSET. Snapshot: {snapshot!r}"
     )
 
 

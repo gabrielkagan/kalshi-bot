@@ -113,6 +113,7 @@ from bot.constants import (
     CALIBRATION_RETRAIN_INTERVAL,
     CALIBRATION_STATE_PATH,
     MARKET_BLEND_W,
+    MARKET_BLEND_W_BY_ASSET,
     MIN_EDGE_PCT,
     SHADOW_BLEND_W,
     SHADOW_CAL_PIPELINE,
@@ -363,13 +364,19 @@ class CalibrationEngine:
 
     def shadow_calibration_pipeline(self, raw_prob: float, best_ask: int,
                                      seconds_remaining: float,
-                                     ofa_adjustment: float = 0.0) -> Optional[Dict]:
+                                     ofa_adjustment: float = 0.0,
+                                     asset: Optional[str] = None) -> Optional[Dict]:
         """Compute alternative calibration pipeline in shadow mode.
 
         Changes vs production:
         1. Temperature scaling instead of Beta Cal
         2. No market-price blending (SHADOW_BLEND_W=0.0)
         3. Excludes cap-era data (handled by _fit_temperature using filtered obs)
+
+        ``asset`` (P2.1.d, 2026-05-13): when provided, the returned
+        ``prod_blend_w`` reflects the per-asset weight from
+        ``MARKET_BLEND_W_BY_ASSET``; falls back to the scalar
+        ``MARKET_BLEND_W`` for HYPE/DOGE shadow paths + legacy callers.
         """
         if not SHADOW_CAL_PIPELINE or raw_prob is None:
             return None
@@ -404,7 +411,8 @@ class CalibrationEngine:
                 "fee_edge": round(fee_edge, 6),
                 "would_trade": fee_edge >= MIN_EDGE_PCT / 100.0,
                 "blend_w": SHADOW_BLEND_W,
-                "prod_blend_w": MARKET_BLEND_W,
+                "prod_blend_w": MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
+                if asset else MARKET_BLEND_W,
             }
         except Exception:
             logging.warning("shadow_calibration_pipeline failed", exc_info=True)

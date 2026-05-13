@@ -294,11 +294,21 @@ As expiry approaches and less can go wrong, the cap relaxes to allow higher-conf
 
 ### Step 5: Market-Price Blending
 
-The calibrated probability is blended with the market-implied probability:
+Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (doc-drift contract; P2.1.d 2026-05-13).
 
-$$p_{final} = 0.60 \times p_{cal} + 0.40 \times p_{market}$$
+The calibrated probability is blended with the market-implied probability using per-asset weights tuned against the cal_mlp v1.1 calibration model:
 
-This 60/40 blend (60% model, 40% market) was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 net-negative trades. The 40% market weight was subsequently tuned from 50% after data showed the model was underconfident by 0.8–2.1pp at 90%+ probabilities. The no-blend system now monitors in shadow mode.
+$$p_{final} = (1 - w_{asset}) \times p_{cal} + w_{asset} \times p_{market}$$
+
+| Asset | $w_{asset}$ | Model / Market split |
+|---|---|---|
+| BTC | 0.10 | 90% model / 10% market |
+| ETH | 0.20 | 80% / 20% |
+| SOL | 0.80 | 20% / 80% |
+| XRP | 0.90 | 10% / 90% |
+| HYPE/DOGE (shadow) | 0.40 | 60% / 40% (legacy fallback) |
+
+These per-asset weights replaced the legacy 60/40 default after a 4×6 sim-PnL sweep (P2.1.c-fu1, 2026-05-13) showed that the cal_mlp v1.1 model's per-asset Brier improvements (BTC −13% / ETH −11% / SOL −3% / XRP −6%) drove sharply different optimal blend ratios. The historical 60/40 was originally tuned in February 2026 ("model underconfident 0.8–2.1pp at 90%+") against an earlier Beta-Cal-only pipeline and had never been re-validated for the cal_mlp regime until P2.1.d. A 14-day Brier-monitored soak with a pre-committed rollback rule (any asset degraded ≥5% relative → revert) gates retention of the new weights.
 
 ### Sanity Checks
 
@@ -729,7 +739,7 @@ The analyst engine (`bot/ai/analyst.py`) uses the Claude API to provide automate
 - **EGARCH/RV divergence clamp**: If the EGARCH-to-RV variance ratio falls outside `[1/3, 3]`, EGARCH is rejected and the engine falls back to RK-only volatility
 - **Dynamic probability cap**: Time-dependent ceiling (93–99.5%) prevents overconfidence during startup; bypassed (99.9% ceiling) once learned calibration is active
 - **Data-driven calibration**: CalibrationEngine learns from settlement outcomes, replacing fixed assumptions with empirical mappings
-- **Market-price blending**: 60/40 blend (60% model, 40% market) anchors estimates and prevents systematic overconfidence
+- **Market-price blending**: Per-asset 15M weights (P2.1.d, 2026-05-13) — BTC 10% market, ETH 20%, SOL 80%, XRP 90%; HYPE/DOGE shadow paths retain the legacy 40% market blend. Anchors estimates and prevents systematic overconfidence under the cal_mlp v1.1 regime.
 
 ## Execution Controls
 

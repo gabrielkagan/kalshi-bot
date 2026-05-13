@@ -106,8 +106,13 @@ The edge check operates on `final_prob` which passes through these stages with o
 
 | Parameter | Value | Purpose |
 |---|---|---|
-| MARKET_BLEND_W (15M) | 0.40 | 60% model, 40% market price |
-| MARKET_BLEND_W (hourly) | 0.40 | Same as 15M |
+| MARKET_BLEND_W_BY_ASSET | `{BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) canonical per-asset map; doc-drift contract. |
+| MARKET_BLEND_W_BY_ASSET (15M BTC) | 0.10 | P2.1.d (2026-05-13) per-asset; cal_mlp v1.1 sweep argmax 0.0 pulled off corner |
+| MARKET_BLEND_W_BY_ASSET (15M ETH) | 0.20 | P2.1.d interior argmax |
+| MARKET_BLEND_W_BY_ASSET (15M SOL) | 0.80 | P2.1.d interior argmax |
+| MARKET_BLEND_W_BY_ASSET (15M XRP) | 0.90 | P2.1.d argmax 1.0 pulled off corner |
+| MARKET_BLEND_W (15M HYPE/DOGE shadow) | 0.40 | Legacy fallback (NOT in per-asset map) |
+| MARKET_BLEND_W (hourly) | 0.40 | Same legacy default |
 | MARKET_BLEND_W (SPX) | 0.00 | No blend — CalEngine only |
 | MARKET_BLEND_W (weather) | 0.20 | 80% model (ensemble is primary signal) |
 | HOURLY_TEMPERATURE_T | 1.45 | Softens overconfident probs (95%→88.4%) |

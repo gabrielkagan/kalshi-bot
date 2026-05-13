@@ -42,7 +42,7 @@ Converts the volatility estimate into a settlement probability:
 2. Map through a per-asset Normal Inverse Gaussian (NIG) CDF --- captures heavy tails and asymmetry; falls back to Student-t(df=4) if NIG isn't available
 3. Data-driven calibration via per-product CalEngines. The 15M engine currently runs in **passthrough mode** (raw probability has lower Brier than the BLR fit, so the BLR layer is bypassed); per-city weather, per-sport-group, and SPX-D engines run their full Platt → Beta → BLR pipeline
 4. Dynamic probability cap: bypassed when learned calibration is active (uses 0.999 safety ceiling); cap schedule applies during startup before training
-5. Market-price blending: 60% model / 40% market-implied probability for 15M; weather/SPX use product-specific weights
+5. Market-price blending: per-asset 15M weights from the cal_mlp v1.1 4×6 sim-PnL sweep — BTC 10%, ETH 20%, SOL 80%, XRP 90% market-implied probability (P2.1.d, 2026-05-13). HYPE/DOGE shadow paths fall back to the legacy 40%. Weather/SPX use product-specific weights. Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (doc-drift contract).
 
 Hard safety rails: refuse to trade if `|z-score| > 25` or if the EGARCH/RV ratio falls outside `[1/3, 3]`.
 

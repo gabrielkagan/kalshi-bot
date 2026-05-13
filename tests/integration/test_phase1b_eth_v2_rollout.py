@@ -60,9 +60,10 @@ def _isolate_calmlp_env(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_v2_eth_train_id_pinned():
-    """The chosen v2 ETH train_id must remain stable. If you're rolling
-    out a different v2/v3 bundle, write a new verifier (and a new pin)."""
-    assert _verifier.V2_ETH_TRAIN_ID == "2026-05-03T16:28:21.622306Z-f08fbc00"
+    """P2.1.d (2026-05-13) retargeted the verifier from V2 ETH to v1.1
+    ETH atomically with the v1.1 atomic deploy (ClickUp 86b9xd9pp). The
+    V2_* variable names are legacy — the value is v1.1 ETH's train_id."""
+    assert _verifier.V2_ETH_TRAIN_ID == "2026-05-12T11:59:31.654442Z-b6eb2704"
 
 
 def test_v1_eth_train_id_pinned():
@@ -93,13 +94,16 @@ def test_prod_v1_eth_matches_eth_pin():
 
 
 def test_cfg_fps_pinned_and_distinct():
-    """Phase 0 evaluated v2 (1969b…) against v1 (178d1…). Either drifting
-    means the rollout is no longer the bundle Phase 0 cleared."""
-    assert _verifier.V2_ETH_EXPECTED_CFG_FP == "1969b12c6c0c39bf"
+    """P2.1.d retargeted V2_ETH_EXPECTED_CFG_FP from V2 ETH (1969b…) to
+    v1.1 ETH (3459…); v1 ETH baseline (178d1…) unchanged. Either drifting
+    means the rollout is no longer the bundle that Phase 0 / P2.1.c
+    cleared. (Per-asset blend dispatch ships under the same Bit but is
+    consumer-side, not bundle-side.)"""
+    assert _verifier.V2_ETH_EXPECTED_CFG_FP == "345978797274721f"
     assert _verifier.V1_ETH_EXPECTED_CFG_FP == "178d14020bd21beb"
     assert (
         _verifier.V2_ETH_EXPECTED_CFG_FP != _verifier.V1_ETH_EXPECTED_CFG_FP
-    ), "v2 and v1 cfg_fp must differ; otherwise we're 'rolling out' the same model"
+    ), "v1.1 and v1 cfg_fp must differ; otherwise we're 'rolling out' the same model"
 
 
 def test_market_blend_w_matches_15m_market_config():
@@ -134,24 +138,31 @@ def test_phase_5_pinned():
 def test_n_vocab_pinned():
     """A re-train with a different ticker universe (e.g., new asset added
     to extract_data) would change n_vocab. Pin so the verifier surfaces
-    this before deploy."""
-    assert _verifier.EXPECTED_N_VOCAB == 3140
+    this before deploy. P2.1.d retargeted to v1.1 ETH (n_vocab=2876;
+    was 3140 at V2)."""
+    assert _verifier.EXPECTED_N_VOCAB == 2876
 
 
 def test_full_model_def_fields_pinned():
-    """All 16 model_definition fields are pinned (not just n_vocab) so
+    """All 17 model_definition fields are pinned (not just n_vocab) so
     when canonical-SHA mismatches in check_file_shas, bundle_metadata's
-    field-drift report shows WHICH fields changed."""
+    field-drift report shows WHICH fields changed. P2.1.d (2026-05-13)
+    added `recipe_namespace` as the 17th field — surfaces the
+    v1.1_production vs replay_v1 dispatch namespace introduced by
+    P2.1.a-3-fu1 (ClickUp 86b9xd9pp; v1.1 ETH bundle's
+    model_definition.json carries `recipe_namespace: "v1.1_production"`)."""
     expected_keys = {
         "cfg_fp", "delta_logit_clamp", "dropout", "emb_dim", "hidden_1",
         "hidden_2", "input_continuous_dim", "model_kind", "n_cont",
         "n_missing_indicator_cols", "n_price_tiers", "n_sides",
         "n_stc_buckets", "n_vocab", "n_vol_regimes", "raw_prob_clip_eps",
+        "recipe_namespace",
     }
     assert set(_verifier.EXPECTED_MODEL_DEF_FIELDS.keys()) == expected_keys
     # Cross-check: n_vocab in the dict matches the standalone constant.
     assert _verifier.EXPECTED_MODEL_DEF_FIELDS["n_vocab"] == _verifier.EXPECTED_N_VOCAB
     assert _verifier.EXPECTED_MODEL_DEF_FIELDS["cfg_fp"] == _verifier.V2_ETH_EXPECTED_CFG_FP
+    assert _verifier.EXPECTED_MODEL_DEF_FIELDS["recipe_namespace"] == "v1.1_production"
 
 
 def test_required_extract_fold_sha_keys():
@@ -369,8 +380,10 @@ def test_operator_env_value_string():
     """The string the operator is told to set in the .env file (key
     `CALMLP_BUNDLE_DIR_ETH=...`) is exactly the verifier's
     V2_ETH_BUNDLE_REL. The KB doc and operator runbook both reference
-    this constant; this test is the cross-check."""
-    expected = "models/cal_mlp_ETH/2026-05-03T16:28:21.622306Z-f08fbc00"
+    this constant; this test is the cross-check. P2.1.d (2026-05-13)
+    retargeted from V2 ETH bundle to v1.1 ETH bundle atomically with
+    the v1.1 CURRENT-pointer flip."""
+    expected = "models/cal_mlp_ETH/2026-05-12T11:59:31.654442Z-b6eb2704"
     assert _verifier.V2_ETH_BUNDLE_REL == expected
 
 

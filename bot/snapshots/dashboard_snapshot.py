@@ -1143,6 +1143,11 @@ class DashboardSnapshotBuilder:
             snap["trading_config"] = {
                 "min_edge_by_price": getattr(_bot_mod, "MIN_EDGE_BY_PRICE", []),
                 "market_blend_w": getattr(_bot_mod, "MARKET_BLEND_W", None),
+                # P2.1.d (2026-05-13): per-asset 15M blend weights replace
+                # the scalar for BTC/ETH/SOL/XRP at runtime. HYPE/DOGE
+                # shadow paths still fall back to the scalar above. 14d
+                # Brier-monitored soak reads from this field.
+                "market_blend_w_by_asset": getattr(_bot_mod, "MARKET_BLEND_W_BY_ASSET", {}),
                 "max_risk_per_trade": getattr(_bot_mod, "MAX_RISK_PER_TRADE", None),
                 "sizing_tiers": getattr(_bot_mod, "SIZING_TIERS", []),
                 "min_entry_price": getattr(_bot_mod, "MIN_ENTRY_PRICE", None),
@@ -1676,6 +1681,9 @@ class DashboardSnapshotBuilder:
                     "production_method": cal_engine.active_method,
                     "blend_w_shadow": getattr(_bot_mod, 'SHADOW_BLEND_W', None),
                     "blend_w_production": getattr(_bot_mod, 'MARKET_BLEND_W', None),
+                    # P2.1.d (2026-05-13): per-asset 15M production blend.
+                    # Soak monitor reads this for per-asset Brier comparison.
+                    "blend_w_production_by_asset": getattr(_bot_mod, 'MARKET_BLEND_W_BY_ASSET', {}),
                 }
         except Exception:
             logging.warning("Snapshot: shadow_cal_pipeline build failed", exc_info=True)

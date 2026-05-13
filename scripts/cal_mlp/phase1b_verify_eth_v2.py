@@ -34,15 +34,20 @@ from pathlib import Path
 from typing import Optional
 
 # Repo-relative paths only; runs from any cwd via PROJECT_ROOT discovery.
-V2_ETH_TRAIN_ID = "2026-05-03T16:28:21.622306Z-f08fbc00"
+# P2.1.d (2026-05-13, ClickUp 86b9xd9pp): retargeted from V2 ETH
+# (train_id 2026-05-03T16:28:21.622306Z-f08fbc00, cfg_fp 1969b12c6c0c39bf,
+# n_vocab 3140) to v1.1 ETH atomically with the v1.1 CURRENT-pointer flip.
+# Variable names retain the V2_* prefix as legacy — this is the in-place
+# bump path per the followup AC (no rename for git-history continuity).
+V2_ETH_TRAIN_ID = "2026-05-12T11:59:31.654442Z-b6eb2704"
 V1_ETH_TRAIN_ID = "2026-04-28T11:50:48.975743Z-a0000cc1"
 V2_ETH_BUNDLE_REL = f"models/cal_mlp_ETH/{V2_ETH_TRAIN_ID}"
-V2_ETH_EXPECTED_CFG_FP = "1969b12c6c0c39bf"
+V2_ETH_EXPECTED_CFG_FP = "345978797274721f"
 V1_ETH_EXPECTED_CFG_FP = "178d14020bd21beb"
-EXPECTED_MARKET_BLEND_W = 0.40
+EXPECTED_MARKET_BLEND_W = 0.40  # 15m MARKET_CONFIGS scalar fallback; per-asset map at runtime
 EXPECTED_PHASE = 5
 EXPECTED_DEPLOY_FOLD_IDX = 1
-EXPECTED_N_VOCAB = 3140  # locked at v2 training time; pinned to surface re-train
+EXPECTED_N_VOCAB = 2876  # v1.1 ETH ticker universe (was 3140 at V2)
 
 # Full model_definition field pins. The canonical-JSON SHA in
 # `check_file_shas` catches ANY change to ANY field, but is
@@ -50,7 +55,7 @@ EXPECTED_N_VOCAB = 3140  # locked at v2 training time; pinned to surface re-trai
 # WHICH field drifted — useful triage signal. Computed from the
 # v2 ETH model_definition.json on 2026-05-06.
 EXPECTED_MODEL_DEF_FIELDS = {
-    "cfg_fp": "1969b12c6c0c39bf",
+    "cfg_fp": "345978797274721f",
     "delta_logit_clamp": 2.5,
     "dropout": 0.1,
     "emb_dim": 4,
@@ -66,6 +71,11 @@ EXPECTED_MODEL_DEF_FIELDS = {
     "n_vocab": EXPECTED_N_VOCAB,
     "n_vol_regimes": 2,
     "raw_prob_clip_eps": 1e-06,
+    # P2.1.a-3-fu1 (2026-05-13) added `recipe_namespace` to RecipeSpec; v1.1
+    # bundles surface it in model_definition.json as "v1.1_production".
+    # Pinned here under P2.1.d (2026-05-13, ClickUp 86b9xd9pp bundle) to keep
+    # the field-drift triage signal honest when ETH v1.1 ships.
+    "recipe_namespace": "v1.1_production",
 }
 
 # Per-asset v1 train_ids on VPS as of 2026-05-05 (queried from
@@ -464,19 +474,23 @@ def check_no_stale_shell_overrides(project_root: Path) -> tuple[bool, str]:
 
 def check_current_pointer_is_v1(project_root: Path) -> tuple[bool, str]:
     """Pre-flight on the host where this runs: models/cal_mlp_<asset>/CURRENT
-    must point at the v1 train_id for ALL FOUR assets. This is the
-    rollback contract: on `unset CALMLP_BUNDLE_DIR_ETH` + restart, the
-    resolver returns '' and the loader reads CURRENT — which had better
-    be v1 for ETH. For BTC/SOL/XRP, CURRENT is what they're loading
-    today; if a CURRENT has drifted to a non-v1 train_id (e.g.,
-    accidental scp of a Mac-trained bundle), live serving for that
-    asset is on a non-shadow-cleared bundle.
+    must point at the v1 train_id for ALL FOUR assets.
 
-    On Mac, all four CURRENTs are typically pointed at v2 train_ids
-    for development — this check FAILS by design on Mac. On VPS
-    (post-scp, pre-env-set), it should pass for all four.
+    **HISTORICAL (V2 ETH rollout, Phase 1b)**: this was the rollback
+    contract — V2 deployed via env-override `CALMLP_BUNDLE_DIR_ETH=...`
+    leaving CURRENT at v1 so a `unset` + restart rolled back cleanly.
 
-    Mac users: skip via --skip-current-pointer when running locally.
+    **POST-P2.1.d (2026-05-13)**: cal_mlp v1.1 deploys via CURRENT
+    POINTER FLIP (not env override), so post-deploy this check
+    FAILS BY DESIGN on every host that has been updated to v1.1.
+    Operators on the new deploy mechanism MUST run with
+    `--skip-current-pointer` on BOTH Mac AND VPS post-deploy. The
+    rollback contract under P2.1.d is `git revert` of the deploy
+    commit + restore CURRENT to v1 manually — there is no
+    env-override fallback path.
+
+    Mac users (always): skip via --skip-current-pointer when running
+    locally; Mac dev typically pins v1.1 CURRENT for development.
     """
     drift = []
     for asset, expected in PROD_V1_TRAIN_IDS.items():

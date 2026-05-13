@@ -45,6 +45,11 @@ class MarketTypeConfig:
 
     # ── Calibration ──
     market_blend_w: float = 0.40
+    # Per-asset overrides for `market_blend_w`. When set (15M only post-P2.1.d),
+    # `get_blend_w(asset)` returns the per-asset value; unknown assets fall
+    # back to the scalar `market_blend_w`. Hourly/SPX/weather/sports leave
+    # this None and route everything through the scalar.
+    market_blend_w_by_asset: Optional[Dict[str, float]] = None
     temperature_t: float = 1.0           # 1.0 = no scaling
     temperature_enabled: bool = False
     cal_eligible: bool = True            # Include in CalibrationEngine training?
@@ -69,6 +74,19 @@ class MarketTypeConfig:
     # e.g. "hourly_observation", "spx_observation", "weather_observation"
     observation_filter_label: str = ""
 
+    def get_blend_w(self, asset: Optional[str]) -> float:
+        """Return the market-blend weight for ``asset``, falling back to the
+        scalar ``market_blend_w`` when no per-asset override is configured
+        (or when ``asset`` is None / not in the override map).
+
+        Post-P2.1.d (2026-05-13) the 15M MarketConfig pins
+        ``market_blend_w_by_asset`` to MARKET_BLEND_W_BY_ASSET for BTC/ETH/
+        SOL/XRP; HYPE/DOGE shadow paths + hourly/spx/weather/sports all use
+        the scalar fallback."""
+        if self.market_blend_w_by_asset and asset:
+            return self.market_blend_w_by_asset.get(asset, self.market_blend_w)
+        return self.market_blend_w
+
 
 # ── Registry ────────────────────────────────────────────────────────────────
 
@@ -84,6 +102,12 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         max_risk_per_trade=0.25,
         kelly_fraction=1.0,
         market_blend_w=0.40,
+        # P2.1.d (2026-05-13): per-asset weights from 4×6 cal_mlp v1.1 sweep
+        # — operator-confirmed argmaxes with interior-pull discipline. Sourced
+        # from bot.constants.MARKET_BLEND_W_BY_ASSET; validated lock-step at
+        # startup in validate_market_configs(). HYPE/DOGE NOT in the map (they
+        # fall back to market_blend_w=0.40 via get_blend_w()).
+        market_blend_w_by_asset=dict(bot.constants.MARKET_BLEND_W_BY_ASSET),
         temperature_t=1.0,
         temperature_enabled=False,
         cal_eligible=True,
@@ -254,6 +278,13 @@ def validate_market_configs() -> None:
         f"15m max_stc: {cfg.max_seconds_before_close} != {bot.constants.MAX_SECONDS_BEFORE_CLOSE}")
     assert cfg.market_blend_w == bot.constants.MARKET_BLEND_W, (
         f"15m blend_w: {cfg.market_blend_w} != {bot.constants.MARKET_BLEND_W}")
+    # P2.1.d (2026-05-13): per-asset blend-weight map lock-step. The dataclass
+    # instance must mirror bot.constants.MARKET_BLEND_W_BY_ASSET exactly —
+    # drift here means the runtime reads a different weight than the constant
+    # advertised, breaking the rollback contract.
+    assert cfg.market_blend_w_by_asset == bot.constants.MARKET_BLEND_W_BY_ASSET, (
+        f"15m blend_w_by_asset drift: {cfg.market_blend_w_by_asset} != "
+        f"{bot.constants.MARKET_BLEND_W_BY_ASSET}")
     assert cfg.observation_only == bot.constants.OBSERVATION_MODE, (
         f"15m obs_only: {cfg.observation_only} != {bot.constants.OBSERVATION_MODE}")
 

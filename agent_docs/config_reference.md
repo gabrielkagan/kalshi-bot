@@ -17,7 +17,8 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
 | MIN_EDGE_BY_PRICE | 0.20%-1.0% | 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.20%, 93-94c→0.50%, 95-96c→0.75%, 97-99c→1.0% |
-| MARKET_BLEND_W | 0.40 | 60% model, 40% market (model underconfident 0.8-2.1pp at 90%+) |
+| MARKET_BLEND_W | 0.40 | Legacy 15M scalar fallback for HYPE/DOGE shadow + non-15M paths. P2.1.d (2026-05-13) superseded for 4 production 15M assets by MARKET_BLEND_W_BY_ASSET (per-asset map). |
+| MARKET_BLEND_W_BY_ASSET | `{BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) per-asset 15M blend weights from cal_mlp v1.1 4×6 sweep — interior-pulled argmaxes (BTC 0.0→0.10, ETH 0.20, SOL 0.80, XRP 1.0→0.90). HYPE/DOGE NOT in map (fall back to MARKET_BLEND_W). Origin: kb/findings/p2-1-c-fu1-blend-weight-sweep-resolves-eth-may13.md. Canonical no-space form is the doc-drift contract (scripts/audit/doc_drift_check.py). |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
 

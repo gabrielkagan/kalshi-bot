@@ -827,6 +827,13 @@ class SupabaseSyncer:
                 "temperature": getattr(cal, "_temperature", None),
                 "sample_count": obs_count,
                 "market_blend_weight": getattr(_bot_mod, "MARKET_BLEND_W", None),
+                # P2.1.d (2026-05-13): per-asset 15M blend weights (BTC
+                # 0.10, ETH 0.20, SOL 0.80, XRP 0.90). HYPE/DOGE shadow
+                # paths still read the scalar above. Schema column added
+                # in scripts/ops/supabase_migration_020_market_blend_weight_by_asset.sql
+                # (jsonb). Soak monitor reads this for per-asset Brier
+                # comparison against the per-asset baseline.
+                "market_blend_weight_by_asset": getattr(_bot_mod, "MARKET_BLEND_W_BY_ASSET", {}),
             }
             self._insert("calibration_snapshots", [row])
         except Exception:

@@ -181,6 +181,7 @@ from bot.constants import (
     LP_MAX_RISK_PER_TRADE,
     MAKER_ONLY_THRESHOLD,
     MARKET_BLEND_W,
+    MARKET_BLEND_W_BY_ASSET,
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
     MAX_SECONDS_BEFORE_CLOSE,
@@ -463,7 +464,16 @@ class OpportunityScanner:
         )
 
         # ── Startup assertion: critical config values ──
-        assert MARKET_BLEND_W == 0.40, f"MARKET_BLEND_W misconfigured: {MARKET_BLEND_W}"
+        # P2.1.d (2026-05-13): per-asset blend weights replace the scalar
+        # MARKET_BLEND_W=0.40 assertion. The scalar MARKET_BLEND_W remains
+        # as fallback for HYPE/DOGE shadow paths (via dict.get(asset, ...))
+        # — its 0.40 value is enforced by validate_market_configs() against
+        # the 15m MarketConfig scalar at startup; no duplicate scanner check
+        # needed.
+        _expected_per_asset_blend = {"BTC": 0.10, "ETH": 0.20, "SOL": 0.80, "XRP": 0.90}
+        assert MARKET_BLEND_W_BY_ASSET == _expected_per_asset_blend, (
+            f"MARKET_BLEND_W_BY_ASSET misconfigured: {MARKET_BLEND_W_BY_ASSET} "
+            f"!= {_expected_per_asset_blend}")
         assert SHADOW_CAL_PIPELINE is True, "SHADOW_CAL_PIPELINE should be True"
         assert MAX_RISK_PER_TRADE == 0.25, f"MAX_RISK_PER_TRADE misconfigured: {MAX_RISK_PER_TRADE}"
         assert XRP_MAX_RISK_PER_TRADE <= MAX_RISK_PER_TRADE, (
@@ -473,10 +483,10 @@ class OpportunityScanner:
             f"BTC risk {BTC_MAX_RISK_PER_TRADE} > 15M risk {MAX_RISK_PER_TRADE}")
         assert BTC_MAX_RISK_PER_TRADE >= 0.05, f"BTC_MAX_RISK_PER_TRADE too low: {BTC_MAX_RISK_PER_TRADE}"
         logging.info(
-            "CONFIG_VERIFY: MARKET_BLEND_W=%.2f SHADOW_CAL_PIPELINE=%s "
+            "CONFIG_VERIFY: MARKET_BLEND_W_BY_ASSET=%s SHADOW_CAL_PIPELINE=%s "
             "MAX_RISK=%s XRP_MAX_RISK=%s BTC_MAX_RISK=%s XRP_15M_SHADOW=%s SIZING_TIERS=%s DRAWDOWN_HALF=%.2f DRAWDOWN_QUARTER=%.2f "
             "DRAWDOWN_HALT=%.2f MAKER_ONLY_THRESHOLD=%.0f",
-            MARKET_BLEND_W, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE, BTC_MAX_RISK_PER_TRADE,
+            MARKET_BLEND_W_BY_ASSET, SHADOW_CAL_PIPELINE, MAX_RISK_PER_TRADE, XRP_MAX_RISK_PER_TRADE, BTC_MAX_RISK_PER_TRADE,
             XRP_15M_SHADOW, SIZING_TIERS, DRAWDOWN_HALF_THRESHOLD, DRAWDOWN_QUARTER_THRESHOLD,
             DRAWDOWN_HALT_THRESHOLD, MAKER_ONLY_THRESHOLD)
 
@@ -2972,13 +2982,16 @@ class OpportunityScanner:
                 _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
                 if best_ask < ENDGAME_BLEND_PRICE:
                     _mkt = best_ask / 100.0
-                    _old_system_prob = (1.0 - MARKET_BLEND_W) * _old_system_prob + MARKET_BLEND_W * _mkt
+                    # P2.1.d: per-asset blend weight; HYPE/DOGE fall back to
+                    # MARKET_BLEND_W (legacy 0.40) via dict.get default.
+                    _cf_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
+                    _old_system_prob = (1.0 - _cf_blend_w) * _old_system_prob + _cf_blend_w * _mkt
 
                 # ── Market-price blending ──────────────────────────────────
                 # For mid-range prices, blend model with market to temper overconfidence.
                 # Skip blending for endgame (≥96c) where dynamic cap provides the edge.
                 _mcfg = get_market_config(window.get("product_type"))
-                _effective_blend_w = _mcfg.market_blend_w
+                _effective_blend_w = _mcfg.get_blend_w(asset)
                 if best_ask < ENDGAME_BLEND_PRICE:
                     market_implied_prob = best_ask / 100.0
                     final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
@@ -3177,7 +3190,7 @@ class OpportunityScanner:
                         pass
                 elif SHADOW_CAL_PIPELINE and _cal_state._CALIBRATION_ENGINE is not None:
                     _cf_cal = _cal_state._CALIBRATION_ENGINE.shadow_calibration_pipeline(
-                        raw_prob, best_ask, seconds_remaining, ofa_adjustment)
+                        raw_prob, best_ask, seconds_remaining, ofa_adjustment, asset=asset)
                     if _cf_cal is not None:
                         _cf["cal_pipeline"] = _cf_cal
 
@@ -3200,6 +3213,9 @@ class OpportunityScanner:
                     try:
                         _cp = _cf["cal_pipeline"]
                         if now - self._shadow_cal_last_log.get(asset, 0) >= 300:
+                            # P2.1.d: log the per-asset effective blend weight
+                            # (HYPE/DOGE shadow paths fall back via dict.get).
+                            _log_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                             logging.info(
                                 "shadow_cal_pipeline %s: prob=%.4f edge=%.4f fee_edge=%.4f "
                                 "would_trade=%s temp=%.3f temp_brier=%.4f "
@@ -3207,7 +3223,7 @@ class OpportunityScanner:
                                 ticker, _cp["prob"], _cp["edge"], _cp["fee_edge"],
                                 _cp["would_trade"], _cp.get("temperature") or 0,
                                 _cp.get("temperature_brier") or 0,
-                                final_prob, fee_adjusted_edge, MARKET_BLEND_W)
+                                final_prob, fee_adjusted_edge, _log_blend_w)
                             self._shadow_cal_last_log[asset] = now
                     except Exception:
                         pass
@@ -6785,7 +6801,7 @@ class OpportunityScanner:
 
                 # Market blend (70-85c always < ENDGAME_BLEND_PRICE)
                 _mcfg = get_market_config(_pt)
-                _effective_blend_w = _mcfg.market_blend_w
+                _effective_blend_w = _mcfg.get_blend_w(asset)
                 market_implied_prob = best_ask / 100.0
                 final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
 
@@ -6982,7 +6998,7 @@ class OpportunityScanner:
 
                 # Market blend
                 _mcfg = get_market_config(_pt)
-                _effective_blend_w = _mcfg.market_blend_w
+                _effective_blend_w = _mcfg.get_blend_w(asset)
                 market_implied_prob = best_ask / 100.0
                 final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
 
@@ -7206,7 +7222,7 @@ class OpportunityScanner:
 
                     # Market blend
                     _mcfg = get_market_config(_pt)
-                    _effective_blend_w = _mcfg.market_blend_w
+                    _effective_blend_w = _mcfg.get_blend_w(asset)
                     market_implied_prob = best_ask / 100.0
                     final_prob = (1.0 - _effective_blend_w) * final_prob + _effective_blend_w * market_implied_prob
 
@@ -7426,7 +7442,8 @@ class OpportunityScanner:
                     _mcfg = get_market_config(_pt)
                     if best_ask < ENDGAME_BLEND_PRICE:
                         mip = best_ask / 100.0
-                        yes_final_prob = (1.0 - _mcfg.market_blend_w) * yes_final_prob + _mcfg.market_blend_w * mip
+                        _no_side_blend_w = _mcfg.get_blend_w(asset)
+                        yes_final_prob = (1.0 - _no_side_blend_w) * yes_final_prob + _no_side_blend_w * mip
 
                 # ── NO-side computation ──
                 no_prob = 1.0 - yes_final_prob

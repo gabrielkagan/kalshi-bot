@@ -63,6 +63,12 @@ DOC_FILES = [
     # is structurally blind to the file the rule explicitly points
     # operators to update.
     "agent_docs/config_reference.md",
+    # P2.1.d (2026-05-13): cal_mlp pipeline + edge-thresholds docs
+    # embed per-asset MARKET_BLEND_W_BY_ASSET canonical-form markers
+    # — without inclusion here, doc-drift is blind to these sister
+    # surfaces and only catches drift in config_reference.md.
+    "agent_docs/calibration_pipeline.md",
+    "kb/concepts/edge-thresholds.md",
 ]
 
 # Constants to extract via regex from Python source files.
@@ -86,6 +92,11 @@ SIMPLE_CONSTANTS = [
     ("HOURLY_CALIBRATION_ENABLED", "Hourly calibration enabled"),
     ("WEATHER_NO_SIDE_LIVE", "Weather NO-side live"),
     ("MARKET_BLEND_W", "Market blend weight"),
+    # P2.1.d (2026-05-13): per-asset 15M map. Custom extractor in
+    # extract_constant() renders the dict to canonical no-space form
+    # `{BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` so the standard `\S+` doc
+    # pattern catches the embedded form in agent_docs/config_reference.md.
+    ("MARKET_BLEND_W_BY_ASSET", "Market blend weight by asset"),
     ("MAX_RISK_PER_TRADE", "Max risk per trade"),
     ("XRP_MAX_RISK_PER_TRADE", "XRP max risk per trade"),
     ("BTC_MAX_RISK_PER_TRADE", "BTC max risk per trade"),
@@ -143,6 +154,13 @@ SIMPLE_CONSTANTS = [
 
 def extract_constant(name: str, source_lines: Dict[str, List[str]]) -> Optional[str]:
     """Extract a constant value from source files using regex."""
+    # P2.1.d (2026-05-13): MARKET_BLEND_W_BY_ASSET is a multi-line dict
+    # literal in bot/constants.py — render it to canonical no-space form
+    # so the standard `\\S+` doc patterns match against the embedded
+    # dict in agent_docs/config_reference.md + other doc sources.
+    if name == "MARKET_BLEND_W_BY_ASSET":
+        return _extract_market_blend_w_by_asset(source_lines)
+
     # Match: CONSTANT = value  or  CONSTANT = os.environ.get(..., "1") == "1"
     pattern = re.compile(
         rf'^\s*{re.escape(name)}\s*=\s*(.+?)(?:\s*#.*)?$'
@@ -162,6 +180,41 @@ def extract_constant(name: str, source_lines: Dict[str, List[str]]) -> Optional[
                 # Clean trailing comments that slipped through
                 raw = re.sub(r'\s*#.*$', '', raw)
                 return raw
+    return None
+
+
+def _extract_market_blend_w_by_asset(source_lines: Dict[str, List[str]]) -> Optional[str]:
+    """Render MARKET_BLEND_W_BY_ASSET dict to canonical no-space form for
+    cross-doc lockstep. Returns e.g. `{BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}`
+    so the embedded form in agent_docs/config_reference.md (and the 5
+    sister docs) can be drift-checked by the standard `\\S+` regex."""
+    # Strict declaration anchor: match `MARKET_BLEND_W_BY_ASSET[: type] = {`
+    # at line start. Skips comment lines that merely mention the name (R3-m1).
+    decl_pat = re.compile(
+        r"^\s*MARKET_BLEND_W_BY_ASSET\b\s*(?::\s*\w+\s*)?=\s*\{?\s*$"
+    )
+    for filename, lines in source_lines.items():
+        if not filename.endswith("constants.py"):
+            continue
+        for i, line in enumerate(lines):
+            if decl_pat.match(line):
+                # Collect from this line until matching close brace (cap 20 lines)
+                buf = []
+                for j in range(i, min(i + 20, len(lines))):
+                    buf.append(lines[j])
+                    if "}" in lines[j]:
+                        break
+                full = " ".join(buf)
+                m = re.search(r"\{(.+?)\}", full, re.DOTALL)
+                if not m:
+                    return None
+                inner = m.group(1)
+                pairs: List[Tuple[str, str]] = []
+                for kv in re.findall(r"['\"](\w+)['\"]\s*:\s*([\d.]+)", inner):
+                    pairs.append((kv[0], kv[1]))
+                # Canonical: sort by ASSETS order BTC<ETH<SOL<XRP alphabetic
+                pairs.sort(key=lambda p: p[0])
+                return "{" + ",".join(f"{k}:{v}" for k, v in pairs) + "}"
     return None
 
 
