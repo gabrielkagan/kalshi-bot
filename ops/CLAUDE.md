@@ -55,6 +55,20 @@ Install with `bash scripts/ops/setup_market_obs_archive_timer.sh` on the VPS. Co
 
 **Drift-check note:** same posture as the state.db backup timers — `/etc/systemd/system/kalshi-market-obs-archive.*` lives outside `kalshi-bot.service`'s drift-check scope; re-run `setup_market_obs_archive_timer.sh` to update.
 
+## journal_archives/ sync (ticket 86b9xgp7k)
+
+`~/kalshi-bot-repo/journal_archives/` holds the per-tick forensic JSONL streams (`opportunity_journal_*`, `scan_journal_*`, `rejection_journal_*`, ...). `rotate_journals.sh` deletes them at the 90-day local retention boundary; without S3 archival they're gone forever.
+
+- `kalshi-journal-archives-sync.{service,timer}` — daily 04:30 UTC (30 min AFTER `rotate_journals.sh` @04:00 so yesterday's journal is fully zstd-compressed before upload). Uses `rclone copy --checksum --immutable` (one-way: upload-or-skip, never deletes from S3) from the local archives dir → `s3prod:kalshi-bot-archive/journals/`. `--immutable` surfaces content divergence as exit 6 (bug/tampering alert). Live current-day `*.jsonl` files AND `rotation.log` (which is appended-to daily) are excluded via `--exclude` filter. Single-runner flock at `/var/lock/kalshi-journal-sync.lock`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+
+**WHY `copy` not `sync`** (R1 catch, ticket 86b9xgp7k): `rclone sync` mirror-deletes — when `rotate_journals.sh` prunes a journal locally at the 90-day boundary, `sync` would DELETE the S3 object too, defeating the entire archive. `rclone copy` is one-way.
+
+Idempotent: re-runs are no-ops (rclone short-circuits per-file via S3 ETag). First run uploads the ~11 GB backlog (~33 days post-2026-04-10).
+
+Install with `bash scripts/ops/setup_journal_archives_sync_timer.sh` on the VPS. Same companion-to-state.db posture as the market_obs timer (expects `s3prod` rclone remote already configured).
+
+**Drift-check note:** same posture as siblings — `/etc/systemd/system/kalshi-journal-archives-sync.*` lives outside `kalshi-bot.service`'s drift-check scope; re-run `setup_journal_archives_sync_timer.sh` to update.
+
 ## Files
 - `kalshi-bot.service` — systemd unit, source of truth
 - `install.sh` — one-time install + reload

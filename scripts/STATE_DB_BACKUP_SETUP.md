@@ -511,3 +511,92 @@ python3` in your interactive shell vs `env -i /usr/bin/which python3`.
 - If you want VPS-side observability later, file a follow-up ticket
   for option (a): a separate read-only IAM user on the VPS. That
   requires AWS console work (not Phase 0a-fu scope).
+
+## 12. Journals sync (ticket 86b9xgp7k)
+
+The per-tick forensic JSONL streams under
+`~/kalshi-bot-repo/journal_archives/` (`opportunity_journal_*`,
+`scan_journal_*`, `rejection_journal_*`, ...) are NOT covered by the
+state.db backup. `rotate_journals.sh` deletes them at the 90-day local
+retention boundary; without S3 archival the per-tick record is gone
+forever. This step installs an incremental sync that runs 30 min after
+the rotation cron.
+
+### Pre-reqs
+
+- §1–§3 above completed (S3 bucket + lifecycle + writer IAM + .env on VPS).
+- The `s3prod` rclone remote exists on the VPS (`setup_state_db_backup_timer.sh` created it).
+
+### Bucket-side multi-prefix expansion (operator one-time)
+
+§1–§3's lifecycle, deny-policy, and writer-IAM as originally written only cover the `daily/*` prefix. The journals (and market_obs, ticket 86b9xcdwg) need the same protections extended to two additional prefixes. **Ticket 86b9xgz66 tracks updating §1-§3 in this runbook to reflect this multi-prefix shape**; until that lands, the operator must hand-extend:
+
+1. **Lifecycle policy** — extend `Filter` from `{"Prefix": "daily/"}` to use `OrPrefixes`:
+   ```json
+   "Filter": {"And": {"Prefix": "", "ObjectSizeGreaterThan": 0}}
+   ```
+   Or split into 3 rules (one per prefix). Apply via `aws s3api put-bucket-lifecycle-configuration`.
+2. **Bucket policy** (§2b deny) — extend `Resource` array to include all three:
+   ```json
+   "Resource": [
+     "arn:aws:s3:::<bucket>/daily/*",
+     "arn:aws:s3:::<bucket>/journals/*",
+     "arn:aws:s3:::<bucket>/market_obs/*"
+   ]
+   ```
+3. **Writer IAM policy** (§3) — extend the `PutObject` resource list to include `arn:aws:s3:::<bucket>/journals/*` and `arn:aws:s3:::<bucket>/market_obs/*`.
+
+Verify with:
+```bash
+aws s3api get-bucket-lifecycle-configuration --bucket <bucket> | jq '.Rules[].Filter'
+aws s3api get-bucket-policy --bucket <bucket> | jq -r '.Policy' | jq '.Statement[].Resource'
+aws iam get-user-policy --user-name kalshi-bot-vps-writer --policy-name <policy> | jq '.PolicyDocument.Statement[].Resource'
+```
+
+All three must include both `daily/*` AND `journals/*` (AND `market_obs/*` if §86b9xcdwg shipped).
+
+### 12.1 Install the timer
+
+```bash
+ssh -t botuser@$VPS_HOST 'bash /home/botuser/kalshi-bot-repo/scripts/ops/setup_journal_archives_sync_timer.sh'
+```
+
+The installer:
+- Pre-flights: rclone present, `s3prod` remote configured, `S3_BACKUP_BUCKET` in `.env`, `/var/lock` writable, Telegram creds present (warn-only).
+- Installs `kalshi-journal-archives-sync.{service,timer}` at `/etc/systemd/system/`.
+- Enables + starts the timer (next fire: 04:30 UTC).
+
+The service wraps via `h4_run_with_alert.py` so non-zero exits Telegram-alert.
+
+### 12.2 Smoke fire on demand
+
+The first run uploads the ~11 GB backlog (typical post-rotation: 33 days × ~250-360 MB compressed). It may take up to 1 hour on the VPS uplink.
+
+```bash
+sudo systemctl start kalshi-journal-archives-sync.service
+journalctl -u kalshi-journal-archives-sync.service --no-pager -n 50
+# Expected tail line: journal_sync: OK dest=s3prod:<bucket>/journals/
+rclone ls s3prod:<bucket>/journals/ | head -20
+# Should list opportunity_journal_*.jsonl.{zst,gz}, scan_journal_*, etc.
+```
+
+### 12.3 Idempotency verification (HARD AC)
+
+Re-running the script after a successful first run MUST be a no-op:
+
+```bash
+sudo systemctl start kalshi-journal-archives-sync.service
+journalctl -u kalshi-journal-archives-sync.service --no-pager -n 20
+# Expected: rclone stdout shows "Transferred: 0 / 0" or equivalent zero-byte summary.
+```
+
+`rclone copy --checksum --immutable` short-circuits per-file via S3 ETag. If `--immutable` ever fires a divergence (rclone exit 6, "Source and destination exist but do not match: immutable file modified"), that is a bug or tampering — the wrapper escalates to Telegram.
+
+### 12.4 Notes for operators
+
+- `rotation.log` is intentionally excluded from the sync (`--exclude rotation.log` in the script's argv): `rotate_journals.sh` appends to it daily, which would trip `--immutable` and abort the entire sync from day 2 onward. The forensic loss is small (rotation.log just logs which file was rotated when); the journals themselves are the valuable artifacts. If forensics is needed, operator can `scp` rotation.log manually.
+- Primitive is `rclone copy` (NOT `sync`). `sync` would mirror local deletions to S3 — when `rotate_journals.sh` prunes a journal at the 90-day boundary, `sync` would DELETE the S3 object too, defeating the entire purpose. `copy` is one-way: upload-or-skip, never delete from destination. The `--checksum` flag keeps it idempotent (re-runs short-circuit per-file via ETag).
+
+### 12.5 Drift-check note
+
+The timer files live at `/etc/systemd/system/kalshi-journal-archives-sync.*` — outside `kalshi-bot.service`'s drift-check scope. Re-running `setup_journal_archives_sync_timer.sh` is the source-of-truth operation for them.
