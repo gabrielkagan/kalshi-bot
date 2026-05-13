@@ -1329,6 +1329,18 @@ class StateManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_open_position_exposure_cents(self) -> int:
+        # Cost-basis sum (count * avg_price_cents) across open positions.
+        # Used by main_loop + settlement Telegram alerts so "Balance:"
+        # approximates Kalshi UI Portfolio total (cash + positions)
+        # rather than cash only. NOT bit-exact with Kalshi's market-mark
+        # figure — diverges as mark moves away from fill price (e.g.
+        # observed ~8% gap on 2026-05-13 user screenshot).
+        return sum(
+            int(p.get("count", 0) or 0) * int(p.get("avg_price_cents", 0) or 0)
+            for p in self.get_open_positions()
+        )
+
     def get_unsettled_positions(self) -> List[Dict]:
         """Return positions that are open or closed but not yet settled."""
         rows = self.conn.execute(

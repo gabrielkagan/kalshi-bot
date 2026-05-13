@@ -693,14 +693,33 @@ class MainLoop:
         self.sizer.record_balance(balance_cents)
         self._peak_balance = balance_cents / 100
         logging.info(f"Connected to Kalshi. Balance: ${balance_cents / 100:.2f}")
-        if _telegram_state._TELEGRAM:
-            _telegram_state._TELEGRAM.send(f"\U0001f7e2 Bot started \u2014 Balance: ${balance_cents / 100:.2f}")
 
         # Reconcile local state with API
         self.state.reconcile_with_api(self.client)
 
         # Check for settlements that happened while bot was down
         self.tracker.startup()
+
+        if _telegram_state._TELEGRAM:
+            # Emit AFTER reconcile_with_api + tracker.startup so the
+            # local positions table no longer contains settled-while-down
+            # entries. Refetch cash too \u2014 tracker.startup() may have
+            # replayed catchup settlements whose payouts Kalshi already
+            # credited; the line-near-`get_balance()` cash captured before
+            # `record_balance` would otherwise miss them. Cost-basis
+            # approximation; diverges from Kalshi's market-mark figure
+            # as the mark moves away from fill price.
+            try:
+                _post_bal_resp = self.client.get_balance()
+                _post_cash_cents = (_post_bal_resp or {}).get("balance") or balance_cents
+            except Exception:
+                _post_cash_cents = balance_cents
+            try:
+                _exposure_cents = self.state.get_open_position_exposure_cents()
+            except Exception:
+                _exposure_cents = 0
+            _total_cents = _post_cash_cents + _exposure_cents
+            _telegram_state._TELEGRAM.send(f"\U0001f7e2 Bot started \u2014 Balance: ${_total_cents / 100:.2f}")
 
         # Backfill raw_prob for calibration data
         self._backfill_calibration_data()

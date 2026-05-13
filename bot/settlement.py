@@ -601,7 +601,15 @@ class SettlementTracker:
             try:
                 bal_resp = self._client.get_balance()
                 if bal_resp:
-                    bal_str = f" | Balance: ${bal_resp.get('balance', 0) / 100:.2f}"
+                    # Cash + open-position cost-basis matches Kalshi UI's
+                    # Portfolio total. Cash alone undercounts when other
+                    # positions are still pending settlement.
+                    try:
+                        _exposure_cents = self._state.get_open_position_exposure_cents()
+                    except Exception:
+                        _exposure_cents = 0
+                    _total_cents = bal_resp.get("balance", 0) + _exposure_cents
+                    bal_str = f" | Balance: ${_total_cents / 100:.2f}"
             except Exception:
                 pass
             _telegram_state._TELEGRAM.send(
