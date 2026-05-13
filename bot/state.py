@@ -1170,7 +1170,26 @@ class StateManager:
             ).fetchall()
 
             if len(local_rows) == 0:
-                # No local position — INSERT from API
+                # Settled-trades guard: if we already processed a
+                # settlement event for this ticker, settled_trades has
+                # a row. Kalshi's positions API can lag in dropping
+                # just-settled positions — trust our authoritative
+                # ledger and skip. Prevents -fu2 phantom-row class.
+                settled_row = self.conn.execute(
+                    "SELECT 1 FROM settled_trades WHERE ticker=? LIMIT 1",
+                    (ticker,)
+                ).fetchone()
+                if settled_row:
+                    logging.warning(
+                        "RECONCILE_TRUSTED_LOCAL_SETTLE: ticker=%s "
+                        "settled_trades row exists, ignoring Kalshi positions-API lag",
+                        ticker)
+                    continue
+
+                # No settled_trades record AND no open local row — orphan
+                # settle or new position. INSERT from API; if conflict
+                # (pre-existing non-open row at (ticker, 'main')), heal
+                # in place to restore local visibility.
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
                 try:
@@ -1182,15 +1201,6 @@ class StateManager:
                     """, (ticker, event_ticker, asset, side, count,
                           avg_price, cost, now, now))
                 except sqlite3.IntegrityError as e:
-                    # INSERT defaults strategy_group='main'; UNIQUE
-                    # (ticker, strategy_group) trips when a settled/
-                    # closed row at (ticker, 'main') already exists.
-                    # Heal in place: UPDATE the conflicting row back to
-                    # status='open'. Restores local visibility so
-                    # window-cap / stacking guards still see the
-                    # position. Pure swallow would leave the Kalshi-
-                    # open position locally-invisible until the next
-                    # state write for that ticker.
                     conflict = self.conn.execute(
                         "SELECT status FROM positions "
                         "WHERE ticker=? AND strategy_group='main'",
