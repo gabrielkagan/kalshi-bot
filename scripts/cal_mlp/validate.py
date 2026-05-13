@@ -230,8 +230,45 @@ def empirical_coverage(
     df: pd.DataFrame,
     conformal_artifact: dict,
     market_blend_w: float,
+    *,
+    recipe: Optional["object"] = None,
 ) -> tuple[list[dict], dict]:
-    """Per-cell coverage + directional miss rates + clip rate."""
+    """Per-cell coverage + directional miss rates + clip rate.
+
+    P2.1.a-3-fu3 (86b9xe3ku): `recipe` is a RecipeSpec from
+    features.resolve_recipe(...) — when its namespace is
+    REPLAY_RECIPE_NAMESPACE the per-row reads tolerate the
+    structurally-absent columns from extract_data_replay.build_feature_frame
+    (no `price_tier` / `vol_regime_int` — no `market_price` to digitize and
+    no vol regime feed for HYPE/DOGE; no `side` string column — only
+    `side_int=1`). Production-recipe and recipe=None preserve the legacy
+    literal-lookup behavior so missing columns on a BTC/ETH/SOL/XRP path
+    still surface as KeyError (extraction bug, not silent default).
+    """
+    # fu3: detect replay namespace once (string compare; recipe is a
+    # RecipeSpec NamedTuple imported lazily in features.py). recipe=None
+    # → production semantics (legacy callers + back-compat).
+    replay_mode = (
+        recipe is not None
+        and getattr(recipe, 'namespace', None) == REPLAY_RECIPE_NAMESPACE
+    )
+    # fu3 R1 M2: replay parquets have no orderbook → entry_price_cents
+    # defaults to 50¢ neutral below. That's only mathematically sound
+    # when `market_blend_w == 0` (breakeven term cancels). validate.main's
+    # blend resolution stack (CLI > ENV > MARKET_CONFIGS['15m']) can
+    # silently pick up a non-zero scalar (e.g., 0.40 fallback for HYPE/
+    # DOGE which are absent from MARKET_BLEND_W_BY_ASSET) — refuse the
+    # combination loudly rather than emit subtly-wrong coverage stats.
+    if replay_mode and abs(market_blend_w) > 1e-9:
+        raise SystemExit(
+            f"empirical_coverage: replay-namespace bundle with "
+            f"market_blend_w={market_blend_w!r} != 0 — replay parquet has "
+            f"no orderbook (entry_price_cents defaults to 50¢ neutral), "
+            f"so the breakeven blend would silently distort p_center. "
+            f"Re-run with --override-market-blend-w 0 (the only fix; "
+            f"market_config.py's 15m fallback is 0.40 so unsetting the "
+            f"MARKET_BLEND_W env var alone is insufficient)."
+        )
     cell_stats = defaultdict(lambda: {
         'n': 0, 'n_covered': 0, 'n_below_lo': 0, 'n_above_hi': 0,
         'n_clipped': 0, 'n_dispatch_miss': 0,
@@ -247,10 +284,26 @@ def empirical_coverage(
         # and `vol_regime_int` (int 0/1). Conformal lookup uses the int. Reading
         # `int(row['vol_regime'])` on the string raises ValueError on first
         # 'elevated' row.
+        #
+        # fu3 (86b9xe3ku): replay-namespace test_df structurally lacks
+        # price_tier (no market_price→PRICE_BIN_CUTOFFS digitize) and
+        # vol_regime_int (no vol regime feed for HYPE/DOGE). Default both
+        # to 0 in replay mode — mirrors Phase4Dataset's int64-zero defaults
+        # for absent categoricals per fu2 (86b9xd9hn). The conformal cells
+        # for a replay-namespace bundle are built per-stc_bucket only
+        # (extract_data_replay.compute_per_stc_bucket_stats:541), so
+        # collapsing price_tier and vol_regime axes is the conformal-
+        # artifact-correct lookup form here.
+        if replay_mode:
+            pt_val = 0
+            vr_val = 0
+        else:
+            pt_val = int(row['price_tier'])
+            vr_val = int(row['vol_regime_int'])
         row_features = {
-            'price_tier': int(row['price_tier']),
+            'price_tier': pt_val,
             'stc_bucket': int(row['stc_bucket']),
-            'vol_regime': int(row['vol_regime_int']),
+            'vol_regime': vr_val,
         }
         is_bleed = (row_features['price_tier'] == 3 and row_features['stc_bucket'] == 2)
         if bleed_collapsed and is_bleed:
@@ -259,19 +312,33 @@ def empirical_coverage(
             key = ('bleed', sub)
         else:
             merged = conformal_artifact['merged_axes']
-            pt = 0 if 'price_tier' in merged else int(row['price_tier'])
+            pt = 0 if 'price_tier' in merged else pt_val
             sb = 0 if 'stc' in merged else int(row['stc_bucket'])
-            vr = 0 if 'vol_regime' in merged else int(row['vol_regime_int'])
+            vr = 0 if 'vol_regime' in merged else vr_val
             key = (pt, sb, vr)
         s = cell_stats[key]
         # The parquet test_df uses the canonical Phase 2 column name
         # `market_price` (extract_data.py:218,374). `entry_price_cents` is
         # sim_pnl.py's internal rename of the SQL-pulled candidate_df
         # (sim_pnl.py:403) and does NOT exist on the parquet-loaded df.
+        #
+        # fu3 (86b9xe3ku): replay parquet has no `market_price` (no
+        # orderbook) and no `side` string (only `side_int=1`, hardcoded YES
+        # per extract_data_replay.py:528). Default both to 50¢/YES in
+        # replay mode — neutral breakeven so the inner blend reduces to
+        # `0.5*w + (1-w)*p_pred`. Replay paths SHOULD run with
+        # market_blend_w=0 (no real orderbook to blend toward), in which
+        # case the breakeven term cancels entirely.
+        if replay_mode:
+            entry_price_cents = 50
+            side_str = 'yes'
+        else:
+            entry_price_cents = int(row['market_price'])
+            side_str = str(row['side'])
         result = predict_with_interval(
             float(row['p_pred']), float(row.get('p_std', 0.0)),
             conformal_artifact, row_features,
-            int(row['market_price']), str(row['side']),
+            entry_price_cents, side_str,
             market_blend_w, mode='inference',
         )
         p_mean, p_std, final_lo, final_hi = result
@@ -607,18 +674,8 @@ def main() -> None:
         # default falls through to `_ALL_CATEGORICAL_COLS` and
         # Phase4Dataset.__init__ KeyErrors on `df['price_tier']` mid-loop.
         #
-        # KNOWN DOWNSTREAM GAP (P2.1.c-scope, separate followup): the
-        # per-row loop in `empirical_coverage` (lines ~244-264) ALSO reads
-        # `row['price_tier']` + `row['vol_regime_int']` directly off the
-        # replay test_df DataFrame — would KeyError after this
-        # CalibrationDataset construction succeeds. P2.1.b training +
-        # P2.1.c per-band Brier work today on replay bundles; P2.1.c
-        # per-cell coverage + the conformal lookup chain need a similar
-        # categorical_feature_cols guard at the empirical_coverage loop.
-        # Tracked as a sister fu3 ticket; do NOT attempt to patch here in
-        # the fu2 commit — empirical_coverage's per-row reads are a
-        # separate dispatch surface than CalibrationDataset's vector
-        # construction.
+        # fu3 (86b9xe3ku) closed the empirical_coverage row-iter dispatch
+        # surface via the `recipe=` kwarg forwarded at the call site below.
         ds = CalibrationDataset(
             test_normed, recipe.cont_feature_cols, ticker_to_id,
             missing_indicator_cols=recipe.missing_indicator_cols,
@@ -675,8 +732,11 @@ def main() -> None:
                 break
 
         print("[coverage] per-cell empirical...")
+        # fu3 (86b9xe3ku): forward the RecipeSpec so replay-namespace
+        # bundles tolerate the absent price_tier / vol_regime_int /
+        # market_price / side columns at the row-iter step.
         cell_audit, cov_summary = empirical_coverage(
-            test_df, conformal_artifact, market_blend_w,
+            test_df, conformal_artifact, market_blend_w, recipe=recipe,
         )
         _check_rss_ceiling('after_coverage')
 

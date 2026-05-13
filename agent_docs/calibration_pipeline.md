@@ -155,12 +155,46 @@ and requires a sister anchor in the dispatch test):
   JSON AND the operator-facing markdown report (sections §3 + §4
   render `_skipped_` rather than misleading `$0.00` defaults). Brier
   (§1) + coverage (§2) remain authoritative.
+- `train.py::Phase4Dataset` + `train.py::run` preds_df concat +
+  `validate.py::CalibrationDataset` (P2.1.a-3-fu2, 2026-05-13, ticket
+  `86b9xd9hn`): receive recipe-derived `categorical_feature_cols` —
+  production lists the full 4-tuple `('price_tier','stc_bucket',
+  'vol_regime_int','side_int')`; replay lists only the 2 columns the
+  parquet structurally has `('stc_bucket','side_int')`. Absent
+  categoricals default to int64 zeros at construction → degenerate
+  one-hots `[1,0,0,0]` and `[1,0]` on those axes (model trains on the
+  collapsed signal; ticker embedding + cont features are the
+  non-degenerate trainable surface).
+- `validate.py::empirical_coverage` (P2.1.a-3-fu3, 2026-05-13, ticket
+  `86b9xe3ku`): accepts keyword-only `recipe=` and short-circuits the
+  per-row reads of `price_tier`/`vol_regime_int`/`market_price`/`side`
+  to neutral defaults (`0`/`0`/`50¢`/`'yes'`) when
+  `recipe.namespace == REPLAY_RECIPE_NAMESPACE`. Production-recipe and
+  `recipe=None` preserve the legacy literal-lookup behavior — absent
+  columns on a BTC/ETH/SOL/XRP run still surface as `KeyError` rather
+  than silently defaulting. Replay-mode with `market_blend_w != 0`
+  raises `SystemExit` at function entry — the neutral-50¢ breakeven
+  only cancels the blend term when `w=0` and `validate.main`'s blend
+  resolution stack can otherwise pick up a non-zero scalar for
+  HYPE/DOGE silently. Pinned by
+  `tests/contracts/test_p2_1_a_3_fu3_validate_replay_tolerance.py`
+  (8 anchors: functional regression + nonzero-blend hard-fail +
+  zero-blend success + keyword-only kwarg + production no-regression +
+  production-still-raises-on-missing-market_price + AST kwarg-presence
+  guard + AST Name-identifier value guard).
 
-**P2.1.b enablement gap** (open at fu1 ship time): `Phase4Dataset.__getitem__`
-unconditionally reads `df['price_tier']` / `df['vol_regime_int']`
-categorical columns. Replay parquets lack both (no market_price → no
-price_tier digitization; no vol regime feed for HYPE/DOGE in replay
-backfill). Recipe-dispatch covers continuous-feature routing only;
-categorical feature engineering for HYPE/DOGE replay is a separate
-follow-up sub-Bit. P2.1.b ETH/BTC/SOL/XRP training works on fu1;
-HYPE/DOGE training blocks on the categorical-FE follow-up.
+**P2.1.b enablement gap** (CLOSED by fu2+fu3, 2026-05-13): at fu1 ship
+time, `Phase4Dataset.__getitem__` unconditionally read `df['price_tier']`
++ `df['vol_regime_int']` categorical columns, and
+`validate.py::empirical_coverage` made a parallel set of per-row reads
+including `df['market_price']` + `df['side']`. Replay parquets lack all
+four columns (no market_price → no price_tier digitization; no vol
+regime feed for HYPE/DOGE in replay backfill; no orderbook for
+market_price; only `side_int=1` hardcoded YES). fu2 (`86b9xd9hn`,
+SHIPPED `b566ae9`) closed the train.py categorical-FE side via
+`RecipeSpec.categorical_feature_cols`. fu3 (`86b9xe3ku`, this commit)
+closed the validate.py empirical_coverage row-iter side via the
+keyword-only `recipe=` kwarg. The validate.py row-iter dispatch surface
+for HYPE/DOGE replay bundles is now closed; P2.3.b (HYPE/DOGE validation)
+becomes runnable once P2.3.a's HYPE/DOGE bundle exists (P2.3.a remains
+blocked on `86b9xednb` — HYPE/DOGE replay corpus proxy).
