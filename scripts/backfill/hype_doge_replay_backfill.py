@@ -126,6 +126,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     Idempotent — re-runs against an existing table are a no-op. PK
     ``(ticker, evaluation_time)`` enables idempotent INSERT OR REPLACE.
+
+    Also migrates pre-P2.3.b-fu2 schemas by adding the ``threshold REAL``
+    column if missing (sub-cent strike precision; legacy ``strike_cents``
+    INTEGER is kept for HYPE back-compat). See
+    ``kb/findings/replay-backfill-strike-precision-bug-may13.md``.
     """
     conn.execute(
         f"""
@@ -134,6 +139,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             evaluation_time TEXT NOT NULL,
             asset TEXT NOT NULL CHECK (asset IN ('HYPE','DOGE')),
             strike_cents INTEGER,
+            threshold REAL,
             close_time TEXT,
             open_time TEXT,
             raw_prob REAL,
@@ -153,6 +159,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Migration path: pre-fu2 DBs have the table without `threshold` column.
+    # SQLite's `ALTER TABLE ADD COLUMN` is idempotent here only via the
+    # explicit `PRAGMA table_info` probe (the `IF NOT EXISTS` clause on
+    # ADD COLUMN landed in 3.35.0+; we target the older 3.x SQLite shipped
+    # with system Pythons too). Race-safe via the `duplicate column` catch:
+    # the contracted use case is a single Mac-side backfill process, but a
+    # concurrent re-entry between probe and ALTER would otherwise raise.
+    existing_cols = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({REPLAY_TABLE})").fetchall()
+    }
+    if "threshold" not in existing_cols:
+        try:
+            conn.execute(f"ALTER TABLE {REPLAY_TABLE} ADD COLUMN threshold REAL")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.commit()
 
 
@@ -243,7 +266,19 @@ def replay_market(
     close_ts = int(_parse_iso(market["close_time"]).timestamp())
     seconds_remaining = float(max(close_ts - eval_ts, 0))
     strike_cents = market["strike_cents"]
-    threshold = strike_cents / 100.0  # cents → USD
+    # P2.3.b-fu2 (2026-05-13, ticket 86b9xtam7): prefer REAL `threshold` over
+    # the legacy `strike_cents/100.0` derivation. For DOGE (spot ~$0.11) the
+    # integer-cent round-trip collapses the 1-cent strike-value space, biasing
+    # the BS probability calc by 3-10% per market. See
+    # `kb/findings/replay-backfill-strike-precision-bug-may13.md`.
+    # NaN-defense: `_floor_strike_to_db_fields` never produces NaN, but a
+    # future direct caller passing `threshold=float('nan')` would propagate
+    # NaN into `ProbabilityEngine.compute(threshold=nan)` silently — fall back
+    # to the legacy path on NaN too.
+    threshold = market.get("threshold")
+    if (threshold is None or (isinstance(threshold, float) and math.isnan(threshold))) \
+            and strike_cents is not None:
+        threshold = strike_cents / 100.0  # HYPE legacy fallback path
     asset = market["asset"]
     result = market["result"]
     settlement_value = 100 if result == "yes" else 0
@@ -335,7 +370,7 @@ def replay_market(
     conn.execute(
         f"""
         INSERT OR REPLACE INTO {REPLAY_TABLE} (
-            ticker, evaluation_time, asset, strike_cents,
+            ticker, evaluation_time, asset, strike_cents, threshold,
             close_time, open_time,
             raw_prob, calibrated_prob, blended_prob,
             spot_at_evaluation, sigma_at_evaluation,
@@ -343,13 +378,14 @@ def replay_market(
             prob_breakeven_gap, sigma_winsorize,
             result, settlement_value,
             data_provenance, replay_run_ts
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             market["ticker"],
             eval_time_iso,
             asset,
             strike_cents,
+            threshold,
             market["close_time"],
             market["open_time"],
             raw_prob,
@@ -587,11 +623,15 @@ def _replay_asset(
         # + INSERT OR REPLACE supports re-running once the bad market is
         # fixed upstream.
         try:
+            threshold_real, strike_cents_legacy = _floor_strike_to_db_fields(
+                m.get("floor_strike")
+            )
             market_dict = {
                 "ticker": m["ticker"],
                 "event_ticker": m.get("event_ticker", ""),
                 "asset": asset,
-                "strike_cents": _floor_strike_to_cents(m.get("floor_strike")),
+                "threshold": threshold_real,
+                "strike_cents": strike_cents_legacy,
                 "open_time": m["open_time"],
                 "close_time": m["close_time"],
                 "result": m.get("result", "").lower(),
@@ -631,16 +671,34 @@ def _replay_asset(
     return written
 
 
-def _floor_strike_to_cents(floor_strike) -> Optional[int]:
-    """Convert Kalshi ``floor_strike`` (USD float/int) to integer cents.
+def _floor_strike_to_db_fields(
+    floor_strike,
+) -> tuple[Optional[float], Optional[int]]:
+    """Convert Kalshi ``floor_strike`` (USD float/int) to BOTH the REAL
+    threshold (precision-preserving for sub-dollar assets like DOGE) and
+    the legacy INTEGER strike_cents (HYPE back-compat — existing 4847-row
+    HYPE corpus rows store integer cents).
 
-    Returns None on missing/invalid input."""
+    P2.3.b-fu2 (2026-05-13, ticket 86b9xtam7) — replaces ``_floor_strike_to_cents``.
+    Root cause: integer-cent rounding lost 3-10% of strike value for DOGE
+    (spot ~$0.11). See ``kb/findings/replay-backfill-strike-precision-bug-may13.md``.
+
+    Returns ``(None, None)`` on missing, unparseable, or NaN/Inf input —
+    matches the legacy single-int helper's None-passthrough so the caller's
+    ``if strike_cents is None: skip`` gate keeps working unchanged. The
+    NaN/Inf guard prevents ``int(round(nan*100))`` from raising ``ValueError``
+    out of the helper (the caller's broad ``except Exception`` would catch it,
+    but a typed-None return is the clearer contract).
+    """
     if floor_strike is None:
-        return None
+        return (None, None)
     try:
-        return int(round(float(floor_strike) * 100))
+        f = float(floor_strike)
     except (ValueError, TypeError):
-        return None
+        return (None, None)
+    if math.isnan(f) or math.isinf(f):
+        return (None, None)
+    return (f, int(round(f * 100)))
 
 
 def main(argv: Optional[list[str]] = None) -> int:

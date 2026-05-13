@@ -43,7 +43,12 @@ from bot.helpers.derived_features import (  # noqa: E402
 REPLAY_TABLE = "historical_replay_calmlp"
 REPLAY_PROVENANCE = "replay_phase2_v1"
 
-# 19 cols per user-supplied Phase 2 schema spec.
+# 20 cols post-P2.3.b-fu2 (19 pre-fu2 + `threshold REAL`, ticket `86b9xtam7`,
+# 2026-05-13). This list is the minimum REQUIRED subset; the schema-check
+# below uses `set(EXPECTED_COLS) - set(cols)` so post-fu2 extra cols are
+# accepted. `threshold` deliberately NOT listed here so pre-fu2 corpora
+# (HYPE legacy) still satisfy the contract — `tests/contracts/test_p2_3_b_fu2_threshold_precision.py`
+# pins the post-fu2 `threshold` column presence separately.
 EXPECTED_COLS = [
     "ticker", "evaluation_time", "asset", "strike_cents",
     "close_time", "open_time",
@@ -126,7 +131,9 @@ def test_harness_exposes_api():
 
 
 def test_table_created_with_expected_columns(tmp_path: Path):
-    """`ensure_schema()` creates `historical_replay_calmlp` with all 19 cols."""
+    """`ensure_schema()` creates `historical_replay_calmlp` with the 19 REQUIRED
+    cols (subset check; post-P2.3.b-fu2 the table has 20 cols total with the
+    added `threshold REAL`)."""
     from scripts.backfill.hype_doge_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)

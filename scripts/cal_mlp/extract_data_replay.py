@@ -10,8 +10,10 @@ demands 32 source columns (REQUIRED_SOURCE_COLS) — most are bot-state
 features (market_price, NBBO, vol_regime, momentum, balance, depth, etc.).
 The Phase 2 replay backfill table `historical_replay_calmlp` (Mac-only,
 written by `scripts/backfill/hype_doge_replay_backfill.py`, ticket
-`86b9wy7v3`, harness shipped at `fe75cf0`) has only 19 columns by design
-because the harness explicitly notes:
+`86b9wy7v3`, harness shipped at `fe75cf0`) has 20 columns post-P2.3.b-fu2
+(19 pre-fu2 + `threshold REAL` added 2026-05-13 ticket `86b9xtam7` to preserve
+sub-cent strike precision for DOGE) by design because the harness explicitly
+notes:
 
   > Bot-state features cannot be replayed accurately (market_price/NBBO,
   > depth, OFT, queue position, recent_bot_pnl, drawdown_scaler). These
@@ -190,6 +192,15 @@ REPLAY_REQUIRED_SOURCE_COLS = (
     'data_provenance', 'replay_run_ts',
 )
 
+# P2.3.b-fu2 (2026-05-13, ticket 86b9xtam7): OPTIONAL columns — present in
+# post-fix DBs (REAL `threshold` preserves sub-cent precision for DOGE),
+# absent from pre-fix legacy bundles (HYPE 4847-row corpus has no column).
+# `_check_schema` MUST NOT raise on a missing optional column; `pull_and_classify`
+# probes the actual table at query time and only SELECTs columns that exist.
+# `build_feature_frame` falls back to `strike_cents / 100.0` when `threshold`
+# is NULL (HYPE legacy path stays intact).
+REPLAY_OPTIONAL_SOURCE_COLS = ('threshold',)
+
 REPLAY_ASSET_CHOICES = ('HYPE', 'DOGE')
 
 
@@ -317,7 +328,15 @@ def _open_ro_conn(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def _check_schema(conn: sqlite3.Connection, db_path: str) -> None:
+def _check_schema(conn: sqlite3.Connection, db_path: str) -> set[str]:
+    """Verify required schema cols are present; return the set of OPTIONAL
+    cols that DO exist in this DB (for `pull_and_classify` to SELECT).
+
+    REQUIRED cols must all be present — missing → Phase2SchemaError.
+    OPTIONAL cols (P2.3.b-fu2 `threshold`) are absent from pre-fix legacy
+    HYPE bundles; we report which ones exist so the SELECT only asks for
+    columns the DB actually has.
+    """
     cols = {row[1] for row in conn.execute(f"PRAGMA table_info({REPLAY_TABLE})").fetchall()}
     if not cols:
         raise Phase2SchemaError(
@@ -330,6 +349,7 @@ def _check_schema(conn: sqlite3.Connection, db_path: str) -> None:
             f"P2.1.a-3 replay schema mismatch — columns expected but not in {REPLAY_TABLE}: {missing}. "
             f"Re-run backfill or update REPLAY_REQUIRED_SOURCE_COLS + cfg_fp_replay."
         )
+    return {c for c in REPLAY_OPTIONAL_SOURCE_COLS if c in cols}
 
 
 # ---------------------------------------------------------------------------
@@ -402,9 +422,15 @@ def pull_and_classify(
     cutoff_end: str,
     *,
     provenance_filter: str,
+    optional_cols_present: Optional[set[str]] = None,
 ) -> tuple[list[dict], dict[str, int], int]:
     """Single-pass pull of `WHERE asset=? AND data_provenance=?` rows. Returns
-    (kept_rows, drops_dict, source_total)."""
+    (kept_rows, drops_dict, source_total).
+
+    `optional_cols_present` — set of OPTIONAL columns the DB actually has,
+    returned by `_check_schema`. Pre-fix DBs lack `threshold`; `kept` dicts
+    omit the key entirely so downstream `build_feature_frame` falls back to
+    `strike_cents / 100.0` (HYPE legacy path)."""
     if provenance_filter not in REPLAY_PROVENANCE_FILTER_CHOICES:
         raise ValueError(
             f"provenance_filter must be one of {REPLAY_PROVENANCE_FILTER_CHOICES}; "
@@ -416,7 +442,11 @@ def pull_and_classify(
             f"cutoff_end must be ISO-8601 UTC ('%Y-%m-%dT%H:%M:%SZ' or "
             f"'%Y-%m-%dT%H:%M:%S.%fZ'); got {cutoff_end!r}"
         )
-    select_cols = ', '.join(REPLAY_REQUIRED_SOURCE_COLS)
+    optional_cols_present = optional_cols_present or set()
+    select_col_tuple = tuple(REPLAY_REQUIRED_SOURCE_COLS) + tuple(
+        c for c in REPLAY_OPTIONAL_SOURCE_COLS if c in optional_cols_present
+    )
+    select_cols = ', '.join(select_col_tuple)
     sql = (
         f"SELECT {select_cols} FROM {REPLAY_TABLE} "
         f"WHERE asset = ? AND data_provenance = ? "
@@ -474,7 +504,19 @@ def build_feature_frame(rows: list[dict]) -> pd.DataFrame:
     # where sigma is per-5s vol stdev of log returns.
     spot = df['spot_at_evaluation'].astype(np.float64).to_numpy()
     sigma = df['sigma_at_evaluation'].astype(np.float64).to_numpy()
-    strike_dollars = df['strike_cents'].astype(np.float64).to_numpy() / 100.0
+    # P2.3.b-fu2 (2026-05-13, ticket 86b9xtam7): prefer REAL `threshold`,
+    # fall back to `strike_cents / 100.0` for legacy HYPE bundles whose
+    # rows pre-date the schema migration. Per
+    # `kb/findings/replay-backfill-strike-precision-bug-may13.md`, HYPE
+    # corpus is correct as-is (asset price magnitude makes integer cents
+    # adequate); DOGE corpus needs full regen against the post-fix schema.
+    legacy_strike_dollars = df['strike_cents'].astype(np.float64).to_numpy() / 100.0
+    if 'threshold' in df.columns:
+        threshold_real = df['threshold'].astype(np.float64).to_numpy()
+        # NaN → fall back to legacy. `np.where` handles the per-row choice.
+        strike_dollars = np.where(np.isnan(threshold_real), legacy_strike_dollars, threshold_real)
+    else:
+        strike_dollars = legacy_strike_dollars
     stc_arr = stc.to_numpy().astype(np.float64)
     # Defensive: clamp denominators, accept honest-NULL on degenerate.
     sigma_safe = np.where(sigma > 0, sigma, np.nan)
@@ -602,12 +644,13 @@ def run(args: argparse.Namespace) -> dict:
             except sqlite3.OperationalError as e:
                 raise Phase2DBError(f"PRAGMA data_version failed: {e}") from e
             data_version_at_close = data_version_at_open
-            _check_schema(conn, str(replay_db_path))
+            optional_cols_present = _check_schema(conn, str(replay_db_path))
             replay_table_total = int(conn.execute(f"SELECT COUNT(*) FROM {REPLAY_TABLE}").fetchone()[0])
             logging.info("[extract_replay] pulling rows for asset=%s ...", asset)
             kept, drops, source_total = pull_and_classify(
                 conn, asset, cutoff_end,
                 provenance_filter=args.provenance_filter,
+                optional_cols_present=optional_cols_present,
             )
             try:
                 data_version_at_close = int(conn.execute("PRAGMA data_version").fetchone()[0])

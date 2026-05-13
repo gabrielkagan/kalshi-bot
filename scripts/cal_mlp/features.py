@@ -349,7 +349,8 @@ def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
 # Replay-corpus recipe (HYPE/DOGE — Phase 2 replay backfill)
 # ---------------------------------------------------------------------------
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — pull path for HYPE/DOGE
-# `historical_replay_calmlp` rows. The replay corpus has only 19 cols vs
+# `historical_replay_calmlp` rows. The replay corpus has 20 cols post-P2.3.b-fu2
+# (19 pre-fu2 + `threshold REAL`, ticket `86b9xtam7`) vs
 # the 32 REQUIRED_SOURCE_COLS in extract_data.py; most bot-state features
 # (market_price, vol_regime, z_score, momentum/realized-vol, NBBO, balance,
 # strategy, side) are honest-NULL on replay rows by design (see
