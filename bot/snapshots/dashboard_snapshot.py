@@ -96,6 +96,214 @@ CONFIG_REGIME_SINCE = "2026-04-02T00:00:00"
 # But since most shadow trades would enter as maker (fee=$0), use taker-only rate for conservative sim
 SIM_FEE_RATE = 0.021
 
+# ── Cohort attribution panel (P1.2, Money Printer Roadmap Phase 1) ───────────
+
+# Cap on the per-list payload — keeps the Supabase row bounded and matches
+# the design § Dashboard mock pagination intent.
+COHORT_PANEL_LIMIT = 20
+
+# Schema version for the cohort_attribution snapshot key — bump on breaking
+# shape changes; gh-pages renderer warns on mismatch.
+COHORT_PANEL_SCHEMA_VERSION = 1
+
+# Stale threshold — if the latest cohort_date is older than this many hours
+# the nightly 13:07 UTC cron missed at least one fire; surface `stale=True`.
+# 36h gives ~12h of NTP/cron jitter slack on the 24h nightly cadence.
+COHORT_PANEL_STALE_HOURS = 36
+
+
+def _empty_cohort_panel(now_iso):
+    """Single source of truth for the cohort_attribution panel shape on the
+    empty / stale / error path. Returned by the inner helper when the table
+    is missing or empty AND used by the outer wire-in's `except` branch so
+    the two stay locked in shape (R2 MN1 — guards against silent shape drift
+    between the helper's no-data path and the wire-in's fallback)."""
+    return {
+        "as_of": now_iso,
+        "schema_version": COHORT_PANEL_SCHEMA_VERSION,
+        "summary": {
+            "latest_cohort_date": None,
+            "stale": True,
+            "n_cohorts_total": 0,
+            "n_cohorts_eligible_n50": 0,
+            "n_cohorts_firing_bleed": 0,
+            "n_cohorts_firing_cal": 0,
+        },
+        "top_bleeders_30d": [],
+        "top_cal_drift_30d": [],
+    }
+
+
+def _price_band_label(band_5c):
+    """Display label for a 5¢ price band — 17 → '85-89'."""
+    lo = band_5c * 5
+    return f"{lo}-{lo + 4}"
+
+
+def _stc_band_label(band_60s):
+    """Display label for a 60s STC band — 4 → '240-299', 11 → '660+'."""
+    if band_60s >= 11:
+        return "660+"
+    lo = band_60s * 60
+    return f"{lo}-{lo + 59}"
+
+
+def _build_cohort_attribution_snap(db_conn):
+    """Build the `cohort_attribution` top-level snap key.
+
+    Reads `cohort_attribution_daily` (P1.1 schema) for the LATEST
+    cohort_date and produces a JSON-serializable dict matching design
+    § Dashboard mock:
+
+        {
+          "as_of": "...",
+          "schema_version": 1,
+          "summary": {"latest_cohort_date", "stale",
+                      "n_cohorts_total", "n_cohorts_eligible_n50",
+                      "n_cohorts_firing_bleed", "n_cohorts_firing_cal"},
+          "top_bleeders_30d": [...],  # cf_pnl_30d ASC, capped at 20
+          "top_cal_drift_30d": [...], # |cal_gap_30d| DESC, capped at 20
+        }
+
+    Defensive: returns the empty-but-shape-complete payload with
+    `stale=True` when (a) the table is empty, (b) `evaluated_opportunities`
+    hasn't been aggregated yet, or (c) the latest cohort_date is older than
+    `COHORT_PANEL_STALE_HOURS`.
+    """
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    panel = _empty_cohort_panel(now_utc.isoformat())
+
+    try:
+        latest_row = db_conn.execute(
+            "SELECT MAX(cohort_date) AS d FROM cohort_attribution_daily"
+        ).fetchone()
+    except Exception:
+        logging.warning("cohort_attribution_daily missing or unreadable", exc_info=True)
+        return panel
+
+    latest_date = None
+    if latest_row is not None:
+        # sqlite3.Row supports indexed AND named access; fall back to index
+        # for dict-cursor variants used in some test paths.
+        try:
+            latest_date = latest_row["d"]
+        except (IndexError, KeyError, TypeError):
+            latest_date = latest_row[0] if latest_row else None
+
+    panel["summary"]["latest_cohort_date"] = latest_date
+    if latest_date is None:
+        return panel
+
+    # Staleness — latest cohort_date older than the nightly cadence + jitter.
+    try:
+        latest_dt = datetime.datetime.fromisoformat(latest_date).replace(
+            tzinfo=datetime.timezone.utc
+        )
+        age_hours = (now_utc - latest_dt).total_seconds() / 3600.0
+        panel["summary"]["stale"] = age_hours > COHORT_PANEL_STALE_HOURS
+    except (ValueError, TypeError):
+        # Unparseable cohort_date — treat as stale defensively.
+        panel["summary"]["stale"] = True
+
+    summary_row = db_conn.execute(
+        """
+        SELECT
+          COUNT(*)                                                    AS n_total,
+          SUM(CASE WHEN n_30d >= 50 THEN 1 ELSE 0 END)                AS n_eligible_50,
+          SUM(CASE WHEN alert_state = 'firing_bleed' THEN 1 ELSE 0 END) AS n_firing_bleed,
+          SUM(CASE WHEN alert_state = 'firing_cal'   THEN 1 ELSE 0 END) AS n_firing_cal
+        FROM cohort_attribution_daily
+        WHERE cohort_date = ?
+        """,
+        (latest_date,),
+    ).fetchone()
+    if summary_row is not None:
+        try:
+            panel["summary"]["n_cohorts_total"] = int(summary_row["n_total"] or 0)
+            panel["summary"]["n_cohorts_eligible_n50"] = int(summary_row["n_eligible_50"] or 0)
+            panel["summary"]["n_cohorts_firing_bleed"] = int(summary_row["n_firing_bleed"] or 0)
+            panel["summary"]["n_cohorts_firing_cal"] = int(summary_row["n_firing_cal"] or 0)
+        except (IndexError, KeyError, TypeError):
+            n_total, n_elig, n_fb, n_fc = (
+                summary_row[0] or 0, summary_row[1] or 0,
+                summary_row[2] or 0, summary_row[3] or 0,
+            )
+            panel["summary"]["n_cohorts_total"] = int(n_total)
+            panel["summary"]["n_cohorts_eligible_n50"] = int(n_elig)
+            panel["summary"]["n_cohorts_firing_bleed"] = int(n_fb)
+            panel["summary"]["n_cohorts_firing_cal"] = int(n_fc)
+
+    bleeder_rows = db_conn.execute(
+        """
+        SELECT asset, strategy, price_band_5c, stc_band_60s, cell_block_stage,
+               n_30d, wr_30d, wilson95_hi_30d,
+               cf_pnl_30d_dollars, cal_gap_30d,
+               alert_state, last_alert_time
+        FROM cohort_attribution_daily
+        WHERE cohort_date = ?
+          AND cf_pnl_30d_dollars IS NOT NULL
+          AND cf_pnl_30d_dollars < 0
+        ORDER BY cf_pnl_30d_dollars ASC
+        LIMIT ?
+        """,
+        (latest_date, COHORT_PANEL_LIMIT),
+    ).fetchall()
+    panel["top_bleeders_30d"] = [_cohort_row_to_panel_entry(r) for r in bleeder_rows]
+
+    cal_drift_rows = db_conn.execute(
+        """
+        SELECT asset, strategy, price_band_5c, stc_band_60s, cell_block_stage,
+               n_30d, wr_30d, wilson95_hi_30d,
+               cf_pnl_30d_dollars,
+               mean_cal_prob_30d, cal_gap_30d,
+               alert_state, last_alert_time
+        FROM cohort_attribution_daily
+        WHERE cohort_date = ?
+          AND cal_gap_30d IS NOT NULL
+        ORDER BY ABS(cal_gap_30d) DESC
+        LIMIT ?
+        """,
+        (latest_date, COHORT_PANEL_LIMIT),
+    ).fetchall()
+    panel["top_cal_drift_30d"] = [
+        _cohort_row_to_panel_entry(r, include_mean_cal_prob=True) for r in cal_drift_rows
+    ]
+
+    return panel
+
+
+def _row_get(row, key, default=None):
+    """Tolerant accessor — sqlite3.Row supports both indexed and named, but
+    name lookup raises on missing keys; sqlite3.Connection.row_factory may
+    also be None (raw tuple) in some test paths."""
+    try:
+        val = row[key]
+        return default if val is None else val
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def _cohort_row_to_panel_entry(row, *, include_mean_cal_prob=False):
+    """Convert a `cohort_attribution_daily` SELECT row to the panel-entry
+    dict shape per design § Dashboard mock."""
+    entry = {
+        "asset": _row_get(row, "asset"),
+        "strategy": _row_get(row, "strategy"),
+        "price_band": _price_band_label(int(_row_get(row, "price_band_5c", 0))),
+        "stc_band": _stc_band_label(int(_row_get(row, "stc_band_60s", 0))),
+        "stage": _row_get(row, "cell_block_stage"),
+        "n": int(_row_get(row, "n_30d", 0)),
+        "wr": _row_get(row, "wr_30d"),
+        "wilson95_hi": _row_get(row, "wilson95_hi_30d"),
+        "cf_pnl_30d": _row_get(row, "cf_pnl_30d_dollars"),
+        "cal_gap": _row_get(row, "cal_gap_30d"),
+        "alert": _row_get(row, "alert_state"),
+        "last_alert_time": _row_get(row, "last_alert_time"),
+    }
+    if include_mean_cal_prob:
+        entry["mean_cal_prob"] = _row_get(row, "mean_cal_prob_30d")
+    return entry
+
 
 def _parse_ob_levels(entries):
     """Parse orderbook level entries into (price_cents, quantity) tuples."""
@@ -4017,6 +4225,21 @@ class DashboardSnapshotBuilder:
             snap["eth_filter_shadow"] = {"total_trades": 0, "wins": 0, "losses": 0,
                                           "wr": 0, "total_pnl_cents": 0, "filters": {}}
 
+        # Cohort attribution panel (P1.2, Money Printer Roadmap Phase 1) —
+        # surfaces the nightly-materialized cohort_attribution_daily rows
+        # (top bleeders + top cal-drift + summary) so the operator can see
+        # bleeders the moment they cross n≥50 instead of waiting for the
+        # weekly bleed report. Read-only against the P1.1 aggregate table;
+        # graceful empty-panel fallback when table missing or cron stale.
+        try:
+            snap["cohort_attribution"] = _build_cohort_attribution_snap(_conn)
+        except Exception:
+            logging.warning("cohort_attribution snapshot failed", exc_info=True)
+            snap["cohort_attribution"] = _empty_cohort_panel(
+                datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
+            snap["_snapshot_errors"].append("cohort_attribution")
+
         # ── Save slow-changing sections to TTL cache ──────────────────
         if _run_slow:
             _SLOW_SNAP_KEYS = {
@@ -4028,6 +4251,8 @@ class DashboardSnapshotBuilder:
                 "calibration_gap", "capital_utilization", "loss_clustering",
                 "pipeline_completeness", "sol_pathc_shadow", "eth_filter_shadow",
                 "low_price_shadow",
+                # P1.2: nightly-aggregated table; 60s TTL is generous over-refresh
+                "cohort_attribution",
             }
             self._slow_cache = {k: v for k, v in snap.items() if k in _SLOW_SNAP_KEYS}
             self._slow_cache_ts = _now_mono
