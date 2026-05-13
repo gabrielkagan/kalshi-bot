@@ -76,12 +76,19 @@ def _seed_evaluated_opportunities_table(conn: sqlite3.Connection) -> None:
 
 
 def _seed_rejected_opportunities_table(conn: sqlite3.Connection) -> None:
-    """Stripped-down rejected_opportunities for coverage-stats math."""
+    """Stripped-down rejected_opportunities for coverage-stats math.
+
+    fu1: production schema names the timestamp column `rejection_time`
+    (NOT `evaluation_time`). Verified via VPS PRAGMA table_info
+    2026-05-13. The original fixture invented `evaluation_time` and
+    masked the bug until the first VPS smoke-test surfaced
+    `sqlite3.OperationalError: no such column: evaluation_time`.
+    """
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS rejected_opportunities (
-            id INTEGER PRIMARY KEY,
-            asset TEXT, evaluation_time TEXT
+            ticker TEXT PRIMARY KEY,
+            asset TEXT, rejection_time TEXT
         )
         """
     )
@@ -104,10 +111,13 @@ def _seed_admit(
 
 
 def _seed_reject(conn: sqlite3.Connection, *, eval_time: str) -> None:
+    """`eval_time` parameter name preserved for callsite-stability;
+    underlying column is `rejection_time` (production schema, fu1)."""
+    import uuid
     conn.execute(
-        "INSERT INTO rejected_opportunities (asset, evaluation_time) "
-        "VALUES ('SOL', ?)",
-        (eval_time,),
+        "INSERT INTO rejected_opportunities (ticker, asset, rejection_time) "
+        "VALUES (?, 'SOL', ?)",
+        (f"reject_{uuid.uuid4().hex[:8]}", eval_time),
     )
 
 
@@ -571,6 +581,42 @@ def test_exited_alerts_includes_transition_on_first_day_of_week():
     )
     assert "2026-05-11" in section4, (
         "last_fire_date must render even when it falls 1 day before week_start"
+    )
+
+
+# ─── Pin 13 — production schema parity (fu1 regression) ─────────────────────
+
+
+def test_coverage_stats_uses_production_rejected_column_name():
+    """fu1 regression pin: the original implementation queried
+    `rejected_opportunities.evaluation_time` but production schema names
+    the column `rejection_time`. The test fixture also invented
+    `evaluation_time`, so the unit test passed while VPS smoke-test
+    crashed with `sqlite3.OperationalError: no such column:
+    evaluation_time`.
+
+    This pin asserts the SQL string in the script references the
+    correct production column. AST-level guard against future schema-
+    invention drift.
+    """
+    from pathlib import Path
+    script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "audit" / "weekly_bleed_report.py"
+    source = script_path.read_text(encoding="utf-8")
+    # The rejected_opportunities query MUST reference rejection_time, NOT evaluation_time.
+    assert "FROM rejected_opportunities" in source, (
+        "Expected the script to query rejected_opportunities"
+    )
+    # Find the line(s) that query rejected_opportunities and verify they use rejection_time.
+    rejected_block_start = source.find("FROM rejected_opportunities")
+    rejected_block = source[rejected_block_start:rejected_block_start + 200]
+    assert "rejection_time" in rejected_block, (
+        "rejected_opportunities query MUST use `rejection_time` "
+        "(production schema), NOT `evaluation_time`"
+    )
+    assert "evaluation_time" not in rejected_block, (
+        "fu1 regression: `evaluation_time` appears near the "
+        "rejected_opportunities query block — production column is "
+        "`rejection_time`"
     )
 
 

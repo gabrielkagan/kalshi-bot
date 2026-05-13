@@ -427,9 +427,14 @@ def _build_coverage_stats_section(
             ).fetchone()[0]
 
     if _table_exists(conn, "rejected_opportunities"):
+        # Production schema: rejected_opportunities timestamp column is
+        # `rejection_time` (NOT `evaluation_time`, which is the
+        # evaluated_opportunities convention). Verified via VPS
+        # PRAGMA table_info on 2026-05-13. See fu1 finding —
+        # smoke-test caught the schema invention on first VPS run.
         rejected_count = conn.execute(
             "SELECT COUNT(*) FROM rejected_opportunities "
-            "WHERE evaluation_time >= ? AND evaluation_time <= ?",
+            "WHERE rejection_time >= ? AND rejection_time <= ?",
             (since_iso, until_iso),
         ).fetchone()[0]
 
