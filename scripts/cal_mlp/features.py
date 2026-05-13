@@ -427,10 +427,10 @@ RECIPE_NAMESPACE_V1_1_PRODUCTION = 'v1.1_production'
 
 
 class RecipeSpec(NamedTuple):
-    """Per-recipe routing quartet consumed by train.py / validate.py /
+    """Per-recipe routing quintet consumed by train.py / validate.py /
     conformal.py. `resolve_recipe(ns)` is the single dispatch entry — see
     `scripts/cal_mlp/features.py` module docstring + ClickUp 86b9xbd2u
-    (P2.1.a-3-fu1) for the design.
+    (P2.1.a-3-fu1) + 86b9xd9hn (P2.1.a-3-fu2) for the design.
 
     Fields:
       - namespace: canonical label ('v1.1_production' or 'replay_v1')
@@ -442,18 +442,29 @@ class RecipeSpec(NamedTuple):
         production, HYPE/DOGE for replay). Caller membership-tests
         `if asset not in recipe.asset_floors` to guard `--asset NAME`
         against `recipe_namespace=NS` mismatch.
+      - categorical_feature_cols: per-recipe tuple of categorical column
+        names the bundle's parquet ACTUALLY contains (subset of the
+        4-tuple `(price_tier, stc_bucket, vol_regime_int, side_int)`
+        consumed by `CalibrationMLP.forward`). For replay_v1, only
+        `(stc_bucket, side_int)` are present — replay parquets lack
+        `market_price` (so no `price_tier` digitization) and have no vol
+        regime feed (so no `vol_regime_int`). Phase4Dataset defaults the
+        absent categoricals to int64 zeros at construction. Added in
+        P2.1.a-3-fu2 (86b9xd9hn) to close the KeyError gap fu1 surfaced
+        without re-extracting replay bundles or bumping cfg_fp_replay.
     """
     namespace: str
     cont_feature_cols: tuple
     cont_feature_transforms: dict
     missing_indicator_cols: tuple
     asset_floors: dict
+    categorical_feature_cols: tuple
 
 
 def resolve_recipe(recipe_namespace):
-    """Route a bundle's `recipe_namespace` field to its CONT_FEATURE_COLS
-    / CONT_FEATURE_TRANSFORMS / MISSING_INDICATOR_COLS / ASSET_FLOORS
-    quartet.
+    """Route a bundle's `recipe_namespace` field to its full RecipeSpec
+    sextet — `namespace` / `cont_feature_cols` / `cont_feature_transforms`
+    / `missing_indicator_cols` / `asset_floors` / `categorical_feature_cols`.
 
     Args:
         recipe_namespace: one of 'v1.1_production', 'replay_v1', or None.
@@ -476,6 +487,12 @@ def resolve_recipe(recipe_namespace):
             cont_feature_transforms=dict(CONT_FEATURE_TRANSFORMS),
             missing_indicator_cols=tuple(MISSING_INDICATOR_COLS),
             asset_floors=dict(ASSET_FLOORS),
+            # All four categoricals are present in production fold
+            # parquets (extract_data.py digitizes market_price → price_tier
+            # and stamps vol_regime_int from the vol-regime string).
+            categorical_feature_cols=(
+                'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
+            ),
         )
     if recipe_namespace == REPLAY_RECIPE_NAMESPACE:
         return RecipeSpec(
@@ -487,6 +504,33 @@ def resolve_recipe(recipe_namespace):
             # field kept for forward-compat with future replay recipes.
             missing_indicator_cols=(),
             asset_floors=dict(ASSET_FLOORS_REPLAY),
+            # P2.1.a-3-fu2 (86b9xd9hn) — replay parquets structurally
+            # lack `price_tier` (no `market_price` → no PRICE_BIN_CUTOFFS
+            # digitization) and `vol_regime_int` (no vol regime feed for
+            # HYPE/DOGE replay). Phase4Dataset defaults both to int64
+            # zeros so CalibrationMLP.forward's one-hots collapse to
+            # constants ([1,0,0,0] and [1,0]) on those two axes.
+            #
+            # Truth-in-degeneracy note (R1 M3+M4): even the two listed
+            # categoricals are effectively constant on replay rows:
+            #   - `stc_bucket=3` always (replay's `replay_market(market)`
+            #     evaluates at `open_time`, so `stc = close_time -
+            #     evaluation_time = 900s` for every 15M market → bucket 3
+            #     under STC_BIN_CUTOFFS=[120,300,600]).
+            #   - `side_int=1` always (extract_data_replay.py:528
+            #     hard-codes `np.int8(1)` per its "always YES side in
+            #     replay" docstring — YES side per the production
+            #     `extract_data.py:404` convention `side_int = (side ==
+            #     'yes').astype(int8)`).
+            # All four CalibrationMLP one-hots are therefore constant
+            # vectors on replay data; only the ticker embedding (EMB_DIM=4)
+            # provides non-degenerate categorical signal. Cont features +
+            # ticker embedding are the entire trainable surface.
+            # Re-extracting replay bundles to add proxy `price_tier` /
+            # `vol_regime_int` would bump cfg_fp_replay (Option B in fu2's
+            # design tree); deferred until Phase 5 Brier/ECE numbers show
+            # the categorical collapse is load-bearing.
+            categorical_feature_cols=('stc_bucket', 'side_int'),
         )
     raise ValueError(
         f"unknown recipe_namespace {recipe_namespace!r}; expected one of "

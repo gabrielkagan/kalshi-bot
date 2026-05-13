@@ -192,6 +192,57 @@ def build_model_from_definition(model_def: dict, n_vocab: int) -> CalibrationMLP
 # Phase4Dataset (per Phase 4 R3#C3)
 # ---------------------------------------------------------------------------
 
+# The full 4-tuple `CalibrationMLP.forward` consumes for one-hot encoding
+# (see model architecture above: price_tier=4 classes, stc_bucket=4,
+# vol_regime_int=2, side_int=2). Production recipe parquets contain all
+# four columns; replay recipe parquets contain only `stc_bucket` +
+# `side_int`. See `features.RecipeSpec.categorical_feature_cols` for the
+# per-recipe subset declaration (P2.1.a-3-fu2, ClickUp 86b9xd9hn).
+_ALL_CATEGORICAL_COLS: tuple = (
+    'price_tier', 'stc_bucket', 'vol_regime_int', 'side_int',
+)
+
+
+def _read_categorical_or_default(
+    df: pd.DataFrame,
+    col: str,
+    categorical_feature_cols: tuple,
+) -> np.ndarray:
+    """Read `col` from `df` as int64, OR return a same-length zero array
+    when `col` is not listed in the recipe's `categorical_feature_cols`.
+
+    Centralized helper so Phase4Dataset.__init__ and the preds_df concat
+    in train.py:run() apply identical fallback semantics — without this,
+    one site reading `df[col]` while the other reads zeros would silently
+    drift preds_df from Phase4Dataset's view of the same categorical
+    surface.
+
+    Defaulting to zero (rather than raising) is the Option A design
+    choice (operator-confirmed 2026-05-13). Replay rows fall in the
+    `(price_tier=0, vol_regime_int=0)` cell — `CalibrationMLP.forward`'s
+    one-hot collapses to a constant `[1,0,0,0]`/`[1,0]` for those two
+    axes. A degenerate categorical signal on the absent axes by design
+    (cfg_fp_replay stays stable; no parquet re-extract). See ClickUp
+    86b9xd9hn ticket body for the Option B (proxy derivation) escalation
+    path if HYPE/DOGE Brier/ECE turn out to need real categorical signal.
+
+    Belt-and-braces: even when `col` IS in `categorical_feature_cols` but
+    the DataFrame is missing the column (a producer/consumer mismatch),
+    we raise rather than silently defaulting — that would mask a recipe
+    bug. The default-to-zero path requires the recipe to explicitly
+    DECLARE the col absent.
+    """
+    if col in categorical_feature_cols:
+        if col not in df.columns:
+            raise KeyError(
+                f"Phase4Dataset categorical column {col!r} listed in "
+                f"recipe.categorical_feature_cols but missing from DataFrame; "
+                f"producer/consumer recipe mismatch."
+            )
+        return df[col].to_numpy(np.int64)
+    return np.zeros(len(df), dtype=np.int64)
+
+
 class Phase4Dataset(Dataset):
     """Wraps a normalized fold DataFrame + ticker vocab + per-cell weights.
     __getitem__ returns dict with FORWARD_KEYS + 'outcome' + 'w_cell'."""
@@ -199,7 +250,8 @@ class Phase4Dataset(Dataset):
     def __init__(self, df: pd.DataFrame, vocab: dict,
                  w_cell_lookup: Optional[np.ndarray] = None,
                  cont_feature_cols: Optional[list] = None,
-                 missing_indicator_cols: Optional[list] = None):
+                 missing_indicator_cols: Optional[list] = None,
+                 categorical_feature_cols: Optional[tuple] = None):
         """R3#C1: w_cell_lookup is optional for inference-only callers.
         When None, defaults to zeros[16] (no per-cell weighting at inference).
 
@@ -208,7 +260,15 @@ class Phase4Dataset(Dataset):
         for back-compat with v1-production callers. Replay-namespace
         callers route through `features.resolve_recipe('replay_v1')` and
         pass `recipe.cont_feature_cols` / `recipe.missing_indicator_cols`
-        explicitly so Phase4Dataset slices the right column subset."""
+        explicitly so Phase4Dataset slices the right column subset.
+
+        categorical_feature_cols: per-recipe tuple of categorical column
+        names the bundle's parquet ACTUALLY contains (P2.1.a-3-fu2,
+        ClickUp 86b9xd9hn). Subset of `_ALL_CATEGORICAL_COLS`; absent
+        entries default to int64 zeros at construction (does NOT touch
+        the parquet on disk → no cfg_fp_replay drift). Default-None
+        resolves to the full 4-tuple — back-compat with production callers
+        that have always passed all four cols through the DataFrame."""
         if w_cell_lookup is None:
             w_cell_lookup = np.zeros(16, dtype=np.float32)
         cont_cols = list(cont_feature_cols) if cont_feature_cols is not None else list(CONT_FEATURE_COLS)
@@ -216,17 +276,26 @@ class Phase4Dataset(Dataset):
             list(missing_indicator_cols) if missing_indicator_cols is not None
             else list(MISSING_INDICATOR_COLS)
         )
+        cat_cols = (
+            tuple(categorical_feature_cols) if categorical_feature_cols is not None
+            else _ALL_CATEGORICAL_COLS
+        )
         self.cont_feature_cols = cont_cols
         self.missing_indicator_cols = missing_cols
+        self.categorical_feature_cols = cat_cols
         self.df = df.reset_index(drop=True)
         self.vocab = vocab
         self.w_cell_lookup = torch.from_numpy(w_cell_lookup.astype(np.float32))
         self._cont_arr = self.df[cont_cols].to_numpy(np.float32)
         self._missing_arr = self.df[missing_cols].to_numpy(np.float32)
-        self._price = self.df['price_tier'].to_numpy(np.int64)
-        self._stc = self.df['stc_bucket'].to_numpy(np.int64)
-        self._vol = self.df['vol_regime_int'].to_numpy(np.int64)
-        self._side = self.df['side_int'].to_numpy(np.int64)
+        # P2.1.a-3-fu2 (86b9xd9hn): default-zero any categorical NOT
+        # listed in `categorical_feature_cols`. Replay parquets lack
+        # `price_tier` + `vol_regime_int` columns; defaulting at the
+        # construction site keeps cfg_fp_replay stable (no re-extract).
+        self._price = _read_categorical_or_default(self.df, 'price_tier', cat_cols)
+        self._stc = _read_categorical_or_default(self.df, 'stc_bucket', cat_cols)
+        self._vol = _read_categorical_or_default(self.df, 'vol_regime_int', cat_cols)
+        self._side = _read_categorical_or_default(self.df, 'side_int', cat_cols)
         self._tid = self.df['ticker_id'].to_numpy(np.int64)
         self._logit_raw = self.df['logit_raw_prob_clipped'].to_numpy(np.float32)
         self._outcome = self.df['outcome'].to_numpy(np.float32)
@@ -275,9 +344,15 @@ class CalibrationDataset(Phase4Dataset):
     P2.1.a-3-fu1 (86b9xbd2u): when callers pass a recipe-derived
     `cont_cols` list (e.g., replay_v1's 4-feature recipe), forward it
     through to Phase4Dataset so inference slices the same column subset
-    the bundle was trained on. Pre-fu1 the `cont_cols` arg was inert."""
+    the bundle was trained on. Pre-fu1 the `cont_cols` arg was inert.
+
+    P2.1.a-3-fu2 (86b9xd9hn): `categorical_feature_cols` is now forwarded
+    too — replay-namespace inference DataFrames lack `price_tier` +
+    `vol_regime_int`. Without forwarding, validate.py's `CalibrationDataset`
+    construction against a replay test_df would KeyError mid-loop."""
     def __init__(self, df: pd.DataFrame, cont_cols=None, ticker_to_id_or_vocab=None,
-                 missing_indicator_cols=None):
+                 missing_indicator_cols=None,
+                 categorical_feature_cols=None):
         # Detect old signature: 3-positional args from Phase 6 call sites.
         if isinstance(ticker_to_id_or_vocab, dict):
             vocab = ticker_to_id_or_vocab
@@ -295,6 +370,7 @@ class CalibrationDataset(Phase4Dataset):
             df, vocab, w_cell_zeros,
             cont_feature_cols=cont_cols,
             missing_indicator_cols=missing_indicator_cols,
+            categorical_feature_cols=categorical_feature_cols,
         )
 
 
@@ -767,16 +843,19 @@ def run(args: argparse.Namespace) -> dict:
                     tr, vocab, w_cell_lookup,
                     cont_feature_cols=recipe.cont_feature_cols,
                     missing_indicator_cols=recipe.missing_indicator_cols,
+                    categorical_feature_cols=recipe.categorical_feature_cols,
                 )
                 ds_cal = Phase4Dataset(
                     ca, vocab, w_cell_lookup,
                     cont_feature_cols=recipe.cont_feature_cols,
                     missing_indicator_cols=recipe.missing_indicator_cols,
+                    categorical_feature_cols=recipe.categorical_feature_cols,
                 )
                 ds_test = Phase4Dataset(
                     te, vocab, w_cell_lookup,
                     cont_feature_cols=recipe.cont_feature_cols,
                     missing_indicator_cols=recipe.missing_indicator_cols,
+                    categorical_feature_cols=recipe.categorical_feature_cols,
                 )
 
                 cal_preds = np.zeros((args.ensemble_size, len(ca)), dtype=np.float32)
@@ -929,16 +1008,38 @@ def run(args: argparse.Namespace) -> dict:
                 assert (cal_p_std >= 0).all() and (test_p_std >= 0).all()
 
                 # Build predictions parquet.
+                # P2.1.a-3-fu2 (86b9xd9hn): route each categorical column
+                # through `_read_categorical_or_default` so replay-namespace
+                # bundles emit 0-arrays for absent `price_tier` +
+                # `vol_regime_int` (matching Phase4Dataset's view of the
+                # same surface). Phase 5 conformal.py reads this parquet
+                # and groups on the 4-tuple — defaulting here keeps the
+                # required-column-set check in conformal.fit_conformal
+                # passing while degenerating the grouping to a single
+                # (0, sb, 0) cell per stc_bucket value (by design for
+                # replay; not load-bearing until Phase 5 Brier numbers
+                # show it).
+                _ca_cat = {
+                    col: _read_categorical_or_default(
+                        ca, col, recipe.categorical_feature_cols,
+                    )
+                    for col in _ALL_CATEGORICAL_COLS
+                }
+                _te_cat = {
+                    col: _read_categorical_or_default(
+                        te, col, recipe.categorical_feature_cols,
+                    )
+                    for col in _ALL_CATEGORICAL_COLS
+                }
                 preds_df = pd.DataFrame({
                     'split': ['cal'] * len(ca) + ['test'] * len(te),
                     'ticker': pd.concat([ca['ticker'], te['ticker']], ignore_index=True),
                     'evaluation_time': pd.concat([ca['evaluation_time'], te['evaluation_time']],
                                                     ignore_index=True),
-                    'price_tier': pd.concat([ca['price_tier'], te['price_tier']], ignore_index=True),
-                    'stc_bucket': pd.concat([ca['stc_bucket'], te['stc_bucket']], ignore_index=True),
-                    'vol_regime_int': pd.concat([ca['vol_regime_int'], te['vol_regime_int']],
-                                                  ignore_index=True),
-                    'side_int': pd.concat([ca['side_int'], te['side_int']], ignore_index=True),
+                    'price_tier': np.concatenate([_ca_cat['price_tier'], _te_cat['price_tier']]),
+                    'stc_bucket': np.concatenate([_ca_cat['stc_bucket'], _te_cat['stc_bucket']]),
+                    'vol_regime_int': np.concatenate([_ca_cat['vol_regime_int'], _te_cat['vol_regime_int']]),
+                    'side_int': np.concatenate([_ca_cat['side_int'], _te_cat['side_int']]),
                     'outcome': pd.concat([ca['outcome'], te['outcome']], ignore_index=True),
                     'method_output_raw': pd.concat([ca['method_output_raw'], te['method_output_raw']],
                                                      ignore_index=True),

@@ -599,9 +599,30 @@ def main() -> None:
             transforms=normstats.get('transforms', {}),
         )
         ticker_to_id = {t: i for i, t in enumerate(sorted(test_normed['ticker'].unique()))}
+        # P2.1.a-3-fu2 (86b9xd9hn): replay-namespace test_df lacks
+        # `price_tier` + `vol_regime_int` columns (extract_data_replay.py
+        # has no `market_price` to digitize). Forward the recipe's
+        # categorical_feature_cols so CalibrationDataset defaults the
+        # absent categoricals to int64 zeros — without this kwarg the
+        # default falls through to `_ALL_CATEGORICAL_COLS` and
+        # Phase4Dataset.__init__ KeyErrors on `df['price_tier']` mid-loop.
+        #
+        # KNOWN DOWNSTREAM GAP (P2.1.c-scope, separate followup): the
+        # per-row loop in `empirical_coverage` (lines ~244-264) ALSO reads
+        # `row['price_tier']` + `row['vol_regime_int']` directly off the
+        # replay test_df DataFrame — would KeyError after this
+        # CalibrationDataset construction succeeds. P2.1.b training +
+        # P2.1.c per-band Brier work today on replay bundles; P2.1.c
+        # per-cell coverage + the conformal lookup chain need a similar
+        # categorical_feature_cols guard at the empirical_coverage loop.
+        # Tracked as a sister fu3 ticket; do NOT attempt to patch here in
+        # the fu2 commit — empirical_coverage's per-row reads are a
+        # separate dispatch surface than CalibrationDataset's vector
+        # construction.
         ds = CalibrationDataset(
             test_normed, recipe.cont_feature_cols, ticker_to_id,
             missing_indicator_cols=recipe.missing_indicator_cols,
+            categorical_feature_cols=recipe.categorical_feature_cols,
         )
         loader = DataLoader(ds, batch_size=2048, shuffle=False, collate_fn=collate_dict)
         p_means, p_stds = [], []
