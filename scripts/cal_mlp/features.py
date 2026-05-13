@@ -35,6 +35,21 @@ ASSET_FLOORS = {
 }
 GLOBAL_MIN_ENTRY_PRICE = 75   # bot.py:219 — sub-floor opt-in via --include-sub-floor
 
+# P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets.
+# Kept SEPARATE from production ASSET_FLOORS so adding/removing replay
+# assets doesn't drift the production v1.1 cfg_fp pin (345978797274721f) —
+# `compute_cfg_fp()` bakes the entire ASSET_FLOORS dict into the canonical
+# fingerprint, so any membership change there shifts every existing
+# bundle's identity. `compute_cfg_fp_replay()` reads ASSET_FLOORS_REPLAY
+# instead. bot/constants.py has no per-asset MIN_*_ENTRY_PRICE for
+# HYPE/DOGE; both fall through to MIN_ENTRY_PRICE=75. When HYPE/DOGE
+# T4-promote and earn per-asset floors in bot/constants.py, update both
+# sides here in the same commit (and bump cfg_fp_replay).
+ASSET_FLOORS_REPLAY = {
+    'HYPE': 75,
+    'DOGE': 75,
+}
+
 
 # ---------------------------------------------------------------------------
 # Settlement whitelist (bot.py:4351 _OK_RESULTS)
@@ -327,3 +342,118 @@ BLEED_CELL = (3, 2)
 
 def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
     return (price_tier, stc_bucket) == BLEED_CELL
+
+
+# ---------------------------------------------------------------------------
+# Replay-corpus recipe (HYPE/DOGE — Phase 2 replay backfill)
+# ---------------------------------------------------------------------------
+# P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — pull path for HYPE/DOGE
+# `historical_replay_calmlp` rows. The replay corpus has only 19 cols vs
+# the 32 REQUIRED_SOURCE_COLS in extract_data.py; most bot-state features
+# (market_price, vol_regime, z_score, momentum/realized-vol, NBBO, balance,
+# strategy, side) are honest-NULL on replay rows by design (see
+# scripts/backfill/hype_doge_replay_backfill.py docstring "Methodology
+# gotchas"). Two production-recipe features are 100% NULL in replay:
+#   - market_price        (replay's `predict()` uses entry_price_cents=0
+#                          sentinel; `market_price` not stored)
+#   - prob_breakeven_gap  (no historical Kalshi orderbook → can't derive)
+#
+# REPLAY recipe is therefore a strict subset of the v1.1 recipe with 6
+# CONT_FEATURE_COLS (vs 8). Other features derive from replay's
+# (spot_at_evaluation, sigma_at_evaluation, strike_cents, close_time,
+# evaluation_time) tuple via the same formulas extract_data.py uses.
+#
+# cfg_fp_replay is namespaced separately from cfg_fp — bundles produced
+# under this recipe are NOT comparable to v1.1 production bundles. Phase
+# 6 A/B refuses cross-recipe comparison via cfg_fp inequality, so the
+# namespace separation is enforced naturally.
+
+CONT_FEATURE_COLS_REPLAY = [
+    # Note: `seconds_to_close` and `time_decayed_proximity` are STRUCTURALLY
+    # CONSTANT for replay rows (RCA 2026-05-13 P2.1.a-3 first extract run).
+    # `replay_market(market, ...)` evaluates each market exactly once at
+    # `open_time`, so `evaluation_time == open_time` always and `stc =
+    # close_time - evaluation_time = 900s` for every 15M market. Including
+    # them would zero-out normstats (`fit_normstats` raises on std<1e-12).
+    # Excluded entirely from the replay recipe; production v1.1 keeps both.
+    'spot_distance_to_strike_sigma',           # derived: (spot - strike) / sigma_term
+    'abs_spot_distance_to_strike_sigma',       # derived: |sd|
+    'hour_sin', 'hour_cos',                    # already-stored in replay corpus
+                                                # (canonical-helper-derived at backfill;
+                                                # we re-derive + verify lock-step here)
+]
+
+CONT_FEATURE_TRANSFORMS_REPLAY = {
+    'hour_sin': 'identity_no_zscore',
+    'hour_cos': 'identity_no_zscore',
+    # all others: 'identity'
+}
+
+# Replay rows lack market_price (no floor predicate) and product_type
+# (replay table is 15M-only by construction). Predicates are pruned
+# accordingly; reordering/adding is a recipe change and bumps cfg_fp_replay.
+DROP_PREDICATES_ORDER_REPLAY = [
+    'null_evaluation_time',
+    'null_close_time',
+    'null_spot_at_evaluation',
+    'null_sigma_at_evaluation',
+    'null_strike_cents',
+    'non_yes_no_result',
+    'settled_after_cutoff',
+    'non_positive_seconds_to_close',  # derived; defensive against close_time<=eval_time
+]
+
+# Phase 2 v1 backfill stamps every row with `replay_phase2_v1`. Future
+# Phase 2.5 / Phase 3 corpora would extend the tuple here AND bump cfg_fp.
+REPLAY_PROVENANCE_FILTER_CHOICES = ('replay_phase2_v1',)
+
+# Single source of truth for the replay-recipe namespace label. Referenced
+# by `compute_cfg_fp_replay()`'s canonical dict, by `extract_data_replay.py`
+# when stamping bundles, and by `tests/contracts/test_p2_1_a_3_corpus_
+# snapshots.py` anchor 9. Promote to a constant per R2 MN3 so all four
+# sites point at one literal and recipe-namespace bumps (e.g., replay_v2)
+# are a single-line edit.
+REPLAY_RECIPE_NAMESPACE = 'replay_v1'
+
+
+def compute_cfg_fp_replay(*, provenance_filter: str = 'replay_phase2_v1') -> str:
+    """sha256[:16] of the canonical replay-recipe extraction policy. Distinct
+    from `compute_cfg_fp` — bundles produced via this fingerprint live in a
+    SEPARATE namespace from v1.1 production bundles (see module docstring).
+
+    Pinned in tests/contracts/test_p2_1_a_3_corpus_snapshots.py anchor 7.
+    Any change to CONT_FEATURE_COLS_REPLAY / transforms / drop predicates /
+    sigma_winsor / raw_prob_clip / provenance_filter shifts this hash and
+    trips the test. Updating the pin requires a sister test update +
+    documentation in the v1.1-retrain session resume doc."""
+    if provenance_filter not in REPLAY_PROVENANCE_FILTER_CHOICES:
+        raise ValueError(
+            f"provenance_filter must be one of {REPLAY_PROVENANCE_FILTER_CHOICES}; "
+            f"got {provenance_filter!r}"
+        )
+    canonical = {
+        # Recipe namespace marker — explicit guard against accidental hash
+        # collision with `compute_cfg_fp()` over the same constants.
+        'recipe_namespace': REPLAY_RECIPE_NAMESPACE,
+        'CONT_FEATURE_COLS_REPLAY': CONT_FEATURE_COLS_REPLAY,
+        'CONT_FEATURE_TRANSFORMS_REPLAY': CONT_FEATURE_TRANSFORMS_REPLAY,
+        'PRICE_BIN_CUTOFFS': PRICE_BIN_CUTOFFS,
+        'STC_BIN_CUTOFFS': STC_BIN_CUTOFFS,
+        'digitize_right': DIGITIZE_RIGHT,
+        'method_output_policy': 'raw_prob_only',
+        'asset_floors_replay': ASSET_FLOORS_REPLAY,
+        'settlement_whitelist': list(SETTLEMENT_WHITELIST),
+        'null_drop_threshold': 0.30,
+        'null_imputation_policy': 'fold_train_mean_with_missing_indicator',
+        'normstats_ddof': 1,
+        'raw_prob_clip_eps': RAW_PROB_CLIP_EPS,
+        'sigma_winsor_abs_cap': SIGMA_WINSOR_ABS_CAP,
+        'drop_predicates_order': DROP_PREDICATES_ORDER_REPLAY,
+        'loss_form': 'bce_w_calibration_residual_v1',
+        'loss_w_floor': 1.0,
+        'loss_w_multiplier': 4.0,
+        'provenance_filter': provenance_filter,
+    }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True).encode()
+    ).hexdigest()[:16]

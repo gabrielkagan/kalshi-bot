@@ -42,9 +42,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).parent))
-# A.7 (86b9vejrj): import path for shared snapshot helper at scripts/_state_db_snapshot.py.
-# Module-top sys.path so the lazy import inside run() can never miss.
+# A.7 (86b9vejrj): shared snapshot helper. Bit 11.2 (2026-05-12) moved
+# `_state_db_snapshot.py` from `scripts/` → `scripts/ops/`; both paths are
+# inserted defensively so the lazy import inside run() never misses.
+# P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) surfaced the broken import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ops'))
 
 import features  # noqa: E402  (R3-H1: import the module so mutations to
                   # features.SIGMA_WINSOR_ABS_CAP are observed at call time;

@@ -44,10 +44,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# Re-use the shared primitive (Phase 0a coordination).
+# Re-use the shared primitive (Phase 0a coordination). Bit 11.2 (2026-05-12)
+# reorganized scripts/ into tier subdirs and moved `_state_db_snapshot.py`
+# from `scripts/` → `scripts/ops/`; both paths are added defensively so this
+# import survives any future move. P2.1.a-3 (2026-05-13, ticket 86b9wuhhr)
+# surfaced the broken import.
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+SCRIPTS_OPS_DIR = SCRIPTS_DIR / 'ops'
+for _p in (SCRIPTS_OPS_DIR, SCRIPTS_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 import _state_db_snapshot as _snap  # noqa: E402
 
 
