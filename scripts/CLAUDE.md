@@ -6,9 +6,9 @@ Audit, research, backfill, and ops scripts. Read-only against `state.db` unless 
 
 The flat `scripts/` root was reorganized into 3 tier subdirs:
 
-- `scripts/audit/` — read-only analysis + Wilson CI + alpha-research + verification (33 files).
+- `scripts/audit/` — read-only analysis + Wilson CI + alpha-research + verification (35 files).
 - `scripts/backfill/` — historical data backfills (9 files).
-- `scripts/ops/` — operator-facing one-shots + setup + migrations + lock sentinels (32 files).
+- `scripts/ops/` — operator-facing one-shots + setup + migrations + lock sentinels (34 files).
 - `scripts/cal_mlp/` — cal_mlp pipeline (already a subdir; untouched by 11.2).
 - `scripts/git_hooks/` — git hook templates (already a subdir; untouched by 11.2).
 
@@ -32,6 +32,8 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 - `audit_runner.sh` — aggregate runner; called by hourly cron
 - `15m_live_audit.py`, `hourly_alpha_research.py`, `spx_shadow_audit.py`, etc. — per-system
 - `doc_drift_check.py` — runs before commits that change config values (invoked by `make doc-drift`)
+- `cohort_attribution_nightly.py` — nightly 13:07 UTC materialization of `cohort_attribution_daily` (Money Printer Roadmap P1.1, ticket `86b9x3kgd`)
+- `weekly_bleed_report.py` — Mondays 13:13 UTC markdown report → `kb/findings/weekly-bleed-{YYYY-MM-DD}.md` + Telegram one-liner via canonical `_TELEGRAM` singleton (Money Printer Roadmap P1.4, ticket `86b9x3kn2`)
 
 ## Backfill scripts (`scripts/backfill/`)
 - `gdelt_backfill.py`, `glassnode_backfill.py`, `cryptocompare_news_backfill.py` — invoked by `.github/workflows/h4_backfill.yml` (wrapped via `scripts/ops/h4_run_with_alert.py` for Telegram failure alerts)
@@ -50,7 +52,7 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 - `setup_state_db_backup_timer.sh` — installer for both backup timers (mirrors `setup_h4_cron.sh` pattern). Re-runnable.
 
 ### Setup helpers
-- `setup_audit_cron.sh`, `setup_doc_drift_timer.sh`, `setup_full_audit_timer.sh`, `setup_h4_cron.sh` — operator-facing cron + timer installers.
+- `setup_audit_cron.sh`, `setup_doc_drift_timer.sh`, `setup_full_audit_timer.sh`, `setup_h4_cron.sh`, `setup_cohort_attribution_cron.sh` (P1.1, ticket `86b9x3kgd`), `setup_weekly_bleed_report_cron.sh` (P1.4, ticket `86b9x3kn2`) — operator-facing cron + timer installers.
 - `pre_deploy_check.sh` — manual pre-deploy aggregator (the canonical pre-deploy gate is `scripts/cal_mlp/deploy_check.sh`).
 
 ### Whitepaper + config artifacts
