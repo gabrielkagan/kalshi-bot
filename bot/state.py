@@ -1173,13 +1173,25 @@ class StateManager:
                 # No local position — INSERT from API
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
-                self.conn.execute("""
-                    INSERT INTO positions (ticker, event_ticker, asset, side,
-                        count, avg_price_cents, total_cost_cents,
-                        opened_at, updated_at, status)
-                    VALUES (?,?,?,?,?,?,?,?,?,'open')
-                """, (ticker, event_ticker, asset, side, count,
-                      avg_price, cost, now, now))
+                try:
+                    self.conn.execute("""
+                        INSERT INTO positions (ticker, event_ticker, asset, side,
+                            count, avg_price_cents, total_cost_cents,
+                            opened_at, updated_at, status)
+                        VALUES (?,?,?,?,?,?,?,?,?,'open')
+                    """, (ticker, event_ticker, asset, side, count,
+                          avg_price, cost, now, now))
+                except sqlite3.IntegrityError as e:
+                    # INSERT defaults strategy_group='main'; UNIQUE
+                    # constraint (ticker, strategy_group) trips when a
+                    # settled/closed row at (ticker, 'main') already
+                    # exists. Surfaces under specific position lifecycles
+                    # (e.g. ticker recycled across strategy groups).
+                    # Log + skip so reconcile doesn't kill startup; the
+                    # API position remains tracked by Kalshi-side state.
+                    logging.warning(
+                        "RECONCILE_INSERT_CONFLICT: ticker=%s err=%s — skipping",
+                        ticker, e)
             elif len(local_rows) == 1:
                 sg = dict(local_rows[0])["strategy_group"]
                 self.conn.execute("""
