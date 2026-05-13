@@ -57,6 +57,7 @@ from train import (  # noqa: E402
     apply_norm,
     collate_dict,
 )  # R3#C5: dropped unused predict_p_out import
+from features import resolve_recipe, REPLAY_RECIPE_NAMESPACE  # noqa: E402
 from conformal import (  # noqa: E402
     SinglePredictor,
     EnsemblePredictor,
@@ -381,7 +382,10 @@ def _check_cfg_fp_compat(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--asset', required=True, choices=['BTC', 'ETH', 'SOL', 'XRP'])
+    ap.add_argument(
+        '--asset', required=True,
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+    )
     ap.add_argument('--bundle-sha', required=True)
     ap.add_argument('--challenger-bundle-sha', default=None)
     ap.add_argument('--alpha', type=float, default=DEFAULT_ALPHA)
@@ -554,6 +558,19 @@ def main() -> None:
         if not ext_bundle_path.is_absolute():
             ext_bundle_path = project_root / ext_bundle_path
         extract_dir = ext_bundle_path.parent
+        # P2.1.a-3-fu1 (86b9xbd2u): load the extract bundle JSON to read
+        # `recipe_namespace`. Pre-P2.1.a-3 production bundles don't stamp
+        # the field; resolve_recipe(None) → production default.
+        with open(ext_bundle_path, encoding='utf-8') as _f:
+            _ext_bundle_for_recipe = json.load(_f)
+        recipe = resolve_recipe(_ext_bundle_for_recipe.get('recipe_namespace'))
+        if args.asset not in recipe.asset_floors:
+            raise SystemExit(
+                f"asset {args.asset!r} not in recipe {recipe.namespace!r} "
+                f"asset_floors {sorted(recipe.asset_floors)} — bundle's "
+                f"recipe_namespace ({_ext_bundle_for_recipe.get('recipe_namespace')!r}) "
+                f"is inconsistent with --asset."
+            )
         deploy_fold_path = Path(deploy_fold['parquet_path'])
         if not deploy_fold_path.is_absolute():
             deploy_fold_path = extract_dir / deploy_fold_path
@@ -574,12 +591,18 @@ def main() -> None:
             expected_sha=deploy_fold.get('normstats_sha256'),
         )
         # R-p6-impl-r5#CRIT: _load_normstats returns full payload; unwrap.
+        # P2.1.a-3-fu1: route through recipe.cont_feature_cols so replay
+        # bundles slice the 4-feature subset (vs production's 8) and avoid
+        # KeyError on missing market_price / prob_breakeven_gap columns.
         test_normed = apply_norm(
-            test_df, normstats['stats'], CONT_FEATURE_COLS,
+            test_df, normstats['stats'], recipe.cont_feature_cols,
             transforms=normstats.get('transforms', {}),
         )
         ticker_to_id = {t: i for i, t in enumerate(sorted(test_normed['ticker'].unique()))}
-        ds = CalibrationDataset(test_normed, CONT_FEATURE_COLS, ticker_to_id)
+        ds = CalibrationDataset(
+            test_normed, recipe.cont_feature_cols, ticker_to_id,
+            missing_indicator_cols=recipe.missing_indicator_cols,
+        )
         loader = DataLoader(ds, batch_size=2048, shuffle=False, collate_fn=collate_dict)
         p_means, p_stds = [], []
         with torch.no_grad():
@@ -636,16 +659,34 @@ def main() -> None:
         )
         _check_rss_ceiling('after_coverage')
 
-        print("[sim_pnl] counterfactual replay...")
-        sim_pnl_result = run_sim_pnl(
-            asset=args.asset, bundle=bundle, conformal_artifact=conformal_artifact,
-            predictor=predictor, market_blend_w=market_blend_w,
-            test_window=(test_df['evaluation_time'].min(),
-                         test_df['evaluation_time'].max()),
-            normstats=normstats, db_path=args.db, device=device,
-            challenger_bundle=challenger_bundle,
-            challenger_artifact=challenger_artifact,
-        )
+        # P2.1.a-3-fu1 (86b9xbd2u): replay-namespace bundles (HYPE/DOGE)
+        # source their corpus from data/replay/state.db::historical_replay_calmlp,
+        # NOT the production state.db::evaluated_opportunities table that
+        # sim_pnl.run_sim_pnl reads. Running sim_pnl unconditionally would
+        # return 0 candidate rows and silently emit an empty PnL audit
+        # block — a false "sim_pnl ran" signal. Skip with a documented
+        # marker; Brier + coverage above remain authoritative. HYPE/DOGE
+        # counterfactual replay is a separate workstream (file as fu).
+        if recipe.namespace == REPLAY_RECIPE_NAMESPACE:
+            print("[sim_pnl] SKIPPED — replay-namespace bundle (HYPE/DOGE); "
+                  "counterfactual replay against production state.db is not "
+                  "meaningful for replay-corpus assets.")
+            sim_pnl_result = {
+                'sim_pnl_skipped': True,
+                'sim_pnl_skip_reason': 'replay_corpus_not_in_state_db',
+                'recipe_namespace': recipe.namespace,
+            }
+        else:
+            print("[sim_pnl] counterfactual replay...")
+            sim_pnl_result = run_sim_pnl(
+                asset=args.asset, bundle=bundle, conformal_artifact=conformal_artifact,
+                predictor=predictor, market_blend_w=market_blend_w,
+                test_window=(test_df['evaluation_time'].min(),
+                             test_df['evaluation_time'].max()),
+                normstats=normstats, db_path=args.db, device=device,
+                challenger_bundle=challenger_bundle,
+                challenger_artifact=challenger_artifact,
+            )
         _check_rss_ceiling('after_sim_pnl')
 
         blockers = []
@@ -719,30 +760,40 @@ def main() -> None:
         if cov_summary['n_total_dispatch_miss'] > 0:
             blockers.append(f"#7 dispatch_miss: {cov_summary['n_total_dispatch_miss']} test rows")
 
-        # Sim PnL ship-blockers (#8, #9, #10).
-        sim_pnl_off = sim_pnl_result.get('block_off', {})
-        sim_pnl_on = sim_pnl_result.get('block_on', {})
-        if sim_pnl_off.get('total_pessimistic_30d', 0.0) <= 0:
-            blockers.append(f"#8 sim_pnl pessimistic ≤ 0: ${sim_pnl_off.get('total_pessimistic_30d', 0):.2f}")
-        modeled = sim_pnl_off.get('total_modeled_30d', 0.0)
-        pessim = sim_pnl_off.get('total_pessimistic_30d', 0.0)
-        if pessim != 0 and abs(modeled - pessim) / abs(pessim) > 0.5:
-            blockers.append(f"#9 sim_pnl modeled vs pessimistic > 50% diverge")
-        if modeled == pessim:
+        # Sim PnL ship-blockers (#8, #9, #10). Skipped when sim_pnl was
+        # not run (replay-namespace bundles per P2.1.a-3-fu1 86b9xbd2u —
+        # see the "[sim_pnl] SKIPPED" branch above).
+        if sim_pnl_result.get('sim_pnl_skipped'):
             soft_flags.append(
-                "#9_dead: pnl_modeled == pnl_pessimistic (per-cell fill-rate "
-                "model deferred — divergence ship-blocker is structurally "
-                "inactive in Phase 6)"
+                f"sim_pnl_skipped: "
+                f"{sim_pnl_result.get('sim_pnl_skip_reason', 'unspecified')} "
+                f"(ship-blockers #8/#9/#10 not evaluated; Brier + coverage "
+                f"above remain authoritative for this bundle)"
             )
-        if (sim_pnl_off.get('worst_7d_drawdown_cents')
-                == sim_pnl_off.get('worst_7d_drawdown_prod_cents')):
-            soft_flags.append(
-                "drawdown_prod_stub: worst_7d_drawdown_prod == worst_7d_drawdown_mlp "
-                "(production-path replay deferred — ratio always 1.0)"
-            )
-        weighted_drop = sim_pnl_result.get('weighted_avg_risk_drop', 0.0)
-        if weighted_drop > 0.15:
-            blockers.append(f"#10 tier migration weighted_avg_risk_drop={weighted_drop:.3f} > 0.15")
+        else:
+            sim_pnl_off = sim_pnl_result.get('block_off', {})
+            sim_pnl_on = sim_pnl_result.get('block_on', {})
+            if sim_pnl_off.get('total_pessimistic_30d', 0.0) <= 0:
+                blockers.append(f"#8 sim_pnl pessimistic ≤ 0: ${sim_pnl_off.get('total_pessimistic_30d', 0):.2f}")
+            modeled = sim_pnl_off.get('total_modeled_30d', 0.0)
+            pessim = sim_pnl_off.get('total_pessimistic_30d', 0.0)
+            if pessim != 0 and abs(modeled - pessim) / abs(pessim) > 0.5:
+                blockers.append(f"#9 sim_pnl modeled vs pessimistic > 50% diverge")
+            if modeled == pessim:
+                soft_flags.append(
+                    "#9_dead: pnl_modeled == pnl_pessimistic (per-cell fill-rate "
+                    "model deferred — divergence ship-blocker is structurally "
+                    "inactive in Phase 6)"
+                )
+            if (sim_pnl_off.get('worst_7d_drawdown_cents')
+                    == sim_pnl_off.get('worst_7d_drawdown_prod_cents')):
+                soft_flags.append(
+                    "drawdown_prod_stub: worst_7d_drawdown_prod == worst_7d_drawdown_mlp "
+                    "(production-path replay deferred — ratio always 1.0)"
+                )
+            weighted_drop = sim_pnl_result.get('weighted_avg_risk_drop', 0.0)
+            if weighted_drop > 0.15:
+                blockers.append(f"#10 tier migration weighted_avg_risk_drop={weighted_drop:.3f} > 0.15")
 
         if market_blend_w_drift:
             blockers.append(
@@ -753,36 +804,39 @@ def main() -> None:
             soft_flags.append(
                 "psutil_missing: RSS ceiling check disabled (R-p6-2#C6 1GB cap not enforced)"
             )
-        if (sim_pnl_result.get('challenger_error')
-                and args.challenger_bundle_sha):
-            soft_flags.append(
-                f"challenger_replay_error: {sim_pnl_result['challenger_error']}"
-            )
+        # Sim PnL-derived ship-blockers + soft flags — gated when sim_pnl
+        # was skipped (replay-namespace bundles, P2.1.a-3-fu1 86b9xbd2u).
+        if not sim_pnl_result.get('sim_pnl_skipped'):
+            if (sim_pnl_result.get('challenger_error')
+                    and args.challenger_bundle_sha):
+                soft_flags.append(
+                    f"challenger_replay_error: {sim_pnl_result['challenger_error']}"
+                )
 
-        unsettled_drop_rate = sim_pnl_result.get('unsettled_drop_rate', 0.0)
-        if unsettled_drop_rate > UNSETTLED_DROP_HARD:
-            blockers.append(
-                f"unsettled_drop_rate={unsettled_drop_rate:.3f} > {UNSETTLED_DROP_HARD} "
-                f"(catastrophic backfill failure)"
+            unsettled_drop_rate = sim_pnl_result.get('unsettled_drop_rate', 0.0)
+            if unsettled_drop_rate > UNSETTLED_DROP_HARD:
+                blockers.append(
+                    f"unsettled_drop_rate={unsettled_drop_rate:.3f} > {UNSETTLED_DROP_HARD} "
+                    f"(catastrophic backfill failure)"
+                )
+            elif unsettled_drop_rate > UNSETTLED_DROP_SOFT:
+                soft_flags.append(f"unsettled_drop_rate={unsettled_drop_rate:.3f}")
+            worst_ratio = sim_pnl_result.get('worst_7d_drawdown_ratio', 1.0)
+            if worst_ratio > 1.5:
+                soft_flags.append(f"worst_7d_drawdown_ratio={worst_ratio:.2f} > 1.5")
+            if sim_pnl_result.get('hwm_init_source') == 'forward_only_from_now':
+                soft_flags.append("hwm_init_source=forward_only_from_now (drawdown replay structural-only)")
+            # A27 deprecation candidate — R-p6-impl-3#C6 drops `> 0` lower bound.
+            block_marginal = (
+                sim_pnl_on.get('total_pessimistic_30d', 0.0)
+                - sim_pnl_off.get('total_pessimistic_30d', 0.0)
             )
-        elif unsettled_drop_rate > UNSETTLED_DROP_SOFT:
-            soft_flags.append(f"unsettled_drop_rate={unsettled_drop_rate:.3f}")
-        worst_ratio = sim_pnl_result.get('worst_7d_drawdown_ratio', 1.0)
-        if worst_ratio > 1.5:
-            soft_flags.append(f"worst_7d_drawdown_ratio={worst_ratio:.2f} > 1.5")
-        if sim_pnl_result.get('hwm_init_source') == 'forward_only_from_now':
-            soft_flags.append("hwm_init_source=forward_only_from_now (drawdown replay structural-only)")
-        # A27 deprecation candidate — R-p6-impl-3#C6 drops `> 0` lower bound.
-        block_marginal = (
-            sim_pnl_on.get('total_pessimistic_30d', 0.0)
-            - sim_pnl_off.get('total_pessimistic_30d', 0.0)
-        )
-        if block_marginal < 100:
-            soft_flags.append(
-                f"a27_block_marginal_pnl_30d=${block_marginal:.0f} < $100 "
-                f"(deprecation CANDIDATE — confounded; manual MIN_EDGE_BY_PRICE "
-                f"re-validation required; negative = block hurting PnL)"
-            )
+            if block_marginal < 100:
+                soft_flags.append(
+                    f"a27_block_marginal_pnl_30d=${block_marginal:.0f} < $100 "
+                    f"(deprecation CANDIDATE — confounded; manual MIN_EDGE_BY_PRICE "
+                    f"re-validation required; negative = block hurting PnL)"
+                )
 
         for cell in conformal_artifact.get('cells', []):
             if cell.get('concentration_warning'):
@@ -908,15 +962,33 @@ def _write_report_md(path: Path, audit: dict) -> None:
 
     lines.append("\n## 3. Sim PnL summary\n")
     sp = audit['sim_pnl']
-    lines.append(f"- Pessimistic 30d (block_off): ${sp.get('block_off', {}).get('total_pessimistic_30d', 0):.2f}")
-    lines.append(f"- Modeled 30d (block_off): ${sp.get('block_off', {}).get('total_modeled_30d', 0):.2f}")
-    lines.append(f"- Pessimistic 30d (block_on): ${sp.get('block_on', {}).get('total_pessimistic_30d', 0):.2f}")
-    lines.append(f"- A27 block marginal: ${(sp.get('block_on', {}).get('total_pessimistic_30d', 0) - sp.get('block_off', {}).get('total_pessimistic_30d', 0)):.2f}/30d")
-    lines.append(f"- Tier migration weighted_avg_risk_drop: {sp.get('weighted_avg_risk_drop', 0):.3f}")
+    # P2.1.a-3-fu1 R1 C1 (86b9xbd2u): replay-namespace bundles skip the
+    # sim_pnl counterfactual. The raw `.get(..., 0)` defaults below would
+    # render "$0.00 PnL / 0.000 risk drop / hwm=unknown" — a false "sim_pnl
+    # ran and found nothing" signal in the operator-facing markdown
+    # report. Branch on the skip marker and emit a single explanatory
+    # line for both sections instead.
+    if sp.get('sim_pnl_skipped'):
+        _reason = sp.get('sim_pnl_skip_reason', 'unspecified')
+        _ns = sp.get('recipe_namespace', 'unknown')
+        lines.append(
+            f"- _skipped_ (recipe_namespace={_ns}; reason={_reason}). "
+            f"Sim PnL counterfactual is not meaningful for replay-corpus "
+            f"assets — Brier (§1) + coverage (§2) remain authoritative."
+        )
+    else:
+        lines.append(f"- Pessimistic 30d (block_off): ${sp.get('block_off', {}).get('total_pessimistic_30d', 0):.2f}")
+        lines.append(f"- Modeled 30d (block_off): ${sp.get('block_off', {}).get('total_modeled_30d', 0):.2f}")
+        lines.append(f"- Pessimistic 30d (block_on): ${sp.get('block_on', {}).get('total_pessimistic_30d', 0):.2f}")
+        lines.append(f"- A27 block marginal: ${(sp.get('block_on', {}).get('total_pessimistic_30d', 0) - sp.get('block_off', {}).get('total_pessimistic_30d', 0)):.2f}/30d")
+        lines.append(f"- Tier migration weighted_avg_risk_drop: {sp.get('weighted_avg_risk_drop', 0):.3f}")
 
     lines.append("\n## 4. Drawdown\n")
-    lines.append(f"- worst_7d_drawdown_ratio (mlp/prod): {sp.get('worst_7d_drawdown_ratio', 1.0):.2f}")
-    lines.append(f"- hwm_init_source: {sp.get('hwm_init_source', 'unknown')}")
+    if sp.get('sim_pnl_skipped'):
+        lines.append("- _skipped_ (sim_pnl-derived metric; see §3).")
+    else:
+        lines.append(f"- worst_7d_drawdown_ratio (mlp/prod): {sp.get('worst_7d_drawdown_ratio', 1.0):.2f}")
+        lines.append(f"- hwm_init_source: {sp.get('hwm_init_source', 'unknown')}")
 
     lines.append("\n## 5. HARD blockers fired\n")
     if audit['blockers_fired']:

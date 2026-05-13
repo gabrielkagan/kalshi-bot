@@ -106,3 +106,58 @@ Untracked dev artifacts (NOT in the AST-guard surface; ticket `86b9wjd3e` pendin
 **Helper-call sites (preserve when editing):** `bot/state.py:1713` + `:2010` (pre-DB-write `compute_derived_features` calls + `:1723` `apply_sigma_winsor` on the returned sigma) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py` (evaluated_opportunities pre-B.1a Tier 4/5 backfill) + `scripts/backfill/wave1_derived_cols.py` (B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill) + `scripts/backfill/hype_doge_replay_backfill.py` (Phase 2 replay backfill, 2026-05-12, ticket `86b9wy7v3`: per-market `replay_market()` calls helpers for `hour_sin`/`hour_cos`/`sigma_winsorize` on `historical_replay_calmlp` rows. `prob_breakeven_gap` honest-NULL in v1 — no historical Kalshi orderbook — but the helper IS called with `market_price_cents=None` to preserve the lock-step call shape) + `scripts/cal_mlp/integration.py` (serve-path `should_block_tm96`, post-A.1b).
 
 Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review of A.1a caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a 2026-05-12 + A.1b 2026-05-12).
+
+## Recipe namespace dispatch (P2.1.a-3-fu1, 2026-05-13, ticket `86b9xbd2u`)
+
+Extract bundles produced under different recipes route through one
+dispatch helper: `scripts/cal_mlp/features.py::resolve_recipe(namespace) ->
+RecipeSpec`. Pinned by `tests/contracts/test_p2_1_a_3_fu1_recipe_dispatch.py`.
+
+**Recipe namespaces** (canonical labels — adding a new one bumps cfg_fp
+and requires a sister anchor in the dispatch test):
+
+| Namespace | CONT_FEATURE_COLS | Assets | cfg_fp |
+|---|---|---|---|
+| `v1.1_production` | 8 (incl. market_price, prob_breakeven_gap) | BTC/ETH/SOL/XRP | `345978797274721f` (default flags) / `1969b12c6c0c39bf` (ablation) |
+| `replay_v1` | 4 (no market_price, no prob_breakeven_gap, no seconds_to_close, no time_decayed_proximity) | HYPE/DOGE | `9347942aaba71146` |
+
+**Bundle stamping convention:**
+- `extract_data_replay.py` ALWAYS stamps `recipe_namespace='replay_v1'`
+  in the produced `extract_bundle.json`.
+- `extract_data.py` (production) currently does NOT stamp the field;
+  consumers default-to-`v1.1_production` on absent key for back-compat
+  with already-shipped production bundles. `resolve_recipe(None)` and
+  `resolve_recipe('v1.1_production')` resolve identically.
+
+**Consumer wiring** (post-fu1):
+- `train.py`, `validate.py`, `conformal.py`: argparse `--asset` choices
+  widened to `['BTC','ETH','SOL','XRP','HYPE','DOGE']`.
+- `train.py`, `validate.py`: load `ext_bundle['recipe_namespace']`,
+  resolve recipe, hard-fail if `--asset` ∉ `recipe.asset_floors`
+  (catches `--asset HYPE` paired with production bundle and vice versa).
+- `train.py`: `Phase4Dataset(...)` + `apply_norm(...)` + `model_def`
+  size receive recipe-derived `cont_feature_cols` /
+  `cont_feature_transforms` / `missing_indicator_cols` /
+  input_continuous_dim — not module-globals.
+- `train.py`: `model_def` now stamps `recipe_namespace`. The existing
+  v2 ETH `phase1b_verify_eth_v2.py::EXPECTED_MODEL_DEF_FIELDS`
+  whitelist deliberately does NOT include the new key — the pinned
+  on-disk v2 bundle predates fu1 — and will be added at next ETH
+  retrain via a separate verifier-update Bit.
+- `validate.py`: replay-namespace bundles SKIP the sim_pnl
+  counterfactual replay block. Replay corpus rows live in
+  `data/replay/state.db::historical_replay_calmlp`, not the production
+  `state.db::evaluated_opportunities` table that `run_sim_pnl` reads.
+  The skip emits a documented `sim_pnl_skipped` marker into the audit
+  JSON AND the operator-facing markdown report (sections §3 + §4
+  render `_skipped_` rather than misleading `$0.00` defaults). Brier
+  (§1) + coverage (§2) remain authoritative.
+
+**P2.1.b enablement gap** (open at fu1 ship time): `Phase4Dataset.__getitem__`
+unconditionally reads `df['price_tier']` / `df['vol_regime_int']`
+categorical columns. Replay parquets lack both (no market_price → no
+price_tier digitization; no vol regime feed for HYPE/DOGE in replay
+backfill). Recipe-dispatch covers continuous-feature routing only;
+categorical feature engineering for HYPE/DOGE replay is a separate
+follow-up sub-Bit. P2.1.b ETH/BTC/SOL/XRP training works on fu1;
+HYPE/DOGE training blocks on the categorical-FE follow-up.

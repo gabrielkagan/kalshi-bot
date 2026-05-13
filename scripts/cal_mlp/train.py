@@ -61,6 +61,7 @@ from features import (  # noqa: E402
     CONT_FEATURE_TRANSFORMS,
     MISSING_INDICATOR_COLS,
     RAW_PROB_CLIP_EPS,
+    resolve_recipe,
 )
 from normalize import apply_norm  # noqa: E402
 
@@ -196,16 +197,32 @@ class Phase4Dataset(Dataset):
     __getitem__ returns dict with FORWARD_KEYS + 'outcome' + 'w_cell'."""
 
     def __init__(self, df: pd.DataFrame, vocab: dict,
-                 w_cell_lookup: Optional[np.ndarray] = None):
+                 w_cell_lookup: Optional[np.ndarray] = None,
+                 cont_feature_cols: Optional[list] = None,
+                 missing_indicator_cols: Optional[list] = None):
         """R3#C1: w_cell_lookup is optional for inference-only callers.
-        When None, defaults to zeros[16] (no per-cell weighting at inference)."""
+        When None, defaults to zeros[16] (no per-cell weighting at inference).
+
+        cont_feature_cols / missing_indicator_cols: per-recipe overrides
+        (P2.1.a-3-fu1, ClickUp 86b9xbd2u). Both default to module-globals
+        for back-compat with v1-production callers. Replay-namespace
+        callers route through `features.resolve_recipe('replay_v1')` and
+        pass `recipe.cont_feature_cols` / `recipe.missing_indicator_cols`
+        explicitly so Phase4Dataset slices the right column subset."""
         if w_cell_lookup is None:
             w_cell_lookup = np.zeros(16, dtype=np.float32)
+        cont_cols = list(cont_feature_cols) if cont_feature_cols is not None else list(CONT_FEATURE_COLS)
+        missing_cols = (
+            list(missing_indicator_cols) if missing_indicator_cols is not None
+            else list(MISSING_INDICATOR_COLS)
+        )
+        self.cont_feature_cols = cont_cols
+        self.missing_indicator_cols = missing_cols
         self.df = df.reset_index(drop=True)
         self.vocab = vocab
         self.w_cell_lookup = torch.from_numpy(w_cell_lookup.astype(np.float32))
-        self._cont_arr = self.df[CONT_FEATURE_COLS].to_numpy(np.float32)
-        self._missing_arr = self.df[MISSING_INDICATOR_COLS].to_numpy(np.float32)
+        self._cont_arr = self.df[cont_cols].to_numpy(np.float32)
+        self._missing_arr = self.df[missing_cols].to_numpy(np.float32)
         self._price = self.df['price_tier'].to_numpy(np.int64)
         self._stc = self.df['stc_bucket'].to_numpy(np.int64)
         self._vol = self.df['vol_regime_int'].to_numpy(np.int64)
@@ -216,10 +233,10 @@ class Phase4Dataset(Dataset):
         # R-p4-r5#H5: a constant-valued feature in a fold gives std=0 in
         # apply_norm → NaN/inf in z-score → poisons gradients silently.
         if not np.isfinite(self._cont_arr).all():
-            bad = [c for c in CONT_FEATURE_COLS
+            bad = [c for c in cont_cols
                    if not np.isfinite(self.df[c].to_numpy(np.float32)).all()]
             raise ValueError(
-                f"Phase4Dataset: non-finite values in CONT_FEATURE_COLS {bad} "
+                f"Phase4Dataset: non-finite values in cont_feature_cols {bad} "
                 f"after apply_norm — likely zero-variance feature in this fold"
             )
         if not np.isfinite(self._logit_raw).all():
@@ -253,8 +270,14 @@ class Phase4Dataset(Dataset):
 class CalibrationDataset(Phase4Dataset):
     """Inference-only wrapper supporting Phase 6's old constructor signature
     `CalibrationDataset(df, cont_cols, ticker_to_id_or_vocab)`. Internally
-    maps to Phase4Dataset with a zero w_cell_lookup (unused at inference)."""
-    def __init__(self, df: pd.DataFrame, cont_cols=None, ticker_to_id_or_vocab=None):
+    maps to Phase4Dataset with a zero w_cell_lookup (unused at inference).
+
+    P2.1.a-3-fu1 (86b9xbd2u): when callers pass a recipe-derived
+    `cont_cols` list (e.g., replay_v1's 4-feature recipe), forward it
+    through to Phase4Dataset so inference slices the same column subset
+    the bundle was trained on. Pre-fu1 the `cont_cols` arg was inert."""
+    def __init__(self, df: pd.DataFrame, cont_cols=None, ticker_to_id_or_vocab=None,
+                 missing_indicator_cols=None):
         # Detect old signature: 3-positional args from Phase 6 call sites.
         if isinstance(ticker_to_id_or_vocab, dict):
             vocab = ticker_to_id_or_vocab
@@ -268,7 +291,11 @@ class CalibrationDataset(Phase4Dataset):
         df = df.copy()
         if 'ticker_id' not in df.columns:
             df['ticker_id'] = df['ticker'].astype(str).map(vocab).fillna(0).astype(np.int64)
-        super().__init__(df, vocab, w_cell_zeros)
+        super().__init__(
+            df, vocab, w_cell_zeros,
+            cont_feature_cols=cont_cols,
+            missing_indicator_cols=missing_indicator_cols,
+        )
 
 
 def collate_dict(batch_list: list) -> dict:
@@ -487,7 +514,10 @@ def marker_matches(marker_path: Path, expected: dict) -> bool:
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Phase 4 cal_mlp training")
-    ap.add_argument('--asset', required=True, choices=['BTC', 'ETH', 'SOL', 'XRP'])
+    ap.add_argument(
+        '--asset', required=True,
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+    )
     ap.add_argument('--extract-train-id', default=None)
     ap.add_argument('--folds-to-train', type=str, default=None,
                     help='comma-separated fold indices; default = all')
@@ -577,6 +607,24 @@ def run(args: argparse.Namespace) -> dict:
                 raise Phase4SchemaError(f"extract bundle missing key {k!r}")
         cfg_fp = ext_bundle['cfg_fp']
 
+        # P2.1.a-3-fu1 (86b9xbd2u): route bundle's recipe_namespace through
+        # the single dispatch entry. Pre-P2.1.a-3 production bundles do NOT
+        # stamp recipe_namespace; resolve_recipe(None) → production for
+        # back-compat. Replay-namespace bundles produced by
+        # extract_data_replay.py route to CONT_FEATURE_COLS_REPLAY (4
+        # features) + ASSET_FLOORS_REPLAY (HYPE/DOGE).
+        recipe = resolve_recipe(ext_bundle.get('recipe_namespace'))
+        if asset not in recipe.asset_floors:
+            raise Phase4ContractError(
+                f"asset {asset!r} not in recipe {recipe.namespace!r} asset_floors "
+                f"{sorted(recipe.asset_floors)} — bundle recipe_namespace "
+                f"{ext_bundle.get('recipe_namespace')!r} is inconsistent with "
+                f"--asset choice. Train against a bundle whose namespace covers "
+                f"this asset."
+            )
+        n_cont_recipe = len(recipe.cont_feature_cols)
+        n_missing_recipe = len(recipe.missing_indicator_cols)
+
         audit_path = train_dir_extract / ext_bundle['audit_path']
         if sha256_file(audit_path) != ext_bundle['audit_sha256']:
             raise Phase4SchemaError("audit_sha256 mismatch")
@@ -644,12 +692,18 @@ def run(args: argparse.Namespace) -> dict:
 
         # Build model_definition.json (early — needed for marker hashing).
         # R2#C4: include cfg_fp so Phase 5 can cross-check.
+        # P2.1.a-3-fu1 (86b9xbd2u): n_cont/n_missing derived from the
+        # resolved recipe so replay-namespace bundles size the linear
+        # layer correctly (4-feature input, not the 8-feature production
+        # input). Module-globals N_CONT/N_MISSING remain as production
+        # defaults for legacy callers (build_model_from_definition).
         model_def = {
             'model_kind': 'ResidualMLPV1',
             'cfg_fp': cfg_fp,
-            'n_cont': N_CONT,
-            'n_missing_indicator_cols': N_MISSING,
-            'input_continuous_dim': N_CONT + N_MISSING,
+            'recipe_namespace': recipe.namespace,
+            'n_cont': n_cont_recipe,
+            'n_missing_indicator_cols': n_missing_recipe,
+            'input_continuous_dim': n_cont_recipe + n_missing_recipe,
             'n_price_tiers': 4,
             'n_stc_buckets': 4,
             'n_vol_regimes': 2,
@@ -678,8 +732,10 @@ def run(args: argparse.Namespace) -> dict:
                 fold_record = next(fr for fr in fold_records if fr['fold'] == fold)
                 normstats = normstats_by_fold[fold]
                 df_raw = fold_dfs[fold]
-                df_norm = apply_norm(df_raw, normstats['stats'], CONT_FEATURE_COLS,
-                                       transforms=normstats.get('transforms', CONT_FEATURE_TRANSFORMS))
+                df_norm = apply_norm(
+                    df_raw, normstats['stats'], recipe.cont_feature_cols,
+                    transforms=normstats.get('transforms', recipe.cont_feature_transforms),
+                )
 
                 tr = df_norm[df_norm['split'] == 'train'].reset_index(drop=True)
                 ca = df_norm[df_norm['split'] == 'cal'].reset_index(drop=True)
@@ -707,9 +763,21 @@ def run(args: argparse.Namespace) -> dict:
                 fold_pf = next(pf for pf in audit_json['per_fold'] if pf['fold'] == fold)
                 w_cell_lookup = compute_w_cell_lookup(fold_pf['per_cell'])
 
-                ds_train = Phase4Dataset(tr, vocab, w_cell_lookup)
-                ds_cal = Phase4Dataset(ca, vocab, w_cell_lookup)
-                ds_test = Phase4Dataset(te, vocab, w_cell_lookup)
+                ds_train = Phase4Dataset(
+                    tr, vocab, w_cell_lookup,
+                    cont_feature_cols=recipe.cont_feature_cols,
+                    missing_indicator_cols=recipe.missing_indicator_cols,
+                )
+                ds_cal = Phase4Dataset(
+                    ca, vocab, w_cell_lookup,
+                    cont_feature_cols=recipe.cont_feature_cols,
+                    missing_indicator_cols=recipe.missing_indicator_cols,
+                )
+                ds_test = Phase4Dataset(
+                    te, vocab, w_cell_lookup,
+                    cont_feature_cols=recipe.cont_feature_cols,
+                    missing_indicator_cols=recipe.missing_indicator_cols,
+                )
 
                 cal_preds = np.zeros((args.ensemble_size, len(ca)), dtype=np.float32)
                 test_preds = np.zeros((args.ensemble_size, len(te)), dtype=np.float32)

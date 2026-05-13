@@ -397,7 +397,10 @@ def write_json_tmp(payload: dict, final_path: Path) -> tuple[Path, str]:
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Phase 5 conformal wrapper")
-    ap.add_argument('--asset', required=True, choices=['BTC', 'ETH', 'SOL', 'XRP'])
+    ap.add_argument(
+        '--asset', required=True,
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+    )
     ap.add_argument('--bundle-sha', required=True,
                     help='Phase 4 bundle_sha to wrap')
     ap.add_argument('--alpha', type=float, default=DEFAULT_ALPHA)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import NamedTuple
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +415,85 @@ REPLAY_PROVENANCE_FILTER_CHOICES = ('replay_phase2_v1',)
 # sites point at one literal and recipe-namespace bumps (e.g., replay_v2)
 # are a single-line edit.
 REPLAY_RECIPE_NAMESPACE = 'replay_v1'
+
+
+# Production-recipe namespace label. Sister to REPLAY_RECIPE_NAMESPACE.
+# Pre-P2.1.a-3 production bundles do NOT stamp `recipe_namespace` in
+# extract_bundle.json (the field was introduced for replay extracts only);
+# `resolve_recipe(None)` and `resolve_recipe('v1.1_production')` therefore
+# resolve identically for back-compat with already-shipped production
+# bundles. Future production extracts SHOULD stamp the field explicitly.
+RECIPE_NAMESPACE_V1_1_PRODUCTION = 'v1.1_production'
+
+
+class RecipeSpec(NamedTuple):
+    """Per-recipe routing quartet consumed by train.py / validate.py /
+    conformal.py. `resolve_recipe(ns)` is the single dispatch entry — see
+    `scripts/cal_mlp/features.py` module docstring + ClickUp 86b9xbd2u
+    (P2.1.a-3-fu1) for the design.
+
+    Fields:
+      - namespace: canonical label ('v1.1_production' or 'replay_v1')
+      - cont_feature_cols: per-recipe CONT_FEATURE_COLS (8 or 4)
+      - cont_feature_transforms: per-col transform name dict
+      - missing_indicator_cols: per-recipe MISSING_INDICATOR_COLS (both
+        empty today; field kept for forward-compat with v2 retrain)
+      - asset_floors: per-recipe asset-floor dict (BTC/ETH/SOL/XRP for
+        production, HYPE/DOGE for replay). Caller membership-tests
+        `if asset not in recipe.asset_floors` to guard `--asset NAME`
+        against `recipe_namespace=NS` mismatch.
+    """
+    namespace: str
+    cont_feature_cols: tuple
+    cont_feature_transforms: dict
+    missing_indicator_cols: tuple
+    asset_floors: dict
+
+
+def resolve_recipe(recipe_namespace):
+    """Route a bundle's `recipe_namespace` field to its CONT_FEATURE_COLS
+    / CONT_FEATURE_TRANSFORMS / MISSING_INDICATOR_COLS / ASSET_FLOORS
+    quartet.
+
+    Args:
+        recipe_namespace: one of 'v1.1_production', 'replay_v1', or None.
+            None resolves to production (back-compat for pre-P2.1.a-3
+            bundles that don't stamp the field).
+
+    Returns:
+        RecipeSpec namedtuple. Tuples are intentionally returned rather
+        than mutable lists so callers can't accidentally extend the
+        recipe in place (which would silently drift cfg_fp pins).
+
+    Raises:
+        ValueError: unknown namespace. Silent fallback would let a
+            typo'd bundle silently mis-train on the wrong feature set.
+    """
+    if recipe_namespace is None or recipe_namespace == RECIPE_NAMESPACE_V1_1_PRODUCTION:
+        return RecipeSpec(
+            namespace=RECIPE_NAMESPACE_V1_1_PRODUCTION,
+            cont_feature_cols=tuple(CONT_FEATURE_COLS),
+            cont_feature_transforms=dict(CONT_FEATURE_TRANSFORMS),
+            missing_indicator_cols=tuple(MISSING_INDICATOR_COLS),
+            asset_floors=dict(ASSET_FLOORS),
+        )
+    if recipe_namespace == REPLAY_RECIPE_NAMESPACE:
+        return RecipeSpec(
+            namespace=REPLAY_RECIPE_NAMESPACE,
+            cont_feature_cols=tuple(CONT_FEATURE_COLS_REPLAY),
+            cont_feature_transforms=dict(CONT_FEATURE_TRANSFORMS_REPLAY),
+            # Replay v1 has no missing-indicator cols (replay parquet
+            # always has the 4 cont features present by construction);
+            # field kept for forward-compat with future replay recipes.
+            missing_indicator_cols=(),
+            asset_floors=dict(ASSET_FLOORS_REPLAY),
+        )
+    raise ValueError(
+        f"unknown recipe_namespace {recipe_namespace!r}; expected one of "
+        f"({RECIPE_NAMESPACE_V1_1_PRODUCTION!r}, {REPLAY_RECIPE_NAMESPACE!r}). "
+        f"A typo'd or future-recipe namespace would otherwise silently "
+        f"fall through to production and corrupt training/validation."
+    )
 
 
 def compute_cfg_fp_replay(*, provenance_filter: str = 'replay_phase2_v1') -> str:
