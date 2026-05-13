@@ -50,6 +50,8 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 - `state_db_restore.py` — verify-only mode (weekly automated check, integrity + row-count parity ±5%) OR `--to PATH` for manual incident recovery. Refuses to overwrite live `state.db` without `--allow-overwrite-live`.
 - `state_db_backup_heartbeat.py` — heartbeat helper for the launchd plist template at scripts/ root.
 - `setup_state_db_backup_timer.sh` — installer for both backup timers (mirrors `setup_h4_cron.sh` pattern). Re-runnable.
+- `export_market_obs_to_s3.py` — nightly archive of `market_observations_continuous` (the only retention-pruned table) to S3 via Parquet+zstd. Read-only SQLite connection; target_date = today - 13d (rows still exist for ≥1 more day). Invoked nightly by `kalshi-market-obs-archive.timer` (05:30 UTC). Ticket `86b9xcdwg`.
+- `setup_market_obs_archive_timer.sh` — installer for the market_obs archive timer. Companion to `setup_state_db_backup_timer.sh` (expects that one to have run first; shares `s3prod` rclone remote + bucket creds). Re-runnable.
 
 ### Setup helpers
 - `setup_audit_cron.sh`, `setup_doc_drift_timer.sh`, `setup_full_audit_timer.sh`, `setup_h4_cron.sh`, `setup_cohort_attribution_cron.sh` (P1.1, ticket `86b9x3kgd`), `setup_weekly_bleed_report_cron.sh` (P1.4, ticket `86b9x3kn2`) — operator-facing cron + timer installers.

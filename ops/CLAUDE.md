@@ -43,6 +43,18 @@ One-time bucket + IAM + lifecycle setup is operator-only — see `scripts/STATE_
 
 **Drift-check note:** these timers live at `/etc/systemd/system/kalshi-state-db-*.{service,timer}` — outside `kalshi-bot.service`'s drift-check scope. Re-running `setup_state_db_backup_timer.sh` is the source-of-truth operation for them.
 
+## market_observations_continuous archive (ticket 86b9xcdwg)
+
+`market_observations_continuous` is the only retention-pruned table on the VPS — the hourly retention sweep DELETEs rows older than 14 days (`bot/snapshots/market_observations_snapshotter.py:539-575`). Without archival, ~35K NBBO rows/day are permanently lost. Nightly archive shipped via:
+
+- `kalshi-market-obs-archive.{service,timer}` — daily 05:30 UTC (between `rotate_journals.sh` @04:00 and `kalshi-state-db-backup` @06:00). Reads rows for `target_date = today_utc - 13d` (day 13 of the 14d window — rows still exist for ≥1 more day) via a read-only SQLite connection, writes Parquet with internal zstd, then `rclone copyto s3prod:kalshi-bot-archive/market_obs/YYYY-MM-DD.parquet.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+
+Idempotent: same date = S3 object overwrite. Bucket lifecycle routes `market_obs/` to Glacier IR from day 0 (rarely read, but want instant retrieval for research). Cost ~$0.02/mo at year 5.
+
+Install with `bash scripts/ops/setup_market_obs_archive_timer.sh` on the VPS. Companion to `setup_state_db_backup_timer.sh` — expects that one to have already run (shares the `s3prod` rclone remote + bucket creds in `.env`).
+
+**Drift-check note:** same posture as the state.db backup timers — `/etc/systemd/system/kalshi-market-obs-archive.*` lives outside `kalshi-bot.service`'s drift-check scope; re-run `setup_market_obs_archive_timer.sh` to update.
+
 ## Files
 - `kalshi-bot.service` — systemd unit, source of truth
 - `install.sh` — one-time install + reload
