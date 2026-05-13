@@ -1,0 +1,153 @@
+{
+  "asset": "ETH",
+  "train_id": "2026-04-28T11:50:48.975743Z-a0000cc1",
+  "cfg_fp": "178d14020bd21beb",
+  "market_blend_w": 0.4,
+  "captured_at": "2026-05-13T01:24:34.174968Z",
+  "rows": [
+    {
+      "row_id": 1,
+      "inputs": {
+        "raw_prob": 0.62,
+        "price_cents": 60,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T60",
+        "row_features": {
+          "seconds_to_close": 720,
+          "spot_distance_to_strike_sigma": 0.5,
+          "abs_spot_distance_to_strike_sigma": 0.5,
+          "time_decayed_proximity": 0.09999999999999998,
+          "prob_breakeven_gap": 0.020000000000000018,
+          "hour_sin": 1.2246467991473532e-16,
+          "hour_cos": -1.0
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.6372276449203491,
+        "ens_std": 0.021007491275668144,
+        "final_lo": 0.5569477738010946,
+        "final_hi": 0.7175075160396036
+      }
+    },
+    {
+      "row_id": 2,
+      "inputs": {
+        "raw_prob": 0.78,
+        "price_cents": 75,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T75",
+        "row_features": {
+          "seconds_to_close": 360,
+          "spot_distance_to_strike_sigma": 1.2,
+          "abs_spot_distance_to_strike_sigma": 1.2,
+          "time_decayed_proximity": 0.72,
+          "prob_breakeven_gap": 0.030000000000000027,
+          "hour_sin": 0.0,
+          "hour_cos": 1.0
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.7910747766494751,
+        "ens_std": 0.017897721379995346,
+        "final_lo": 0.7107949055302205,
+        "final_hi": 0.8713546477687297
+      }
+    },
+    {
+      "row_id": 3,
+      "inputs": {
+        "raw_prob": 0.87,
+        "price_cents": 85,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T85",
+        "row_features": {
+          "seconds_to_close": 600,
+          "spot_distance_to_strike_sigma": 0.8,
+          "abs_spot_distance_to_strike_sigma": 0.8,
+          "time_decayed_proximity": 0.2666666666666667,
+          "prob_breakeven_gap": 0.020000000000000018,
+          "hour_sin": -1.0,
+          "hour_cos": -1.8369701987210297e-16
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.8783035421371459,
+        "ens_std": 0.01331564411520958,
+        "final_lo": 0.7569990044373731,
+        "final_hi": 0.9996080798369187
+      }
+    },
+    {
+      "row_id": 4,
+      "inputs": {
+        "raw_prob": 0.93,
+        "price_cents": 92,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T92",
+        "row_features": {
+          "seconds_to_close": 180,
+          "spot_distance_to_strike_sigma": 2.0,
+          "abs_spot_distance_to_strike_sigma": 2.0,
+          "time_decayed_proximity": 1.6,
+          "prob_breakeven_gap": 0.010000000000000009,
+          "hour_sin": 1.0,
+          "hour_cos": 6.123233995736766e-17
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9406362109184265,
+        "ens_std": 0.00872490182518959,
+        "final_lo": 0.8456809136072795,
+        "final_hi": 1.0
+      }
+    },
+    {
+      "row_id": 5,
+      "inputs": {
+        "raw_prob": 0.97,
+        "price_cents": 97,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T97",
+        "row_features": {
+          "seconds_to_close": 120,
+          "spot_distance_to_strike_sigma": 0.3,
+          "abs_spot_distance_to_strike_sigma": 0.3,
+          "time_decayed_proximity": 0.26,
+          "prob_breakeven_gap": 0.0,
+          "hour_sin": -0.4999999999999998,
+          "hour_cos": -0.8660254037844388
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9769681100845337,
+        "ens_std": 0.003700034460052848,
+        "final_lo": 0.9353448043173932,
+        "final_hi": 1.0
+      }
+    },
+    {
+      "row_id": 6,
+      "inputs": {
+        "raw_prob": 0.99,
+        "price_cents": 99,
+        "side": "yes",
+        "ticker": "KXETH15M-26APR28-T99",
+        "row_features": {
+          "seconds_to_close": 60,
+          "spot_distance_to_strike_sigma": 0.1,
+          "abs_spot_distance_to_strike_sigma": 0.1,
+          "time_decayed_proximity": 0.09333333333333334,
+          "prob_breakeven_gap": 0.0,
+          "hour_sin": 0.7071067811865476,
+          "hour_cos": -0.7071067811865475
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9924023351669311,
+        "ens_std": 0.0012205337407067418,
+        "final_lo": 0.9507790293997906,
+        "final_hi": 1.0
+      }
+    }
+  ]
+}

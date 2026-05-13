@@ -1,0 +1,153 @@
+{
+  "asset": "XRP",
+  "train_id": "2026-04-28T11:50:39.500729Z-b8161b7b",
+  "cfg_fp": "178d14020bd21beb",
+  "market_blend_w": 0.4,
+  "captured_at": "2026-05-13T01:24:34.212677Z",
+  "rows": [
+    {
+      "row_id": 1,
+      "inputs": {
+        "raw_prob": 0.62,
+        "price_cents": 60,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T60",
+        "row_features": {
+          "seconds_to_close": 720,
+          "spot_distance_to_strike_sigma": 0.5,
+          "abs_spot_distance_to_strike_sigma": 0.5,
+          "time_decayed_proximity": 0.09999999999999998,
+          "prob_breakeven_gap": 0.020000000000000018,
+          "hour_sin": 1.2246467991473532e-16,
+          "hour_cos": -1.0
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.6133389973640442,
+        "ens_std": 0.025219600647687912,
+        "final_lo": 0.5786960776826676,
+        "final_hi": 0.6479819170454207
+      }
+    },
+    {
+      "row_id": 2,
+      "inputs": {
+        "raw_prob": 0.78,
+        "price_cents": 75,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T75",
+        "row_features": {
+          "seconds_to_close": 360,
+          "spot_distance_to_strike_sigma": 1.2,
+          "abs_spot_distance_to_strike_sigma": 1.2,
+          "time_decayed_proximity": 0.72,
+          "prob_breakeven_gap": 0.030000000000000027,
+          "hour_sin": 0.0,
+          "hour_cos": 1.0
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.7958392024040222,
+        "ens_std": 0.012869279831647873,
+        "final_lo": 0.7611962827226456,
+        "final_hi": 0.8304821220853987
+      }
+    },
+    {
+      "row_id": 3,
+      "inputs": {
+        "raw_prob": 0.87,
+        "price_cents": 85,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T85",
+        "row_features": {
+          "seconds_to_close": 600,
+          "spot_distance_to_strike_sigma": 0.8,
+          "abs_spot_distance_to_strike_sigma": 0.8,
+          "time_decayed_proximity": 0.2666666666666667,
+          "prob_breakeven_gap": 0.020000000000000018,
+          "hour_sin": -1.0,
+          "hour_cos": -1.8369701987210297e-16
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.8571469569206238,
+        "ens_std": 0.01859341748058796,
+        "final_lo": 0.8225040372392473,
+        "final_hi": 0.8917898766020004
+      }
+    },
+    {
+      "row_id": 4,
+      "inputs": {
+        "raw_prob": 0.93,
+        "price_cents": 92,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T92",
+        "row_features": {
+          "seconds_to_close": 180,
+          "spot_distance_to_strike_sigma": 2.0,
+          "abs_spot_distance_to_strike_sigma": 2.0,
+          "time_decayed_proximity": 1.6,
+          "prob_breakeven_gap": 0.010000000000000009,
+          "hour_sin": 1.0,
+          "hour_cos": 6.123233995736766e-17
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9465481572151184,
+        "ens_std": 0.008465087041258812,
+        "final_lo": 0.9090602429478439,
+        "final_hi": 0.9840360714823929
+      }
+    },
+    {
+      "row_id": 5,
+      "inputs": {
+        "raw_prob": 0.97,
+        "price_cents": 97,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T97",
+        "row_features": {
+          "seconds_to_close": 120,
+          "spot_distance_to_strike_sigma": 0.3,
+          "abs_spot_distance_to_strike_sigma": 0.3,
+          "time_decayed_proximity": 0.26,
+          "prob_breakeven_gap": 0.0,
+          "hour_sin": -0.4999999999999998,
+          "hour_cos": -0.8660254037844388
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9849515800476074,
+        "ens_std": 0.002152990782633424,
+        "final_lo": 0.9821542529198061,
+        "final_hi": 0.9877489071754088
+      }
+    },
+    {
+      "row_id": 6,
+      "inputs": {
+        "raw_prob": 0.99,
+        "price_cents": 99,
+        "side": "yes",
+        "ticker": "KXXRP15M-26APR28-T99",
+        "row_features": {
+          "seconds_to_close": 60,
+          "spot_distance_to_strike_sigma": 0.1,
+          "abs_spot_distance_to_strike_sigma": 0.1,
+          "time_decayed_proximity": 0.09333333333333334,
+          "prob_breakeven_gap": 0.0,
+          "hour_sin": 0.7071067811865476,
+          "hour_cos": -0.7071067811865475
+        }
+      },
+      "outputs": {
+        "cal_prob": 0.9949612340927124,
+        "ens_std": 0.0006574371363967657,
+        "final_lo": 0.9921639069649111,
+        "final_hi": 0.9977585612205138
+      }
+    }
+  ]
+}

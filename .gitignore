@@ -21,6 +21,13 @@ DOC_DRIFT_REPORT.txt
 # nested `tests/fixtures/state/` etc. would also be silently ignored.
 /state/
 
+# cal_mlp trained model bundles (~7MB total across 4 assets at v1 baseline).
+# Local-only by convention — bundles ship to the VPS via deploy, not git.
+# Re-sync from VPS with:
+#   rsync -av botuser@<vps>:~/kalshi-bot-repo/models/ models/
+# Leading `/` anchors to repo root only.
+/models/
+
 
 
 
