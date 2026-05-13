@@ -54,8 +54,41 @@ class TestReconcilePositionsStrategyGroupConflict(unittest.TestCase):
         client.get_orders.return_value = {"orders": []}
 
         # Must NOT raise. With the fix, the INSERT-conflict is caught
-        # and logged. Without the fix, sqlite3.IntegrityError propagates.
+        # and the settled row is reopened in place.
         sm.reconcile_with_api(client)
+
+    def test_insert_conflict_reopens_settled_row_in_place(self):
+        # Pins the money-loss-preventing UPDATE-in-place behavior: the
+        # conflicting row must end status='open' so window-cap and
+        # stacking guards still see it.
+        sm = self._fresh()
+        sm.conn.execute(
+            "INSERT INTO positions (ticker, event_ticker, asset, side, count, "
+            "avg_price_cents, total_cost_cents, opened_at, updated_at, status, "
+            "strategy_group) VALUES (?, ?, ?, 'yes', ?, ?, ?, "
+            "'2026-05-13T00:00:00Z', '2026-05-13T00:00:00Z', 'settled', 'main')",
+            ("KXBTC15M-OLD", "KXBTC15M", "BTC", 50, 99, 4950),
+        )
+        sm.conn.commit()
+
+        client = MagicMock()
+        client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-OLD",
+                "position": 50,
+                "market_exposure": 4950,
+            }],
+            "event_positions": [],
+        }
+        client.get_orders.return_value = {"orders": []}
+
+        sm.reconcile_with_api(client)
+
+        rows = sm.get_open_positions()
+        tickers = [r["ticker"] for r in rows]
+        self.assertIn("KXBTC15M-OLD", tickers,
+                      "post-reconcile: the formerly settled row must be "
+                      "visible at status='open' to avoid window-cap bypass")
 
 
 if __name__ == "__main__":

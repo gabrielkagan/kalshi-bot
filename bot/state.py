@@ -1183,15 +1183,33 @@ class StateManager:
                           avg_price, cost, now, now))
                 except sqlite3.IntegrityError as e:
                     # INSERT defaults strategy_group='main'; UNIQUE
-                    # constraint (ticker, strategy_group) trips when a
-                    # settled/closed row at (ticker, 'main') already
-                    # exists. Surfaces under specific position lifecycles
-                    # (e.g. ticker recycled across strategy groups).
-                    # Log + skip so reconcile doesn't kill startup; the
-                    # API position remains tracked by Kalshi-side state.
-                    logging.warning(
-                        "RECONCILE_INSERT_CONFLICT: ticker=%s err=%s — skipping",
-                        ticker, e)
+                    # (ticker, strategy_group) trips when a settled/
+                    # closed row at (ticker, 'main') already exists.
+                    # Heal in place: UPDATE the conflicting row back to
+                    # status='open'. Restores local visibility so
+                    # window-cap / stacking guards still see the
+                    # position. Pure swallow would leave the Kalshi-
+                    # open position locally-invisible until the next
+                    # state write for that ticker.
+                    conflict = self.conn.execute(
+                        "SELECT status FROM positions "
+                        "WHERE ticker=? AND strategy_group='main'",
+                        (ticker,)
+                    ).fetchone()
+                    if conflict and dict(conflict)["status"] != "open":
+                        self.conn.execute("""
+                            UPDATE positions SET side=?, count=?,
+                                avg_price_cents=?, total_cost_cents=?,
+                                updated_at=?, status='open'
+                            WHERE ticker=? AND strategy_group='main'
+                        """, (side, count, avg_price, cost, now, ticker))
+                        logging.warning(
+                            "RECONCILE_REOPEN_SETTLED: ticker=%s prev_status=%s",
+                            ticker, dict(conflict)["status"])
+                    else:
+                        logging.warning(
+                            "RECONCILE_INSERT_CONFLICT: ticker=%s err=%s — skipping",
+                            ticker, e)
             elif len(local_rows) == 1:
                 sg = dict(local_rows[0])["strategy_group"]
                 self.conn.execute("""
