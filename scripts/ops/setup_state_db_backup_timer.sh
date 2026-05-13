@@ -200,14 +200,28 @@ fi
 # ── rclone remote: create if not present (idempotent) ───────────────────
 if ! rclone listremotes 2>/dev/null | grep -q "^${RCLONE_REMOTE}:$"; then
     echo "rclone remote ${RCLONE_REMOTE} not found; creating from env..."
+    # NOTE: do NOT pass `acl private` here. AWS buckets created with the
+    # post-April-2023 default Object Ownership = BucketOwnerEnforced
+    # have ACLs entirely disabled, and any PutObject carrying an
+    # `x-amz-acl` header (even the legacy default "private") is rejected
+    # with 403 Forbidden. Omitting acl makes rclone send no header at
+    # all, which BucketOwnerEnforced accepts. Legacy buckets that DO
+    # allow ACLs still treat absent-acl-header as "private" by default,
+    # so this is backward-compatible.
+    # NOTE: do NOT set `location_constraint` for us-east-1. AWS S3
+    # explicitly rejects CreateBucket with LocationConstraint=us-east-1
+    # (us-east-1 is the default and the constraint must be omitted).
+    # rclone consults location_constraint only on CreateBucket attempts
+    # — with --s3-no-check-bucket on every transaction below it's also
+    # functionally unused. Setting it conditionally would make the
+    # script branch; just omitting it is correct for us-east-1 and
+    # benign elsewhere (rclone will still use `region` for signing).
     rclone config create "${RCLONE_REMOTE}" s3 \
         provider AWS \
         env_auth false \
         access_key_id "${S3_AKID}" \
         secret_access_key "${S3_SECRET}" \
         region "${S3_REGION}" \
-        location_constraint "${S3_REGION}" \
-        acl private \
         storage_class STANDARD \
         >/dev/null
     echo "rclone remote ${RCLONE_REMOTE} created."
@@ -239,7 +253,7 @@ fi
 SENTINEL_KEY="_install_check/setup-$(date -u +%Y%m%dT%H%M%S).txt"
 TMP_SENTINEL="$(mktemp)"
 echo "kalshi-bot install probe at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMP_SENTINEL"
-if ! rclone copyto --checksum "$TMP_SENTINEL" "${RCLONE_REMOTE}:${S3_BUCKET}/${SENTINEL_KEY}" 2>&1; then
+if ! rclone copyto --checksum --s3-no-check-bucket "$TMP_SENTINEL" "${RCLONE_REMOTE}:${S3_BUCKET}/${SENTINEL_KEY}" 2>&1; then
     rm -f "$TMP_SENTINEL"
     echo "FAIL: rclone PutObject probe failed against ${S3_BUCKET}."
     echo "      Verify: bucket exists in region ${S3_REGION}, IAM creds valid."

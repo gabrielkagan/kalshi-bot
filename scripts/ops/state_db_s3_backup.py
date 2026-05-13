@@ -373,6 +373,12 @@ class S3RcloneStore:
         cmd = [
             "rclone", "copyto",
             "--checksum",  # verify upload via S3 ETag
+            # rclone v1.55+ otherwise calls CreateBucket on every transaction
+            # to "ensure" the bucket exists. With our writer-scoped IAM that
+            # 403s, AND for us-east-1 specifically the CreateBucket fails with
+            # InvalidLocationConstraint regardless of permission. Skip it —
+            # the bucket is set up out of band by STATE_DB_BACKUP_SETUP.md.
+            "--s3-no-check-bucket",
             "--retries", "3",
             "--low-level-retries", "10",
             str(local),
@@ -459,6 +465,7 @@ class S3RcloneStore:
         cmd = [
             "rclone", "copyto",
             "--checksum",
+            "--s3-no-check-bucket",  # see put() — same rationale on restore
             "--retries", "3",
             self._dest(key),
             str(local),
