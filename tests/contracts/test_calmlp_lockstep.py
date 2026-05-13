@@ -492,3 +492,181 @@ def test_bot_claude_md_documents_lockstep_surface():
             f"bot/CLAUDE.md lock-step section must name {site} as part of the "
             f"drift surface"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Anchor 5 — v1.1 candidate cfg_fp pin (P2.1.a-2, ticket 86b9wuhhr)
+# ─────────────────────────────────────────────────────────────────────
+#
+# v1 production (2026-04-28 CURRENT bundles on VPS) was trained at commit
+# 7122693 with cfg_fp 178d14020bd21beb. Commit 7ad2464 ("calibrator data
+# hygiene: P1-P7 + 4-site sigma winsorize lock-step") added
+# 'sigma_winsor_abs_cap': SIGMA_WINSOR_ABS_CAP to the compute_cfg_fp
+# canonical dict — bumping cfg_fp to 345978797274721f at HEAD with default
+# flags. That value is the v1.1 retrain target (P2.1.b).
+#
+# The 2026-05-03 unpromoted candidates with cfg_fp 1969b12c6c0c39bf are
+# NOT a different feature recipe — they were trained with
+# `--include-sub-floor --provenance-filter=full_dataset` per the v2 deploy
+# runbook (kb/decisions/v2-cal-mlp-deploy-runbook-may03.md). Verified by
+# computing compute_cfg_fp(include_sub_floor=True, provenance_filter=
+# 'full_dataset') == '1969b12c6c0c39bf'. CONT_FEATURE_COLS was unchanged
+# from 7122693 onward; the canonical-dict input is the same; only the
+# SQL-side ablation flags differ.
+#
+# Wave 1 derivable features (hour_sin/cos, prob_breakeven_gap,
+# abs_spot_distance_to_strike_sigma, time_decayed_proximity) were ALREADY
+# in v1's CONT_FEATURE_COLS at the 7122693 train commit. The Wave 1 work
+# (B.1a-fu2 106d450 wave1_derived_cols.py) backfilled DB columns; it did
+# not change the cal_mlp feature recipe.
+
+
+V1_PRODUCTION_CFG_FP = "178d14020bd21beb"      # 2026-04-28 CURRENT bundles
+V1_1_CANDIDATE_CFG_FP = "345978797274721f"     # current HEAD; v1.1 retrain target
+
+
+def _load_features():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cal_mlp_features", FEATURES_PY)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_v1_1_candidate_cfg_fp_pinned():
+    """compute_cfg_fp(include_sub_floor=False, provenance_filter='all') must
+    equal V1_1_CANDIDATE_CFG_FP — the cfg_fp the v1.1 retrain will produce.
+
+    Frozen 2026-05-13 (P2.1.a-2). Gate against accidental feature-recipe
+    drift between P2.1.a-2 ship and the P2.1.b retrain run. Updating the
+    pin requires a sister update to features.py::compute_cfg_fp docstring
+    + the C0 ticket description (86b9wuhhr).
+    """
+    mod = _load_features()
+    got = mod.compute_cfg_fp(include_sub_floor=False, provenance_filter='all')
+    assert got == V1_1_CANDIDATE_CFG_FP, (
+        f"v1.1 candidate cfg_fp drifted: got {got!r}, "
+        f"expected {V1_1_CANDIDATE_CFG_FP!r}. Either revert the recipe "
+        f"change or bump V1_1_CANDIDATE_CFG_FP + update features.py "
+        f"compute_cfg_fp docstring + C0 ticket."
+    )
+
+
+def test_v1_to_v1_1_cfg_fp_delta_documented():
+    """features.py::compute_cfg_fp docstring must cite both v1 + v1.1 cfg_fp.
+
+    The hashes are load-bearing for P2.1.b retrain identity + P2.1.c
+    validation (Brier delta vs the pinned v1 baseline). Buried in commit
+    history they are hard to recover; pinned in source they are cheap
+    to audit.
+    """
+    src = _read(FEATURES_PY)
+    assert V1_PRODUCTION_CFG_FP in src, (
+        f"features.py must cite v1 production cfg_fp "
+        f"{V1_PRODUCTION_CFG_FP!r} for traceability against the P2.1.a-1 "
+        f"baseline (tests/integration/cal_mlp_v1_baseline/)."
+    )
+    assert V1_1_CANDIDATE_CFG_FP in src, (
+        f"features.py must cite v1.1 candidate cfg_fp "
+        f"{V1_1_CANDIDATE_CFG_FP!r} for traceability against the P2.1.b "
+        f"retrain target."
+    )
+
+
+def test_v1_1_recipe_includes_wave1_derivable_features():
+    """CONT_FEATURE_COLS must include all Wave 1 derivable features.
+
+    Wave 1 derivable = features computable from existing DB columns via
+    canonical helpers (bot/helpers/derived_features.py + features.py
+    helpers). Non-derivable Wave 1 cols (vol_regime text label,
+    orderbook_levels_json) are explicitly out of scope per C0 ticket.
+
+    Floor-only semantic pin (`not missing`) on TOP of the hash pin above.
+    The exact-set lock against silent ADDs lives in
+    `test_v1_1_candidate_cfg_fp_pinned` — any column added to
+    CONT_FEATURE_COLS bumps cfg_fp away from the pinned hash.
+    """
+    mod = _load_features()
+    required_wave1_derivable = (
+        "hour_sin",
+        "hour_cos",
+        "prob_breakeven_gap",
+        "spot_distance_to_strike_sigma",      # subject to sigma_winsor cap
+        "abs_spot_distance_to_strike_sigma",  # derived from sigma post-winsor
+        "time_decayed_proximity",             # derived from sigma post-winsor
+    )
+    missing = [f for f in required_wave1_derivable if f not in mod.CONT_FEATURE_COLS]
+    assert not missing, (
+        f"CONT_FEATURE_COLS missing Wave 1 derivable feature(s): {missing!r}. "
+        f"Each is canonical-helper-derived (compute_hour_features, "
+        f"apply_sigma_winsor, compute_derived_features) — dropping any "
+        f"breaks the P2.1.b retrain feature recipe."
+    )
+
+
+def test_v1_1_cfg_fp_includes_sigma_winsor_in_canonical_dict():
+    """compute_cfg_fp canonical dict must include 'sigma_winsor_abs_cap'.
+
+    This is the SPECIFIC delta that drove the v1 (178d14020bd21beb) →
+    v1.1 candidate (345978797274721f) cfg_fp bump at commit 7ad2464.
+    Verified by mutating SIGMA_WINSOR_ABS_CAP and asserting cfg_fp
+    changes — closes the "is it actually in the canonical dict, or
+    just imported but unused?" loophole.
+    """
+    mod = _load_features()
+    baseline = mod.compute_cfg_fp(include_sub_floor=False, provenance_filter='all')
+    original_cap = mod.SIGMA_WINSOR_ABS_CAP
+    try:
+        mod.SIGMA_WINSOR_ABS_CAP = 26.0  # arbitrary perturbation
+        perturbed = mod.compute_cfg_fp(include_sub_floor=False, provenance_filter='all')
+    finally:
+        mod.SIGMA_WINSOR_ABS_CAP = original_cap
+    assert baseline != perturbed, (
+        "compute_cfg_fp canonical dict must include SIGMA_WINSOR_ABS_CAP "
+        "(the v1 → v1.1 delta key); perturbing the constant must change "
+        "the hash. If this test fails, the cfg_fp would not roundtrip "
+        "winsorize-cap changes — bundles trained at different caps would "
+        "collide on identity."
+    )
+
+
+def test_v1_1_cfg_fp_partitions_under_ablation_flags():
+    """compute_cfg_fp must produce distinct hashes for each {include_sub_floor,
+    provenance_filter} combination — bundle identity contract.
+
+    Pre-pins the v2-deploy-runbook (kb/decisions/v2-cal-mlp-deploy-runbook-
+    may03.md) ablation pattern: live_only / full_dataset / all × sub_floor
+    on/off must produce 6 distinct cfg_fps. Confirms the 2026-05-03
+    unpromoted candidates' cfg_fp 1969b12c6c0c39bf is the
+    (sub_floor=True, provenance='full_dataset') combination of the SAME
+    recipe — not a different feature set as the date-discrepancy finding
+    doc originally claimed (P2.1.a-2 RCA correction).
+    """
+    mod = _load_features()
+    combos = (
+        (False, "all"),
+        (True,  "all"),
+        (False, "live_only"),
+        (True,  "live_only"),
+        (False, "full_dataset"),
+        (True,  "full_dataset"),
+    )
+    hashes = {
+        (sf, pf): mod.compute_cfg_fp(include_sub_floor=sf, provenance_filter=pf)
+        for sf, pf in combos
+    }
+    assert len(set(hashes.values())) == 6, (
+        f"Expected 6 distinct cfg_fps across (sub_floor, provenance_filter) "
+        f"combos; got {hashes!r}. Bundle identity must disambiguate every "
+        f"ablation flag."
+    )
+    # Pin the 2026-05-03 unpromoted-candidate identity for traceability —
+    # the finding doc cal-mlp-v1-baseline-date-discrepancy-may13.md cites
+    # this hash; if the pin breaks, the finding doc must be re-checked.
+    assert hashes[(True, "full_dataset")] == "1969b12c6c0c39bf", (
+        f"2026-05-03 unpromoted-candidate cfg_fp drifted: "
+        f"compute_cfg_fp(include_sub_floor=True, provenance_filter="
+        f"'full_dataset') = {hashes[(True, 'full_dataset')]!r}, "
+        f"expected '1969b12c6c0c39bf'."
+    )

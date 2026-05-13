@@ -242,7 +242,34 @@ def compute_cfg_fp(
     `provenance_filter` is one of `PROVENANCE_FILTER_CHOICES` and bakes the
     SQL-side `data_provenance` filter into bundle identity — live_only
     vs full_dataset must produce distinct bundles per the v2 ablation
-    runbook (`kb/decisions/v2-cal-mlp-deploy-runbook-may03.md`)."""
+    runbook (`kb/decisions/v2-cal-mlp-deploy-runbook-may03.md`).
+
+    Known cfg_fp values (Money Printer Roadmap Phase 2, P2.1.a-2 pin):
+
+      178d14020bd21beb  v1 production (2026-04-28 CURRENT VPS bundles).
+                        Trained at commit 7122693, BEFORE 'sigma_winsor_abs_cap'
+                        was added to the canonical dict. Default flags
+                        (include_sub_floor=False, provenance_filter='all').
+
+      345978797274721f  v1.1 candidate (current HEAD, default flags). The
+                        v1 → v1.1 delta is the single key
+                        'sigma_winsor_abs_cap': SIGMA_WINSOR_ABS_CAP added
+                        to the canonical dict by commit 7ad2464 ("4-site
+                        sigma winsorize lock-step"). CONT_FEATURE_COLS was
+                        UNCHANGED from 7122693 onward — all Wave 1
+                        derivable features (hour_sin/cos,
+                        prob_breakeven_gap, abs_spot_distance_to_strike_sigma,
+                        time_decayed_proximity) were already in v1's recipe.
+
+      1969b12c6c0c39bf  2026-05-03 unpromoted candidates on VPS. Same
+                        feature recipe as 345978797274721f; differs only
+                        by --include-sub-floor --provenance-filter=
+                        full_dataset ablation flags per the v2 deploy
+                        runbook. NOT a different feature recipe.
+
+    These three hashes are pinned in tests/contracts/test_calmlp_lockstep.py
+    as v1.1-retrain identity contracts (anchor 5). Updating any pin requires
+    a sister update to that test file + the C0 ticket (ClickUp 86b9wuhhr)."""
     if provenance_filter not in PROVENANCE_FILTER_CHOICES:
         raise ValueError(
             f"provenance_filter must be one of {PROVENANCE_FILTER_CHOICES}; "

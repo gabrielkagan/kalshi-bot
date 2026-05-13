@@ -53,10 +53,13 @@ The three pipelines use the SAME formulas. Any drift = silent training-distribut
 
 | Cohort | Activated | Used by |
 |---|---|---|
-| v1 (8 features) | 2026-02-22 | LIVE bundle, cfg_fp `178d14020bd21beb` |
+| v1 (8 features) | features active since 2026-02-22; CURRENT bundles trained 2026-04-28 | LIVE bundle, cfg_fp `178d14020bd21beb` (commit `7122693`) |
+| v1.1 candidate (same 8 features; adds `sigma_winsor_abs_cap` to canonical dict) | Recipe shipped 2026-04-29 commit `7ad2464` | v1.1 retrain target, cfg_fp `345978797274721f` (current HEAD with default flags); Money Printer Roadmap Phase 2 (`86b9wuhhr`) |
 | v2 (+8 features: momentum, buffer, BTC RV) | 2026-04-19 | K=1 train target 2026-05-19 |
 | v3 (+3 features: spread, flow, CB-Kraken gap) | 2026-04-23 | K=2 train target 2026-06-22 |
-| External market data (OKX funding+OI, Deribit DVOL) | 2026-04-29 (this commit) | Earliest v3 use 2026-06-22 |
+| External market data (OKX funding+OI, Deribit DVOL) | 2026-04-29 (commit `7ad2464`) | Earliest v3 use 2026-06-22 |
+
+The v1 → v1.1 cfg_fp delta is documented in `scripts/cal_mlp/features.py::compute_cfg_fp` docstring (the "Known cfg_fp values" section) and pinned in `tests/contracts/test_calmlp_lockstep.py` anchor 5. The 2026-05-03 unpromoted candidates on VPS (cfg_fp `1969b12c6c0c39bf`) are the `--include-sub-floor --provenance-filter=full_dataset` ablation arm of the same recipe per `kb/decisions/v2-cal-mlp-deploy-runbook-may03.md` — not a distinct feature cohort.
 
 Health monitoring: `scripts/audit/calibrator_feature_health.py` (cron 6h) alerts via Telegram when any feature drops below 99% (or 95% for known-WS-flaky 5m momentum). Schema drift surfaced as `SCHEMA_DRIFT` alert.
 
