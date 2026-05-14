@@ -12,7 +12,7 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 |--------|------|-------|
 | ticker | TEXT PK | Market ticker |
 | event_ticker | TEXT | Event-level ticker |
-| asset | TEXT | BTC, ETH, SOL, XRP, HYPE (shadow), DOGE (shadow) |
+| asset | TEXT | BTC, ETH, SOL, XRP, HYPE, DOGE (all live post P2.3 promotion 2026-05-14) |
 | market_result | TEXT | Settlement result |
 | side | TEXT | yes/no |
 | count | INTEGER | Contracts |

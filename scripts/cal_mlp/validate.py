@@ -256,9 +256,11 @@ def empirical_coverage(
     # defaults to 50¢ neutral below. That's only mathematically sound
     # when `market_blend_w == 0` (breakeven term cancels). validate.main's
     # blend resolution stack (CLI > ENV > MARKET_CONFIGS['15m']) can
-    # silently pick up a non-zero scalar (e.g., 0.40 fallback for HYPE/
-    # DOGE which are absent from MARKET_BLEND_W_BY_ASSET) — refuse the
-    # combination loudly rather than emit subtly-wrong coverage stats.
+    # silently pick up a non-zero scalar (e.g., 0.40 legacy scalar fallback
+    # for unknown assets or non-15M product types; post-P2.3 2026-05-14
+    # HYPE/DOGE are themselves in the per-asset map with 0.80/0.60 — see
+    # bot.constants.MARKET_BLEND_W_BY_ASSET) — refuse the combination
+    # loudly rather than emit subtly-wrong coverage stats.
     if replay_mode and abs(market_blend_w) > 1e-9:
         raise SystemExit(
             f"empirical_coverage: replay-namespace bundle with "

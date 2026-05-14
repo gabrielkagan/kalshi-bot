@@ -54,16 +54,22 @@ CURRENT_CONFIG = {
     "BTC_MIN_ENTRY_PRICE": 88,
     "ETH_MIN_ENTRY_PRICE": 90,
     "XRP_MIN_ENTRY_PRICE": 92,
+    "HYPE_MIN_ENTRY_PRICE": 90,
+    "DOGE_MIN_ENTRY_PRICE": 85,
     "XRP_15M_SHADOW": False,
+    "HYPE_15M_SHADOW": False,
+    "DOGE_15M_SHADOW": False,
     "MAX_ENTRY_PRICE": 99,
     "MIN_EDGE_BY_PRICE": "97c→1.0%, 95c→0.75%, 93c→0.5%, 91c→0.2%, 89c→0.25%, default→0.25%",
     "MARKET_BLEND_W": 0.40,
-    "MARKET_BLEND_W_BY_ASSET": "{BTC:0.10, ETH:0.20, SOL:0.80, XRP:0.90}  # P2.1.d 2026-05-13; HYPE/DOGE shadow → MARKET_BLEND_W fallback",
+    "MARKET_BLEND_W_BY_ASSET": "{BTC:0.10, ETH:0.20, SOL:0.80, XRP:0.90, HYPE:0.80, DOGE:0.60}  # P2.3 live promotion 2026-05-14 (86b9xv66a)",
     "MAX_RISK_PER_TRADE": 0.25,
     "MAX_SECONDS_BEFORE_CLOSE": 900,
     "STC_SHADOW_THRESHOLD": 600,
     "XRP_MAX_RISK_PER_TRADE": 0.15,
     "BTC_MAX_RISK_PER_TRADE": 0.15,
+    "HYPE_MAX_RISK_PER_TRADE": 0.10,
+    "DOGE_MAX_RISK_PER_TRADE": 0.10,
     "SOL_MIN_EDGE": 0.010,
     "MAKER_ONLY_THRESHOLD": 0.0,
     "SIZING_TIERS": "[(0.04,0.25),(0.025,0.2),(0.018,0.15),(0.012,0.1),(0.009,0.07),(0.007,0.05),(0.005,0.03),(0.0025,0.02)]",
@@ -659,7 +665,7 @@ def _loss_context_to_markdown(ctx: dict) -> str:
 
 LOSS_POSTMORTEM_SYSTEM = """You are an expert quantitative analyst reviewing a loss from a cryptocurrency prediction market trading bot on Kalshi.
 
-The bot trades above/below markets on BTC, ETH, SOL, and XRP. It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
+The bot trades above/below markets on BTC, ETH, SOL, XRP, HYPE, and DOGE (all six 15M-live post P2.3 promotion 2026-05-14). It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
 
 Your job is to analyze the loss and identify the root cause. All statistics have been pre-computed for you — do NOT perform any calculations yourself. Use the data as presented.
 

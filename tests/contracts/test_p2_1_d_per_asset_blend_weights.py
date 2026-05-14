@@ -48,16 +48,22 @@ MARKET_CONFIG_PY = REPO_ROOT / "market_config.py"
 CONSTANTS_PY = REPO_ROOT / "bot" / "constants.py"
 
 
-# Operator-confirmed per-asset blend weights (end of P2.1.c session
-# 2026-05-13, after the 4×6 sweep across {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}).
-# Sourced from `.p2_1_c_run/cross_sweep_summary.txt` argmax + interior-
-# pull discipline (BTC + XRP pulled off corners; ETH + SOL kept at
-# interior argmaxes).
+# Operator-confirmed per-asset blend weights.
+# - BTC/ETH/SOL/XRP: end of P2.1.c session 2026-05-13, after the 4×6 sweep
+#   across {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}. Sourced from
+#   `.p2_1_c_run/cross_sweep_summary.txt` argmax + interior-pull discipline
+#   (BTC + XRP pulled off corners; ETH + SOL kept at interior argmaxes).
+# - HYPE/DOGE: P2.3 live promotion 2026-05-14, ClickUp 86b9xv66a, B.1 Brier
+#   sweep on live shadow data accumulated 2026-05-10 → 2026-05-13 (DOGE
+#   n=1710 / HYPE n=1469). Both argmins interior — no corner pull needed.
+#   See kb/findings/p2-3-b-live-promotion-blend-weights-may14.md.
 EXPECTED_PER_ASSET_BLEND_W: dict[str, float] = {
     "BTC": 0.10,
     "ETH": 0.20,
     "SOL": 0.80,
     "XRP": 0.90,
+    "HYPE": 0.80,
+    "DOGE": 0.60,
 }
 
 # v1.1 CURRENT pointer target for atomic deploy. Train_id format:
@@ -133,7 +139,7 @@ def test_market_type_config_exposes_get_blend_w():
         "dispatch is one-place rather than scattered."
     )
 
-    # 15M production assets → per-asset map
+    # 15M production assets (4 P2.1.d + 2 P2.3 live promotion) → per-asset map
     for asset, expected in EXPECTED_PER_ASSET_BLEND_W.items():
         actual = cfg_15m.get_blend_w(asset)
         assert actual == expected, (
@@ -141,13 +147,18 @@ def test_market_type_config_exposes_get_blend_w():
             f"(MARKET_BLEND_W_BY_ASSET pin)"
         )
 
-    # Unknown asset (HYPE/DOGE shadow path) → fallback to scalar
-    fallback = cfg_15m.get_blend_w("HYPE")
+    # Unknown asset (defensive — no current asset routes here, but the
+    # fallback path is still load-bearing for hypothetical future asset
+    # additions and for non-15M product types whose configs reuse the
+    # same get_blend_w method) → fallback to scalar legacy 0.40.
+    # Pre-P2.3 (2026-05-14) HYPE/DOGE used this path; both are now in
+    # the map. Use an asset code that does NOT exist in the registry.
+    fallback = cfg_15m.get_blend_w("__NONEXISTENT_ASSET__")
     assert fallback == cfg_15m.market_blend_w, (
-        f"15m get_blend_w('HYPE') = {fallback} != fallback "
-        f"{cfg_15m.market_blend_w}; HYPE/DOGE shadow paths MUST fall "
-        f"back to the scalar `market_blend_w` (legacy 0.40) when the "
-        f"per-asset map has no entry."
+        f"15m get_blend_w('__NONEXISTENT_ASSET__') = {fallback} != "
+        f"fallback {cfg_15m.market_blend_w}; unknown-asset path MUST "
+        f"fall back to the scalar `market_blend_w` (legacy 0.40) when "
+        f"the per-asset map has no entry."
     )
 
     # asset=None (defensive) → fallback to scalar

@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across {{WEATHER_CITY_COUNT}} US cities, and live sports outcomes across {{SPORTS_LEAGUE_COUNT}} leagues) run in observation or 1-contract verification mode while their CalEngines train.
+Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP, HYPE, DOGE — all six live post P2.3 promotion 2026-05-14) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across {{WEATHER_CITY_COUNT}} US cities, and live sports outcomes across {{SPORTS_LEAGUE_COUNT}} leagues) run in observation or 1-contract verification mode while their CalEngines train.
 
 ## How It Works
 
@@ -13,7 +13,7 @@ Deribit DVOL ──────────┤
 CoinGlass funding ─────┘
 ```
 
-Every second the bot scans all active 15-minute windows across the four crypto assets. Edge thresholds are price-dependent and per-asset. The global edge floor is V-shaped: it relaxes from 0.25% (80--90c) to a low of 0.20% at 91--92c, then climbs back up to 0.5% (93--94c), 0.75% (95--96c), and 1.0% at 97c+. The 91--92c trough reflects empirical tightness in that price band; very-high prices need the larger edge to absorb fee drag and time risk. On top of that, each asset has its own minimum entry price (BTC 88c+, SOL 86c+, XRP 92c+) and ETH operates with a main tier at 90c+ plus a sub-80c live tier capped at 50 contracts (the 80--89c band is blocked due to negative historical PnL).
+Every second the bot scans all active 15-minute windows across the six crypto assets. Edge thresholds are price-dependent and per-asset. The global edge floor is V-shaped: it relaxes from 0.25% (80--90c) to a low of 0.20% at 91--92c, then climbs back up to 0.5% (93--94c), 0.75% (95--96c), and 1.0% at 97c+. The 91--92c trough reflects empirical tightness in that price band; very-high prices need the larger edge to absorb fee drag and time risk. On top of that, each asset has its own minimum entry price (BTC 88c+, SOL 86c+, XRP 92c+, HYPE 90c+, DOGE 85c+) and ETH operates with a main tier at 90c+ plus a sub-80c live tier capped at 50 contracts (the 80--89c band is blocked due to negative historical PnL).
 
 ## Architecture
 
@@ -42,7 +42,7 @@ Converts the volatility estimate into a settlement probability:
 2. Map through a per-asset Normal Inverse Gaussian (NIG) CDF --- captures heavy tails and asymmetry; falls back to Student-t(df=4) if NIG isn't available
 3. Data-driven calibration via per-product CalEngines. The 15M engine currently runs in **passthrough mode** (raw probability has lower Brier than the BLR fit, so the BLR layer is bypassed); per-city weather, per-sport-group, and SPX-D engines run their full Platt → Beta → BLR pipeline
 4. Dynamic probability cap: bypassed when learned calibration is active (uses 0.999 safety ceiling); cap schedule applies during startup before training
-5. Market-price blending: per-asset 15M weights from the cal_mlp v1.1 4×6 sim-PnL sweep — BTC 10%, ETH 20%, SOL 80%, XRP 90% market-implied probability (P2.1.d, 2026-05-13). HYPE/DOGE shadow paths fall back to the legacy 40%. Weather/SPX use product-specific weights. Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (doc-drift contract).
+5. Market-price blending: per-asset 15M weights — BTC 10%, ETH 20%, SOL 80%, XRP 90% (cal_mlp v1.1 4×6 sim-PnL sweep, P2.1.d 2026-05-13); HYPE 80%, DOGE 60% (B.1 Brier sweep on shadow data, P2.3 live promotion 2026-05-14). Weather/SPX use product-specific weights. Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (doc-drift contract).
 
 Hard safety rails: refuse to trade if `|z-score| > 25` or if the EGARCH/RV ratio falls outside `[1/3, 3]`.
 
@@ -114,7 +114,7 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Source | Transport | Data | Frequency |
 |--------|-----------|------|-----------|
-| Coinbase | WebSocket | BTC, ETH, SOL, XRP spot prices | 1s snapshots (300-sample buffer) |
+| Coinbase | WebSocket | BTC, ETH, SOL, XRP, HYPE, DOGE spot prices | 1s snapshots (300-sample buffer) |
 | Kraken | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Bybit | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Binance | WebSocket | Spot prices (geo-blocked on VPS) | Real-time when reachable |
@@ -141,7 +141,7 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 The bot runs multiple product engines in parallel, with different live/observation states:
 
-- **15M crypto (BTC, ETH, SOL, XRP)** --- LIVE (XRP gated to 92c+, ETH to 90c+ main path with a separate 75--79c capped sub-tier)
+- **15M crypto (BTC, ETH, SOL, XRP, HYPE, DOGE)** --- LIVE (XRP gated to 92c+, ETH to 90c+ main path with a separate 75--79c capped sub-tier; HYPE 90c+, DOGE 85c+ post P2.3 promotion 2026-05-14)
 - **Decided contracts (T1, T1B, T2, T2-Z25)** --- LIVE on top of 15M
 - **Late-window momentum (terminal_momentum at 96/98/99c)** --- LIVE
 - **Weekend / overnight discount entries** --- LIVE in restricted price/STC zones

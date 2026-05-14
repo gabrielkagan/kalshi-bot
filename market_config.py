@@ -79,10 +79,10 @@ class MarketTypeConfig:
         scalar ``market_blend_w`` when no per-asset override is configured
         (or when ``asset`` is None / not in the override map).
 
-        Post-P2.1.d (2026-05-13) the 15M MarketConfig pins
-        ``market_blend_w_by_asset`` to MARKET_BLEND_W_BY_ASSET for BTC/ETH/
-        SOL/XRP; HYPE/DOGE shadow paths + hourly/spx/weather/sports all use
-        the scalar fallback."""
+        Post-P2.1.d (2026-05-13) + P2.3 (2026-05-14) the 15M MarketConfig
+        pins ``market_blend_w_by_asset`` to MARKET_BLEND_W_BY_ASSET for all
+        6 production 15M assets (BTC/ETH/SOL/XRP/HYPE/DOGE); unknown
+        assets + hourly/spx/weather/sports all use the scalar fallback."""
         if self.market_blend_w_by_asset and asset:
             return self.market_blend_w_by_asset.get(asset, self.market_blend_w)
         return self.market_blend_w
@@ -102,11 +102,12 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         max_risk_per_trade=0.25,
         kelly_fraction=1.0,
         market_blend_w=0.40,
-        # P2.1.d (2026-05-13): per-asset weights from 4×6 cal_mlp v1.1 sweep
-        # — operator-confirmed argmaxes with interior-pull discipline. Sourced
-        # from bot.constants.MARKET_BLEND_W_BY_ASSET; validated lock-step at
-        # startup in validate_market_configs(). HYPE/DOGE NOT in the map (they
-        # fall back to market_blend_w=0.40 via get_blend_w()).
+        # P2.1.d (2026-05-13) + P2.3 (2026-05-14): per-asset weights for all
+        # 6 production 15M assets — operator-confirmed argmaxes with
+        # interior-pull discipline. Sourced from
+        # bot.constants.MARKET_BLEND_W_BY_ASSET; validated lock-step at
+        # startup in validate_market_configs(). Unknown assets fall back to
+        # market_blend_w=0.40 via get_blend_w().
         market_blend_w_by_asset=dict(bot.constants.MARKET_BLEND_W_BY_ASSET),
         temperature_t=1.0,
         temperature_enabled=False,

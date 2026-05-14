@@ -19,9 +19,10 @@ weather_no_live, hourly_no_live) where the HYPE/DOGE safety comes from a
 different mechanism (asset-whitelist / product-type / exclusion-set).
 
 Sister anchors:
-  - `tests/integration/test_doge_hype_onboarding_t1.py::TestStrategyEscapePathGates`
-    — the T1 source-walk that originally locked TM/WKND/OVN/DC. This file
-    is broader (every candidates.append site, not just those 4).
+  - `tests/integration/test_doge_hype_onboarding_t1.py::TestStrategyKillSwitchClauses`
+    — the T1 source-walk that originally locked TM/WKND/OVN/DC; renamed
+    in P2.3 ship 2026-05-14 to reflect post-promote kill-switch posture.
+    This file is broader (every candidates.append site, not just those 4).
   - `bot.constants.LPNE_ASSETS / HOURLY_NO_EXCLUDED_ASSETS / HOURLY_EXCLUDED_ASSETS`
     — the asset-membership sets that gate the non-strategy sites.
 
@@ -359,17 +360,24 @@ def test_hourly_excluded_assets_contains_hype_doge() -> None:
     )
 
 
-def test_15m_shadow_flags_default_true_pre_p2_3_f() -> None:
-    """Until P2.3.f flips HYPE_15M_SHADOW/DOGE_15M_SHADOW to False, both must
-    be True. If a future Bit needs to flip these, this test fails and the
-    P2.3.f atomic-deploy contract owns the unflip — re-running this test
-    suite at that point should be part of the P2.3.f pre-flight gate."""
+def test_15m_shadow_flags_false_post_p2_3_live_promotion() -> None:
+    """Post-P2.3 live promotion (2026-05-14, ClickUp 86b9xv66a), both flags
+    MUST be False. The P2.3.b-fu2 B.5 GO path retired the cal_mlp-training
+    arc; raw_prob + conservative per-asset MARKET_BLEND_W (DOGE 0.60,
+    HYPE 0.80) is the live signal. Per-asset T4 prereq constants
+    (HYPE/DOGE_MIN_ENTRY_PRICE + _MAX_RISK_PER_TRADE) wired atomically.
+    Canonical anchor for the post-flip state lives in
+    `tests/contracts/test_p2_3_live_promotion_constants.py` — this anchor
+    duplicates the assertion here so the original P2.3.e shadow-gate
+    audit covers both pre- and post-flip states from a single test
+    suite."""
     from bot.constants import HYPE_15M_SHADOW, DOGE_15M_SHADOW
-    assert HYPE_15M_SHADOW is True, (
-        "HYPE_15M_SHADOW is False but P2.3.f has not shipped — this means HYPE is "
-        "exposed to live trading without the cal_mlp predictor + per-asset weight "
-        "selection from P2.3.a-c. Either flip back to True or finish P2.3.f."
+    assert HYPE_15M_SHADOW is False, (
+        "HYPE_15M_SHADOW is True but P2.3 live promotion (86b9xv66a) "
+        "shipped — flag MUST be False. If you intentionally rolled back, "
+        "update test_p2_3_live_promotion_constants.py too."
     )
-    assert DOGE_15M_SHADOW is True, (
-        "DOGE_15M_SHADOW is False but P2.3.f has not shipped — see HYPE assertion."
+    assert DOGE_15M_SHADOW is False, (
+        "DOGE_15M_SHADOW is True but P2.3 live promotion shipped — see "
+        "HYPE assertion."
     )

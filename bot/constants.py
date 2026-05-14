@@ -28,8 +28,8 @@ SERIES_TICKERS = {
     "ETH": "KXETH15M",
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
-    "HYPE": "KXHYPE15M",      # T1 (2026-05-10): shadow observation
-    "DOGE": "KXDOGE15M",      # T1 (2026-05-10): shadow observation
+    "HYPE": "KXHYPE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
+    "DOGE": "KXDOGE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -63,15 +63,32 @@ SOL_LOW_ENTRY_STC_GATE = True    # Block SOL ≤85c at STC≥300s (data: 78.3% W
 XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/2L 95.3% WR at >=92c)
 
 # T1 onboarding (2026-05-10, ticket 86b9vecw9): HYPE + DOGE 15M shadow observation.
-# These flags MUST remain True until T4 promotion (per-asset MIN_ENTRY_PRICE +
-# MAX_RISK_PER_TRADE constants wired into the elif chains AND NBBO_FALLBACK_GATES
-# entries from observed spread distribution). Without those constants the elif
-# chains fall to scaffolded defaults → live orders without per-asset sizing.
-# Wired into the XRP_15M_SHADOW gate pattern in bot/scanner/__init__.py
-# (YES-side ~:5867 and NO-side ~:7610). Lock-step test:
-# tests/integration/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
-HYPE_15M_SHADOW = True            # HYPE 15M shadow observation — T1 onboarding
-DOGE_15M_SHADOW = True            # DOGE 15M shadow observation — T1 onboarding
+# T4 live promotion (2026-05-14, ClickUp 86b9xv66a): per-asset MIN_ENTRY_PRICE +
+# MAX_RISK_PER_TRADE constants wired into the elif chains (scanner ~:2680-2693 +
+# ~:4707-4742 main-path sizing + ~:4144-4171 DC sizing; executor mirrors at
+# ~:2090-2103 escalation + ~:3187-3201 maker + ~:4571-4575 sub-floor-fill
+# telemetry map). NBBO_FALLBACK_GATES INTENTIONALLY
+# OMITS HYPE/DOGE — orderbook-only first-step; widen later from observed
+# spread distribution. Live signal: raw_prob + conservative per-asset
+# MARKET_BLEND_W (DOGE 0.60, HYPE 0.80 from B.1 sweep on n=1710/1469 shadow
+# samples; +7.0%/+4.4% Brier improvement over coinflip on replay corpus per
+# P2.3.b-fu2). Lock-step tests: tests/contracts/test_p2_3_live_promotion_constants.py +
+# tests/integration/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety
+# (both flipped atomically with this flag). cal_mlp retrain from live
+# evaluated_opportunities deferred 2-4 weeks post-promote (separate Bit).
+HYPE_15M_SHADOW = False           # HYPE 15M live (T4 promoted 2026-05-14, floor 90c, max_risk 0.10)
+DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor 85c, max_risk 0.10)
+
+# T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend
+# edge-gated subset since 2026-05-10. HYPE conservative pick (borderline EV
+# even at floor 90 in raw shadow data; maker-fill discount of ~1-3c/trade
+# expected to lift to positive). DOGE clean pick (PnL +1.93c/trade at 85+,
+# n=445, WR 95.5%). See kb/findings/p2-3-b-live-promotion-price-tier-analysis-may14.md.
+HYPE_MIN_ENTRY_PRICE = 90         # cents (data: 90+ WR 94.4% n=250 post-blend; conservative borderline-EV pick)
+DOGE_MIN_ENTRY_PRICE = 85         # cents (data: 85+ WR 95.5% n=445 PnL +1.93c/trade; matches SOL floor pattern)
+
+HYPE_MAX_RISK_PER_TRADE = 0.10    # HYPE: conservative new-asset start (below live 4 at 0.15-0.20)
+DOGE_MAX_RISK_PER_TRADE = 0.10    # DOGE: conservative new-asset start
 
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 
@@ -958,7 +975,7 @@ HOURLY_DYNAMIC_CAP_SCHEDULE = [
     (0,    0.999), # < 1 min
 ]
 
-MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for HYPE/DOGE shadow paths + non-15M product types. P2.1.d (2026-05-13) supersedes this for the 4 production 15M assets via MARKET_BLEND_W_BY_ASSET (per-asset interior-pulled argmaxes from 4×6 cal_mlp v1.1 sweep, ClickUp 86b9xfwkg).
+MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for non-15M product types and any unknown asset (via `.get(asset, MARKET_BLEND_W)`). P2.1.d (2026-05-13) + P2.3 (2026-05-14, 86b9xv66a) superseded for all 6 production 15M assets via MARKET_BLEND_W_BY_ASSET.
 
 # ─── 15M per-asset market blend weights (P2.1.d, 2026-05-13) ────────────────
 # Each value chosen from the 4-asset × 6-weight sim PnL sweep in P2.1.c-fu1
@@ -967,14 +984,23 @@ MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for H
 # (0.20 and 0.80 respectively). Rationale + raw sweep data:
 #   kb/findings/p2-1-c-fu1-blend-weight-sweep-resolves-eth-may13.md
 #   .p2_1_c_run/cross_sweep_summary.txt
-# HYPE/DOGE are NOT in the map (they're in shadow observation; per
-# CLAUDE.md don't merge per-asset weights with shadow paths). Fallback for
-# unknown assets is MARKET_BLEND_W above (legacy 0.40).
+# P2.3 live promotion 2026-05-14 (86b9xv66a) added HYPE 0.80 + DOGE 0.60
+# from B.1 Brier sweep on T1 shadow data. Fallback for unknown assets +
+# non-15M product types is MARKET_BLEND_W above (legacy 0.40).
 MARKET_BLEND_W_BY_ASSET: dict = {
     "BTC": 0.10,
     "ETH": 0.20,
     "SOL": 0.80,
     "XRP": 0.90,
+    # P2.3 live promotion (2026-05-14, ClickUp 86b9xv66a). Both interior
+    # argmins from B.1 full-population Brier sweep on shadow data since
+    # 2026-05-10 (DOGE n=1710, HYPE n=1469). DOGE plateau 0.55-0.70;
+    # HYPE plateau 0.70-0.85. Heavy market blend tempers model
+    # overconfidence (HYPE mean_raw 0.77 vs win_rate 0.66; DOGE
+    # mean_raw 0.75 vs win_rate 0.70). Sweep doc:
+    # kb/findings/p2-3-b-live-promotion-blend-weights-may14.md.
+    "HYPE": 0.80,
+    "DOGE": 0.60,
 }
 
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
@@ -1227,6 +1253,8 @@ TM_ASSET_RISK_CAPS = {
     "ETH": ETH_MAX_RISK_PER_TRADE,        # 0.20
     "SOL": SOL_MAX_RISK_PER_TRADE,        # 0.15
     "XRP": XRP_MAX_RISK_PER_TRADE,        # 0.15
+    "HYPE": HYPE_MAX_RISK_PER_TRADE,      # 0.10 (P2.3 live promotion 2026-05-14)
+    "DOGE": DOGE_MAX_RISK_PER_TRADE,      # 0.10 (P2.3 live promotion 2026-05-14)
 }
 
 # ── TM Sweep Shadow ────────────────────────────────────────────────────────

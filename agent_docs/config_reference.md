@@ -14,11 +14,13 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | SOL_MIN_ENTRY_PRICE | 86 | Cents (raised from 80: SOL@85c 68.2% WR -$496/22 vs 86c 94.4% WR +$375/36) |
 | ETH_SUB80_POSITION_CAP | 50 | Max contracts for ETH 75-79c (half-Kelly clamp [20,50]) |
 | XRP_MIN_ENTRY_PRICE | 92 | Cents (PnL negative at every floor <90c, PF=1.68 at ≥92c) |
+| HYPE_MIN_ENTRY_PRICE | 90 | Cents (P2.3 2026-05-14 live promotion; B.1b post-blend 90+ WR 94.4% n=250; conservative borderline-EV pick) |
+| DOGE_MIN_ENTRY_PRICE | 85 | Cents (P2.3 2026-05-14 live promotion; B.1b post-blend 85+ WR 95.5% n=445 PnL +1.93c/trade pre-maker-discount) |
 | MAX_ENTRY_PRICE | 99 | Cents |
 | MIN_EDGE_PCT | 0.25 | Flat fallback for execution paths (was 0.7) |
 | MIN_EDGE_BY_PRICE | 0.20%-1.0% | 80-88c→0.25%, 89-90c→0.25%, 91-92c→0.20%, 93-94c→0.50%, 95-96c→0.75%, 97-99c→1.0% |
-| MARKET_BLEND_W | 0.40 | Legacy 15M scalar fallback for HYPE/DOGE shadow + non-15M paths. P2.1.d (2026-05-13) superseded for 4 production 15M assets by MARKET_BLEND_W_BY_ASSET (per-asset map). |
-| MARKET_BLEND_W_BY_ASSET | `{BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) per-asset 15M blend weights from cal_mlp v1.1 4×6 sweep — interior-pulled argmaxes (BTC 0.0→0.10, ETH 0.20, SOL 0.80, XRP 1.0→0.90). HYPE/DOGE NOT in map (fall back to MARKET_BLEND_W). Origin: kb/findings/p2-1-c-fu1-blend-weight-sweep-resolves-eth-may13.md. Canonical no-space form is the doc-drift contract (scripts/audit/doc_drift_check.py). |
+| MARKET_BLEND_W | 0.40 | Legacy 15M scalar fallback for non-15M paths and unknown assets. P2.1.d (2026-05-13) + P2.3 (2026-05-14) superseded for all 6 production 15M assets by MARKET_BLEND_W_BY_ASSET (per-asset map). |
+| MARKET_BLEND_W_BY_ASSET | `{BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) per-asset 15M blend weights from cal_mlp v1.1 4×6 sweep — interior-pulled argmaxes (BTC 0.0→0.10, ETH 0.20, SOL 0.80, XRP 1.0→0.90). Extended 2026-05-14 (P2.3, 86b9xv66a) with HYPE 0.80 + DOGE 0.60 from B.1 Brier sweep on T1 shadow data (n=1469/1710 settled rows; both interior argmins). Origins: kb/findings/p2-1-c-fu1-blend-weight-sweep-resolves-eth-may13.md + kb/findings/p2-3-b-live-promotion-blend-weights-may14.md. Canonical no-space alphabetical form is the doc-drift contract (scripts/audit/doc_drift_check.py). |
 | MAX_RISK_PER_TRADE | 0.25 | Max 25% bankroll per trade |
 | MAX_SECONDS_BEFORE_CLOSE | 900 | 15 min before close (600-900s shadow, 0-600s live) |
 
@@ -70,6 +72,8 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 |--------|-------|-------|
 | XRP_MAX_RISK_PER_TRADE | 0.15 | XRP: 15% per-trade (was 12%) |
 | BTC_MAX_RISK_PER_TRADE | 0.15 | BTC: 15% per-trade (was 12%) |
+| HYPE_MAX_RISK_PER_TRADE | 0.10 | HYPE: 10% per-trade (P2.3 2026-05-14 live promotion, conservative new-asset default) |
+| DOGE_MAX_RISK_PER_TRADE | 0.10 | DOGE: 10% per-trade (P2.3 2026-05-14 live promotion, conservative new-asset default) |
 | SOL_MIN_EDGE | 0.010 | SOL-specific edge floor (>=1.0% = 94.2% WR n=258; <1.0% drops to 82%) |
 | SOL_TAKER_FIRST | True | SOL bypasses maker entirely, direct IOC at all STC |
 | SOL_RESCUE_CONTRACT_CAP | 25 | SOL rescue sizing clamp |

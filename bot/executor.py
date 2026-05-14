@@ -66,10 +66,11 @@ from bot.constants import (
     DC_IOC_RETRY_DELAY, DC_PRICE_TOLERANCE_MAX, DC_PRICE_TOLERANCE_START_RETRY, DECIDED_CONTRACT_MIN_PRICE,
     DECIDED_CONTRACT_T2_MAX_PRICE, DIP_ADDON_ENABLED, DIP_ADDON_MAX_TOTAL_RISK, DIP_ADDON_MIN_DROP_CENTS,
     DIP_ADDON_MIN_ENTRY_PRICE, DIP_ADDON_MIN_SECONDS_SINCE_FILL, DIP_ADDON_MIN_STC_REMAINING, DIP_ADDON_SHADOW_FLOOR,
+    DOGE_MIN_ENTRY_PRICE,
     DIP_ADDON_SHADOW_MODE, DIP_ADDON_SIZE_FRACTION, DIRECT_TAKER_THRESHOLD, EARLY_ESCALATION_MIN_MOVE,
     ESCALATION_MAX_ENTRY, ESCALATION_WAIT_LONG, ESCALATION_WAIT_MEDIUM, ESCALATION_WAIT_SHORT,
     ETH_MIN_ENTRY_PRICE, FILL_MODEL_JOURNAL, HOURLY_FIXED_CONTRACTS, HOURLY_MAX_ENTRY_PRICE,
-    HOURLY_MIN_EDGE_PCT, HOURLY_NO_FIXED_CONTRACTS, HOURLY_TAKER_ONLY,
+    HOURLY_MIN_EDGE_PCT, HOURLY_NO_FIXED_CONTRACTS, HOURLY_TAKER_ONLY, HYPE_MIN_ENTRY_PRICE,
     IOC_DRIFT_CHECK_COLD_START_RATIO, IOC_DRIFT_CHECK_DIVERGENCE_RATIO, IOC_DRIFT_CHECK_ENABLED, IOC_DRIFT_CHECK_MIN_CACHED_DEPTH,
     IOC_DRIFT_CHECK_REST_WINDOW_S, IOC_LIMIT_MAX_BUMP_CENTS, IOC_MIN_COUNT_AFTER_CLAMP, IOC_RETRY_OFFSET,
     IOC_TICKER_COOLDOWN, LADDER_ESCALATION_ELIGIBLE_STRATEGIES, LADDER_ESCALATION_ENABLED, LADDER_ESCALATION_MIN_REMAINDER,
@@ -2097,6 +2098,10 @@ class OrderExecutor:
             _esc_floor = SOL_MIN_ENTRY_PRICE
         elif _esc_asset == "XRP":
             _esc_floor = XRP_MIN_ENTRY_PRICE
+        elif _esc_asset == "HYPE":
+            _esc_floor = HYPE_MIN_ENTRY_PRICE
+        elif _esc_asset == "DOGE":
+            _esc_floor = DOGE_MIN_ENTRY_PRICE
         if best_ask < _esc_floor or best_ask > ESCALATION_MAX_ENTRY:
             logging.warning(
                 f"Escalation aborted: price {best_ask}¢ out of range "
@@ -3179,7 +3184,7 @@ class OrderExecutor:
         price = fair_value - offset
         if degraded:
             price -= POST_ONLY_DEGRADED_EXTRA_OFFSET
-        # Per-asset price floor (mirrors scanner check at ~L6560)
+        # Per-asset price floor (mirrors scanner check at ~L2680)
         _pt = candidate.get("product_type")
         _asset = candidate.get("asset")
         _mcfg_exec = get_market_config(_pt)
@@ -3193,6 +3198,10 @@ class OrderExecutor:
                 _floor = SOL_MIN_ENTRY_PRICE
             elif _asset == "XRP":
                 _floor = XRP_MIN_ENTRY_PRICE
+            elif _asset == "HYPE":
+                _floor = HYPE_MIN_ENTRY_PRICE
+            elif _asset == "DOGE":
+                _floor = DOGE_MIN_ENTRY_PRICE
         if price < _floor:
             logging.warning("Maker price %dc below %s floor %dc for %s — skipping",
                             price, _asset, _floor, ticker)
@@ -4562,6 +4571,7 @@ class OrderExecutor:
         _ASSET_FLOOR_MAP = {
             "BTC": BTC_MIN_ENTRY_PRICE, "ETH": ETH_MIN_ENTRY_PRICE,
             "SOL": SOL_MIN_ENTRY_PRICE, "XRP": XRP_MIN_ENTRY_PRICE,
+            "HYPE": HYPE_MIN_ENTRY_PRICE, "DOGE": DOGE_MIN_ENTRY_PRICE,
         }
         _fill_asset = order["asset"]
         _fill_floor = _ASSET_FLOOR_MAP.get(_fill_asset, MIN_ENTRY_PRICE)

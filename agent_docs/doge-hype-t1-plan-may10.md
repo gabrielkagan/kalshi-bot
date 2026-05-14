@@ -154,7 +154,7 @@ The spike doc claimed `HYPE_15M_SHADOW=True` is comprehensive — it isn't. The 
 
 **Fix**: each strategy gate now includes explicit `and not (HYPE_15M_SHADOW and asset == "HYPE")` and `and not (DOGE_15M_SHADOW and asset == "DOGE")` clauses (or, for DC, a `_dc_live_enabled = False` clear-block). LPNE was already safe via `LPNE_ASSETS = {"BTC"}`. The main 15M path is downstream of the shadow gate so its `continue` covers it.
 
-**Regression locks**: `tests/test_doge_hype_onboarding_t1.py::TestStrategyEscapePathGates` source-walks the scanner module body and asserts HYPE_15M_SHADOW + DOGE_15M_SHADOW are referenced inside each strategy's eligibility region.
+**Regression locks**: `tests/integration/test_doge_hype_onboarding_t1.py::TestStrategyKillSwitchClauses` (renamed P2.3 ship 2026-05-14; was `TestStrategyEscapePathGates`) source-walks the scanner module body and asserts HYPE_15M_SHADOW + DOGE_15M_SHADOW are referenced inside each strategy's eligibility region.
 
 ### Latent issue noted in R2 (out of T1 scope)
 

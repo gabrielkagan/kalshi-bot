@@ -2,14 +2,15 @@
 
 > Update like a dashboard, not a doc. Re-state the date on every change.
 
-**Last updated:** 2026-05-10
+**Last updated:** 2026-05-14
 
 ## Live trading
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
-- **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+)
-- **15M shadow assets:** HYPE (`HYPE_15M_SHADOW=True`, onboarded T1 2026-05-10), DOGE (`DOGE_15M_SHADOW=True`, onboarded T1 2026-05-10). Hourly for both in `HOURLY_EXCLUDED_ASSETS` + `HOURLY_NO_EXCLUDED_ASSETS` until T4. Path: T1 (shadow) → T1.5 (external feeds) → T2 (post-deploy verify) → T3 (cal_mlp training when ~2k settled rows) → T4 (promote).
+- **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+), HYPE (90c+, P2.3 2026-05-14), DOGE (85c+, P2.3 2026-05-14)
+- **15M shadow assets:** (none — HYPE/DOGE T4 promoted 2026-05-14 via P2.3 raw_prob + per-asset MARKET_BLEND_W blend, ClickUp 86b9xv66a). Hourly HYPE/DOGE remain in `HOURLY_EXCLUDED_ASSETS` + `HOURLY_NO_EXCLUDED_ASSETS` (hourly path not yet promoted). Original T1-T4 onboarding history: T1 shadow 2026-05-10 → T4 live 2026-05-14 via Brier-sweep raw_prob direct-promote (cal_mlp training arc retired).
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
+- **HYPE_15M_SHADOW = False / DOGE_15M_SHADOW = False** — P2.3 live promotion 2026-05-14. Per-asset constants wired (HYPE_MIN_ENTRY_PRICE=90, DOGE_MIN_ENTRY_PRICE=85, both MAX_RISK_PER_TRADE=0.10). MARKET_BLEND_W_BY_ASSET extended: HYPE 0.80, DOGE 0.60. NBBO_FALLBACK_GATES INTENTIONALLY omits HYPE/DOGE (orderbook-only first step). 14d Brier-monitored soak runs through 2026-05-28.
 - **SOL_TAKER_FIRST = True** — bypasses maker, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c). All @ 20% fixed sizing. **T2-Z2 SHADOWED** (97a365f Apr 1, -$313 on 47 trades). Canonical: `kb/concepts/dc-strategy.md`
 - **Overnight discount LIVE:** weekday 04-11 UTC, 89c+, STC≤600s, no DC overlap; sub-89c/STC>600s remain shadow
@@ -54,8 +55,8 @@
 - **Orderbook:** YES and NO are SEPARATE; YES + NO prices do NOT always sum to 100
 - **All orders are limit orders** (no market orders)
 - **Tier:** Advanced (30 reads/sec, 30 writes/sec)
-- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M (shadow), KXDOGE15M (shadow)
-- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD, KXHYPED (shadow), KXDOGED (shadow)
+- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M (live, P2.3 2026-05-14), KXDOGE15M (live, P2.3 2026-05-14)
+- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD, KXHYPED (excluded), KXDOGED (excluded)
 - **Series (weather, 19 cities):** KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX, KXHIGHAUS, KXHIGHTATL, KXHIGHTSFO, KXHIGHTDAL, KXHIGHTPHX, KXHIGHPHIL, KXHIGHTMIN, KXHIGHTSEA, KXHIGHTHOU, KXHIGHTBOS, KXHIGHTLV, KXHIGHTOKC, KXHIGHTDC, KXHIGHTNOLA
 
 ## Fees

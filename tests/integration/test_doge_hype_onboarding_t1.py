@@ -60,32 +60,57 @@ class TestAtomicActivationSafety(unittest.TestCase):
         self.assertIn("HYPE", ASSETS, "HYPE missing from config.ASSETS")
         self.assertIn("DOGE", ASSETS, "DOGE missing from config.ASSETS")
 
-    def test_hype_in_assets_implies_shadow_flag_on(self):
-        """If HYPE is active, HYPE_15M_SHADOW must be True (no live trades)."""
+    def test_hype_t4_prereqs_wired_when_shadow_flag_false(self):
+        """Post-T4 live promotion (P2.3, 2026-05-14, ClickUp 86b9xv66a):
+        when HYPE_15M_SHADOW=False, all T4 prerequisite constants MUST be
+        wired (per-asset MIN_ENTRY_PRICE + MAX_RISK_PER_TRADE + TM cap).
+        If a future Bit flips the flag back to True (shadow), this assertion
+        is satisfied trivially (the contract only fires post-flip)."""
         from bot.config import ASSETS
         if "HYPE" not in ASSETS:
             self.skipTest("HYPE not yet in ASSETS")
-        from bot.constants import HYPE_15M_SHADOW
-        self.assertTrue(
+        from bot.constants import (
             HYPE_15M_SHADOW,
-            "SAFETY: HYPE is in ASSETS but HYPE_15M_SHADOW=False would route "
-            "to live trading without per-asset risk sizing. "
-            "Either remove HYPE from ASSETS or keep HYPE_15M_SHADOW=True "
-            "until T4 promotion (per-asset risk constants + NBBO gates wired)."
+            HYPE_MIN_ENTRY_PRICE,
+            HYPE_MAX_RISK_PER_TRADE,
+            TM_ASSET_RISK_CAPS,
         )
+        if HYPE_15M_SHADOW:
+            # Pre-T4 shadow state: the T4 prereq constants existing or not
+            # is moot because the asset never reaches the elif chains.
+            return
+        # Post-T4: every prereq must be defined and reasonable.
+        self.assertGreaterEqual(HYPE_MIN_ENTRY_PRICE, 50,
+            f"HYPE_MIN_ENTRY_PRICE={HYPE_MIN_ENTRY_PRICE} too low")
+        self.assertLessEqual(HYPE_MIN_ENTRY_PRICE, 99,
+            f"HYPE_MIN_ENTRY_PRICE={HYPE_MIN_ENTRY_PRICE} too high")
+        self.assertGreater(HYPE_MAX_RISK_PER_TRADE, 0.0,
+            f"HYPE_MAX_RISK_PER_TRADE={HYPE_MAX_RISK_PER_TRADE} must be > 0")
+        self.assertLessEqual(HYPE_MAX_RISK_PER_TRADE, 0.25,
+            f"HYPE_MAX_RISK_PER_TRADE={HYPE_MAX_RISK_PER_TRADE} exceeds global 0.25 cap")
+        self.assertIn("HYPE", TM_ASSET_RISK_CAPS,
+            "TM_ASSET_RISK_CAPS missing HYPE — TM strategy bypasses per-asset sizing")
 
-    def test_doge_in_assets_implies_shadow_flag_on(self):
+    def test_doge_t4_prereqs_wired_when_shadow_flag_false(self):
         from bot.config import ASSETS
         if "DOGE" not in ASSETS:
             self.skipTest("DOGE not yet in ASSETS")
-        from bot.constants import DOGE_15M_SHADOW
-        self.assertTrue(
+        from bot.constants import (
             DOGE_15M_SHADOW,
-            "SAFETY: DOGE is in ASSETS but DOGE_15M_SHADOW=False would route "
-            "to live trading without per-asset risk sizing. "
-            "Either remove DOGE from ASSETS or keep DOGE_15M_SHADOW=True "
-            "until T4 promotion."
+            DOGE_MIN_ENTRY_PRICE,
+            DOGE_MAX_RISK_PER_TRADE,
+            TM_ASSET_RISK_CAPS,
         )
+        if DOGE_15M_SHADOW:
+            return
+        self.assertGreaterEqual(DOGE_MIN_ENTRY_PRICE, 50,
+            f"DOGE_MIN_ENTRY_PRICE={DOGE_MIN_ENTRY_PRICE} too low")
+        self.assertLessEqual(DOGE_MIN_ENTRY_PRICE, 99,
+            f"DOGE_MIN_ENTRY_PRICE={DOGE_MIN_ENTRY_PRICE} too high")
+        self.assertGreater(DOGE_MAX_RISK_PER_TRADE, 0.0)
+        self.assertLessEqual(DOGE_MAX_RISK_PER_TRADE, 0.25)
+        self.assertIn("DOGE", TM_ASSET_RISK_CAPS,
+            "TM_ASSET_RISK_CAPS missing DOGE")
 
     def test_hype_in_assets_implies_hourly_excluded(self):
         """If HYPE is active, hourly YES-side must be excluded (no per-asset risk)."""
@@ -297,21 +322,28 @@ class TestMarketConfigMirror(unittest.TestCase):
         )
 
 
-# ─── Strategy escape-path gates (RCA from adversarial review R1) ─────────
+# ─── Strategy kill-switch clauses (RCA from adversarial review R1) ───────
+# These tests pin the SOURCE-LEVEL presence of `HYPE_15M_SHADOW` /
+# `DOGE_15M_SHADOW` clauses inside the TM / WKND / OVN / DC strategy
+# eligibility checks. The clauses serve dual roles depending on flag state:
+#   - Pre-T4 (flags True, before P2.3 ship 2026-05-14): gates exclude
+#     HYPE/DOGE from these strategies' candidate.append sites.
+#   - Post-T4 (flags False, current state): gates degrade to True and
+#     allow HYPE/DOGE through TM/WKND/OVN/DC live; the clauses are
+#     preserved as KILL-SWITCHES — flip the flag to revert the asset.
 # The XRP_15M_SHADOW gate at bot/scanner/__init__.py:5867 fires AFTER
 # Terminal Momentum (~:3303), Weekend Discount (~:3781), Overnight Discount
 # (~:3943), and Decided Contracts (~:4207) have already appended candidates.
-# Each of those 4 strategies must therefore gate HYPE/DOGE explicitly when
-# their shadow flags are True. Source-walk: the scanner module body must
-# reference the shadow flags from inside each strategy's eligibility check.
+# Without the kill-switch clauses inside each strategy, flipping a shadow
+# flag back to True would have no effect on these strategies' live routing.
 
-class TestStrategyEscapePathGates(unittest.TestCase):
+class TestStrategyKillSwitchClauses(unittest.TestCase):
     def setUp(self):
         import bot.scanner
         import inspect
         self.source = inspect.getsource(bot.scanner)
 
-    def test_terminal_momentum_gates_hype_shadow(self):
+    def test_terminal_momentum_has_hype_doge_kill_switch_clauses(self):
         # TM intercept must include "and not (HYPE_15M_SHADOW and asset == \"HYPE\")"
         # near the TERMINAL_MOMENTUM_ENABLED check. Anchor on the if-condition (not
         # the import) by requiring "if (TERMINAL_MOMENTUM_ENABLED" prefix.
@@ -320,26 +352,26 @@ class TestStrategyEscapePathGates(unittest.TestCase):
         # Look 1000 chars forward to cover the full if-chain
         tm_window = self.source[tm_idx:tm_idx + 1000]
         self.assertIn("HYPE_15M_SHADOW", tm_window,
-            "TM intercept gate at scanner:~3303 missing HYPE_15M_SHADOW filter — "
-            "HYPE could route live through TM at 96/98/99c despite shadow flag")
+            "TM intercept gate at scanner:~3303 missing HYPE_15M_SHADOW kill-switch — "
+            "flipping HYPE_15M_SHADOW=True would NOT revert HYPE from TM live routing")
         self.assertIn("DOGE_15M_SHADOW", tm_window,
-            "TM intercept gate missing DOGE_15M_SHADOW filter")
+            "TM intercept gate missing DOGE_15M_SHADOW kill-switch")
 
-    def test_weekend_discount_gates_hype_doge_shadow(self):
+    def test_weekend_discount_has_hype_doge_kill_switch_clauses(self):
         wknd_idx = self.source.find("WEEKEND_DISCOUNT_LIVE\n")
         self.assertGreater(wknd_idx, 0, "WEEKEND_DISCOUNT_LIVE eligibility flag not found")
         wknd_window = self.source[wknd_idx:wknd_idx + 800]
         self.assertIn("HYPE_15M_SHADOW", wknd_window)
         self.assertIn("DOGE_15M_SHADOW", wknd_window)
 
-    def test_overnight_discount_gates_hype_doge_shadow(self):
+    def test_overnight_discount_has_hype_doge_kill_switch_clauses(self):
         ovn_idx = self.source.find("OVERNIGHT_DISCOUNT_LIVE\n")
         self.assertGreater(ovn_idx, 0)
         ovn_window = self.source[ovn_idx:ovn_idx + 800]
         self.assertIn("HYPE_15M_SHADOW", ovn_window)
         self.assertIn("DOGE_15M_SHADOW", ovn_window)
 
-    def test_decided_contracts_gates_hype_doge_shadow(self):
+    def test_decided_contracts_has_hype_doge_kill_switch_clauses(self):
         # DC shape: `_dc_live_enabled = (...)` initial assignment, then a
         # short shadow-flag clear-block (`if HYPE/DOGE shadow: _dc_live_enabled = False`),
         # then the `if (_dc_live_enabled and not OBSERVATION_MODE...)` gate.
@@ -351,8 +383,8 @@ class TestStrategyEscapePathGates(unittest.TestCase):
         self.assertGreater(dc_gate, dc_assign)
         dc_window = self.source[dc_assign:dc_gate]
         self.assertIn("HYPE_15M_SHADOW", dc_window,
-            "DC eligibility missing HYPE_15M_SHADOW clear-flag — "
-            "HYPE could route live through Decided Contracts despite shadow flag")
+            "DC eligibility missing HYPE_15M_SHADOW kill-switch clear-flag — "
+            "flipping HYPE_15M_SHADOW=True would NOT revert HYPE from DC live")
         self.assertIn("DOGE_15M_SHADOW", dc_window)
 
 

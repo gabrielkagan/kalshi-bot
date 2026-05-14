@@ -1143,10 +1143,10 @@ class DashboardSnapshotBuilder:
             snap["trading_config"] = {
                 "min_edge_by_price": getattr(_bot_mod, "MIN_EDGE_BY_PRICE", []),
                 "market_blend_w": getattr(_bot_mod, "MARKET_BLEND_W", None),
-                # P2.1.d (2026-05-13): per-asset 15M blend weights replace
-                # the scalar for BTC/ETH/SOL/XRP at runtime. HYPE/DOGE
-                # shadow paths still fall back to the scalar above. 14d
-                # Brier-monitored soak reads from this field.
+                # P2.1.d (2026-05-13) + P2.3 (2026-05-14): per-asset 15M
+                # blend weights replace the scalar for all 6 production 15M
+                # assets at runtime. Unknown assets fall back to the scalar
+                # above. 14d Brier-monitored soak reads from this field.
                 "market_blend_w_by_asset": getattr(_bot_mod, "MARKET_BLEND_W_BY_ASSET", {}),
                 "max_risk_per_trade": getattr(_bot_mod, "MAX_RISK_PER_TRADE", None),
                 "sizing_tiers": getattr(_bot_mod, "SIZING_TIERS", []),

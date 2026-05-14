@@ -83,7 +83,7 @@ header-includes:
 
 # Executive Summary
 
-This document describes an automated trading platform for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The system began with short-duration cryptocurrency contracts — binary options that settle every 15 minutes — and now runs a layered live business: 15M crypto across four assets, decided contracts (high-conviction overlay), late-window momentum, weekend and overnight discount entries, near-expiry low-price entries, and weather temperature NO-side. Adjacent product engines (S&P 500 intraday, hourly crypto, sports comebacks) collect calibration data in observation mode, with hourly currently kill-switched off after a March incident.
+This document describes an automated trading platform for **Kalshi**, the first CFTC-regulated prediction market exchange in the United States. The system began with short-duration cryptocurrency contracts — binary options that settle every 15 minutes — and now runs a layered live business: 15M crypto across six assets (BTC/ETH/SOL/XRP since Feb 2026; HYPE/DOGE post P2.3 promotion 2026-05-14), decided contracts (high-conviction overlay), late-window momentum, weekend and overnight discount entries, near-expiry low-price entries, and weather temperature NO-side. Adjacent product engines (S&P 500 intraday, hourly crypto, sports comebacks) collect calibration data in observation mode, with hourly currently kill-switched off after a March incident.
 
 The platform monitors real-time data from multiple sources per vertical, estimates outcome probabilities using domain-specific models, and executes trades only when it identifies a clear edge over the market price. Every aspect of the strategy — from market selection to position sizing to execution — is designed around disciplined risk management and profit maximization.
 
@@ -154,7 +154,7 @@ For every active market, the bot estimates the probability that the underlying a
 - **EGARCH-conditioned volatility** — how much the price is expected to move, accounting for clustering and leverage effects
 - **Options-implied volatility** — what the derivatives market expects
 - **Cross-exchange signals** — whether other exchanges are leading a move
-- **Market-price blending** — Per-asset weights from a 4×6 sim-PnL sweep against the v1.1 calibration model (BTC 90/10, ETH 80/20, SOL 20/80, XRP 10/90 model/market). The historical 60/40 default has been retired for production 15M assets as of 2026-05-13; HYPE/DOGE shadow paths still use the legacy blend. Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,ETH:0.20,SOL:0.80,XRP:0.90}` (doc-drift contract).
+- **Market-price blending** — Per-asset weights against the v1.1 calibration model. P2.1.d 2026-05-13 retired the historical 60/40 default for BTC/ETH/SOL/XRP from a 4×6 sim-PnL sweep (BTC 90/10, ETH 80/20, SOL 20/80, XRP 10/90 model/market). P2.3 2026-05-14 added HYPE (20/80) and DOGE (40/60) live from a B.1 Brier sweep on T1 shadow data. Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (doc-drift contract).
 
 The probability model uses **Normal Inverse Gaussian (NIG) distributions** fitted specifically to each cryptocurrency's return characteristics. Unlike generic models, NIG captures both the heavy tails (large moves are more common than a bell curve predicts) and the asymmetry (upward and downward moves have different frequencies) unique to each asset.
 
@@ -276,7 +276,7 @@ Before any trade is placed, the system verifies:
 
 ### Hard Price Boundaries
 
-The bot only trades contracts priced between **75 and 99 cents**, with per-asset minimums (BTC 88¢, ETH 90¢ main tier with a separate 75–79¢ live sub-tier capped at 50 contracts, SOL 86¢, XRP 92¢). Below these floors, the probability of payout after fees is insufficient. Above 99¢, the potential profit is too small to justify the risk. Specialized overlays extend into lower prices near expiry: Terminal Momentum (96/98/99¢, final 1–5 min) and Low-Price Near-Expiry (BTC 80–87¢, final 10–120 sec). A SOL sub-86¢ time gate blocks low-price far-from-expiry entries. These guardrails eliminate an entire class of low-quality trades.
+The bot only trades contracts priced between **75 and 99 cents**, with per-asset minimums (BTC 88¢, ETH 90¢ main tier with a separate 75–79¢ live sub-tier capped at 50 contracts, SOL 86¢, XRP 92¢, HYPE 90¢, DOGE 85¢ — HYPE/DOGE post P2.3 promotion 2026-05-14). Below these floors, the probability of payout after fees is insufficient. Above 99¢, the potential profit is too small to justify the risk. Specialized overlays extend into lower prices near expiry: Terminal Momentum (96/98/99¢, final 1–5 min) and Low-Price Near-Expiry (BTC 80–87¢, final 10–120 sec). A SOL sub-86¢ time gate blocks low-price far-from-expiry entries. These guardrails eliminate an entire class of low-quality trades.
 
 ### Intelligent Late-Window Execution
 
@@ -293,8 +293,8 @@ Below 180 seconds before settlement, the system switches to **direct taker execu
 | **Status** | Live trading since February 22, 2026 |
 | **Settled trades** | {{LIVE_SETTLED}} ({{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} BE) |
 | **Win rate** | {{LIVE_WR}} |
-| **Assets** | BTC, ETH, SOL, XRP (live); HYPE, DOGE (shadow observation, T1 2026-05-10) |
-| **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+; overlays extend lower in the final minutes) |
+| **Assets** | BTC, ETH, SOL, XRP, HYPE, DOGE (all live; BTC/ETH/SOL/XRP since Feb 2026, HYPE/DOGE T4 promoted 2026-05-14 via P2.3) |
+| **Entry prices** | 75–99¢ (per-asset: BTC 88¢+, ETH 90¢+ main tier with 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+, HYPE 90¢+, DOGE 85¢+; overlays extend lower in the final minutes) |
 
 ---
 
@@ -414,7 +414,7 @@ For readers interested in the mathematical foundations, the full technical white
 
 **Volatility Model** — Uses the Realized Kernel estimator (Barndorff-Nielsen 2008) with data-adaptive bandwidth selection to produce noise-robust volatility from high-frequency returns. Multiple estimators are blended using Mincer-Zarnowitz R²-weighted EMA blending, replacing fixed weights with data-driven quality scores. Includes EGARCH(1,1) with Student-t innovations for conditional volatility (promoted to live trading), time-varying RK weights, adaptive jump detection (percentile-based thresholds per asset), and options-implied volatility integration from Deribit.
 
-**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven via per-product CalEngines: the 15M engine currently runs in passthrough mode (raw probability has lower Brier than the BLR fit, so the BLR layer is bypassed), while per-city weather, per-sport-group, and SPX-D engines run their full Platt → Beta → BLR pipelines. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends per-asset for 15M (P2.1.d, 2026-05-13): BTC 90/10, ETH 80/20, SOL 20/80, XRP 10/90 (model/market); HYPE/DOGE shadow paths retain the historical 60/40 fallback. Weather and SPX use product-specific weights.
+**Probability Model** — Computes win probability using the Normal Inverse Gaussian (NIG) distribution with per-asset fitted parameters (a, b, μ, δ), capturing both heavy tails and asymmetry. NIG dramatically outperforms Student-t on statistical fit tests. Calibration is data-driven via per-product CalEngines: the 15M engine currently runs in passthrough mode (raw probability has lower Brier than the BLR fit, so the BLR layer is bypassed), while per-city weather, per-sport-group, and SPX-D engines run their full Platt → Beta → BLR pipelines. A dynamic time-dependent probability cap applies during startup (93% at 10min+ → 99.5% at <1min) but is bypassed (99.9% ceiling) once learned calibration is active. Final probability blends per-asset for 15M: BTC 90/10, ETH 80/20, SOL 20/80, XRP 10/90 (P2.1.d 2026-05-13); HYPE 20/80, DOGE 40/60 (P2.3 2026-05-14, model/market). Weather and SPX use product-specific weights.
 
 **Position Sizing** — Edge-tiered sizing with drawdown-based scaling. Eight tiers from 25% at 4%+ edge down to 2% at 0.25%+ edge, with automatic de-risking against the rolling 7-day cash HWM (half at 85%, quarter at 75%, halt at 65%). Per-asset max risk per trade: BTC 15%, ETH 20%, SOL 15%, XRP 15%, hourly 15%, SPX 10%, weather 10%. 15M main uses full Kelly; hourly (when re-enabled) sizes at fixed 25 contracts on YES and 25 contracts on its DC overlay (bypassing Kelly); SPX uses eighth-Kelly (0.125); weather YES sim uses quarter-Kelly (0.25), weather NO is fixed 1-contract. Decided contracts use fixed sizing (T1/T1B/T2 at 20%, T2-Z25 at 10%, with SOL DC overrides at 5%/10% for ≥97¢/95–96¢). Low-STC sizing cap halves position below 100s; universal STC sizing scaler reduces position proportionally to time remaining (contracts × 300/STC) above 300s. LPNE is 50 contracts fixed.
 

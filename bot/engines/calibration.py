@@ -373,10 +373,11 @@ class CalibrationEngine:
         2. No market-price blending (SHADOW_BLEND_W=0.0)
         3. Excludes cap-era data (handled by _fit_temperature using filtered obs)
 
-        ``asset`` (P2.1.d, 2026-05-13): when provided, the returned
-        ``prod_blend_w`` reflects the per-asset weight from
-        ``MARKET_BLEND_W_BY_ASSET``; falls back to the scalar
-        ``MARKET_BLEND_W`` for HYPE/DOGE shadow paths + legacy callers.
+        ``asset`` (P2.1.d 2026-05-13 + P2.3 2026-05-14): when provided,
+        the returned ``prod_blend_w`` reflects the per-asset weight from
+        ``MARKET_BLEND_W_BY_ASSET`` (all 6 production 15M assets);
+        falls back to the scalar ``MARKET_BLEND_W`` for unknown assets +
+        non-15M callers.
         """
         if not SHADOW_CAL_PIPELINE or raw_prob is None:
             return None

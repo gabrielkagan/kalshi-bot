@@ -117,6 +117,8 @@ from bot.constants import (
     DIP_ADDON_MIN_STC_REMAINING,
     DIP_ADDON_SHADOW_MODE,
     DOGE_15M_SHADOW,
+    DOGE_MAX_RISK_PER_TRADE,
+    DOGE_MIN_ENTRY_PRICE,
     ENDGAME_BLEND_PRICE,
     ETH_MAX_RISK_PER_TRADE,
     ETH_MIN_ENTRY_PRICE,
@@ -160,6 +162,8 @@ from bot.constants import (
     HOURLY_SHADOW_CONFIGS,
     HOURLY_TEMPERATURE_T,
     HYPE_15M_SHADOW,
+    HYPE_MAX_RISK_PER_TRADE,
+    HYPE_MIN_ENTRY_PRICE,
     KALSHI_OFT_SHADOW_MODE,
     LOSS_COOLDOWN_ENABLED,
     LOSS_COOLDOWN_SECONDS,
@@ -466,11 +470,16 @@ class OpportunityScanner:
         # ── Startup assertion: critical config values ──
         # P2.1.d (2026-05-13): per-asset blend weights replace the scalar
         # MARKET_BLEND_W=0.40 assertion. The scalar MARKET_BLEND_W remains
-        # as fallback for HYPE/DOGE shadow paths (via dict.get(asset, ...))
-        # — its 0.40 value is enforced by validate_market_configs() against
-        # the 15m MarketConfig scalar at startup; no duplicate scanner check
-        # needed.
-        _expected_per_asset_blend = {"BTC": 0.10, "ETH": 0.20, "SOL": 0.80, "XRP": 0.90}
+        # as fallback for non-15M product types and any future unknown
+        # asset (via dict.get(asset, ...)) — its 0.40 value is enforced
+        # by validate_market_configs() against the 15m MarketConfig
+        # scalar at startup; no duplicate scanner check needed.
+        # P2.3 live promotion (2026-05-14, 86b9xv66a) extended this to 6
+        # keys: HYPE 0.80 + DOGE 0.60 from B.1 Brier sweep on shadow data.
+        _expected_per_asset_blend = {
+            "BTC": 0.10, "ETH": 0.20, "SOL": 0.80, "XRP": 0.90,
+            "HYPE": 0.80, "DOGE": 0.60,
+        }
         assert MARKET_BLEND_W_BY_ASSET == _expected_per_asset_blend, (
             f"MARKET_BLEND_W_BY_ASSET misconfigured: {MARKET_BLEND_W_BY_ASSET} "
             f"!= {_expected_per_asset_blend}")
@@ -2672,6 +2681,7 @@ class OpportunityScanner:
                 # ── Per-asset price floor (15M only) ─────────────────────────
                 # BTC 89c+: 86-88c below taker BE. ETH 75c+ (30-contract cap sub-80c).
                 # SOL 80c+. XRP 92c+: PnL-negative at every floor below 90c.
+                # HYPE 90c+ / DOGE 85c+: P2.3 live promotion 2026-05-14 (B.1b).
                 _asset_floor = MIN_ENTRY_PRICE  # default
                 if _pt in (None, "15m"):
                     if asset == "BTC":
@@ -2682,6 +2692,10 @@ class OpportunityScanner:
                         _asset_floor = SOL_MIN_ENTRY_PRICE
                     elif asset == "XRP":
                         _asset_floor = XRP_MIN_ENTRY_PRICE
+                    elif asset == "HYPE":
+                        _asset_floor = HYPE_MIN_ENTRY_PRICE
+                    elif asset == "DOGE":
+                        _asset_floor = DOGE_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
                     # ── LPNE intercept: BTC 80-87c near-expiry ──────────────
                     # Data: BTC 80-87c at STC<=120s = 97.6% WR (42 obs), p=0.031.
@@ -2982,8 +2996,9 @@ class OpportunityScanner:
                 _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
                 if best_ask < ENDGAME_BLEND_PRICE:
                     _mkt = best_ask / 100.0
-                    # P2.1.d: per-asset blend weight; HYPE/DOGE fall back to
-                    # MARKET_BLEND_W (legacy 0.40) via dict.get default.
+                    # P2.1.d + P2.3: per-asset blend weight for all 6 production
+                    # 15M assets; unknown assets fall back to MARKET_BLEND_W
+                    # (legacy 0.40) via dict.get default.
                     _cf_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                     _old_system_prob = (1.0 - _cf_blend_w) * _old_system_prob + _cf_blend_w * _mkt
 
@@ -3213,8 +3228,9 @@ class OpportunityScanner:
                     try:
                         _cp = _cf["cal_pipeline"]
                         if now - self._shadow_cal_last_log.get(asset, 0) >= 300:
-                            # P2.1.d: log the per-asset effective blend weight
-                            # (HYPE/DOGE shadow paths fall back via dict.get).
+                            # P2.1.d + P2.3: log the per-asset effective blend
+                            # weight for all 6 production 15M assets; unknown
+                            # assets fall back via dict.get.
                             _log_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                             logging.info(
                                 "shadow_cal_pipeline %s: prob=%.4f edge=%.4f fee_edge=%.4f "
@@ -4152,6 +4168,14 @@ class OpportunityScanner:
                                     _dc_asset_max = int((_dc_balance * XRP_MAX_RISK_PER_TRADE) / best_ask)
                                     if _dc_position > _dc_asset_max >= 1:
                                         _dc_position = _dc_asset_max
+                                elif asset == "HYPE":
+                                    _dc_asset_max = int((_dc_balance * HYPE_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
+                                elif asset == "DOGE":
+                                    _dc_asset_max = int((_dc_balance * DOGE_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
                                 # EV with assumed win prob — calibrated from 14-day settlement data:
                                 # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)
                                 # T1B: 47/47 (100%) at 95-98c → 0.98 (was 0.97, unlocks 97c)
@@ -4711,6 +4735,18 @@ class OpportunityScanner:
                         logging.info("ASSET_CAP: ETH raw=%d capped=%d balance=$%.2f",
                                      sizing["contracts"], _eth_max, _sizing_balance / 100)
                         sizing["contracts"] = _eth_max
+                elif asset == "HYPE" and _pt in (None, "15m"):
+                    _hype_max = int((_sizing_balance * HYPE_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _hype_max >= 1:
+                        logging.info("ASSET_CAP: HYPE raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _hype_max, _sizing_balance / 100)
+                        sizing["contracts"] = _hype_max
+                elif asset == "DOGE" and _pt in (None, "15m"):
+                    _doge_max = int((_sizing_balance * DOGE_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _doge_max >= 1:
+                        logging.info("ASSET_CAP: DOGE raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _doge_max, _sizing_balance / 100)
+                        sizing["contracts"] = _doge_max
 
                 # ETH sub-80c position cap: clamp to [20, 50] contracts
                 # Half-Kelly at 75c/87% WR = 322-645 contracts — uncapped is reckless.
@@ -5856,6 +5892,14 @@ class OpportunityScanner:
                 # STC sizing scaler (300/STC) already reduces position sizes here.
                 if (window.get("product_type") in (None, "15m")
                         and seconds_remaining > STC_EXTENDED_LIVE_FLOOR):
+                    # HYPE/DOGE INTENTIONALLY OMITTED from this map (P2.3 live promotion
+                    # 2026-05-14): no 300-600s STC HYPE/DOGE shadow data yet (T1 2026-05-10
+                    # → T4 2026-05-14, 4 days). `.get(asset, MAX_ENTRY_PRICE)` returns 99c
+                    # for unknown assets → effective 300-600s STC floor of 99c for HYPE/DOGE
+                    # (conservative — only enter at 99c+ in the extended-STC zone). Widen
+                    # post-soak from observed 300-600s STC HYPE/DOGE settled rows; until
+                    # then the buffer-rescue path below still allows fat-buffer HYPE/DOGE
+                    # entries to fall through.
                     _stc_ext_floor = {"BTC": STC_EXTENDED_BTC_MIN_PRICE, "ETH": STC_EXTENDED_ETH_MIN_PRICE,
                                       "SOL": STC_EXTENDED_SOL_MIN_PRICE, "XRP": STC_EXTENDED_XRP_MIN_PRICE}.get(asset, MAX_ENTRY_PRICE)
                     if best_ask < _stc_ext_floor:
@@ -5937,9 +5981,11 @@ class OpportunityScanner:
                             **_oft_db, **_shadow_diag)
                     continue
 
-                # ── HYPE SHADOW GATE (15M only, T1 onboarding 2026-05-10) ──
-                # HYPE: shadow data collection — no live trades until T4 promotion
-                # (per-asset MIN_ENTRY_PRICE/MAX_RISK_PER_TRADE elif chains + NBBO).
+                # ── HYPE KILL-SWITCH GATE (15M only — T1 shadow 2026-05-10 → T4 live 2026-05-14) ──
+                # POST-PROMOTE (P2.3, 86b9xv66a): this gate is DEAD when
+                # HYPE_15M_SHADOW=False (current state). Preserved as the kill-switch
+                # — flip HYPE_15M_SHADOW=True in bot/constants.py to revert to shadow
+                # observation if the post-promote 14d Brier soak rolls back HYPE.
                 if HYPE_15M_SHADOW and asset == "HYPE" and window.get("product_type") in (None, "15m"):
                     _dedup_key = (ticker, "hype_shadow")
                     if _dedup_key not in self._eval_opp_seen:
@@ -5965,8 +6011,11 @@ class OpportunityScanner:
                             **_oft_db, **_shadow_diag)
                     continue
 
-                # ── DOGE SHADOW GATE (15M only, T1 onboarding 2026-05-10) ──
-                # DOGE: shadow data collection — no live trades until T4 promotion.
+                # ── DOGE KILL-SWITCH GATE (15M only — T1 shadow 2026-05-10 → T4 live 2026-05-14) ──
+                # POST-PROMOTE (P2.3, 86b9xv66a): this gate is DEAD when
+                # DOGE_15M_SHADOW=False (current state). Preserved as the kill-switch
+                # — flip DOGE_15M_SHADOW=True in bot/constants.py to revert to shadow
+                # observation if the post-promote 14d Brier soak rolls back DOGE.
                 if DOGE_15M_SHADOW and asset == "DOGE" and window.get("product_type") in (None, "15m"):
                     _dedup_key = (ticker, "doge_shadow")
                     if _dedup_key not in self._eval_opp_seen:
