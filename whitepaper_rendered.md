@@ -82,7 +82,7 @@ The bot monitors real-time data from multiple sources per vertical, estimates ou
 
 ## Market Opportunity
 
-Kalshi lists 15-minute crypto contracts around the clock. Each window produces fresh contracts for four assets at multiple strike prices, creating hundreds of tradeable markets per day. Because these are short-duration, binary-outcome instruments, mispricing tends to be small but frequent — an ideal environment for systematic, model-driven trading.
+Kalshi lists 15-minute crypto contracts around the clock. Each window produces fresh contracts for six assets (BTC, ETH, SOL, XRP, HYPE, DOGE — HYPE/DOGE post P2.3 promotion 2026-05-14) at multiple strike prices, creating hundreds of tradeable markets per day. Because these are short-duration, binary-outcome instruments, mispricing tends to be small but frequent — an ideal environment for systematic, model-driven trading.
 
 Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 intraday (observation, briefly live Mar 17 then reverted on Polygon 403), daily weather temperature across 19 US cities (NO-side LIVE since Apr 11 in 1-contract verification mode; YES-side observation), live sports outcomes across 28 leagues (observation; basketball alpha detected), and hourly crypto (kill-switched Apr 18 after correlated multi-strike losses). Each uses domain-specific models while sharing common edge detection, sizing, and execution infrastructure.
 
@@ -137,7 +137,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 | **KalshiFeed** | WebSocket connection for real-time fills and orderbook delta streaming |
 | **Logger** | Structured JSONL logging across multiple journals with fill deduplication |
 | **StateManager** | SQLite-backed persistent state (WAL mode for crash resilience, `busy_timeout=10000`); tracks positions, orders, fills, settlements, and order lifecycle |
-| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP (live trading) and HYPE, DOGE (shadow observation, T1 2026-05-10) with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
+| **CoinbaseFeed** | Real-time WebSocket feed for BTC, ETH, SOL, XRP, HYPE, DOGE (all 6 live trading post P2.3 promotion 2026-05-14) with 300-point price buffer (5 minutes at 1-second intervals); EGARCH uses a separate 10,800-point return buffer (15 hours at 5-second intervals) |
 | **DeribitDVOLFetcher** | Daemon thread fetching implied volatility (DVOL) index for BTC and ETH every 60 seconds |
 | **CrossExchangeFeed** | WebSocket feeds from Kraken, Bybit, and Binance for cross-exchange lead-lag detection (Binance geo-blocked on VPS) |
 | **KalshiOrderFlowTracker** | Shadow-mode Kalshi-native orderbook imbalance, depth velocity, and spread convergence signals |
@@ -161,7 +161,7 @@ Beyond the live 15M engine, the platform spans four adjacent verticals: S&P 500 
 
 | Source | Data | Transport | Frequency |
 |---|---|---|---|
-| Coinbase | Spot prices (BTC, ETH, SOL, XRP live; HYPE, DOGE shadow) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
+| Coinbase | Spot prices (BTC, ETH, SOL, XRP, HYPE, DOGE — all live post P2.3 2026-05-14) | WebSocket | Real-time (1s snapshots, 300-point buffer = 5min) |
 | Kraken | Spot prices (cross-exchange) | WebSocket | Real-time |
 | Deribit | Implied volatility (DVOL) for BTC/ETH | REST API | 60 seconds |
 | Polygon.io | SPX spot price | REST API | 1s polling (NYSE RTH) |
@@ -294,11 +294,22 @@ As expiry approaches and less can go wrong, the cap relaxes to allow higher-conf
 
 ### Step 5: Market-Price Blending
 
-The calibrated probability is blended with the market-implied probability:
+Canonical lockstep: `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (doc-drift contract; P2.1.d 2026-05-13 + P2.3 HYPE/DOGE live promotion 2026-05-14).
 
-$$p_{final} = 0.60 \times p_{cal} + 0.40 \times p_{market}$$
+The calibrated probability is blended with the market-implied probability using per-asset weights tuned against the cal_mlp v1.1 calibration model:
 
-This 60/40 blend (60% model, 40% market) was validated against a no-blend alternative: the no-blend system was +1.86 percentage points overconfident (Brier score 0.0946 vs 0.0422), and would have generated 16 net-negative trades. The 40% market weight was subsequently tuned from 50% after data showed the model was underconfident by 0.8–2.1pp at 90%+ probabilities. The no-blend system now monitors in shadow mode.
+$$p_{final} = (1 - w_{asset}) \times p_{cal} + w_{asset} \times p_{market}$$
+
+| Asset | $w_{asset}$ | Model / Market split |
+|---|---|---|
+| BTC | 0.10 | 90% model / 10% market |
+| ETH | 0.20 | 80% / 20% |
+| SOL | 0.80 | 20% / 80% |
+| XRP | 0.90 | 10% / 90% |
+| HYPE | 0.80 | 20% / 80% |
+| DOGE | 0.60 | 40% / 60% |
+
+The BTC/ETH/SOL/XRP weights replaced the legacy 60/40 default after a 4×6 sim-PnL sweep (P2.1.c-fu1, 2026-05-13) showed that the cal_mlp v1.1 model's per-asset Brier improvements (BTC −13% / ETH −11% / SOL −3% / XRP −6%) drove sharply different optimal blend ratios. HYPE/DOGE were added in P2.3 (2026-05-14) from a B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 → 2026-05-14 (n=1469/1710 settled rows; both interior argmins). The historical 60/40 was originally tuned in February 2026 ("model underconfident 0.8–2.1pp at 90%+") against an earlier Beta-Cal-only pipeline and had never been re-validated for the cal_mlp regime until P2.1.d. A 14-day Brier-monitored soak with a pre-committed rollback rule (any asset degraded ≥5% relative → revert) gates retention of the new weights.
 
 ### Sanity Checks
 
@@ -718,7 +729,7 @@ The analyst engine (`bot/ai/analyst.py`) uses the Claude API to provide automate
 ## Market Selection Controls
 
 - **Multi-asset capable**: Can trade multiple assets per 15-minute window
-- **Price range guardrails**: Global floor 75–99¢ with per-asset overrides — BTC 88¢ (with LPNE intercepting 80–87¢ near-expiry), ETH 90¢ main tier (plus a 75–79¢ live sub-tier capped at 50 contracts; the 80–89¢ band is rejected by the floor due to negative historical PnL), SOL 86¢, XRP 92¢. Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
+- **Price range guardrails**: Global floor 75–99¢ with per-asset overrides — BTC 88¢ (with LPNE intercepting 80–87¢ near-expiry), ETH 90¢ main tier (plus a 75–79¢ live sub-tier capped at 50 contracts; the 80–89¢ band is rejected by the floor due to negative historical PnL), SOL 86¢, XRP 92¢, HYPE 90¢, DOGE 85¢ (HYPE/DOGE post P2.3 promotion 2026-05-14). Below these floors, win rates are insufficient after fees; above 99¢ offers insufficient reward
 - **Price-dependent edge threshold**: Fee-adjusted edge must exceed a price-dependent minimum (0.25% at 80¢ up to 1.0% at 97¢+) after taker fees (worst-case)
 - **Scanner uses taker fees**: Every candidate is profitable even if forced to taker execution
 
@@ -729,7 +740,7 @@ The analyst engine (`bot/ai/analyst.py`) uses the Claude API to provide automate
 - **EGARCH/RV divergence clamp**: If the EGARCH-to-RV variance ratio falls outside `[1/3, 3]`, EGARCH is rejected and the engine falls back to RK-only volatility
 - **Dynamic probability cap**: Time-dependent ceiling (93–99.5%) prevents overconfidence during startup; bypassed (99.9% ceiling) once learned calibration is active
 - **Data-driven calibration**: CalibrationEngine learns from settlement outcomes, replacing fixed assumptions with empirical mappings
-- **Market-price blending**: 60/40 blend (60% model, 40% market) anchors estimates and prevents systematic overconfidence
+- **Market-price blending**: Per-asset 15M weights — BTC 10%, ETH 20%, SOL 80%, XRP 90% (P2.1.d 2026-05-13); HYPE 80%, DOGE 60% (P2.3 2026-05-14). Anchors estimates and prevents systematic overconfidence under the cal_mlp v1.1 regime (BTC/ETH/SOL/XRP) or the raw_prob bootstrap signal (HYPE/DOGE, pending cal_mlp retrain from live evaluated_opportunities ~2-4 weeks post-promote).
 
 ## Execution Controls
 
@@ -762,30 +773,30 @@ All numbers below are auto-regenerated from `state.db` on every push. See `kb/de
 | Metric | Value |
 |---|---|
 | **Status** | Live trading since February 22, 2026 |
-| **Settled trades** | 3,951 (3,651W / 298L / 2 breakeven) |
+| **Settled trades** | 4,010 (3,706W / 302L / 2 breakeven) |
 | **Win rate** | 92.4\% |
-| **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+) |
+| **Assets** | BTC (88¢+, LPNE 80–87¢), ETH (90¢+ main, 75–79¢ capped sub-tier), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+) — HYPE/DOGE post P2.3 promotion 2026-05-14 |
 
 ### Performance by Strategy Group
 
 | Strategy group | n | W / L | Win rate |
 |---|---|---|---|
-| 15M main (Kelly-sized) | 1,627 | 1,472 W / 155 L | 90.5\% |
-| Decided contracts | 239 | 231 W / 8 L | 96.7\% |
+| 15M main (Kelly-sized) | 1,647 | 1,490 W / 157 L | 90.5\% |
+| Decided contracts | 241 | 233 W / 8 L | 96.7\% |
 | Weekend discount | 175 | 165 W / 10 L | 94.3\% |
-| Overnight discount | 98 | 94 W / 4 L | 95.9\% |
+| Overnight discount | 99 | 95 W / 4 L | 96.0\% |
 | LPNE (BTC 80–87¢ near-expiry) | 5 | 5 W / 0 L | 100.0\% |
-| Weather NO (1-contract verification) | 156 | 61 W / 95 L | 39.1\% |
+| Weather NO (1-contract verification) | 159 | 62 W / 97 L | 39.0\% |
 | Hourly NO (pre-kill-switch) | 14 | 6 W / 8 L | 42.9\% |
 
 ### Calibration
 
 The bot exposes two Brier scores:
 
-- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0414 overall, 0.0299 on 15M, 0.3955 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
-- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0596 overall (3,753 samples), 0.0446 on 15M.
+- **Brier (all live candidates)** — measures the **model's** calibration on every opportunity that passed the live-candidate filter, whether or not it filled: 0.0410 overall, 0.0297 on 15M, 0.4010 on weather (side-aware: NO-side rows use $1-p_{raw}$ as the model's probability of the bot's bet winning).
+- **Brier (filled trades only)** — measures the **bot's paid-decision** calibration via JOIN(settled_trades, latest matching evaluated_opportunities row), deduplicated on stacked tickers and timestamp ties: 0.0598 overall (3,811 samples), 0.0444 on 15M.
 
-A small number of settled trades (3,951 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
+A small number of settled trades (4,010 total, of which N lack a matching EO row — see `settled_without_matching_eo` in the auto-generated stats) are excluded from filled-Brier; their model prediction was not preserved in evaluated_opportunities.
 
 ### Regime Slices
 
@@ -793,20 +804,20 @@ Two regime cutoffs are pinned to actual deploy commit timestamps:
 
 | Slice | Settled | Wins | Win rate | Brier (model) |
 |---|---|---|---|---|
-| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,129 | 1,949 | 91.5\% | 0.0420 |
-| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,181 | 1,066 | 90.3\% | 0.0336 |
+| Since 2026-04-11T20:43Z (loss-burst cooldown + weather NO live) | 2,188 | 2,004 | 91.6\% | 0.0413 |
+| Since 2026-04-23T23:46Z (WS schema fix `0ddcaf8`) | 1,240 | 1,121 | 90.4\% | 0.0332 |
 
 The post-Apr-23 slice is the cleanest "current regime" view: WS orderbook depth is now decoded correctly, loss-burst cooldown is shipped, weather NO has been live for 12 days, and XRP has been live at 92¢+ for ~5 days.
 
 ### Shadow / Hypothetical PnL
 
-Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 181,201 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
+Counterfactual PnL for shadow-only strategies (would-have entered at relaxed gates) is computed across all evaluated_opportunities with `counterfactual_pnl IS NOT NULL`, totalling 185,870 signals. These are simulated under the assumption of no fill impact, so they overstate what live promotion would actually capture; treat them as upper bounds when evaluating shadow→live promotions.
 
 ## Markets
 
 ### Crypto 15-Minute (Live Trading)
 
-Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M. STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Several live overlays add incremental volume on top of the main 15M scan:
+Binary contracts settling every 15 minutes. Series: KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M, KXDOGE15M (HYPE/DOGE T4 promoted 2026-05-14 via P2.3, 86b9xv66a). STC window: scan 0–900s, live 0–600s, shadow observation 600–900s. Several live overlays add incremental volume on top of the main 15M scan:
 
 - **Decided contract overlay** — T1, T1B, T2, T2-Z25 live; T2-Z2 returned to shadow Apr 22 after underperformance (47 trades). Six T1/T2 expansion shadows (T1A, T1B-EXP, T2A, T2B, T3, T3A) collect data for potential future tiers
 - **Terminal Momentum (TM)** — trades the final 1–5 minutes at 96/98/99¢ (95 and 97 removed Apr 9 after a 2wk losing run on 347 trades). Sizing is `TM_BASE_CONTRACTS=100` × margin × STC multiplier with caps (min 25, max 500); 96¢ is blocked when sourced from NBBO
@@ -942,4 +953,4 @@ Promoted features (driving live behavior):
 
 ---
 
-*Last updated: 2026-05-12T15:34:23Z*
+*Last updated: 2026-05-14T00:12:53Z*
