@@ -21,6 +21,7 @@ Usage:
 """
 import argparse
 import math
+import os as _os
 import sqlite3
 import sys
 from collections import defaultdict
@@ -28,9 +29,24 @@ from datetime import datetime, timedelta
 from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 
-# ── Bot's live MIN_EDGE_BY_PRICE schedule (for reference) ─────────
+# ── Bot's live MIN_EDGE_BY_PRICE schedule (single source of truth) ────
+# Import from bot.constants so the script can never drift from the
+# live bot config. Pre-R2 the script had a hardcoded BOT_EDGE_SCHEDULE
+# dict + get_tier_min_edge() function that drifted ~2× from constants
+# (91-92c: 0.20% vs 0.35%; 93-94c: 0.50% vs 0.90%; 95-96c: 0.75% vs
+# 1.25%; 97c+: 1.00% vs 2.00%). Pinned by sister AST test.
+_REPO_ROOT = _os.path.dirname(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from bot.constants import MIN_EDGE_BY_PRICE as _MIN_EDGE_BY_PRICE
+
+# Build the legacy {price_cents: edge_pct} dict from the canonical
+# list-of-(min_price, edge) tuples in bot/constants.py.
+# bot.constants.MIN_EDGE_BY_PRICE is sorted descending by price; we
+# pull the breakpoints + edge directly.
 BOT_EDGE_SCHEDULE = {
-    86: 0.0025, 89: 0.0025, 91: 0.0035, 93: 0.009, 95: 0.0125, 97: 0.02
+    price: edge for price, edge in _MIN_EDGE_BY_PRICE
 }
 
 # ── Fee model ──────────────────────────────────────────────────────
@@ -106,6 +122,46 @@ def profit_factor(wins_pnl, losses_pnl):
         return float('inf') if wins_pnl > 0 else 0
     return abs(wins_pnl / losses_pnl)
 
+# ── Hourly shadow/observation stage enumeration ────────────────────
+# Hardcoded single-stage check (`filter_stage == 'hourly_observation'`)
+# was the bug class caught by alpha_audit's May-5 rebuild (commit ec0c0e5
+# / kb/decisions/project_alpha_audit_rebuild_may05.md). Live hourly DB
+# has 18+ filter_stage values; the shadow/observation subset must
+# enumerate every literal + every `hourly_config_*` variant + the
+# canonical `candidate` post-filter stage.
+HOURLY_SIGNAL_STAGE_LITERAL = frozenset({
+    'hourly_observation',
+    'hourly_observation_v2',
+    'candidate',
+})
+
+
+def _is_hourly_signal_stage(stage) -> bool:
+    if not isinstance(stage, str):
+        return False
+    if stage in HOURLY_SIGNAL_STAGE_LITERAL:
+        return True
+    return stage.startswith('hourly_config_')
+
+
+# Canonical 4-value market_result vocab written by bot/settlement.py.
+# Kalshi's API uses ('yes', 'all_yes') for YES-side wins and
+# ('no', 'all_no') for NO-side wins. Handling only the 2-value subset
+# was the latent extension of the C1 inversion bug (R1 adv-review).
+# Sister precedent: alpha_audit.is_win (tests/integration/test_alpha_audit.py:227-247).
+_YES_RESULT_VALUES = frozenset({'yes', 'all_yes'})
+_NO_RESULT_VALUES = frozenset({'no', 'all_no'})
+
+
+def _won_for_side(side, market_result) -> bool:
+    # NO-side bet wins when market settles NO/all_no; YES-side bet wins
+    # when market settles YES/all_yes. NULL side defaults to YES
+    # semantics (legacy data pre-side-column).
+    if (side or 'yes') == 'no':
+        return market_result in _NO_RESULT_VALUES
+    return market_result in _YES_RESULT_VALUES
+
+
 # ── Data loading ───────────────────────────────────────────────────
 def load_hourly_data(db_path: str) -> List[Dict]:
     """Load all settled hourly evaluated_opportunities."""
@@ -123,11 +179,14 @@ def load_hourly_data(db_path: str) -> List[Dict]:
     data = []
     for r in rows:
         d = dict(r)
-        d['won'] = d['market_result'] == 'yes'
+        d['won'] = _won_for_side(d.get('side'), d.get('market_result'))
         d['price'] = int(round(d['market_price'] * 100)) if d['market_price'] and d['market_price'] < 1.5 else int(d['market_price'] or 0)
         if d['price'] > 100:
             d['price'] = int(d['market_price'] * 100) if d['market_price'] < 1.5 else int(d['market_price'])
-        d['price'] = max(1, min(99, d['price']))
+        # Clamp to natural domain [0, 100]. Pre-patch this was [1, 99],
+        # which silently coerced settled-100c markets to 99c — distorting
+        # PnL math, tier classification, and breakeven WR.
+        d['price'] = max(0, min(100, d['price']))
         d['eval_dt'] = datetime.fromisoformat(d['evaluation_time'].replace('Z', '+00:00')) if d['evaluation_time'] else None
         d['hour'] = d['eval_dt'].hour if d['eval_dt'] else None
         d['date'] = d['eval_dt'].strftime('%Y-%m-%d') if d['eval_dt'] else None
@@ -138,7 +197,7 @@ def load_hourly_data(db_path: str) -> List[Dict]:
         d['cal_prob'] = d.get('calibrated_prob') or 0
         d['raw_p'] = d.get('raw_prob') or 0
         d['shadow_cal'] = d.get('shadow_cal_prob')
-        d['is_signal'] = d['filter_stage'] == 'hourly_observation'
+        d['is_signal'] = _is_hourly_signal_stage(d.get('filter_stage'))
         d['volatility_val'] = d.get('volatility') or 0
         d['z_score_val'] = d.get('z_score') or 0
         d['kelly_val'] = d.get('kelly_f') or 0
@@ -412,19 +471,16 @@ def get_price_tier(price_cents: int) -> str:
         return '97c+'
 
 def get_tier_min_edge(price_cents: int) -> float:
-    """Return the bot's minimum edge for this price tier."""
-    if price_cents < 89:
-        return 0.0025
-    elif price_cents < 91:
-        return 0.0025
-    elif price_cents < 93:
-        return 0.0035
-    elif price_cents < 95:
-        return 0.009
-    elif price_cents < 97:
-        return 0.0125
-    else:
-        return 0.02
+    """Return the bot's minimum edge for this price tier.
+
+    Single source of truth: bot.constants.MIN_EDGE_BY_PRICE
+    (sorted descending by min_price). Walks the list and returns
+    the edge for the highest min_price the price meets.
+    """
+    for min_price, edge in _MIN_EDGE_BY_PRICE:
+        if price_cents >= min_price:
+            return edge
+    return _MIN_EDGE_BY_PRICE[-1][1]
 
 
 # ── Main research pipeline ─────────────────────────────────────────
@@ -437,8 +493,17 @@ def run_research(db_path: str):
     signals = [d for d in all_data if d['is_signal']]
     all_settled = [d for d in all_data if d['market_result'] is not None]
 
+    # Dynamic asset enumeration — replaces hardcoded ['BTC','ETH','SOL','XRP']
+    # at every per-asset iteration + every 'ALL' grid-search config. The
+    # hardcoded form silently dropped HYPE/DOGE hourly observation rows
+    # (150 + 105 settled on 2026-05-15). Sister precedent: alpha_audit.py
+    # May-5 rebuild (kb/decisions/project_alpha_audit_rebuild_may05.md).
+    signal_assets = sorted({d['asset'] for d in signals if d.get('asset')})
+    all_assets_set = set(signal_assets)
+
     print(f"\nDataset: {len(all_data)} total evals, {len(signals)} signals, "
           f"{len(all_settled)} settled")
+    print(f"Assets observed: {', '.join(signal_assets) if signal_assets else '(none)'}")
     if not signals:
         print("  >>> NO SIGNALS FOUND. Nothing to analyze.")
         return
@@ -474,7 +539,7 @@ def run_research(db_path: str):
     print(f"  {'-'*66}")
 
     asset_results = {}
-    for asset in ['BTC', 'ETH', 'SOL', 'XRP']:
+    for asset in signal_assets:
         r = evaluate_config(signals, assets={asset}, label=asset)
         asset_results[asset] = r
         if r['n'] > 0:
@@ -489,9 +554,9 @@ def run_research(db_path: str):
           f"{'$/day':>8} {'PF':>6} {'Stable':>7}")
     print(f"  {'-'*70}")
 
-    all_assets = {'BTC', 'ETH', 'SOL', 'XRP'}
+    all_assets = all_assets_set
     exclusion_results = []
-    for exclude_n in range(0, 4):
+    for exclude_n in range(0, len(all_assets_set)):
         for excluded in combinations(all_assets, exclude_n):
             remaining = all_assets - set(excluded)
             if not remaining:
@@ -566,7 +631,7 @@ def run_research(db_path: str):
         asset_losses[s['asset']].append(s)
 
     total_loss_pnl = sum(sim_pnl_1lot(s['price'], False) for s in losses_list)
-    for asset in ['BTC', 'ETH', 'SOL', 'XRP']:
+    for asset in signal_assets:
         al = asset_losses.get(asset, [])
         loss_pnl = sum(sim_pnl_1lot(s['price'], False) for s in al)
         pct = loss_pnl / total_loss_pnl * 100 if total_loss_pnl else 0
@@ -795,15 +860,20 @@ def run_research(db_path: str):
     configs = []
 
     # 5a: Asset portfolios x price floors
+    # The 'no_X' / 'ALL' entries MUST be dynamic w.r.t. all_assets_set —
+    # hardcoding `{'BTC','ETH','SOL'}, 'no_XRP'` was a structural lie
+    # when HYPE/DOGE entered the universe: the label claimed "no_XRP"
+    # but the set actually excluded XRP+HYPE+DOGE. R3 adv-review
+    # MAJOR-R3.2. Same defect class as R1 M3 in 3-element-subset form.
     asset_combos = [
         ({'BTC'}, 'BTC_only'),
         ({'ETH'}, 'ETH_only'),
         ({'SOL'}, 'SOL_only'),
         ({'BTC', 'ETH'}, 'BTC_ETH'),
         ({'BTC', 'SOL'}, 'BTC_SOL'),
-        ({'BTC', 'ETH', 'SOL'}, 'no_XRP'),
-        ({'ETH', 'SOL', 'XRP'}, 'no_BTC'),
-        ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL'),
+        (all_assets_set - {'XRP'}, 'no_XRP'),
+        (all_assets_set - {'BTC'}, 'no_BTC'),
+        (all_assets_set, 'ALL'),
     ]
     price_floors = [50, 70, 80, 85, 88, 90, 92, 95]
 
@@ -827,7 +897,7 @@ def run_research(db_path: str):
     stc_ranges = [(0, 300), (0, 600), (0, 900), (300, 600), (300, 900), (300, 1200),
                   (600, 900), (600, 1200), (600, 1800), (900, 1800), (1200, 1800)]
     for assets, aname in [({'BTC'}, 'BTC'), ({'BTC', 'ETH'}, 'BTC_ETH'),
-                          ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL')]:
+                          (all_assets_set, 'ALL')]:
         for stc_lo, stc_hi in stc_ranges:
             r = evaluate_config(signals, assets=assets, min_stc=stc_lo, max_stc=stc_hi,
                                 label=f"{aname}_STC_{stc_lo}-{stc_hi}")
@@ -845,7 +915,7 @@ def run_research(db_path: str):
         'Active': set(range(13, 22)),   # US trading hours
     }
     for sname, hours in sessions.items():
-        for assets, aname in [({'BTC'}, 'BTC'), ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL')]:
+        for assets, aname in [({'BTC'}, 'BTC'), (all_assets_set, 'ALL')]:
             r = evaluate_config(signals, assets=assets, hours=hours,
                                 label=f"{aname}_{sname}")
             if r['n'] >= 20:
@@ -870,14 +940,14 @@ def run_research(db_path: str):
     # 5f: Per-window position limits
     for wlimit in [1, 2, 3]:
         for assets, aname in [({'BTC'}, 'BTC'), ({'BTC', 'ETH'}, 'BTC_ETH'),
-                               ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL')]:
+                               (all_assets_set, 'ALL')]:
             r = evaluate_config(signals, assets=assets, max_signals_per_window=wlimit,
                                 label=f"{aname}_wlim={wlimit}")
             if r['n'] >= 20:
                 configs.append(r)
 
     # 5g: Shadow CalEngine probabilities
-    for assets, aname in [({'BTC'}, 'BTC'), ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL')]:
+    for assets, aname in [({'BTC'}, 'BTC'), (all_assets_set, 'ALL')]:
         r = evaluate_config(signals, assets=assets, use_shadow_cal=True,
                             label=f"{aname}_shadow_cal")
         if r['n'] >= 20:
@@ -885,7 +955,7 @@ def run_research(db_path: str):
 
     # 5h: Combined best: asset x price x edge x STC
     for assets, aname in [({'BTC'}, 'BTC'), ({'BTC', 'ETH'}, 'BTC_ETH'),
-                           ({'BTC', 'ETH', 'SOL', 'XRP'}, 'ALL')]:
+                           (all_assets_set, 'ALL')]:
         for pf in [80, 85, 90]:
             for ec in [0.008, 0.01, 0.015]:
                 for stc_lo, stc_hi in [(300, 900), (300, 1200)]:
@@ -1122,15 +1192,26 @@ def run_research(db_path: str):
         print(f"    $/day: ${best['pnl_per_day']:.2f}, PF={best['profit_factor']:.2f}")
         print(f"    Max drawdown: ${best.get('max_drawdown', 0):.2f}")
 
-        # Translate label to bot config
+        # Translate label to bot config.
+        # Dynamic excluded-set derivation: the included assets are
+        # whichever assets the best config evaluated against, surfaced
+        # via best['asset_stats'].keys() (populated by evaluate_config
+        # only for assets the config actually included). Then excluded
+        # = all_assets_set - included.
+        #
+        # Pre-R3 patch this block hardcoded literal exclusion sets like
+        # `{'ETH', 'SOL', 'XRP'}` — when HYPE/DOGE entered the universe,
+        # an operator pasting that recommendation verbatim would
+        # accidentally PROMOTE HYPE/DOGE to live hourly trading (drop
+        # them out of HOURLY_EXCLUDED_ASSETS). R3 adv-review MAJOR-R3.1.
         print(f"\n    Suggested bot config changes:")
         label = best['label']
-        if 'BTC_only' in label:
-            print(f"      HOURLY_EXCLUDED_ASSETS = {{'ETH', 'SOL', 'XRP'}}")
-        elif 'no_XRP' in label:
-            print(f"      HOURLY_EXCLUDED_ASSETS = {{'XRP'}}")
-        elif 'BTC_ETH' in label:
-            print(f"      HOURLY_EXCLUDED_ASSETS = {{'SOL', 'XRP'}}")
+        included_assets = set(best.get('asset_stats', {}).keys())
+        if included_assets and included_assets != all_assets_set:
+            excluded = all_assets_set - included_assets
+            if excluded:
+                excluded_repr = "{" + ", ".join(repr(a) for a in sorted(excluded)) + "}"
+                print(f"      HOURLY_EXCLUDED_ASSETS = {excluded_repr}")
 
         if 'P>=' in label:
             pf_match = label.split('P>=')[1].split('_')[0]
@@ -1216,7 +1297,7 @@ def run_research(db_path: str):
           f"({(avg_cal - actual_wr) * 100:+.1f}pp)")
 
     # Asset-specific issues
-    for asset in ['BTC', 'ETH', 'SOL', 'XRP']:
+    for asset in signal_assets:
         r = asset_results.get(asset, {})
         if r and r.get('n', 0) > 0:
             if r['flat_pnl'] < -2.0:
@@ -1366,7 +1447,7 @@ def v2_variant_alpha(db_path: str, total_days: float):
                          ("V2 (temp_scale, no blend)", "hourly_observation_v2")]:
         rows = conn.execute("""
             SELECT asset, market_price, calibrated_prob, fee_adjusted_edge,
-                   seconds_to_close, position_size, market_result
+                   seconds_to_close, position_size, market_result, side
             FROM evaluated_opportunities
             WHERE product_type='hourly' AND filter_stage=?
               AND market_result IS NOT NULL
@@ -1376,16 +1457,21 @@ def v2_variant_alpha(db_path: str, total_days: float):
             print(f"\n  --- {label}: No settled data ---")
             continue
 
-        wins = sum(1 for r in rows if r["market_result"] == "yes")
+        # Side-aware win semantics (mirrors C1 fix in _won_for_side).
+        # Currently latent in v2 (only YES rows seen) but structurally
+        # required so future NO-side v2 rows don't invert WR.
+        def _won(r):
+            return _won_for_side(r["side"], r["market_result"])
+        wins = sum(1 for r in rows if _won(r))
         n = len(rows)
         wr = wins / n * 100
         avg_p = sum(r["market_price"] for r in rows) / n
         be = avg_p  # maker
         sized_pnl = sum(
-            sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["position_size"] or 1)
+            sim_pnl_1lot(r["market_price"], _won(r)) * (r["position_size"] or 1)
             for r in rows)
-        flat_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") for r in rows)
-        brier = sum((r["calibrated_prob"] - (1 if r["market_result"] == "yes" else 0))**2
+        flat_pnl = sum(sim_pnl_1lot(r["market_price"], _won(r)) for r in rows)
+        brier = sum((r["calibrated_prob"] - (1.0 if _won(r) else 0.0))**2
                      for r in rows) / n
         oc = sum(r["calibrated_prob"] for r in rows) / n * 100 - wr
 
@@ -1403,16 +1489,17 @@ def v2_variant_alpha(db_path: str, total_days: float):
         print(f"    {'-'*42}")
         for asset in sorted(by_asset):
             ar = by_asset[asset]
-            w = sum(1 for r in ar if r["market_result"] == "yes")
-            pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["position_size"] or 1)
+            w = sum(1 for r in ar if _won(r))
+            pnl = sum(sim_pnl_1lot(r["market_price"], _won(r)) * (r["position_size"] or 1)
                       for r in ar)
             ap = sum(r["market_price"] for r in ar) / len(ar)
             print(f"    {asset:<6} {len(ar):>4} {w:>3} {len(ar)-w:>3} "
                   f"{w/len(ar)*100:>5.1f}% ${pnl:>6.2f} {ap:>4.0f}c")
 
-    # Matched Brier comparison
+    # Matched Brier comparison (side-aware: matched on ticker so v1 + v2
+    # share the same `side` per ticker; v1.side suffices)
     matched = conn.execute("""
-        SELECT v1.ticker, v1.market_result,
+        SELECT v1.ticker, v1.market_result, v1.side,
                v1.calibrated_prob AS v1_prob, v1.position_size AS v1_size,
                v2.calibrated_prob AS v2_prob, v2.position_size AS v2_size,
                v1.market_price
@@ -1427,11 +1514,13 @@ def v2_variant_alpha(db_path: str, total_days: float):
 
     if matched:
         n = len(matched)
-        v1_brier = sum((r["v1_prob"] - (1 if r["market_result"] == "yes" else 0))**2 for r in matched) / n
-        v2_brier = sum((r["v2_prob"] - (1 if r["market_result"] == "yes" else 0))**2 for r in matched) / n
-        v1_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["v1_size"] or 1)
+        def _won_m(r):
+            return _won_for_side(r["side"], r["market_result"])
+        v1_brier = sum((r["v1_prob"] - (1.0 if _won_m(r) else 0.0))**2 for r in matched) / n
+        v2_brier = sum((r["v2_prob"] - (1.0 if _won_m(r) else 0.0))**2 for r in matched) / n
+        v1_pnl = sum(sim_pnl_1lot(r["market_price"], _won_m(r)) * (r["v1_size"] or 1)
                      for r in matched)
-        v2_pnl = sum(sim_pnl_1lot(r["market_price"], r["market_result"] == "yes") * (r["v2_size"] or 1)
+        v2_pnl = sum(sim_pnl_1lot(r["market_price"], _won_m(r)) * (r["v2_size"] or 1)
                      for r in matched)
         delta = v1_brier - v2_brier
         winner = "V2" if delta > 0 else "V1"
