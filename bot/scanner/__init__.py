@@ -1034,13 +1034,17 @@ class OpportunityScanner:
             ).fetchone()
             recent_pnl = pnl_row[0] if pnl_row and pnl_row[0] is not None else 0
 
-            # Drawdown: current_balance vs _session_hwm_balance if tracked, else 0
-            # Use main loop balance tracking if available
+            # Drawdown: portfolio_balance vs PositionSizer rolling 7d HWM —
+            # same source as `_drawdown_scaler`, so the column never disagrees
+            # with the scaler's sizing decision (ClickUp 86b9z6yhw). `getattr`
+            # guards test stubs that don't wire `_sizer`; production scanner
+            # always has it via constructor injection from MainLoop.
             drawdown_pct = 0.0
-            if self._ml is not None:
-                cur = getattr(self._ml, "_last_known_balance", None)
-                hwm = getattr(self._ml, "_session_hwm_balance", None)
-                if cur is not None and hwm is not None and hwm > 0:
+            sizer = getattr(self, "_sizer", None)
+            if sizer is not None and sizer._balance_history:
+                hwm = sizer.get_rolling_hwm()
+                _, cur = sizer._balance_history[-1]
+                if hwm > 0:
                     drawdown_pct = max(0.0, (1 - cur / hwm) * 100)
 
             # IOC fill success rate last 1h: evaluated_opportunities with order_outcome
@@ -2737,7 +2741,7 @@ class OpportunityScanner:
                                         "fee_adjusted_edge": round((cal_prob - best_ask / 100.0) - (calculate_fee(1, best_ask, is_taker=True, fee_mult_taker=_pricecfg.fee_multiplier_taker, fee_mult_maker=_pricecfg.fee_multiplier_maker) / 100.0), 6),
                                         "position_size": LPNE_FIXED_CONTRACTS,
                                         "kelly_f": 0.0,
-                                        "drawdown_scaler": 1.0,
+                                        "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                         "vol_regime": vol_est["regime"],
                                         "balance_at_scan": self._get_balance_cached(),
                                         "strategy": "low_price_near_expiry",
@@ -2781,7 +2785,7 @@ class OpportunityScanner:
                                                 best_ask_source=best_ask_source,
                                                 position_size=LPNE_FIXED_CONTRACTS,
                                                 kelly_f=0.0,
-                                                drawdown_scaler=1.0,
+                                                drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                                 strategy="low_price_near_expiry",
                                                 product_type=window.get("product_type"),
                                                 **_oft_db, **_shadow_diag)
@@ -3529,7 +3533,7 @@ class OpportunityScanner:
                                             "fee_adjusted_edge": round(fee_adjusted_edge, 6),
                                             "position_size": _tm_size,
                                             "kelly_f": 0.0,
-                                            "drawdown_scaler": 1.0,
+                                            "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                             "vol_regime": vol_est["regime"],
                                             "balance_at_scan": self._get_balance_cached(),
                                             "spot_buffer_pct": round(_tm_buf_pct, 4),
@@ -4363,7 +4367,7 @@ class OpportunityScanner:
                                         "edge": round(_dc_assumed_p - best_ask / 100.0, 6),
                                         "position_size": _dc_position,
                                         "kelly_f": _dc_kelly_f,
-                                        "drawdown_scaler": 1.0,
+                                        "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                         "vol_regime": vol_est["regime"],
                                         "balance_at_scan": _dc_balance,
                                         "strategy": _dc_strat,
@@ -5518,7 +5522,7 @@ class OpportunityScanner:
                                         "fee_adjusted_edge": round(_bn_fee_edge, 6),
                                         "position_size": BRACKET_NO_FIXED_CONTRACTS,
                                         "kelly_f": 0.0,
-                                        "drawdown_scaler": 1.0,
+                                        "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                         "vol_regime": vol_est["regime"],
                                         "balance_at_scan": balance,
                                         "strategy": "bracket_no",
@@ -5555,7 +5559,7 @@ class OpportunityScanner:
                                                 breakeven_wr=_bn_no_cost / 100.0,
                                                 ask_depth=ask_depth, best_ask_source=best_ask_source,
                                                 position_size=BRACKET_NO_FIXED_CONTRACTS,
-                                                kelly_f=0.0, drawdown_scaler=1.0,
+                                                kelly_f=0.0, drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                                 strategy="bracket_no", old_system_prob=_old_system_prob,
                                                 product_type="weather", side="no",
                                                 wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
@@ -5611,7 +5615,7 @@ class OpportunityScanner:
                                         ask_depth=ask_depth, best_ask_source=best_ask_source,
                                         position_size=1,  # Fixed 1-contract sizing
                                         kelly_f=0.0,
-                                        drawdown_scaler=1.0,
+                                        drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                         strategy=strategy, old_system_prob=_old_system_prob,
                                         product_type="weather", side="no",
                                         wx_ensemble_mean=_shadow_extra.get("wx_ensemble_mean"),
@@ -7558,7 +7562,7 @@ class OpportunityScanner:
                                         vol_regime=item.get("vol_regime", "normal"),
                                         ask_depth=item.get("ask_depth"),
                                         best_ask_source=item.get("best_ask_source"),
-                                        position_size=WEATHER_NO_CONTRACT_COUNT, kelly_f=0.0, drawdown_scaler=1.0,
+                                        position_size=WEATHER_NO_CONTRACT_COUNT, kelly_f=0.0, drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                         strategy="weather_no_live",
                                         product_type="weather", side="no",
                                         raw_prob=1.0 - raw_prob if raw_prob is not None else None,
@@ -7594,7 +7598,7 @@ class OpportunityScanner:
                                     "fee_adjusted_edge": round(_wnl_assumed_edge, 6),
                                     "position_size": WEATHER_NO_CONTRACT_COUNT,
                                     "kelly_f": 0.0,
-                                    "drawdown_scaler": 1.0,
+                                    "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                     "vol_regime": item.get("vol_regime", "normal"),
                                     "balance_at_scan": item.get("balance"),
                                     "strategy": "weather_no_live",
@@ -7656,7 +7660,7 @@ class OpportunityScanner:
                                     ask_depth=item.get("ask_depth"),
                                     best_ask_source=item.get("best_ask_source"),
                                     position_size=HOURLY_NO_FIXED_CONTRACTS,
-                                    kelly_f=0.0, drawdown_scaler=1.0,
+                                    kelly_f=0.0, drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                     strategy="hourly_no_live",
                                     product_type="hourly", side="no",
                                     raw_prob=1.0 - raw_prob if raw_prob is not None else None,
@@ -7687,7 +7691,7 @@ class OpportunityScanner:
                                 "fee_adjusted_edge": no_fee_adj_edge,
                                 "position_size": HOURLY_NO_FIXED_CONTRACTS,
                                 "kelly_f": 0.0,
-                                "drawdown_scaler": 1.0,
+                                "drawdown_scaler": self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                 "vol_regime": item.get("vol_regime", "normal"),
                                 "balance_at_scan": item.get("balance"),
                                 "strategy": "hourly_no_live",

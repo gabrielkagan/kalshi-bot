@@ -148,6 +148,13 @@ def test_no_undocumented_bare_sum_pnl_in_repo():
     for py in REPO_ROOT.rglob('*.py'):
         if py.resolve() in allowlist_paths:
             continue
+        rel = py.relative_to(REPO_ROOT)
+        # Skip parallel-session worktree checkouts (`.claude/worktrees/`):
+        # they hold stale snapshots of `dashboard_snapshot.py` etc. from
+        # before the fee-subtraction sweep and aren't part of the deployed
+        # codebase. DD-4 (ClickUp 86b9z7tqa, 2026-05-15).
+        if rel.parts[:2] == ('.claude', 'worktrees'):
+            continue
         # Skip vendored / virtual env / build / test dirs.
         parts = py.parts
         if any(p in {'.venv', 'venv', '.tox', 'build', '__pycache__', 'tests'}

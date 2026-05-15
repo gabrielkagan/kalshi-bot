@@ -284,10 +284,16 @@ class TestTMSizing(unittest.TestCase):
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
         self.assertIn('"kelly_f": 0.0', tm_block)
 
-    def test_drawdown_scaler_one_in_candidate(self):
-        """TM candidate must set drawdown_scaler=1.0 (not affected by drawdown)."""
+    def test_drawdown_scaler_routes_through_real_sizer_in_candidate(self):
+        """TM candidate must route drawdown_scaler through the real PositionSizer
+        readonly accessor (post-DD-2, ClickUp 86b9z6y4k — was stubbed 1.0 pre-fix,
+        which poisoned `evaluated_opportunities.drawdown_scaler` analytics)."""
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
-        self.assertIn('"drawdown_scaler": 1.0', tm_block)
+        self.assertIn(
+            '"drawdown_scaler": self._sizer._drawdown_scaler_readonly('
+            'self._get_balance_cached() or 0)',
+            tm_block,
+        )
 
     def test_execution_time_re_derives_count(self):
         """_execute_tm_taker must re-derive count via tm_compute_contracts on price drift."""

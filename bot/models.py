@@ -1256,7 +1256,9 @@ class PositionSizer:
         return 1.0
 
     def _drawdown_scaler_readonly(self, balance_cents: int) -> float:
-        """Read-only version for dashboard display. Does NOT update HWM."""
+        """Read-only version for dashboard + DB-column display. Does NOT
+        update HWM. Halt-floor mirrors `_drawdown_scaler` (0.10 floor,
+        not 0.0 full halt) per ClickUp 86b9z6y4k."""
         hwm = self.get_rolling_hwm()
         if hwm <= 0:
             return 1.0
@@ -1266,7 +1268,7 @@ class PositionSizer:
             portfolio_balance = balance_cents
         ratio = portfolio_balance / hwm
         if ratio < DRAWDOWN_HALT_THRESHOLD:
-            return 0.0
+            return 0.10
         if ratio < DRAWDOWN_QUARTER_THRESHOLD:
             return 0.25
         if ratio < DRAWDOWN_HALF_THRESHOLD:
