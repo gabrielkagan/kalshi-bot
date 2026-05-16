@@ -70,8 +70,10 @@ class ConnPlan:
     which channels.
 
     Tuple-typed market_tickers + channels for value-equality + hashability
-    in test fixtures. Empty market_tickers is legal (operator may boot
-    the collector before D1.4 REST snapshot populates the ticker file).
+    in test fixtures. Empty market_tickers is legal (operator boot with
+    no COLLECTOR_TICKERS_FILE and a transient REST fetch failure, or
+    Kalshi legitimately reports zero open markets — the D1.4 refresher
+    repopulates on the next interval).
     """
     conn_id: str
     market_tickers: Tuple[str, ...]
@@ -135,8 +137,8 @@ class SubscriptionManager:
         dealt to conns round-robin (ticker[i] → conn[i % N]). The result
         is N ConnPlan instances with stable conn_ids ``A``, ``B``, … —
         even when ``tickers_by_tier`` is empty (so the operator boot path
-        still spins up N WS conns ready to accept subscribes once D1.4
-        REST snapshot lands).
+        still spins up N WS conns ready to accept subscribes — useful
+        for boots that race the first D1.4 REST refresh tick).
         """
         bins: List[List[str]] = [[] for _ in range(self._conn_count)]
         for tier_tickers in self._tickers_by_tier.values():

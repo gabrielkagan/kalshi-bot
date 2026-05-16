@@ -156,15 +156,17 @@ def test_collector_scaffolded_files_exist(filename: str):
 
     D1.2 (2026-05-16, ticket `86b9ypn66`) shipped writer.py + uploader.py
     + main_loop.py + ws_connection.py bodies. D1.3 (2026-05-16, ticket
-    `86b9ypn72`) shipped subscription_manager.py body. Remaining body
-    lands at D1.4 (rest_snapshot) + D1.5 (systemd wiring); canonical
-    mapping in ``collector/__init__.py``'s docstring.
+    `86b9ypn72`) shipped subscription_manager.py body. **D1.4 SHIPPED
+    2026-05-16, ticket `86b9ypn8r`** shipped rest_snapshot.py body
+    (REST-driven catalog refresh). D1.5 (systemd wiring) is the
+    remaining out-of-`collector/` body; canonical mapping in
+    ``collector/__init__.py``'s docstring.
     """
     path = COLLECTOR_DIR / filename
     assert path.is_file(), (
         f"{path} missing. D0.3 §5 source-tree shape locks 6 submodules + "
-        "__init__.py + __main__.py post-D1.1.5; remaining stub body "
-        "(rest_snapshot) lands at D1.4."
+        "__init__.py + __main__.py post-D1.1.5; D1.4 shipped the last "
+        "stub body (rest_snapshot)."
     )
 
 

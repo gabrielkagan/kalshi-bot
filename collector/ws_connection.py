@@ -102,9 +102,10 @@ class BronzeArchiver:
                 allocate writers, it only dispatches.
             subscribe_frames: sequence of pre-built subscribe payloads
                 (from ``SubscriptionManager.build_subscribe_frames``). May
-                be empty (e.g. when the operator boots the collector
-                before D1.4 REST snapshot populates the ticker file) —
-                the WS still connects, just receives no data frames.
+                be empty (boot raced the first D1.4 REST refresh tick,
+                OR Kalshi legitimately had zero open markets at boot) —
+                the WS still connects, just receives no data frames
+                until the refresher populates the set + force-reconnects.
             cmd_id_to_channel: mapping populated by
                 ``build_subscribe_frames`` so subscribe-acks
                 (``type=subscribed``/``type=ok``) bind ``sid`` → channel.
@@ -153,6 +154,61 @@ class BronzeArchiver:
                 on_session_end=self._on_session_end,
                 url=url,
             )
+
+    # ── Subscription updates (D1.4) ─────────────────────────────────────
+
+    def update_subscriptions(
+        self,
+        subscribe_frames: Sequence[Dict],
+        cmd_id_to_channel: Mapping[int, str],
+    ) -> None:
+        """Atomically replace the subscribe frames + cmd_id_to_channel map.
+
+        Called by ``RestSnapshotRefresher`` (via main_loop's on_refresh
+        callback) when the REST catalog refresh produces a new ticker
+        set. After ``update_subscriptions``, the caller should invoke
+        ``request_reconnect`` so the WSClient cycles its session, which
+        fires ``on_session_end`` (clears sid→channel) → ``on_session_start``
+        (dispatches the NEW subscribe_frames).
+
+        Safety model (R1-M4 from D1.4 adv round 1 — DO NOT overclaim):
+        the writes here use an ATOMIC-REPLACE pattern (full attribute
+        reassignment with the lock held). ``_on_session_start`` and
+        ``_handle_subscribe_ack`` read these attributes WITHOUT acquiring
+        ``self._lock`` — that is safe in the current code because:
+          - ``_on_session_start`` does ``for frame in self._subscribe_frames``:
+            the LOAD_ATTR is a single bytecode op and captures the
+            current tuple by reference; a subsequent rebind via
+            ``update_subscriptions`` cannot affect the already-captured
+            tuple (tuples are immutable).
+          - ``_handle_subscribe_ack`` does ``self._cmd_id_to_channel.get(cmd_id)``:
+            single attribute lookup + single dict.get call, both atomic
+            under the GIL.
+        Any future change that iterates these attributes across MULTIPLE
+        bytecode ops without snapshotting (e.g., a
+        ``for cmd_id, channel in self._cmd_id_to_channel.items()``
+        WITHOUT capturing to a local first) MUST acquire ``self._lock``
+        in the reader, OR copy the attribute to a local variable first
+        and iterate the local. The lock here also bounds the window
+        where ``_subscribe_frames`` (new) and ``_cmd_id_to_channel``
+        (old) could be in mixed states across a concurrent ``on_frame``;
+        an ack arriving against the new frames before the
+        cmd_id_to_channel update lands would just no-op (lookup
+        returns None → handle_subscribe_ack returns).
+        """
+        with self._lock:
+            self._subscribe_frames = tuple(subscribe_frames)
+            self._cmd_id_to_channel = dict(cmd_id_to_channel)
+
+    def request_reconnect(self) -> None:
+        """Delegate to the underlying ``WSClient.request_reconnect``.
+
+        D1.4 surface: lets main_loop force-cycle the WS session after a
+        ``update_subscriptions`` so the new tickers actually take effect
+        (Kalshi has no in-session add/remove API; we have to reconnect
+        and re-subscribe).
+        """
+        self._wire.request_reconnect()
 
     # ── Session callbacks ───────────────────────────────────────────────
 

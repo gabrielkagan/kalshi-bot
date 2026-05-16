@@ -1,6 +1,7 @@
-"""D1.2 + D1.3 sister-doc lockstep — break the prose-drift cycle proactively (L97 + L99).
+"""D1.2 + D1.3 + D1.4 sister-doc lockstep — break the prose-drift cycle proactively (L97 + L99).
 
-Tickets `86b9ypn66` (D1.2, 2026-05-16) + `86b9ypn72` (D1.3, 2026-05-16).
+Tickets `86b9ypn66` (D1.2) + `86b9ypn72` (D1.3) + `86b9ypn8r` (D1.4),
+all 2026-05-16.
 Created post-D1.2 R2 adversarial review which surfaced 4 MAJOR findings
 all in the same drift class: tracked sister docs still saying
 "D1.2-D1.5" / "raises NotImplementedError" / "land at D1.2" after D1.2
@@ -79,6 +80,7 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "collector" / "writer.py",
     REPO_ROOT / "collector" / "uploader.py",
     REPO_ROOT / "collector" / "subscription_manager.py",
+    REPO_ROOT / "collector" / "rest_snapshot.py",
     REPO_ROOT / "kalshi_wire" / "__init__.py",
     REPO_ROOT / "kalshi_wire" / "auth.py",
     REPO_ROOT / "kalshi_wire" / "ws_client.py",
@@ -88,7 +90,9 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_collector_ws_consumes_wire.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_subscription_manager.py",
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_on_session_start.py",
+    REPO_ROOT / "tests" / "contracts" / "test_collector_rest_snapshot.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_main_loop_wireup.py",
+    REPO_ROOT / "tests" / "integration" / "test_collector_rest_snapshot_refresh_cycle.py",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -135,6 +139,74 @@ STALE_PATTERNS_POST_D1_3: list[str] = [
     # Stale single-conn no-tier narrative — D1.3 generalized to multi-conn.
     "single-conn no-tier shape",
 ]
+
+# Patterns that are FALSE post-D1.4 SHIPPED. PARANOID coverage at day 1
+# per L99 lesson — extending the pattern set proactively rather than
+# letting R-N rounds discover blind spots.
+#
+# Note: phrases that exclusively reference D1.5+ work (systemd deploy,
+# operator decisions, etc.) MUST NOT be added here — those are still
+# legitimately forward-looking after D1.4. Only patterns that became
+# false at the moment D1.4 shipped go here.
+STALE_PATTERNS_POST_D1_4: list[str] = [
+    "D1.4 target",
+    "D1.4 will add",
+    "D1.4 will replace",
+    "D1.4 (rest_snapshot, ",  # only-D1.5 unblocked phrasing post-D1.4
+    "land at D1.4 (",
+    "until D1.4 lands",
+    "until D1.4 REST snapshot",
+    "until D1.4 subscription_manager",  # belt-and-suspenders — was D1.3
+    "after D1.4 lands",
+    "future D1.4",
+    "lands at D1.4",
+    "D1.4 implementation target",
+    "D1.4 replaces this",
+    # Stub-fossil module docstring (rest_snapshot.py had a stub pre-D1.4).
+    "REST-fallback redundancy for catalog refresh",
+    "D1.4 (REST snapshot, 86b9ypn8r)  ← NEXT",  # pickup-chain phrasing
+    # Stale single-file-pending narrative — post-D1.4 the rest_snapshot
+    # body shipped; the "only rest_snapshot remains" framing is no
+    # longer accurate as the pending-Bit description.
+    "only rest_snapshot remains",
+    "only D1.4 remains",
+    # R1-M3 (D1.4 R1 adv finding): the original PARANOID set used
+    # literal substring matching but missed parenthetical forms like
+    # ``D1.4 (REST snapshot) will replace`` and ``before D1.4 REST
+    # snapshot populates``. Extending coverage with the specific
+    # phrases the R1 reviewer found across 3 collector source files.
+    "D1.4 (REST snapshot) will replace",
+    "D1.4 (REST snapshot) will populate",
+    "D1.4 (REST snapshot) will add",
+    "before D1.4 REST snapshot",
+    "once D1.4 REST snapshot",
+    "wait for D1.4 REST snapshot",
+    "D1.4 REST snapshot populates",
+    "D1.4 REST snapshot lands",
+    # Phrases that explicitly tag the *production-default* as still being
+    # the file seam are stale post-D1.4 (REST is the new default).
+    "operator points COLLECTOR_TICKERS_FILE at",
+    "COLLECTOR_TICKERS_FILE is the only seam",
+    "no production file at it",
+    # R2-M1/R2-Mn1/R3-M1 meta-pattern: when R1-M4 retracted the
+    # "lock-protected against in-flight on_frame dispatch" overclaim at
+    # the canonical docstring, sister surfaces (CLAUDE.md + bot_layout.md
+    # + _replan_for_archivers docstring + the test-file module docstring)
+    # echoed the now-retracted claim. Encode the retracted phrases as
+    # ratchet patterns so a future Bit reintroducing them fires at the
+    # contract tier instead of waiting for an adversarial round.
+    "lock-protected atomic swap",
+    "lock-protected against in-flight on_frame dispatch",
+    # R3-M2 echo of R1-M2 retract: test/doc surfaces saying fetch
+    # returns "empty ticker list / empty / partial map" on failure
+    # paths are stale post-R1-M2 (fetch returns None on failure).
+    "returns an empty ticker list",
+    "empty page returns an empty",
+    "return an empty / partial",
+    "return an empty or partial",
+    "return an empty/partial",
+]
+
 
 # The "raises NotImplementedError" mention is only allowed in
 # tests/  + .md histories. In the live collector/ source files, no
@@ -228,6 +300,48 @@ def test_collector_and_kalshi_wire_source_files_have_no_notimplemented_post_d1_2
     assert not findings, (
         f"Live collector/kalshi_wire source still raises NotImplementedError post-D1.2:\n"
         + "\n".join(findings)
+    )
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D1_4)
+def test_no_post_d1_4_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D1.4-pending phrase after D1.4 shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.4 (REST snapshot
+    body + RestSnapshotRefresher + main_loop hourly refresh wiring).
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.4-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed D1.3): lockstep ratchets "
+        "must have PARANOID pattern coverage from day-1. If THIS pattern "
+        "is a legitimate D1.5+ forward-looking phrase, narrow it (e.g., "
+        "add a qualifier that won't match historical D1.4 prose)."
+    )
+
+
+def test_d1_4_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks D1.4
+    as SHIPPED. Catches the inverse failure mode where staleness patterns
+    pass (no D1.4 mention at all) but the docs haven't been updated."""
+    shipped_re = re.compile(
+        r"D1\.4\s+SHIPPED|D1\.4.*shipped|shipped.*D1\.4",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.4 SHIPPED — staleness ratchets clean "
+        "but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )
 
 
