@@ -28,7 +28,7 @@ Path-literal refs (>= 9 sites):
   - tests/contracts/test_call_sites.py:32 (parametrize list — opens file)
   - tests/integration/test_regression.py:561 (parametrize list — opens file)
   - .github/workflows/whitepaper.yml (path trigger — verify)
-  - TESTING_STRATEGY.md:50,57 (prose; cosmetic, low priority)
+  - docs/testing-strategy.md:50,57 (prose; cosmetic, low priority)
 
 Sister Sprint 10.1 sub-moves still pending after this Bit:
   - 10.1c: weather_engine.py → bot/engines/weather_engine.py
