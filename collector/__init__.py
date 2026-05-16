@@ -27,12 +27,13 @@ Canonical Bit ⇄ submodule mapping (single source of truth):
          BronzeArchiver.run() body (SHIPPED 2026-05-16, ticket
          ``86b9ypn66``). The "bronze data plumbing" is now complete —
          envelopes from kalshi_wire flow through BronzeArchiver → writer
-         → rotation → uploader → S3. NOTE: until D1.3 subscription
-         manager lands, no subscribe frames are sent, so the WS connects
-         but no data flows; first-bronze-flow is D1.3's AC.
+         → rotation → uploader → S3.
   D1.3 — subscription_manager.py (per-tier WS subscription assignment;
-         D0.2 F1 NFL Sunday peak-load soak ack). FIRST Bit where bronze
-         files actually populate end-to-end.
+         D0.2 F1 NFL Sunday peak-load soak ack) + BronzeArchiver.on_session_start
+         dispatch + sid→channel binding + main_loop multi-conn fan-out
+         (SHIPPED 2026-05-16, ticket ``86b9ypn72``). FIRST Bit where bronze
+         files actually populate end-to-end — R1-C3 acceptance criterion
+         deferred from D1.2 closed here.
   D1.4 — rest_snapshot.py (REST-fallback redundancy for catalog refresh)
   D1.5 — systemd unit + collector-start.sh wiring (requires-approval).
          3 D0.3 §12 operator decisions still pending: lifecycle deviation,

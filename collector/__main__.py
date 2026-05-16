@@ -3,10 +3,12 @@
 ENTRYPOINT-SHIM DISCIPLINE (mirrors bot/__main__.py sacred-boundary rule):
 this file contains NO business logic. Body lives in
 ``collector/main_loop.py``. **D1.2 SHIPPED 2026-05-16 (ticket
-`86b9ypn66`)**: ``run()`` orchestrates writer + uploader + archiver in
-the single-conn no-tier shape; invoking ``python -m collector`` boots
-the bronze pipeline. (Note: WS connects but no data frames flow until
-D1.3 subscription_manager lands ``on_session_start`` subscribe wiring.)
+`86b9ypn66`)** + **D1.3 SHIPPED 2026-05-16 (ticket `86b9ypn72`)**:
+``run()`` orchestrates SubscriptionManager + per-conn writers +
+archivers + uploader in multi-conn per-channel shape; invoking
+``python -m collector`` boots the bronze pipeline. First-bronze-flow
+landed at D1.3 — ``on_session_start`` dispatches the pre-built
+subscribe frames assembled by ``collector/subscription_manager.py``.
 
 ## Import ordering (load-bearing post-D1.2)
 
