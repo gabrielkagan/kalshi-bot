@@ -204,7 +204,7 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | WEATHER_KELLY_FRACTION | 0.25 | Quarter-Kelly |
 | WEATHER_MIN_SECONDS_BEFORE_CLOSE | 3600 | At least 1 hour before settlement |
 | WEATHER_MAX_SECONDS_BEFORE_CLOSE | 86400 | Weather settles daily — always eligible |
-| WEATHER_NO_SIDE_LIVE | True | LIVE — NO 39-40c, STC ≥ 16h, 1-contract |
+| WEATHER_NO_SIDE_LIVE | False | KILLED 2026-05-16 (ce8e2d2). Lifetime n=167, 38.3% WR vs 70% assumed prior (Wilson 95% CI [23.6%, 47.0%]) empirically falsified. Near-ATM zone (NO 39-40c ↔ YES 60-61c) is market-maker zone with no edge. `bracket_no_live` (far-ITM NO 4-12c, 91.7% WR) is where NO edge actually lives. Re-research underway: see ClickUp Weather Initiative folder `90149436180`. |
 | WEATHER_NO_MIN_PRICE | 39 | Tightened May 2 from 37 — 37c/38c sub-bands bleeding (25%/14.3% WR), 39-40c band profitable |
 
 ## Calibrator (P2 cal_mlp)
