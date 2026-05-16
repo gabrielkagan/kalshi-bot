@@ -697,7 +697,9 @@ def test_bot_impl_reexports_discover_active_windows():
 
 def test_no_settlement_no_impl_toplevel_contract_added():
     """SettlementTracker is a clean leaf — no `settlement-no-impl-toplevel` carve-out needed.
-    Net contracts stays at 5 post-Bit-9.2."""
+    Net contracts stays at 5 (bot-side) post-Bit-9.2; D1.1 (2026-05-16) added
+    the unrelated `collector-no-bot` 6th contract for the Data Corpus
+    initiative, so the live count assertion below is now 6."""
     config = configparser.ConfigParser()
     config.read(IMPORTLINTER_INI)
     contracts = [s for s in config.sections() if s.startswith("importlinter:contract:")]
@@ -706,14 +708,18 @@ def test_no_settlement_no_impl_toplevel_contract_added():
         "Unexpected `settlement-no-impl-toplevel` contract added — SettlementTracker is a "
         "clean leaf (no late-binding required); the contract should NOT exist."
     )
-    # Sanity: 5 contracts total post-Bit-9.3-iii.c (2026-05-11) — engines-no-impl
-    # was retired because bot/_impl.py was DELETED (forbidden_modules list would
-    # be empty, which import-linter rejects as malformed). Post-Bit-9.3-iii.a was 6
-    # (engines-no-impl, fetchers-no-engines, feeds-no-engines, helpers-leaf,
-    # bot-no-torch, bot-no-pandas); now 5.
-    assert len(contracts) == 5, (
-        f".importlinter has {len(contracts)} contracts; expected 5 "
-        f"post-Bit-9.3-iii.c. Contracts present: {sorted(contract_names)}"
+    # Sanity: 6 contracts total post-D1.1 (2026-05-16). The 5 bot-side
+    # contracts post-Bit-9.3-iii.c (fetchers-no-engines, feeds-no-engines,
+    # helpers-leaf, bot-no-torch, bot-no-pandas — engines-no-impl was
+    # retired when bot/_impl.py was DELETED) plus D1.1's `collector-no-bot`
+    # (Data Corpus initiative, ticket 86b9ypn49) for the new top-level
+    # collector/ sibling package. This test's intent — "no
+    # settlement-no-impl-toplevel carve-out was added" — is unchanged;
+    # only the unrelated 6th contract bumps the count.
+    assert len(contracts) == 6, (
+        f".importlinter has {len(contracts)} contracts; expected 6 "
+        f"post-D1.1 (5 bot-side + collector-no-bot). Contracts present: "
+        f"{sorted(contract_names)}"
     )
 
 

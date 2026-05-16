@@ -60,6 +60,19 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   runtime-config view for bot/snapshots/dashboard_snapshot.py +
   bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12; Bit 12.1
   2026-05-12 relocated `config.py` from repo root → `bot/config.py`).
+- **`collector/__main__.py` is the entrypoint shim for the Data Corpus
+  collector** — a NEW top-level Python package SIBLING to `bot/`
+  (D1.1 SHIPPED 2026-05-16, ticket `86b9ypn49`). Same sacred-boundary
+  discipline as `bot/__main__.py`: no business logic in the shim, body
+  lives in `collector/<module>.py` (`main_loop.py`, `ws_connection.py`,
+  `rest_snapshot.py`, `writer.py`, `uploader.py`, `subscription_manager.py`,
+  `auth.py`). Structural bot-isolation contract: `collector/` has ZERO
+  `bot.*` imports, enforced by the `[importlinter:contract:collector-no-bot]`
+  forbidden contract + AST defense-in-depth in
+  `tests/contracts/test_collector_no_bot_imports.py`. See
+  `kb/decisions/data-corpus-architecture.md` for the bronze/silver/gold
+  architecture. D1.1 is scaffolding-only — `collector/main_loop.py::run()`
+  raises NotImplementedError; real implementations land at D1.2-D1.5.
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
   Direct `import torch` / `import pandas` anywhere under `bot/` is
   blocked by `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`).

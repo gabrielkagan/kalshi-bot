@@ -241,11 +241,18 @@ bot/snapshots/supabase_sync.py                 -- pushes snapshots to Supabase R
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
 start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + `python -m bot`)
+collector/                     -- Data Corpus collector (NEW top-level SIBLING to bot/, D1.1 SHIPPED 2026-05-16, ticket 86b9ypn49)
+collector/__main__.py          -- entrypoint shim, mirrors bot/__main__.py sacred-boundary rule (`python -m collector`)
+collector/{main_loop,ws_connection,rest_snapshot,writer,uploader,subscription_manager,auth}.py
+                               -- scaffolding stubs at D1.1; real implementations land across D1.2-D1.5 per the Data Corpus architecture decision (D0.3, local-only kb/)
+collector-start.sh             -- wrapper for D1.5 systemd unit ops/kalshi-collector.service (parallel to start.sh; `python -m collector`)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main
 .github/workflows/whitepaper.yml -- auto-generate README stats + whitepaper PDFs
 ```
+
+The `collector/` package has ZERO `bot.*` imports — structural bot-isolation contract enforced by the `collector-no-bot` `.importlinter` forbidden contract. Off-switch in either direction (`systemctl stop kalshi-{bot,collector}`) leaves the other unaffected.
 
 ### Journals (gitignored)
 

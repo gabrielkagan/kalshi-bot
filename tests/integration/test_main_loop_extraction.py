@@ -40,7 +40,9 @@ Path-A (METHOD-BODY late-binding for ALL bot._impl access):
   at bot/main_loop.py module scope (bot/order_flow.py is a clean leaf).
 
   No new .importlinter carve-out needed — bot/main_loop.py has no
-  top-level bot._impl edge in the import graph. Net contracts stays at 5.
+  top-level bot._impl edge in the import graph. Net contracts stays at 5
+  (bot-side); D1.1 (2026-05-16) added an unrelated 6th contract
+  `collector-no-bot` for the Data Corpus initiative.
 
 Cross-module access patterns preserved:
   - `_telegram_state._TELEGRAM` (Bit 8.1 path-A++; ~11 read sites + 1 write
@@ -756,7 +758,10 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     """MainLoop uses METHOD-BODY late-binding for bot._impl access (Path-A) — no
     `main_loop-no-impl-toplevel` `.importlinter` carve-out is needed because
     bot/main_loop.py has zero top-level bot._impl edge in the import graph.
-    Net contracts stays at 5 post-Bit-9.3 (mirrors Bit 9.2's clean leaf shape)."""
+    Net contracts stays at 5 (bot-side) post-Bit-9.3 (mirrors Bit 9.2's clean
+    leaf shape); D1.1 (2026-05-16) added the unrelated `collector-no-bot` 6th
+    contract for the Data Corpus initiative, so the live count assertion
+    below is now 6."""
     config = configparser.ConfigParser()
     config.read(IMPORTLINTER_INI)
     contracts = [s for s in config.sections() if s.startswith("importlinter:contract:")]
@@ -768,12 +773,16 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     assert "main_loop-no-impl-toplevel" not in contract_names, (
         "Unexpected `main_loop-no-impl-toplevel` contract added"
     )
-    # Sanity: 5 contracts post-Bit-9.3-iii.c (2026-05-11). engines-no-impl
-    # was retired because bot/_impl.py was DELETED (its forbidden_modules list
-    # would be empty, which import-linter rejects). Remaining:
-    # fetchers-no-engines, feeds-no-engines, helpers-leaf, bot-no-torch, bot-no-pandas.
-    assert len(contracts) == 5, (
-        f"Expected 5 .importlinter contracts post-Bit-9.3-iii.c; found {len(contracts)}: {contract_names}"
+    # Sanity: 6 contracts post-D1.1 (2026-05-16). The 5 bot-side contracts
+    # post-Bit-9.3-iii.c (fetchers-no-engines, feeds-no-engines, helpers-leaf,
+    # bot-no-torch, bot-no-pandas — engines-no-impl was retired when bot/_impl.py
+    # was DELETED) plus D1.1's `collector-no-bot` (Data Corpus initiative,
+    # ticket 86b9ypn49) for the new top-level collector/ sibling package.
+    # This test's intent — "no main-loop-no-impl-toplevel carve-out was added" —
+    # is unchanged; only the unrelated 6th contract bumps the count.
+    assert len(contracts) == 6, (
+        f"Expected 6 .importlinter contracts post-D1.1 (5 bot-side + collector-no-bot); "
+        f"found {len(contracts)}: {sorted(contract_names)}"
     )
 
 

@@ -122,7 +122,7 @@ ml = [
     "pyarrow>=14,<22",
 ]
 
-# Scope setuptools' flat-layout discovery to the bot/ package only.
+# Scope setuptools' flat-layout discovery to the bot/ + collector/ packages.
 # Without `include`, setuptools >=64 walks the repo root and finds 9 sibling
 # top-level Python-identifier directories besides bot/ (agent_docs/, analysis/,
 # data/, kb/, models/, ops/, reports/, research/, templates/ — none have
@@ -134,15 +134,20 @@ ml = [
 # that flat-layout discovery "picks up bot/ correctly" only held in a
 # pristine bot-only repo; this repo has many sibling dirs.
 #
-# `include = ["bot", "bot.*"]`: fnmatch-matches the parent package + every
-# subpackage (Bit 2.1b stubs + Sprint 3+ additions). Both patterns are
-# needed — `bot.*` requires a literal dot, so it doesn't match the bare `bot`.
+# `include = ["bot", "bot.*", "collector", "collector.*"]`: fnmatch-matches
+# both parent packages + every subpackage. The "bot.*" / "collector.*" patterns
+# require a literal dot so they don't match the bare parent names — both
+# patterns are needed for each package. D1.1 (ticket 86b9ypn49, 2026-05-16)
+# added the collector entries when the Data Corpus initiative shipped the
+# collector/ top-level package per kb/decisions/data-corpus-architecture.md §5
+# (sibling to bot/, NOT a subpackage; zero bot.* imports per the
+# `collector-no-bot` .importlinter contract).
 # `namespaces = false`: defense-in-depth — gates discovery on __init__.py
 # existence so a future include-pattern broadening can't silently sweep in
 # a PEP 420 namespace dir.
-# Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot.
+# Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot_and_collector.
 [tool.setuptools.packages.find]
-include = ["bot", "bot.*"]
+include = ["bot", "bot.*", "collector", "collector.*"]
 namespaces = false
 
 [tool.pytest.ini_options]

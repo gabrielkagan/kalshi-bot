@@ -97,6 +97,15 @@ EXPECTED_CONTRACTS = (
     # specifically; these contracts generalize to ALL bot.* modules.
     "bot-no-torch",
     "bot-no-pandas",
+    # D1.1 (ticket 86b9ypn49, 2026-05-16) — Data Corpus collector/
+    # scaffolding. Per kb/decisions/data-corpus-architecture.md §5 +
+    # §10 mechanism #5, the new top-level `collector/` package contains
+    # zero bot.* imports — structural enforcement of the
+    # bot-isolation contract ("collector failure ⇒ bot keeps trading;
+    # bot failure ⇒ collector keeps capturing"). The shape pin here
+    # (type=forbidden) pairs with the dedicated negative-injection
+    # mutation test in tests/contracts/test_collector_no_bot_imports.py.
+    "collector-no-bot",
 )
 
 # bot.constants is the only allowed internal dep for the helpers leaf.
@@ -221,15 +230,32 @@ def test_importlinter_file_exists():
     )
 
 
-def test_importlinter_root_package_is_bot():
-    """``root_package = bot`` anchors the grimp graph.
+def test_importlinter_root_packages_include_bot():
+    """``[importlinter].root_packages`` (plural, post-D1.1) lists ``bot``.
 
-    Without this header, the contracts have no source tree to walk.
+    Pre-D1.1 (2026-05-16) this was the singular ``root_package = bot`` form.
+    D1.1 (ticket 86b9ypn49) flipped to plural to admit the sibling
+    ``collector/`` top-level package — without the flip, grimp's import
+    graph would NOT walk collector/ and the `collector-no-bot` forbidden
+    contract would silently no-op.
+
+    The dedicated D1.1 contract test
+    (``tests/contracts/test_collector_no_bot_imports.py
+    ::test_importlinter_root_packages_is_plural_form``) carries the
+    additional negative claim (singular key MUST be absent) + the
+    `collector` membership pin. This test stays focused on the bot
+    side of the plural-list invariant — bot MUST still be present
+    after the shape change.
     """
     cp = _read_importlinter()
     assert cp.has_section("importlinter"), "missing top-level [importlinter] section"
-    assert cp.get("importlinter", "root_package", fallback=None) == "bot", (
-        ".importlinter [importlinter].root_package must be `bot`."
+    raw = cp.get("importlinter", "root_packages", fallback="")
+    listed = [line.strip() for line in raw.splitlines() if line.strip()]
+    assert "bot" in listed, (
+        f".importlinter [importlinter].root_packages must include `bot`; "
+        f"got {listed}. The 6 bot.* contracts (fetchers-no-engines, "
+        "feeds-no-engines, helpers-leaf, bot-no-torch, bot-no-pandas, "
+        "and the historical retired set) all require grimp to walk bot/."
     )
 
 
