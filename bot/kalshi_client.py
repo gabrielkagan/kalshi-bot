@@ -4,15 +4,25 @@ Extracted from `bot/_impl.py` in Sprint 4 Bit 4.3 (2026-05-08). The class
 is re-imported into `bot/_impl.py` so `bot.KalshiClient`, `bot._impl.KalshiClient`,
 and `bot.kalshi_client.KalshiClient` are all the same class object.
 
-Imports are deliberate: this module pulls only stdlib + `requests` +
-`cryptography` + the constants/breakers needed to drive class-body decoration
-and method bodies. It does NOT import `bot._impl` (would cause a circular
-import — `_impl` imports this module).
+D1.1.5 (ticket 86b9zdhz2, 2026-05-16): RSA-PSS-SHA256 sign + PEM load
+DELEGATED to the shared transport library `kalshi_wire/auth.py` per the
+2026-05-16 AMENDMENT to ``kb/decisions/data-corpus-architecture.md`` §5.
+Pre-D1.1.5 the inline ``padding.PSS(...)`` construction lived here at
+lines 60-72; post-D1.1.5 the cryptographic primitive moves to
+``kalshi_wire.auth.sign``. Byte-equivalence is pinned by
+``tests/contracts/test_kalshi_wire_auth.py::test_sign_parity_with_bot_kalshi_client``.
+The class retains all its rate-limiting + circuit-breaker wrapper logic
++ request/response handling — only the cryptographic step delegates.
+
+Imports are deliberate: stdlib + ``requests`` + the constants/breakers
+needed to drive class-body decoration and method bodies + the
+``kalshi_wire.auth`` delegation surface. The ``cryptography`` library
+imports moved to ``kalshi_wire.auth``. Does NOT import ``bot._impl``
+(deleted in Bit 9.3-iii.c).
 """
 
 from __future__ import annotations
 
-import base64
 import datetime
 import logging
 import threading
@@ -21,8 +31,6 @@ from datetime import timezone
 from typing import Dict, List, Optional
 
 import requests
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 
 from bot.constants import (
     API_PATH_PREFIX,
@@ -37,6 +45,8 @@ from bot.helpers.breakers import (
     _kalshi_series_key,
 )
 from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # Sprint 10.5a (2026-05-11)
+from kalshi_wire.auth import load_private_key as _wire_load_private_key
+from kalshi_wire.auth import sign as _wire_sign
 
 
 class KalshiClient:
@@ -50,26 +60,22 @@ class KalshiClient:
         self._write_timestamps: List[float] = []
         self._rate_lock = threading.Lock()
 
-    # ── Auth ──────────────────────────────────────────────────────────────
+    # ── Auth (D1.1.5: delegates to kalshi_wire.auth) ──────────────────────
 
     @staticmethod
     def _load_private_key(key_path: str):
-        with open(key_path, "rb") as f:
-            return serialization.load_pem_private_key(f.read(), password=None)
+        """Load a PEM-encoded private key (delegates to ``kalshi_wire.auth``)."""
+        return _wire_load_private_key(key_path)
 
     def _create_signature(self, timestamp_ms: str, method: str, path: str) -> str:
-        """Sign timestamp_ms + METHOD + path (without query params) using RSA-PSS."""
-        path_no_query = path.split("?")[0]
-        message = f"{timestamp_ms}{method}{path_no_query}".encode("utf-8")
-        sig = self.private_key.sign(
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.DIGEST_LENGTH,
-            ),
-            hashes.SHA256(),
-        )
-        return base64.b64encode(sig).decode("utf-8")
+        """Sign timestamp_ms + METHOD + path (without query params) using RSA-PSS.
+
+        D1.1.5: delegates to ``kalshi_wire.auth.sign``. The wire library
+        owns the byte-level RSA-PSS-SHA256 construction; this method
+        retains its public signature for compatibility with the existing
+        callers in ``_request``.
+        """
+        return _wire_sign(self.private_key, timestamp_ms, method, path)
 
     # ── Rate Limiting ─────────────────────────────────────────────────────
 

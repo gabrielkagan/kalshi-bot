@@ -73,7 +73,10 @@ EXPECTED_SUBMODULES = (
     "writer.py",
     "uploader.py",
     "subscription_manager.py",
-    "auth.py",
+    # D1.1.5 Phase 4 (2026-05-16, ticket 86b9zdhz2): collector/auth.py
+    # was DELETED — auth now flows through kalshi_wire.auth per the
+    # 2026-05-16 §5 AMENDMENT ("two sides of the same coin"). The
+    # scaffolding source-tree shape goes from 9 → 8 files.
 )
 
 
@@ -375,9 +378,15 @@ def test_lint_imports_fails_when_collector_imports_bot(tmp_path: Path):
     cmd = _require_lint_imports()
 
     fixture_root = tmp_path / "project"
-    # Copy what grimp needs: bot/, collector/, and .importlinter at root.
+    # Copy what grimp needs: bot/, collector/, kalshi_wire/, and .importlinter
+    # at root. D1.1.5 (ticket 86b9zdhz2, 2026-05-16) added kalshi_wire to
+    # the .importlinter `root_packages` plural list; without copying it
+    # into the fixture, lint-imports errors with "Could not find package
+    # 'kalshi_wire' in your Python path" before it can evaluate any
+    # contract — masking the actual collector-no-bot enforcement.
     shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
     shutil.copytree(COLLECTOR_DIR, fixture_root / "collector")
+    shutil.copytree(REPO_ROOT / "kalshi_wire", fixture_root / "kalshi_wire")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     # Inject a real collector→bot import edge into main_loop.py.

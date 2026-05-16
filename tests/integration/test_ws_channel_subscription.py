@@ -33,7 +33,6 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import AsyncMock
 import bot.feeds  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -41,6 +40,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "bot/feeds/kalshi.py")  # Bit 4.5b: KalshiFeed moved here from bot/_impl.py
+
+
+class _MockWire:
+    """Stand-in for ``kalshi_wire.ws_client.WSClient`` (D1.1.5 Phase 3b).
+    Captures send_frame payloads as dicts (one per call).
+    """
+    def __init__(self):
+        self.sent = []
+        self.send_frame_raises = None
+        self.reconnect_requested = False
+        self._connected_state = False
+        self._last_msg_ts = 0.0
+
+    def send_frame(self, payload):
+        if self.send_frame_raises is not None:
+            raise self.send_frame_raises
+        self.sent.append(payload)
+
+    def request_reconnect(self):
+        self.reconnect_requested = True
+
+    @property
+    def is_connected(self):
+        return self._connected_state
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 def _make_feed():
@@ -64,10 +93,6 @@ def _make_feed():
     f._delta_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
-    f._ws_last_seq = {}
-    f._ws_seq_gap_logs = 0
-    f._ws_seq_gap_max_logs = 0
-    f._ws_last_msg_ts = 0.0
     f._ws_connect_ts = time.time()
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
@@ -75,11 +100,12 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
     f._raw_log_count = 0
     f._raw_log_capped_logged = False
     f._lock = threading.Lock()
+    # D1.1.5 Phase 3b: transport moved into kalshi_wire.ws_client.WSClient.
+    f._wire = _MockWire()
     return f
 
 
@@ -158,7 +184,7 @@ class TestTypeOkRecognizedAsAck(unittest.TestCase):
 # B. Unsubscribe schema: delete_markets, NOT unsubscribe with sids
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
+class TestUnsubscribeUsesDeleteMarkets(unittest.TestCase):
     """Phase 2.10 P0: unsubscribe ONE ticker MUST use
     `update_subscription` with `action: delete_markets`. Pre-fix
     we sent `cmd: unsubscribe` with `sids: [sid]`, which Kalshi
@@ -167,14 +193,13 @@ class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
     to be masked by Phase 2.6's per-ticker sid model not
     populating most tickers."""
 
-    async def test_unsub_sends_update_subscription_delete_markets(self):
+    def test_unsub_sends_update_subscription_delete_markets(self):
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 2  # channel sid
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "BTC1")
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_unsubscribe("BTC1")
+        self.assertEqual(len(f._wire.sent), 1)
+        sent = f._wire.sent[-1]
         self.assertEqual(sent["cmd"], "update_subscription")
         self.assertEqual(
             sent["params"]["action"], "delete_markets",
@@ -193,17 +218,16 @@ class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
             "sids array must NOT be present — that's the "
             "cancel-whole-subscription mode.")
 
-    async def test_unsub_skips_when_sid_unknown(self):
+    def test_unsub_skips_when_sid_unknown(self):
         """Subscribe in flight (no sid yet) — can't send
         delete_markets without sid. Skip; let resub recover."""
         f = _make_feed()
         f._subscribed_tickers.add("NEW1")
         # No entry in _ticker_to_sid.
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "NEW1")
+        f._send_ob_unsubscribe("NEW1")
         # No send (or skip — must NOT use the dangerous sids API).
-        if ws.send.await_count > 0:
-            sent = json.loads(ws.send.await_args.args[0])
+        if len(f._wire.sent) > 0:
+            sent = f._wire.sent[-1]
             self.assertNotIn(
                 "sids", sent.get("params", {}),
                 "Even in fallback, MUST NOT use sids — would nuke "
@@ -249,7 +273,9 @@ class TestAstUnsubscribeUsesDeleteMarkets(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
+                # D1.1.5 Phase 3b: _send_ob_unsubscribe is now SYNC
+                # (frames enqueue via self._wire.send_frame).
+                if (isinstance(fn, ast.FunctionDef)
                         and fn.name == "_send_ob_unsubscribe"):
                     body_src = ast.unparse(fn)
                     self.assertIn(
@@ -264,7 +290,7 @@ class TestAstUnsubscribeUsesDeleteMarkets(unittest.TestCase):
         self.fail("_send_ob_unsubscribe not found")
 
 
-class TestDeleteMarketsLeavesOtherTickersIntact(unittest.IsolatedAsyncioTestCase):
+class TestDeleteMarketsLeavesOtherTickersIntact(unittest.TestCase):
     """R-review A3: removing one ticker via delete_markets MUST
     leave other tickers on the same channel sid functional. Phase
     2.10's premise is that all tickers share one channel sid;
@@ -272,17 +298,16 @@ class TestDeleteMarketsLeavesOtherTickersIntact(unittest.IsolatedAsyncioTestCase
     OTHER tickers, that would be the latent disaster Phase 2.10
     was meant to prevent."""
 
-    async def test_other_tickers_keep_their_sid(self):
+    def test_other_tickers_keep_their_sid(self):
         f = _make_feed()
         # Multiple tickers on shared channel sid=2.
         f._subscribed_tickers.update({"BTC1", "ETH1", "SOL1"})
         f._ticker_to_sid["BTC1"] = 2
         f._ticker_to_sid["ETH1"] = 2
         f._ticker_to_sid["SOL1"] = 2
-        ws = AsyncMock()
         # Remove just BTC1.
-        await f._send_ob_unsubscribe(ws, "BTC1")
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_unsubscribe("BTC1")
+        sent = f._wire.sent[-1]
         self.assertEqual(sent["params"]["action"], "delete_markets")
         self.assertEqual(sent["params"]["market_tickers"], ["BTC1"])
         # BTC1 popped from local map (matches what Kalshi did).

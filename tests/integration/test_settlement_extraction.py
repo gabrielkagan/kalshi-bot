@@ -708,17 +708,20 @@ def test_no_settlement_no_impl_toplevel_contract_added():
         "Unexpected `settlement-no-impl-toplevel` contract added — SettlementTracker is a "
         "clean leaf (no late-binding required); the contract should NOT exist."
     )
-    # Sanity: 6 contracts total post-D1.1 (2026-05-16). The 5 bot-side
+    # Sanity: 8 contracts total post-D1.1.5 (2026-05-16). The 5 bot-side
     # contracts post-Bit-9.3-iii.c (fetchers-no-engines, feeds-no-engines,
     # helpers-leaf, bot-no-torch, bot-no-pandas — engines-no-impl was
     # retired when bot/_impl.py was DELETED) plus D1.1's `collector-no-bot`
-    # (Data Corpus initiative, ticket 86b9ypn49) for the new top-level
-    # collector/ sibling package. This test's intent — "no
+    # (Data Corpus initiative, ticket 86b9ypn49) plus D1.1.5's two new
+    # contracts (ticket 86b9zdhz2): `kalshi_wire-no-bot` +
+    # `kalshi_wire-no-collector` (shared transport library, 2026-05-16
+    # AMENDMENT to D0.3 §5). This test's intent — "no
     # settlement-no-impl-toplevel carve-out was added" — is unchanged;
-    # only the unrelated 6th contract bumps the count.
-    assert len(contracts) == 6, (
-        f".importlinter has {len(contracts)} contracts; expected 6 "
-        f"post-D1.1 (5 bot-side + collector-no-bot). Contracts present: "
+    # only the unrelated 7th + 8th contracts bump the count.
+    assert len(contracts) == 8, (
+        f".importlinter has {len(contracts)} contracts; expected 8 "
+        f"post-D1.1.5 (5 bot-side + collector-no-bot + kalshi_wire-no-bot + "
+        f"kalshi_wire-no-collector). Contracts present: "
         f"{sorted(contract_names)}"
     )
 

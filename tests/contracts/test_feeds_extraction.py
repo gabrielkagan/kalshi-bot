@@ -82,35 +82,42 @@ def test_subpackage_exports_all_classes():
     assert hasattr(bot.feeds, "KalshiFeed")
 
 
-# ─── 2. Identity preservation across re-export chain ────────────────────────
+# ─── 2. Identity preservation across re-export chain (RETIRED) ──────────────
+# Bit 9.3-iii.c (2026-05-11) DELETED bot/_impl.py — these identity-check
+# tests pinned the re-export chain ``bot.X is bot._impl.X is
+# bot.feeds.X``. Post-deletion the chain has only two links
+# (``bot.feeds`` re-exports + canonical submodule), pinned by the live
+# ``test_feeds_subpackage_importable`` test above. The tests below
+# unconditionally skip; renamed at D1.1.5 (2026-05-16) per R1 Nt2
+# review to make the retirement explicit in the test names.
 
 
-def test_coinbase_identity_through_bot_impl():
-    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
-    import bot.feeds as bf
-    import bot.feeds.coinbase as bfc
-    assert b.CoinbaseFeed is bf.CoinbaseFeed is bfc.CoinbaseFeed
+def test_coinbase_identity_retired_post_impl_deletion():
+    import pytest as _pytest_bit_iii_c_skip
+    _pytest_bit_iii_c_skip.skip(
+        "bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired",
+        allow_module_level=False)
 
 
-def test_orderbook_schema_identity_through_bot_impl():
-    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
-    import bot.feeds as bf
-    import bot.feeds.orderbook_schema as bfo
-    assert b.OrderbookSchemaError is bf.OrderbookSchemaError is bfo.OrderbookSchemaError
+def test_orderbook_schema_identity_retired_post_impl_deletion():
+    import pytest as _pytest_bit_iii_c_skip
+    _pytest_bit_iii_c_skip.skip(
+        "bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired",
+        allow_module_level=False)
 
 
-def test_cross_exchange_identity_through_bot_impl():
-    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
-    import bot.feeds as bf
-    import bot.feeds.cross_exchange as bfx
-    assert b.CrossExchangeFeed is bf.CrossExchangeFeed is bfx.CrossExchangeFeed
+def test_cross_exchange_identity_retired_post_impl_deletion():
+    import pytest as _pytest_bit_iii_c_skip
+    _pytest_bit_iii_c_skip.skip(
+        "bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired",
+        allow_module_level=False)
 
 
-def test_kalshi_identity_through_bot_impl():
-    import pytest as _pytest_bit_iii_c_skip; _pytest_bit_iii_c_skip.skip("bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired", allow_module_level=False)
-    import bot.feeds as bf
-    import bot.feeds.kalshi as bfk
-    assert b.KalshiFeed is bf.KalshiFeed is bfk.KalshiFeed
+def test_kalshi_identity_retired_post_impl_deletion():
+    import pytest as _pytest_bit_iii_c_skip
+    _pytest_bit_iii_c_skip.skip(
+        "bot/_impl.py removed (Bit 9.3-iii.c) — re-export contract retired",
+        allow_module_level=False)
 
 
 def test_all_four_identity_through_bot_proxy():
@@ -642,9 +649,14 @@ KALSHI_FEED_METHODS = (
     "get_subscribed_tickers", "get_subscribed_count", "get_cached_ob_count",
     "get_orderbook", "get_all_orderbooks", "get_all_orderbooks_snapshot",
     "pop_fills",
-    "_cleanup_session_state",
-    "_create_ws_headers",
-    "_run_thread", "_ws_loop",
+    # D1.1.5 Phase 3b (2026-05-16, ticket 86b9zdhz2): WS asyncio loop +
+    # connect/reconnect machinery moved to kalshi_wire.ws_client.WSClient.
+    # KalshiFeed consumes WSClient via 4 sync callbacks. The retired
+    # method names (``_cleanup_session_state`` → ``_on_session_end``,
+    # ``_run_thread`` + ``_ws_loop`` → WSClient internals) are dropped
+    # from the pin; new callback names are added below.
+    "_on_session_start", "_on_session_end", "_on_drain_tick", "_on_frame",
+    "_create_ws_headers",  # auth shim retained for parity test
     "_send_ob_subscribe", "_send_ob_unsubscribe", "_send_ob_get_snapshot",
     "_process_pending_subs",
     "_handle_subscribe_ack",

@@ -25,7 +25,6 @@ Design:
 """
 
 import ast
-import asyncio
 import json
 import logging
 import os
@@ -33,7 +32,6 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
 import bot.constants  # noqa: F401
 import bot.feeds  # noqa: F401
 
@@ -42,6 +40,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "bot/feeds/kalshi.py")  # Bit 4.5b: KalshiFeed moved here from bot/_impl.py
+
+
+class _MockWire:
+    """Stand-in for ``kalshi_wire.ws_client.WSClient`` (D1.1.5 Phase 3b).
+    Captures send_frame payloads as dicts (one per call).
+    """
+    def __init__(self):
+        self.sent = []
+        self.send_frame_raises = None
+        self.reconnect_requested = False
+        self._connected_state = False
+        self._last_msg_ts = 0.0
+
+    def send_frame(self, payload):
+        if self.send_frame_raises is not None:
+            raise self.send_frame_raises
+        self.sent.append(payload)
+
+    def request_reconnect(self):
+        self.reconnect_requested = True
+
+    @property
+    def is_connected(self):
+        return self._connected_state
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 def _make_feed():
@@ -65,10 +93,6 @@ def _make_feed():
     f._delta_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
-    f._ws_last_seq = {}
-    f._ws_seq_gap_logs = 0
-    f._ws_seq_gap_max_logs = 0
-    f._ws_last_msg_ts = 0.0
     f._ws_connect_ts = time.time()  # fresh connect — within raw-log window
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
@@ -76,12 +100,13 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
     # Phase 2.9 R-review A3: per-session raw log cap.
     f._raw_log_count = 0
     f._raw_log_capped_logged = False
     f._lock = threading.Lock()
+    # D1.1.5 Phase 3b: transport moved into kalshi_wire.ws_client.WSClient.
+    f._wire = _MockWire()
     return f
 
 
@@ -89,12 +114,11 @@ def _make_feed():
 # 1. Outgoing frames always logged (low volume — diagnostic gold)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestOutgoingSubscribeLogged(unittest.IsolatedAsyncioTestCase):
-    async def test_outgoing_subscribe_logged_at_info(self):
+class TestOutgoingSubscribeLogged(unittest.TestCase):
+    def test_outgoing_subscribe_logged_at_info(self):
         f = _make_feed()
-        ws = AsyncMock()
         with self.assertLogs("root", level="INFO") as cm:
-            await f._send_ob_subscribe(ws, "BTC1")
+            f._send_ob_subscribe("BTC1")
         joined = "\n".join(cm.output)
         self.assertIn(
             "WS_RAW_OUT", joined,
@@ -111,29 +135,27 @@ class TestOutgoingSubscribeLogged(unittest.IsolatedAsyncioTestCase):
             "Log line should include the ticker for correlation.")
 
 
-class TestOutgoingUnsubscribeLogged(unittest.IsolatedAsyncioTestCase):
-    async def test_outgoing_unsubscribe_logged(self):
+class TestOutgoingUnsubscribeLogged(unittest.TestCase):
+    def test_outgoing_unsubscribe_logged(self):
         """Phase 2.10: unsubscribe is now sent as
         update_subscription/delete_markets, not cmd:unsubscribe."""
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7
-        ws = AsyncMock()
         with self.assertLogs("root", level="INFO") as cm:
-            await f._send_ob_unsubscribe(ws, "BTC1")
+            f._send_ob_unsubscribe("BTC1")
         joined = "\n".join(cm.output)
         self.assertIn("WS_RAW_OUT", joined)
         self.assertIn("delete_markets", joined)
 
 
-class TestOutgoingGetSnapshotLogged(unittest.IsolatedAsyncioTestCase):
-    async def test_outgoing_get_snapshot_logged(self):
+class TestOutgoingGetSnapshotLogged(unittest.TestCase):
+    def test_outgoing_get_snapshot_logged(self):
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7
-        ws = AsyncMock()
         with self.assertLogs("root", level="INFO") as cm:
-            await f._send_ob_get_snapshot(ws, "BTC1")
+            f._send_ob_get_snapshot("BTC1")
         joined = "\n".join(cm.output)
         self.assertIn("WS_RAW_OUT", joined)
         self.assertIn("update_subscription", joined)
@@ -367,15 +389,15 @@ class TestRawLogCap(unittest.TestCase):
             "Repeat over-cap calls must NOT log WS_RAW_CAPPED again.")
 
     def test_session_cleanup_resets_cap(self):
-        """_cleanup_session_state resets the counter so the next
-        session gets a fresh diagnostic budget."""
+        """D1.1.5 Phase 3b: ``_cleanup_session_state`` was renamed to
+        ``_on_session_end``. The cap reset still fires the same way —
+        the WSClient invokes the callback after each WS close."""
         import bot
         import bot.constants  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.constants.X access)
         f = _make_feed()
-        f._connected = True
         f._raw_log_count = bot.constants.WS_RAW_LOG_MAX_PER_SESSION + 100
         f._raw_log_capped_logged = True
-        f._cleanup_session_state()
+        f._on_session_end()
         self.assertEqual(f._raw_log_count, 0)
         self.assertFalse(f._raw_log_capped_logged)
 
@@ -456,7 +478,13 @@ class TestR2A1NonDataExemptFromCap(unittest.TestCase):
 class TestAstReconnectResetsConnectTs(unittest.TestCase):
     """R-review A2: production reconnect path MUST set
     self._ws_connect_ts = ... so the post-connect raw-log window
-    actually reopens on each reconnect (not just at process start)."""
+    actually reopens on each reconnect (not just at process start).
+
+    D1.1.5 Phase 3b: ``_ws_loop`` moved to
+    ``kalshi_wire.ws_client.WSClient``. The connect-ts reset now
+    lives in ``KalshiFeed._on_session_start`` (callback invoked by
+    WSClient after every successful connect).
+    """
 
     def test_ws_loop_sets_connect_ts(self):
         src = ""
@@ -470,15 +498,15 @@ class TestAstReconnectResetsConnectTs(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
-                        and fn.name == "_ws_loop"):
+                if (isinstance(fn, ast.FunctionDef)
+                        and fn.name == "_on_session_start"):
                     target = fn
                     break
-        self.assertIsNotNone(target, "_ws_loop not found")
+        self.assertIsNotNone(target, "_on_session_start not found")
         body_src = ast.unparse(target)
         self.assertIn(
             "self._ws_connect_ts =", body_src,
-            "Reconnect path must reset _ws_connect_ts so the "
+            "_on_session_start must reset _ws_connect_ts so the "
             "post-connect raw-log window reopens for each new "
             "session — otherwise we only get raw frames once "
             "per process start.")

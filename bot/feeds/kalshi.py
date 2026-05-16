@@ -1,59 +1,59 @@
-"""KalshiFeed — Kalshi WebSocket for fills + orderbook deltas.
+"""KalshiFeed — Kalshi WebSocket consumer for fills + orderbook deltas.
 
-Extracted from bot/_impl.py in Sprint 4 Bit 4.5b (2026-05-09). The
-class is the largest leaf in the Sprint 4 modularization track at
-~1,790 lines: full asyncio daemon-thread loop, fill notifications,
-orderbook delta + snapshot handling, get_snapshot health watchdog
-(R1 / A1 / R2 / P0 hardening), and the Apr 26 2026 unsubscribe
-blacklist (window-rotation race defense). Sister classes
-``CoinbaseFeed``, ``CrossExchangeFeed``, and the
-``OrderbookSchemaError`` exception (raised inside this class) shipped
-in the earlier Bit 4.5a; this bit completes the ``bot/feeds/``
-subpackage.
+Extracted from bot/_impl.py in Sprint 4 Bit 4.5b (2026-05-09). Originally
+the largest leaf in the Sprint 4 modularization track at ~1,790 lines:
+full asyncio daemon-thread loop, fill notifications, orderbook delta +
+snapshot handling, get_snapshot health watchdog (R1 / A1 / R2 / P0
+hardening), and the Apr 26 2026 unsubscribe blacklist (window-rotation
+race defense).
 
-Imports are deliberate: stdlib (``asyncio``, ``base64``, ``json``,
-``logging``, ``random``, ``threading``, ``time``,
-``collections.deque``, ``typing``) + ``websockets`` +
-``cryptography.hazmat.primitives.hashes`` +
-``cryptography.hazmat.primitives.asymmetric.padding`` (RSA-PSS
-signature for the WS handshake — same auth shape as the REST
-``KalshiClient`` extracted in Bit 4.3) + ``bot.constants`` (13
-explicit names; all WS_* tunables plus ``KALSHI_WS_URL``) + sibling
-``bot.feeds.orderbook_schema.OrderbookSchemaError`` (Bit 4.5a — the
-exception was extracted ahead of this larger move so the raise/except
-sites would land local to the ``bot/feeds/`` package). Does NOT
-import ``bot._impl`` (would create a circular import — ``_impl``
-re-exports this class via ``from bot.feeds import KalshiFeed``).
+**D1.1.5 (2026-05-16, ticket 86b9zdhz2)** Phase 3b refactored the
+asyncio + WS-transport spine out of this class into
+``kalshi_wire.ws_client.WSClient`` per the 2026-05-16 AMENDMENT to
+``kb/decisions/data-corpus-architecture.md`` §5 ("two sides of the same
+coin" — bot + collector share one transport). KalshiFeed is now a
+WSClient consumer: it instantiates one ``WSClient`` wire instance, hands
+it 4 sync callbacks (``_on_session_start`` / ``_on_frame`` /
+``_on_session_end`` / ``_on_drain_tick``), and keeps ALL bot-state
+machinery — orderbook cache, fill queue, sid map, cmd_id counter,
+``_outstanding_subscribes``, blacklist semantics, ``force_resubscribe``,
+the Phase 2.x sid handling, and the dispatch table. The asyncio event
+loop, ``websockets.connect``, silence watchdog, frame parse, and seq-gap
+detector live in WSClient.
 
-Construction site: ``MainLoop.__init__`` in ``bot/_impl.py`` does
+Sister classes ``CoinbaseFeed``, ``CrossExchangeFeed``, and the
+``OrderbookSchemaError`` exception (raised inside this class) shipped in
+Bit 4.5a.
+
+Imports are deliberate: stdlib (``json``, ``logging``, ``threading``,
+``time``, ``collections.deque``, ``typing``) + ``bot.constants`` (12
+explicit names; all WS_* tunables plus ``KALSHI_WS_URL``) +
+``kalshi_wire.ws_client.WSClient`` (D1.1.5 Phase 3b) +
+``kalshi_wire.auth`` indirectly via WSClient (D1.1.5 Phase 3a, kept here
+for backwards-compat with the historical ``_create_ws_headers`` shape
+even though WSClient owns the actual handshake) + sibling
+``bot.feeds.orderbook_schema.OrderbookSchemaError``.
+
+Construction site: ``MainLoop.__init__`` does
 ``self.kalshi_feed = KalshiFeed(api_key, self.client.private_key)``
 where ``self.client`` is a ``KalshiClient`` (bot/kalshi_client.py,
 Bit 4.3). The WS handshake reuses the REST client's already-loaded
 ``private_key`` so we don't re-deserialize the PEM.
 
-Sister state inside ``OpportunityScanner.scan`` (still in
-``bot/_impl.py``) interacts with ``unsubscribe_ticker`` via the
-window-rotation cleanup loop — the relevant call site is anchored
-with the ``ws_expired = set(expired) | set(expired_ob)`` search
-string (L30: search anchors > literal line refs across cross-file
-boundaries that shift with each modularization bit).
+Sister state inside ``OpportunityScanner.scan`` interacts with
+``unsubscribe_ticker`` via the window-rotation cleanup loop — the
+relevant call site is anchored with the
+``ws_expired = set(expired) | set(expired_ob)`` search string.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import logging
-import random
 import threading
 import time
 from collections import deque
-from typing import Dict, List, Optional, Set, Tuple
-
-import websockets
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from bot.constants import (
     KALSHI_WS_URL,
@@ -71,6 +71,18 @@ from bot.constants import (
     WS_WATCHDOG_CHECK_INTERVAL,
 )
 from bot.feeds.orderbook_schema import OrderbookSchemaError
+# D1.1.5 (ticket 86b9zdhz2, 2026-05-16):
+#   - Phase 3a: WS handshake RSA-PSS auth moved to kalshi_wire/auth.py.
+#   - Phase 3b: WS transport spine (connect/reconnect/_ws_loop/silence
+#     watchdog/frame parse) moved to kalshi_wire.ws_client.WSClient.
+# KalshiFeed retains all bot-state machinery (queue mgmt, blacklist,
+# force_resubscribe, orderbook state machine, Phase 2.x sid handling, sid
+# map, cmd_id counter) and consumes WSClient via 4 sync callbacks. The
+# ``_create_ws_headers`` shim below preserves the historical
+# instance-method signature; in practice WSClient calls
+# ``kalshi_wire.auth.make_ws_headers`` directly.
+from kalshi_wire.auth import make_ws_headers as _wire_make_ws_headers
+from kalshi_wire.ws_client import Frame, WSClient
 
 
 class KalshiFeed:
@@ -94,10 +106,24 @@ class KalshiFeed:
         self._api_key = api_key
         self._private_key = private_key
         self._lock = threading.Lock()
-        self._connected = False
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._stop_event: Optional[asyncio.Event] = None
+        # D1.1.5 Phase 3b: WS transport delegated to kalshi_wire.ws_client.
+        # KalshiFeed instantiates ONE WSClient and consumes its 4 sync
+        # callbacks; all bot-state machinery (queue mgmt, sid map,
+        # blacklist, dispatch) stays on this class. WSClient owns the
+        # asyncio thread, connect/reconnect, silence watchdog, frame
+        # parse + seq-gap detect, and the thread-safe send queue.
+        self._wire = WSClient(
+            api_key=api_key,
+            private_key=private_key,
+            url=KALSHI_WS_URL,
+            on_frame=self._on_frame,
+            on_session_start=self._on_session_start,
+            on_session_end=self._on_session_end,
+            on_drain_tick=self._on_drain_tick,
+            silence_grace_s=WS_SILENCE_GRACE_SECONDS,
+            silence_timeout_s=WS_SILENCE_TIMEOUT_SECONDS,
+            watchdog_check_interval=WS_WATCHDOG_CHECK_INTERVAL,
+        )
         # Shared state (lock-protected)
         self._orderbooks: Dict[str, Dict] = {}
         self._recent_fills: deque = deque(maxlen=10000)
@@ -204,7 +230,11 @@ class KalshiFeed:
         # SKIP a sid-less ticker. Without this, one stuck
         # subscribe = one ticker on permanent stale cache until
         # natural disconnect (could be hours).
-        self._force_reconnect_requested: bool = False
+        # D1.1.5 Phase 3b: the actual force-reconnect mechanism lives
+        # on the WSClient (`self._wire.request_reconnect()` + its
+        # internal silence-watchdog observation). KalshiFeed no longer
+        # tracks the flag locally — `_check_snapshot_timeouts` calls
+        # `self._wire.request_reconnect()` directly.
         # Phase 2.6 R4 / A8: tickers whose subscribe is in flight
         # at the moment of unsubscribe_ticker. The type=subscribed
         # response handler will use the freshly-learned sid to
@@ -213,10 +243,9 @@ class KalshiFeed:
         # we cannot reach).
         self._pending_late_unsubscribes: Set[str] = set()
         # Phase 2.9 R-review A3: per-session raw log line counter.
-        # Reset on every reconnect via _cleanup_session_state.
+        # Reset on every reconnect via _on_session_end.
         self._raw_log_count: int = 0
         self._raw_log_capped_logged: bool = False
-        self._ws = None
         # One-shot schema probes — log the first snapshot/delta msg keys per run so
         # post-deploy verifier can confirm the live wire matches the contract.
         # Remove in follow-up commit after verification.
@@ -227,33 +256,46 @@ class KalshiFeed:
         # kb/failures/kalshi-ws-schema-drift.md § "test-as-spec addendum".
         self._delta_probe_count = 0
         self._delta_probe_max = 5
-        # WS sequence-gap detector (H3 hypothesis for delta underflows).
-        # Kalshi WS envelope carries (sid, seq) per subscription. Seq should be
-        # monotonically increasing per sid. Gaps = dropped/reordered messages.
-        # Diagnostic only — remove after hypothesis confirmed/rejected.
-        # See kb/failures/kalshi-ws-schema-drift.md § "WS delta underflow".
-        self._ws_last_seq: Dict[int, int] = {}
-        self._ws_seq_gap_logs = 0
-        self._ws_seq_gap_max_logs = 500
-        # WS silence watchdog (2026-04-24 17:30 UTC 15M outage defense).
-        # Kalshi's WS can stay "connected" while delivering zero protocol
-        # messages — pings/pongs are handled internally by the websockets
-        # library and don't surface in the message iterator. When this
-        # happens, subscribes never flush, no snapshots arrive, 15M dies
-        # silently. Track last message arrival and force reconnect if idle
-        # too long. See kb/failures/ws-15m-silence-2026-04-24.md.
-        self._ws_last_msg_ts: float = 0.0
+        # D1.1.5 Phase 3b: WS-session connect timestamp — only used by
+        # ``_should_log_raw_in`` to gate the post-connect raw-log time
+        # window (raw-log helpers are bot-specific per pickup prompt
+        # L42). The actual WS connect / silence watchdog / seq-gap
+        # detector now live in WSClient. Set in ``_on_session_start``.
         self._ws_connect_ts: float = 0.0
 
     # ── Public API (called from main thread) ──────────────────────────────
 
     def start(self):
-        self._thread = threading.Thread(target=self._run_thread, daemon=True)
-        self._thread.start()
+        """Start the WS feed — delegates to ``WSClient.start()`` (D1.1.5
+        Phase 3b). The asyncio thread, connect loop, silence watchdog,
+        and frame parse all live in the wire client; KalshiFeed receives
+        frames via the ``_on_frame`` callback.
+        """
+        self._wire.start()
 
     def stop(self):
-        if self._loop and self._stop_event:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
+        """Stop the WS feed — delegates to ``WSClient.stop()`` (D1.1.5
+        Phase 3b)."""
+        self._wire.stop()
+
+    def request_reconnect(self) -> None:
+        """Request a fresh WS session — delegates to
+        ``WSClient.request_reconnect()`` (D1.1.5 Phase 3b).
+
+        Used by:
+          - ``OpportunityScanner.scan()`` R2 unproductive-recovery
+            escalation (10 consecutive unproductive ticks → fresh WS)
+          - ``KalshiFeed._check_snapshot_timeouts`` Phase 2.6 R4 / A1+A2+A3
+            stuck-subscribe recovery (~30s after subscribe → no sid)
+
+        Pre-Phase-3b these callers wrote ``self._force_reconnect_requested
+        = True`` directly on KalshiFeed. The flag now lives on WSClient
+        and is observed by its internal ``_silence_watchdog`` task; this
+        shim preserves the public-API shape so consumers (especially
+        ``bot/scanner/__init__.py``) keep working without learning the
+        wire/feed split.
+        """
+        self._wire.request_reconnect()
 
     def subscribe_ticker(self, ticker: str):
         with self._lock:
@@ -458,6 +500,7 @@ class KalshiFeed:
         timed_out: List[str] = []
         recovery_warns: List[str] = []
         disabled_now = False
+        _need_reconnect = False  # D1.1.5 Phase 3b — signal WSClient outside lock
         with self._lock:
             for t, req_ts in list(self._snapshot_request_pending.items()):
                 if now - req_ts > WS_SNAPSHOT_REQUEST_TIMEOUT_S:
@@ -522,10 +565,15 @@ class KalshiFeed:
                         # and drift detector both SKIP). Without
                         # forced reconnect, the silence watchdog
                         # never fires (other tickers keep
-                        # _ws_last_msg_ts fresh) and the ticker
+                        # _last_msg_ts fresh) and the ticker
                         # is silently stuck on stale cache.
+                        # D1.1.5 Phase 3b: the silence watchdog +
+                        # reconnect flag live in WSClient; we signal
+                        # it via the thread-safe ``request_reconnect()``
+                        # API. Call outside the lock to avoid nested
+                        # acquisition (WSClient takes its own lock).
                         if stuck_ticker in self._subscribed_tickers:
-                            self._force_reconnect_requested = True
+                            _need_reconnect = True
 
             # R1 / A5 + R4 / F2: walk recovery deadlines, surface
             # stuck tickers. The signal "snapshot didn't arrive"
@@ -577,6 +625,13 @@ class KalshiFeed:
                 "or session error).",
                 stuck_ticker, cid,
                 int(WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S))
+        # D1.1.5 Phase 3b: signal WSClient AFTER releasing _lock —
+        # request_reconnect() takes WSClient's own state lock; nesting
+        # would risk deadlock if WSClient ever calls back through a
+        # callback that grabs _lock while we hold it (it doesn't today,
+        # but the order discipline keeps that future-safe).
+        if _need_reconnect:
+            self._wire.request_reconnect()
         return timed_out
 
     def unsubscribe_ticker(self, ticker: str):
@@ -669,15 +724,96 @@ class KalshiFeed:
             self._recent_fills.clear()
             return fills
 
-    def _cleanup_session_state(self) -> None:
-        """R4 / F1: clear all WS-session-bound state. Called from
-        BOTH the exception path (BEFORE the backoff sleep — so
-        is_connected reads False during reconnect wait) AND the
-        graceful-close path (so the prior session's _orderbooks
-        don't survive into the next iteration).
+    # ── WSClient callbacks (D1.1.5 Phase 3b) ─────────────────────────────
+    # The 4 hooks below are invoked synchronously from the WSClient's
+    # asyncio thread. They MUST NOT do long-running work (the WSClient
+    # awaits other tasks while we run). They share KalshiFeed's
+    # `_lock` for bot-state mutation; WSClient takes its own lock for
+    # transport-internal state (no nesting).
+
+    def _on_session_start(self) -> None:
+        """Fires AFTER WS connect + auth, BEFORE the WSClient starts
+        reading incoming frames. Pre-D1.1.5 these resets lived inline at
+        the top of ``_ws_loop``'s connect block.
+
+        Order is load-bearing:
+        1. Clear the Phase 2.x per-session dicts (sids are session-scoped
+           — stale entries would cause Kalshi error frames + spurious
+           timeouts on the new session).
+        2. Re-arm the get_snapshot disable state (R2 / P1-5).
+        3. Set the raw-log connect-ts so the post-connect log time
+           window starts now.
+        4. Send the fill-channel subscribe (static id=1, no sid tracking).
+        5. Re-subscribe every ticker currently in `_subscribed_tickers`
+           via the same `_send_ob_subscribe` path live subscribes use.
+           This keeps `_outstanding_subscribes`/`_next_msg_id`
+           accounting identical across the cold-start vs reconnect
+           paths.
         """
         with self._lock:
-            self._connected = False
+            # R2 / P1-5: reset Phase 2 disable state on every
+            # reconnect. Sticky-within-session is a safety choice
+            # (a transient mid-session blip shouldn't toggle
+            # behavior repeatedly). Sticky-across-reconnect is a
+            # bug — fresh session = fresh sids = let primary path
+            # re-prove the contract. Without this, an outage that
+            # trips disable would degrade the bot forever.
+            if self._get_snapshot_disabled:
+                logging.info(
+                    "WS_GET_SNAPSHOT_RE_ENABLE — fresh "
+                    "WS session, re-arming primary "
+                    "snapshot path.")
+            self._get_snapshot_disabled = False
+            self._get_snapshot_disabled_logged = False
+            self._get_snapshot_consecutive_failed_sweeps = 0
+            # R3 / P1-A + P1-B: stale Phase 2 dicts/lists from the
+            # prior session must NOT survive a reconnect. Otherwise:
+            #   - old `_snapshot_request_pending` entries time out
+            #     5s into the new session, falsely incrementing the
+            #     failed-sweep counter,
+            #   - old `_pending_snapshot_requests` list entries get
+            #     sent as redundant get_snapshots after the natural
+            #     reconnect re-subscribe already produced one,
+            #   - old recovery deadlines fire spurious
+            #     WS_RESUB_STUCK warnings 30s into new session.
+            self._snapshot_request_pending.clear()
+            self._pending_snapshot_requests.clear()
+            self._force_resub_recovery_deadline.clear()
+            self._force_resub_recovery_warned.clear()
+            resub_tickers = list(self._subscribed_tickers)
+        # Prime raw-log connect-ts so the post-connect time window
+        # starts now (independent of WSClient's own internal timestamp).
+        self._ws_connect_ts = time.time()
+        logging.info(f"kalshi_ws_connected: url={KALSHI_WS_URL}")
+        # Subscribe to fills channel (all markets). Static id=1; no
+        # sid tracking — fill is global, not per-ticker.
+        _fill_payload: Dict[str, Any] = {
+            "id": 1,
+            "cmd": "subscribe",
+            "params": {"channels": ["fill"]},
+        }
+        self._log_raw_out(_fill_payload)
+        self._wire.send_frame(_fill_payload)
+        logging.debug("kalshi_ws_subscribe: channel=fill")
+        # Re-subscribe to any tickers that were active before reconnect.
+        for ticker in resub_tickers:
+            try:
+                self._send_ob_subscribe(ticker)
+            except Exception:
+                logging.debug(
+                    "Failed to re-subscribe to %s on session_start",
+                    ticker, exc_info=True)
+
+    def _on_session_end(self) -> None:
+        """Fires AFTER WS close (graceful or excepted), BEFORE the
+        WSClient backoff sleep. R3/P0-A invariant: clears all per-session
+        bot-state caches while ``is_connected`` (delegating to WSClient)
+        reads False, so scan paths see no_orderbook instead of stale
+        cache during the reconnect-wait window.
+
+        Pre-D1.1.5 this was ``_cleanup_session_state``.
+        """
+        with self._lock:
             self._orderbooks.clear()
             # Phase 2.5: sids are session-scoped — Kalshi assigns
             # fresh ones on reconnect. Stale sids from the prior
@@ -699,10 +835,6 @@ class KalshiFeed:
             # Phase 2.6 R2 / B1: orphan-sid dedup is also
             # session-scoped — fresh session = clean state.
             self._ws_orphan_sid_seen.clear()
-            # Phase 2.6 R4 / A1+A2+A3: reset force-reconnect flag.
-            # If we're closing the session, the request has been
-            # honored.
-            self._force_reconnect_requested = False
             # Phase 2.6 R4 / A8: clear pending late-unsubscribes
             # (subscriptions in flight at reconnect-time will be
             # naturally cleaned up — Kalshi drops the old session's
@@ -712,16 +844,38 @@ class KalshiFeed:
             # the new session gets fresh diagnostic budget.
             self._raw_log_count = 0
             self._raw_log_capped_logged = False
-        self._ws = None
-        # Reset seq tracking — new WS session starts fresh sids;
-        # old state would produce spurious gap warnings.
-        self._ws_last_seq.clear()
-        self._ws_seq_gap_logs = 0
+
+    def _on_drain_tick(self) -> None:
+        """Fires every ``drain_tick_interval_s`` seconds on the WSClient
+        asyncio thread. Drives the pending-subscribe drain that the
+        Apr-24 P0 deadlock fix added (see
+        kb/failures/ws-subscription-deadlock.md).
+        """
+        try:
+            self._process_pending_subs()
+        except Exception:
+            logging.debug(
+                "pending-sub drain iteration failed", exc_info=True)
+
+    def _on_frame(self, frame: Frame) -> None:
+        """Fires for every incoming WS frame. Watchdog ``_last_msg_ts``
+        is already set by WSClient BEFORE this callback (Apr-24 silence-
+        watchdog ordering). Dispatches to the bot-state handlers via
+        ``_handle_message`` on the raw payload.
+
+        Pre-D1.1.5 ``_handle_message`` was invoked directly from
+        ``async for raw in ws:``; the frame parse + seq-gap detection
+        now live in WSClient (their results land on the Frame dataclass
+        but we keep the existing dispatch by raw payload to minimize
+        behavior delta during this extraction Bit).
+        """
+        self._handle_message(frame.raw)
 
     @property
     def is_connected(self) -> bool:
-        with self._lock:
-            return self._connected
+        """Delegate to WSClient (D1.1.5 Phase 3b). Pre-extraction this
+        read a local flag mutated inside ``_ws_loop``."""
+        return self._wire.is_connected
 
     def get_subscribed_count(self) -> int:
         with self._lock:
@@ -763,252 +917,39 @@ class KalshiFeed:
         with self._lock:
             return _copy.deepcopy(self._orderbooks)
 
-    # ── Auth ───────────────────────────────────────────────────────────────
+    # ── Auth (shim) ───────────────────────────────────────────────────────
 
     def _create_ws_headers(self) -> Dict[str, str]:
-        """Create auth headers for Kalshi WS handshake (same RSA-PSS as REST)."""
-        timestamp_ms = str(int(time.time() * 1000))
-        # WS auth signs: timestamp + "GET" + "/trade-api/ws/v2"
-        message = f"{timestamp_ms}GET/trade-api/ws/v2".encode("utf-8")
-        sig = self._private_key.sign(
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.DIGEST_LENGTH,
-            ),
-            hashes.SHA256(),
-        )
-        signature = base64.b64encode(sig).decode("utf-8")
-        return {
-            "KALSHI-ACCESS-KEY": self._api_key,
-            "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
-            "KALSHI-ACCESS-SIGNATURE": signature,
-        }
+        """Create auth headers for Kalshi WS handshake (same RSA-PSS as REST).
 
-    # ── Background thread ──────────────────────────────────────────────────
+        D1.1.5 Phase 3a: delegates to ``kalshi_wire.auth.make_ws_headers``.
+        Post-Phase-3b the WS handshake itself is performed inside
+        ``kalshi_wire.ws_client.WSClient`` (which calls the same wire
+        helper), so this instance method is no longer on the live
+        handshake path — but it remains as a shim for the parity test
+        at ``tests/contracts/test_kalshi_wire_auth.py
+        ::test_make_ws_headers_parity_with_bot_feeds_kalshi``, which
+        verifies the bot-side auth call site produces signatures
+        verifiable against the same key as ``kalshi_wire.auth.sign``.
+        """
+        return _wire_make_ws_headers(self._api_key, self._private_key)
 
-    def _run_thread(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._stop_event = asyncio.Event()
-        try:
-            self._loop.run_until_complete(self._ws_loop())
-        except Exception:
-            logging.error("Kalshi feed thread crashed", exc_info=True)
-        finally:
-            self._loop.close()
+    # ── WS frame send primitives ──────────────────────────────────────────
+    # D1.1.5 Phase 3b: the WS asyncio loop, connect/reconnect,
+    # auth, silence watchdog, frame parse, and seq-gap detect all
+    # moved to ``kalshi_wire.ws_client.WSClient``. The
+    # ``_send_ob_*`` methods below build the same JSON payloads they
+    # always have; the actual ``ws.send`` is enqueued via
+    # ``self._wire.send_frame(payload)`` and drained by WSClient's
+    # internal asyncio task.
+    #
+    # These methods are SYNC (pre-D1.1.5 they were ``async def
+    # _send_ob_*(self, ws, ticker)``). They run on the WSClient
+    # asyncio thread (invoked via ``_on_session_start`` /
+    # ``_on_drain_tick``) and update bot-state under ``self._lock``
+    # just like before.
 
-    async def _ws_loop(self):
-        backoff = 1.0
-        max_backoff = 60.0
-
-        while not self._stop_event.is_set():
-            try:
-                headers = self._create_ws_headers()
-                async with websockets.connect(
-                    KALSHI_WS_URL,
-                    additional_headers=headers,
-                    ping_interval=30,
-                    ping_timeout=10,
-                ) as ws:
-                    self._ws = ws
-                    with self._lock:
-                        self._connected = True
-                        # R2 / P1-5: reset Phase 2 disable state on
-                        # every reconnect. Sticky-within-session is
-                        # a safety choice (a transient mid-session
-                        # blip shouldn't toggle behavior repeatedly).
-                        # Sticky-across-reconnect is a bug — fresh
-                        # session = fresh sids = let primary path
-                        # re-prove the contract. Without this, an
-                        # outage that trips disable would degrade
-                        # the bot forever.
-                        if self._get_snapshot_disabled:
-                            logging.info(
-                                "WS_GET_SNAPSHOT_RE_ENABLE — fresh "
-                                "WS session, re-arming primary "
-                                "snapshot path.")
-                        self._get_snapshot_disabled = False
-                        self._get_snapshot_disabled_logged = False
-                        self._get_snapshot_consecutive_failed_sweeps = 0
-                        # R3 / P1-A + P1-B: stale Phase 2 dicts/lists
-                        # from the prior session must NOT survive a
-                        # reconnect. Otherwise:
-                        #   - old `_snapshot_request_pending` entries
-                        #     time out 5s into new session, falsely
-                        #     incrementing the failed-sweep counter
-                        #     (until it disables for non-Kalshi-
-                        #     contract reasons),
-                        #   - old `_pending_snapshot_requests` list
-                        #     entries get sent as redundant
-                        #     get_snapshots after the natural
-                        #     reconnect re-subscribe already produced
-                        #     a snapshot,
-                        #   - old recovery deadlines fire spurious
-                        #     WS_RESUB_STUCK warnings 30s into new
-                        #     session.
-                        self._snapshot_request_pending.clear()
-                        self._pending_snapshot_requests.clear()
-                        self._force_resub_recovery_deadline.clear()
-                        self._force_resub_recovery_warned.clear()
-                    backoff = 1.0
-                    # Prime the watchdog timestamps so the grace window starts now.
-                    _now = time.time()
-                    self._ws_connect_ts = _now
-                    self._ws_last_msg_ts = _now
-                    logging.info(f"kalshi_ws_connected: url={KALSHI_WS_URL}")
-
-                    # Subscribe to fills channel (all markets)
-                    await ws.send(json.dumps({
-                        "id": 1,
-                        "cmd": "subscribe",
-                        "params": {"channels": ["fill"]},
-                    }))
-                    logging.debug("kalshi_ws_subscribe: channel=fill")
-
-                    # Re-subscribe to any tickers that were active before reconnect
-                    with self._lock:
-                        resub_tickers = list(self._subscribed_tickers)
-                    for ticker in resub_tickers:
-                        await self._send_ob_subscribe(ws, ticker)
-
-                    # P0 FIX (2026-04-24 18:00 UTC): drain pending subs on a
-                    # timer, independent of incoming messages. Previously subs
-                    # only flushed inside the `async for raw in ws:` loop body,
-                    # which blocks indefinitely when Kalshi stops delivering
-                    # messages (symptom: subscribe_ticker calls accumulate in
-                    # _pending_subscribes and never reach ws.send, so Kalshi
-                    # never knows to send us snapshots — full chicken-and-egg
-                    # deadlock). See kb/failures/ws-subscription-deadlock.md.
-                    async def _drain_loop():
-                        while not self._stop_event.is_set():
-                            try:
-                                await asyncio.sleep(2.0)
-                                await self._process_pending_subs(ws)
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                logging.debug(
-                                    "pending-sub drain iteration failed",
-                                    exc_info=True)
-                    _drain_task = asyncio.create_task(_drain_loop())
-
-                    # Silence watchdog (2026-04-24 17:30 UTC 15M outage
-                    # defense). Kalshi WS can stay "connected" (ping/pong
-                    # healthy internally) while delivering zero protocol
-                    # messages for minutes. When no fill/snapshot/delta/ack
-                    # arrives for WS_SILENCE_TIMEOUT_SECONDS after the
-                    # initial grace window, close the ws so the outer
-                    # reconnect kicks in. See
-                    # kb/failures/ws-15m-silence-2026-04-24.md.
-                    async def _silence_watchdog():
-                        while not self._stop_event.is_set():
-                            try:
-                                await asyncio.sleep(WS_WATCHDOG_CHECK_INTERVAL)
-                                # Phase 2.6 R4 / A1+A2+A3: explicit
-                                # reconnect request from B2 watchdog
-                                # (stuck subscribe). Recovery path
-                                # for sid-less stuck tickers — they
-                                # cannot be drift-recovered without
-                                # a fresh WS session.
-                                if self._force_reconnect_requested:
-                                    logging.error(
-                                        "WS_FORCE_RECONNECT — "
-                                        "reconnect requested by B2 "
-                                        "stuck-subscribe watchdog. "
-                                        "Closing WS for clean "
-                                        "re-subscribe of all tickers.")
-                                    try:
-                                        await ws.close()
-                                    except Exception:
-                                        pass
-                                    return
-                                now = time.time()
-                                if now - self._ws_connect_ts < WS_SILENCE_GRACE_SECONDS:
-                                    continue
-                                silent = now - self._ws_last_msg_ts
-                                if silent > WS_SILENCE_TIMEOUT_SECONDS:
-                                    with self._lock:
-                                        _sub_count = len(self._subscribed_tickers)
-                                    logging.error(
-                                        "WS_SILENCE_WATCHDOG: no msg in %.0fs "
-                                        "(timeout=%ds subs=%d) — forcing reconnect",
-                                        silent, WS_SILENCE_TIMEOUT_SECONDS,
-                                        _sub_count)
-                                    try:
-                                        await ws.close()
-                                    except Exception:
-                                        pass
-                                    return
-                            except asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                logging.debug(
-                                    "silence watchdog iteration failed",
-                                    exc_info=True)
-                    _watchdog_task = asyncio.create_task(_silence_watchdog())
-
-                    try:
-                        # Message loop with periodic subscribe/unsubscribe processing
-                        async for raw in ws:
-                            if self._stop_event.is_set():
-                                break
-                            self._handle_message(raw)
-                            # Process pending subscriptions
-                            await self._process_pending_subs(ws)
-                    finally:
-                        for _bg_task in (_drain_task, _watchdog_task):
-                            _bg_task.cancel()
-                            try:
-                                await _bg_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-
-            except asyncio.CancelledError:
-                self._cleanup_session_state()
-                break
-            except Exception as e:
-                # R4 / F1: cleanup MUST run before the backoff
-                # sleep. Otherwise during the up-to-60s wait,
-                # is_connected returns True and stale
-                # `_orderbooks` from the prior session is served
-                # to scan as live data. Pre-R3 this happened
-                # inline here; R3 moved it to `finally:` (which
-                # fires AFTER except, i.e., AFTER the sleep) and
-                # silently regressed the exact bug R3/P0-A
-                # claimed to fix.
-                self._cleanup_session_state()
-                jitter = backoff * random.uniform(0, 0.25)
-                wait = backoff + jitter
-                logging.warning(
-                    f"kalshi_ws_disconnected: reason={e} reconnect_backoff={wait:.1f}s"
-                )
-                try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=wait
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    pass
-                backoff = min(backoff * 2, max_backoff)
-            else:
-                # R3 / P0-A + R4 / F1: graceful close path
-                # (silence watchdog ws.close(), server-initiated
-                # close, async-with normal exit). Without this,
-                # stale `_orderbooks` from the prior session
-                # would survive into the next iteration and be
-                # served as live data for ~ORDERBOOK_CACHE_TTL
-                # seconds before fresh snapshots replaced it —
-                # the exact drift class Phase 2 was built to
-                # prevent.
-                self._cleanup_session_state()
-
-        with self._lock:
-            self._connected = False
-        self._ws = None
-        logging.info("Kalshi feed stopped")
-
-    async def _send_ob_subscribe(self, ws, ticker: str):
+    def _send_ob_subscribe(self, ticker: str) -> None:
         # Phase 2.6: unique command id per subscribe so the
         # type=subscribed response can be matched back to this
         # ticker (see _handle_message subscribed branch). Pre-2.6
@@ -1029,10 +970,12 @@ class KalshiFeed:
             },
         }
         # Phase 2.9: raw-out trace BEFORE send so we see what was
-        # attempted even if ws.send raises.
+        # attempted even if send_frame raises.
         self._log_raw_out(_payload)
         try:
-            await ws.send(json.dumps(_payload))
+            # D1.1.5 Phase 3b: was `await ws.send(json.dumps(_payload))`.
+            # WSClient.send_frame is thread-safe enqueue → asyncio drain.
+            self._wire.send_frame(_payload)
         except Exception:
             # Phase 2.6 R-review A3: send failure leaves the cmd_id
             # registered in _outstanding_subscribes forever — orphan.
@@ -1049,7 +992,7 @@ class KalshiFeed:
             f"kalshi_ws_subscribe: ticker={ticker} "
             f"id={cmd_id} channel=orderbook_delta")
 
-    async def _send_ob_unsubscribe(self, ws, ticker: str):
+    def _send_ob_unsubscribe(self, ticker: str) -> None:
         """Phase 2.10: surgical single-ticker removal via
         `update_subscription` with `action: delete_markets`.
 
@@ -1099,7 +1042,8 @@ class KalshiFeed:
         # Phase 2.9: raw-out trace.
         self._log_raw_out(_payload)
         try:
-            await ws.send(json.dumps(_payload))
+            # D1.1.5 Phase 3b: was `await ws.send(json.dumps(_payload))`.
+            self._wire.send_frame(_payload)
         except Exception:
             # Send failed — leave sid map intact, caller may retry.
             logging.warning(
@@ -1119,7 +1063,7 @@ class KalshiFeed:
             f"kalshi_ws_unsubscribe: ticker={ticker} sid={sid} "
             f"id={cmd_id} (via update_subscription/delete_markets)")
 
-    async def _send_ob_get_snapshot(self, ws, ticker: str):
+    def _send_ob_get_snapshot(self, ticker: str) -> None:
         """Phase 2.7: request a fresh snapshot WITHOUT bouncing the
         subscription. Per Kalshi WS error code list, get_snapshot
         requires BOTH a subscription ID (sid) AND at least one
@@ -1178,13 +1122,14 @@ class KalshiFeed:
         }
         # Phase 2.9: raw-out trace.
         self._log_raw_out(_payload)
-        await ws.send(json.dumps(_payload))
+        # D1.1.5 Phase 3b: was `await ws.send(json.dumps(_payload))`.
+        self._wire.send_frame(_payload)
         logging.info(
             "kalshi_ws_get_snapshot: ticker=%s sid=%d id=%d "
             "(Phase 2.7 cache reset)",
             ticker, sid, cmd_id)
 
-    async def _process_pending_subs(self, ws):
+    def _process_pending_subs(self) -> None:
         # Phase 2: check for snapshot-request timeouts FIRST. Any
         # ticker whose get_snapshot didn't yield an orderbook_snapshot
         # within WS_SNAPSHOT_REQUEST_TIMEOUT_S falls back to unsub+resub
@@ -1210,21 +1155,25 @@ class KalshiFeed:
         # _pending_subscribes; if subs ran first we'd send subscribe
         # before unsubscribe, leaving the ticker permanently
         # unsubscribed. (Pre-fix: subs went first → resub bug.)
+        # D1.1.5 Phase 3b: ordering is preserved because
+        # WSClient.send_frame enqueues onto a single asyncio.Queue
+        # that the drain task pops FIFO — the order we call
+        # send_frame is the order Kalshi receives the frames.
         for ticker in unsubs:
             try:
-                await self._send_ob_unsubscribe(ws, ticker)
+                self._send_ob_unsubscribe(ticker)
             except Exception:
                 logging.debug(f"Failed to unsubscribe from {ticker}", exc_info=True)
 
         for ticker in subs:
             try:
-                await self._send_ob_subscribe(ws, ticker)
+                self._send_ob_subscribe(ticker)
             except Exception:
                 logging.debug(f"Failed to subscribe to {ticker}", exc_info=True)
 
         for ticker in snap_reqs:
             try:
-                await self._send_ob_get_snapshot(ws, ticker)
+                self._send_ob_get_snapshot(ticker)
             except Exception:
                 logging.warning(
                     "Failed to send get_snapshot for %s", ticker,
@@ -1382,12 +1331,13 @@ class KalshiFeed:
         logging.info("WS_RAW_IN %s", raw)
 
     def _handle_message(self, raw: str):
-        # Watchdog: any message from the server (subscribe ack, heartbeat,
-        # fill, orderbook event, even an error we ignore) proves the WS
-        # session is healthy. Updated at every incoming frame regardless
-        # of dispatch outcome. Paired with _ws_silence_watchdog in
-        # _ws_loop which force-reconnects if this stays stale.
-        self._ws_last_msg_ts = time.time()
+        # D1.1.5 Phase 3b: invoked from `_on_frame(frame)`. WSClient
+        # already updated its internal `_last_msg_ts` BEFORE invoking
+        # the on_frame callback (Apr-24 silence-watchdog ordering —
+        # load-bearing). The wire layer also already ran the seq-gap
+        # detector. This method now only handles the bot-state
+        # dispatch (fill / orderbook_snapshot / orderbook_delta /
+        # subscribed / ok / unsubscribed / error).
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -1399,25 +1349,6 @@ class KalshiFeed:
         _msg_type = data.get("type")
         if self._should_log_raw_in(_msg_type):
             self._log_raw_in(raw, msg_type=_msg_type)
-
-        # WS sequence-gap detector. Kalshi WS messages carry (sid, seq) per
-        # subscription; seq should be +1 per message within a sid. Any other
-        # delta means dropped/reordered/duplicate messages. Diagnostic only —
-        # remove after H3 hypothesis (WS message loss) is confirmed/rejected.
-        sid = data.get("sid")
-        seq = data.get("seq")
-        if sid is not None and seq is not None:
-            prev = self._ws_last_seq.get(sid)
-            if prev is not None and seq != prev + 1:
-                if self._ws_seq_gap_logs < self._ws_seq_gap_max_logs:
-                    ticker = (data.get("msg") or {}).get("market_ticker", "?")
-                    logging.warning(
-                        "WS_SEQ_GAP sid=%s ticker=%s type=%s expected_seq=%d "
-                        "actual_seq=%d gap=%d",
-                        sid, ticker, data.get("type", "?"), prev + 1, seq,
-                        seq - prev - 1)
-                    self._ws_seq_gap_logs += 1
-            self._ws_last_seq[sid] = seq
 
         msg_type = data.get("type")
 

@@ -57,6 +57,36 @@ KALSHI_FEED_PY = os.path.join(
     "bot/feeds/kalshi.py")
 
 
+class _MockWire:
+    """Stand-in for ``kalshi_wire.ws_client.WSClient`` (D1.1.5 Phase 3b).
+    Captures send_frame payloads as dicts (one per call).
+    """
+    def __init__(self):
+        self.sent = []
+        self.send_frame_raises = None
+        self.reconnect_requested = False
+        self._connected_state = False
+        self._last_msg_ts = 0.0
+
+    def send_frame(self, payload):
+        if self.send_frame_raises is not None:
+            raise self.send_frame_raises
+        self.sent.append(payload)
+
+    def request_reconnect(self):
+        self.reconnect_requested = True
+
+    @property
+    def is_connected(self):
+        return self._connected_state
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
 def _make_feed():
     """Construct a minimal KalshiFeed with the attrs force_resubscribe
     needs. Bypasses __init__ to avoid touching network/asyncio."""
@@ -88,7 +118,6 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
     f._raw_log_count = 0
     f._raw_log_capped_logged = False
@@ -98,6 +127,8 @@ def _make_feed():
     f._delta_probe_max = 0
     import threading
     f._lock = threading.Lock()
+    # D1.1.5 Phase 3b: transport moved into kalshi_wire.ws_client.WSClient.
+    f._wire = _MockWire()
     return f
 
 
@@ -371,7 +402,10 @@ class TestR1A4UnsubBeforeSubOrdering(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
+                # D1.1.5 Phase 3b: _process_pending_subs became SYNC
+                # (drain loop now runs on the WSClient asyncio thread
+                # via the _on_drain_tick callback; no per-frame ws arg).
+                if (isinstance(fn, ast.FunctionDef)
                         and fn.name == "_process_pending_subs"):
                     target = fn
                     break
@@ -797,14 +831,16 @@ class TestR2P13SnapshotForUnsubscribedTicker(unittest.TestCase):
 class TestR2P15ResetDisableOnReconnect(unittest.TestCase):
     """R2 / P1-5: WS reconnect must reset _get_snapshot_disabled
     and the failed-sweep counter. Sticky-across-reconnect is a
-    bug — fresh session = fresh sids = let primary re-prove."""
+    bug — fresh session = fresh sids = let primary re-prove.
+
+    D1.1.5 Phase 3b: ``_ws_loop`` moved to ``kalshi_wire.ws_client``.
+    The reset logic now lives in ``KalshiFeed._on_session_start``,
+    which the WSClient invokes after each successful WS connect.
+    """
 
     def test_ast_reconnect_resets_disable_state(self):
         with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
-        # The reset must happen inside _ws_loop after
-        # `self._connected = True`. We verify the lines exist
-        # textually inside the KalshiFeed._ws_loop method.
         tree = ast.parse(src)
         target = None
         for cls in ast.walk(tree):
@@ -812,19 +848,23 @@ class TestR2P15ResetDisableOnReconnect(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
-                        and fn.name == "_ws_loop"):
+                # _on_session_start is the new home for the reset
+                # logic that used to live inline at the top of
+                # the _ws_loop connect block.
+                if (isinstance(fn, ast.FunctionDef)
+                        and fn.name == "_on_session_start"):
                     target = fn
                     break
-        self.assertIsNotNone(target, "_ws_loop not found")
+        self.assertIsNotNone(target, "_on_session_start not found")
         body_src = ast.unparse(target)
         self.assertIn(
             "_get_snapshot_disabled = False", body_src,
-            "_ws_loop must reset _get_snapshot_disabled on "
+            "_on_session_start must reset _get_snapshot_disabled on "
             "reconnect — sticky-across-reconnect is a bug.")
         self.assertIn(
             "_get_snapshot_consecutive_failed_sweeps = 0", body_src,
-            "_ws_loop must reset failed-sweep counter on reconnect.")
+            "_on_session_start must reset failed-sweep counter "
+            "on reconnect.")
 
 
 class TestR2P16DriftDetectorPurgeFalse(unittest.TestCase):
@@ -945,10 +985,22 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
     cleared on BOTH the exception path (before backoff sleep —
     so is_connected reads False during reconnect wait) AND the
     graceful-close path (silence watchdog ws.close(), server
-    close). _cleanup_session_state() is the helper; it must be
-    invoked from both branches."""
+    close).
 
-    def test_ast_cleanup_helper_exists_and_clears_orderbooks(self):
+    D1.1.5 Phase 3b: ``_ws_loop`` + ``_cleanup_session_state`` +
+    ``_run_thread`` moved from ``bot/feeds/kalshi.py`` to
+    ``kalshi_wire/ws_client.py``. The session-end cleanup is now
+    invoked by WSClient through the ``KalshiFeed._on_session_end``
+    callback (R3/P0-A invariant: callback fires BEFORE the
+    WSClient backoff sleep). The runtime ordering is now pinned
+    by the differential test in
+    ``tests/equivalence/test_kalshi_wire_differential.py::
+    test_session_end_callback_fires_before_backoff_sleep`` —
+    these AST tests are reduced to structural pins that the
+    extraction is complete.
+    """
+
+    def test_ast_on_session_end_exists_and_clears_orderbooks(self):
         with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
@@ -959,28 +1011,65 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
                 continue
             for fn in cls.body:
                 if (isinstance(fn, ast.FunctionDef)
-                        and fn.name == "_cleanup_session_state"):
+                        and fn.name == "_on_session_end"):
                     target = fn
                     break
         self.assertIsNotNone(
             target,
-            "_cleanup_session_state helper must exist — it's the "
-            "single source of truth for WS-session-bound cleanup.")
+            "_on_session_end callback must exist — it's the "
+            "single source of truth for WS-session-bound cleanup "
+            "(post-D1.1.5 successor to _cleanup_session_state).")
         body_src = ast.unparse(target)
         self.assertIn(
             "_orderbooks.clear()", body_src,
-            "Cleanup helper must clear _orderbooks (the entire "
+            "_on_session_end must clear _orderbooks (the entire "
             "Phase 2 raison d'être is preventing stale-cache "
             "leakage across sessions).")
         self.assertIn(
-            "self._connected = False", body_src,
-            "Cleanup helper must reset _connected so is_connected "
-            "reads False during reconnect wait.")
+            "_ticker_to_sid.clear()", body_src,
+            "_on_session_end must clear _ticker_to_sid (sids are "
+            "session-scoped — stale sids on reconnect cause "
+            "Kalshi error frames).")
+        self.assertIn(
+            "_outstanding_subscribes.clear()", body_src,
+            "_on_session_end must clear _outstanding_subscribes "
+            "(prior-session cmd IDs orphan after reconnect).")
 
-    def test_ast_ws_loop_invokes_cleanup_in_except_before_sleep(self):
-        """R4 / F1: cleanup must fire BEFORE the backoff sleep,
-        otherwise during the up-to-60s wait, is_connected returns
-        True and stale cache from the prior session is served."""
+    def test_ast_extracted_methods_are_gone_from_kalshifeed(self):
+        """D1.1.5 Phase 3b structural pin: _ws_loop, _run_thread,
+        and _cleanup_session_state moved out of KalshiFeed into
+        kalshi_wire.ws_client.WSClient. Their continued presence
+        on KalshiFeed would indicate an incomplete extraction
+        (two homes for the same transport logic)."""
+        with open(KALSHI_FEED_PY) as fh:
+            src = fh.read()
+        tree = ast.parse(src)
+        feed_methods = set()
+        for cls in ast.walk(tree):
+            if (not isinstance(cls, ast.ClassDef)
+                    or cls.name != "KalshiFeed"):
+                continue
+            for fn in cls.body:
+                if isinstance(
+                        fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    feed_methods.add(fn.name)
+        for gone in ("_ws_loop", "_run_thread",
+                     "_cleanup_session_state"):
+            self.assertNotIn(
+                gone, feed_methods,
+                f"{gone} MUST NOT exist on KalshiFeed post-D1.1.5 "
+                "Phase 3b. Transport-layer logic moved to "
+                "kalshi_wire.ws_client.WSClient; the R3/P0-A "
+                "cleanup-before-backoff-sleep invariant is now "
+                "exercised by the runtime differential test in "
+                "tests/equivalence/test_kalshi_wire_differential.py.")
+
+    def test_ast_session_end_does_not_clear_force_reconnect_flag(self):
+        """D1.1.5 Phase 3b pin: _force_reconnect_requested moved
+        to WSClient. The pre-extraction _cleanup_session_state
+        cleared this flag inline; post-extraction the flag lives
+        on the wire and is managed there.
+        """
         with open(KALSHI_FEED_PY) as fh:
             src = fh.read()
         tree = ast.parse(src)
@@ -990,77 +1079,29 @@ class TestR3P0AAndR4F1SessionCleanup(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
-                        and fn.name == "_ws_loop"):
+                if (isinstance(fn, ast.FunctionDef)
+                        and fn.name == "_on_session_end"):
                     target = fn
                     break
-        self.assertIsNotNone(target, "_ws_loop not found")
-        # Walk the inner Try with multiple handlers; find the
-        # generic Exception handler and verify _cleanup_session_state
-        # appears textually BEFORE asyncio.wait_for/sleep.
-        for node in ast.walk(target):
-            if not isinstance(node, ast.Try):
-                continue
-            for handler in node.handlers:
-                if (handler.type is not None
-                        and isinstance(handler.type, ast.Name)
-                        and handler.type.id == "Exception"):
-                    handler_src = ast.unparse(handler)
-                    cleanup_idx = handler_src.find(
-                        "_cleanup_session_state")
-                    sleep_idx = handler_src.find("asyncio.wait_for")
-                    if cleanup_idx == -1 or sleep_idx == -1:
-                        continue
-                    self.assertLess(
-                        cleanup_idx, sleep_idx,
-                        "_cleanup_session_state MUST be called "
-                        "BEFORE the backoff sleep in the except "
-                        "Exception block. R3 mistakenly moved "
-                        "cleanup to a `finally:` that ran AFTER "
-                        "the sleep — during which is_connected "
-                        "returned True and stale cache was served.")
-                    return
-        self.fail(
-            "Could not locate the except Exception block calling "
-            "_cleanup_session_state in _ws_loop.")
-
-    def test_ast_ws_loop_invokes_cleanup_on_graceful_close(self):
-        """Graceful-close path (async-with normal exit) must also
-        clear cache. Either via `else:` clause on the try, or
-        equivalent placement after the try."""
-        with open(KALSHI_FEED_PY) as fh:
-            src = fh.read()
-        tree = ast.parse(src)
-        target = None
-        for cls in ast.walk(tree):
-            if (not isinstance(cls, ast.ClassDef)
-                    or cls.name != "KalshiFeed"):
-                continue
-            for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
-                        and fn.name == "_ws_loop"):
-                    target = fn
-                    break
-        self.assertIsNotNone(target, "_ws_loop not found")
+        self.assertIsNotNone(target, "_on_session_end not found")
         body_src = ast.unparse(target)
-        # We require AT LEAST 2 invocations of
-        # _cleanup_session_state inside _ws_loop (except path +
-        # graceful path). CancelledError handler also calls it
-        # but we only require 2 minimum.
-        invocations = body_src.count(
-            "self._cleanup_session_state()")
-        self.assertGreaterEqual(
-            invocations, 2,
-            "_ws_loop must invoke _cleanup_session_state from "
-            "BOTH the exception path AND the graceful-close path. "
-            "Found %d invocations." % invocations)
+        self.assertNotIn(
+            "_force_reconnect_requested = False", body_src,
+            "_on_session_end MUST NOT touch _force_reconnect_requested "
+            "— that flag moved to WSClient in Phase 3b.")
 
 
 class TestR3P1ABReconnectClearsPhase2Dicts(unittest.TestCase):
     """R3 / P1-A + P1-B: WS reconnect must clear stale Phase 2
     pending state. Otherwise old-session entries time out 5s into
     new session, falsely incrementing the failed-sweep counter,
-    and old recovery deadlines fire spurious warnings."""
+    and old recovery deadlines fire spurious warnings.
+
+    D1.1.5 Phase 3b: this reconnect block moved from the top of
+    _ws_loop's connect path into ``KalshiFeed._on_session_start``
+    (invoked by WSClient after each successful WS connect, BEFORE
+    the WSClient starts reading frames).
+    """
 
     def test_ast_reconnect_block_clears_pending_dicts(self):
         with open(KALSHI_FEED_PY) as fh:
@@ -1072,11 +1113,11 @@ class TestR3P1ABReconnectClearsPhase2Dicts(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
-                        and fn.name == "_ws_loop"):
+                if (isinstance(fn, ast.FunctionDef)
+                        and fn.name == "_on_session_start"):
                     target = fn
                     break
-        self.assertIsNotNone(target, "_ws_loop not found")
+        self.assertIsNotNone(target, "_on_session_start not found")
         body_src = ast.unparse(target)
         for needle in [
             "_snapshot_request_pending.clear()",
@@ -1086,7 +1127,7 @@ class TestR3P1ABReconnectClearsPhase2Dicts(unittest.TestCase):
         ]:
             self.assertIn(
                 needle, body_src,
-                f"_ws_loop reconnect block must clear `{needle}` "
+                f"_on_session_start must clear `{needle}` "
                 "to prevent stale Phase 2 state from poisoning the "
                 "new session.")
 
@@ -1107,7 +1148,10 @@ class TestR3P1CSendFailurePopsPending(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
+                # D1.1.5 Phase 3b: _process_pending_subs became SYNC
+                # (callback path: WSClient invokes _on_drain_tick which
+                # calls _process_pending_subs — no ws arg).
+                if (isinstance(fn, ast.FunctionDef)
                         and fn.name == "_process_pending_subs"):
                     target = fn
                     break

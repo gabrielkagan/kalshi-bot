@@ -241,10 +241,13 @@ bot/snapshots/supabase_sync.py                 -- pushes snapshots to Supabase R
 watchdog.py                    -- process health monitoring
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
 start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + `python -m bot`)
-collector/                     -- Data Corpus collector (NEW top-level SIBLING to bot/, D1.1 SHIPPED 2026-05-16, ticket 86b9ypn49)
+collector/                     -- Data Corpus collector (top-level SIBLING to bot/, D1.1 SHIPPED 2026-05-16, ticket 86b9ypn49)
 collector/__main__.py          -- entrypoint shim, mirrors bot/__main__.py sacred-boundary rule (`python -m collector`)
-collector/{main_loop,ws_connection,rest_snapshot,writer,uploader,subscription_manager,auth}.py
-                               -- scaffolding stubs at D1.1; real implementations land across D1.2-D1.5 per the Data Corpus architecture decision (D0.3, local-only kb/)
+collector/{main_loop,ws_connection,rest_snapshot,writer,uploader,subscription_manager}.py
+                               -- scaffolding stubs at D1.1; ws_connection.py rewired to consume kalshi_wire (D1.1.5, ticket 86b9zdhz2); auth.py DELETED at D1.1.5 (auth flows through kalshi_wire.auth); other bodies land across D1.2-D1.5 per the Data Corpus architecture decision (D0.3, local-only kb/)
+kalshi_wire/                   -- shared Kalshi WS transport library (top-level SIBLING to bot/ and collector/, D1.1.5 SHIPPED 2026-05-16, ticket 86b9zdhz2; ZERO bot.* / collector.* imports; consumed by both)
+kalshi_wire/{auth,ws_client}.py
+                               -- auth.py: RSA-PSS-SHA256 sign + REST/WS header helpers; ws_client.py: WSClient (asyncio thread + connect/reconnect + silence watchdog + send queue) + Frame dataclass + build_envelope() (D0.3 §2 6-field bronze envelope)
 collector-start.sh             -- wrapper for D1.5 systemd unit ops/kalshi-collector.service (parallel to start.sh; `python -m collector`)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
@@ -252,7 +255,7 @@ requirements.txt               -- Python dependencies
 .github/workflows/whitepaper.yml -- auto-generate README stats + whitepaper PDFs
 ```
 
-The `collector/` package has ZERO `bot.*` imports — structural bot-isolation contract enforced by the `collector-no-bot` `.importlinter` forbidden contract. Off-switch in either direction (`systemctl stop kalshi-{bot,collector}`) leaves the other unaffected.
+The `collector/` and `kalshi_wire/` packages have ZERO `bot.*` imports — structural bot-isolation contract enforced by the `collector-no-bot` + `kalshi_wire-no-bot` + `kalshi_wire-no-collector` `.importlinter` forbidden contracts (8 total). Off-switch in either direction (`systemctl stop kalshi-{bot,collector}`) leaves the other unaffected. The 2026-05-16 §5 AMENDMENT to `kb/decisions/data-corpus-architecture.md` adopted the "two sides of the same coin" shared-transport shape (`kalshi_wire/`) after external-advisor feedback that capture + replay must use the same wire parser for bronze to be reusable.
 
 ### Journals (gitignored)
 

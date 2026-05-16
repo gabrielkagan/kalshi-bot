@@ -41,7 +41,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 def _make_feed():
     """Mirror of test_ws_force_resubscribe._make_feed — minimal KalshiFeed
     with attrs the subscribe/unsubscribe paths need. Kept local so future
-    blacklist additions land in lockstep with the SUT."""
+    blacklist additions land in lockstep with the SUT.
+
+    D1.1.5 Phase 3b (2026-05-16, ticket 86b9zdhz2): the
+    ``_force_reconnect_requested`` attribute was REMOVED from KalshiFeed
+    — the flag now lives on ``WSClient`` and is signaled via the
+    thread-safe ``KalshiFeed.request_reconnect()`` shim. The fake-feed
+    initializer below intentionally OMITS the stray attribute so the
+    "mirror real shape" invariant stays honest; tests that need to
+    inspect reconnect requests use a counter pattern (see
+    ``tests/integration/test_scan_unproductive_recovery.py`` for the
+    canonical ``_reconnect_requests`` shape).
+    """
     import bot
     import bot.feeds  # noqa: F401 (Bit 9.3-iii.c — explicit submodule import; bot.feeds.X access)
     f = bot.feeds.KalshiFeed.__new__(bot.feeds.KalshiFeed)
@@ -64,7 +75,6 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
     f._raw_log_count = 0
     f._raw_log_capped_logged = False

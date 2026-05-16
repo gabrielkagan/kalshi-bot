@@ -134,20 +134,23 @@ ml = [
 # that flat-layout discovery "picks up bot/ correctly" only held in a
 # pristine bot-only repo; this repo has many sibling dirs.
 #
-# `include = ["bot", "bot.*", "collector", "collector.*"]`: fnmatch-matches
-# both parent packages + every subpackage. The "bot.*" / "collector.*" patterns
-# require a literal dot so they don't match the bare parent names — both
-# patterns are needed for each package. D1.1 (ticket 86b9ypn49, 2026-05-16)
-# added the collector entries when the Data Corpus initiative shipped the
-# collector/ top-level package per kb/decisions/data-corpus-architecture.md §5
-# (sibling to bot/, NOT a subpackage; zero bot.* imports per the
-# `collector-no-bot` .importlinter contract).
+# `include = ["bot", "bot.*", "collector", "collector.*", "kalshi_wire",
+# "kalshi_wire.*"]`: fnmatch-matches each parent package + every subpackage.
+# The "bot.*" / "collector.*" / "kalshi_wire.*" patterns require a literal
+# dot so they don't match the bare parent names — both patterns are needed
+# for each package. D1.1 (ticket 86b9ypn49, 2026-05-16) added the collector
+# entries when the Data Corpus initiative shipped the collector/ top-level
+# package. D1.1.5 (ticket 86b9zdhz2, 2026-05-16) added the kalshi_wire entries
+# when the 2026-05-16 AMENDMENT to D0.3 §5 introduced the shared transport
+# library (sibling to bot/ and collector/, consumed by both, zero bot.* /
+# collector.* imports per the `kalshi_wire-no-bot` + `kalshi_wire-no-collector`
+# .importlinter contracts).
 # `namespaces = false`: defense-in-depth — gates discovery on __init__.py
 # existence so a future include-pattern broadening can't silently sweep in
 # a PEP 420 namespace dir.
-# Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot_and_collector.
+# Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot_and_collector_and_wire.
 [tool.setuptools.packages.find]
-include = ["bot", "bot.*", "collector", "collector.*"]
+include = ["bot", "bot.*", "collector", "collector.*", "kalshi_wire", "kalshi_wire.*"]
 namespaces = false
 
 [tool.pytest.ini_options]

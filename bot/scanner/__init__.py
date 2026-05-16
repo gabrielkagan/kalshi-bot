@@ -9251,19 +9251,26 @@ class OpportunityScanner:
                 self._scan_15m_unproductive_count)
 
         # Phase 3 R2 — escalation: if STILL unproductive at 10
-        # consecutive ticks (~5 min), set _force_reconnect_requested
+        # consecutive ticks (~5 min), call ``request_reconnect()``
         # so silence watchdog forces a fresh WS session. One-shot
         # per stuck-period (cleared on next productive tick).
+        # D1.1.5 Phase 3b (2026-05-16, ticket 86b9zdhz2): pre-extraction
+        # this set ``kf._force_reconnect_requested = True`` directly; the
+        # flag moved to ``WSClient`` and KalshiFeed exposes the public
+        # ``request_reconnect()`` shim (which delegates to the wire
+        # client's thread-safe ``request_reconnect()``). Direct attribute
+        # write would land on a STRAY attribute the silence watchdog
+        # never observes — silently no-op'ing the escalation.
         if (self._scan_15m_unproductive_count
                 >= SCAN_UNPRODUCTIVE_RECONNECT_THRESHOLD
                 and not getattr(
                     self, "_scan_15m_reconnect_triggered", False)):
             self._scan_15m_reconnect_triggered = True
             try:
-                kf._force_reconnect_requested = True
+                kf.request_reconnect()
             except Exception:
                 logging.warning(
-                    "Failed to set _force_reconnect_requested",
+                    "Failed to call kf.request_reconnect()",
                     exc_info=True)
             logging.error(
                 "SCAN_UNPRODUCTIVE_15M_RECOVERY_R2: requesting WS "
