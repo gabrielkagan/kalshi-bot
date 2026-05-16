@@ -44,7 +44,7 @@ BUILD_WHITEPAPER = os.path.join(OPS_DIR, "build_whitepaper.py")
 CHECK_FRESHNESS = os.path.join(SCRIPT_DIR, "check_docs_freshness.py")
 
 CONFIG_JSON = os.path.join(REPO_DIR, "config.json")
-STATS_JSON = os.path.join(REPO_DIR, "whitepaper_stats.json")
+STATS_JSON = os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_stats.json")
 
 
 def run_step(name, cmd):

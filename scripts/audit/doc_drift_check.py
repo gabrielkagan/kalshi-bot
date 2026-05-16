@@ -48,7 +48,7 @@ SOURCE_FILES = [
 
 # Documentation files to check
 DOC_FILES = [
-    "README.md", "whitepaper.md", "whitepaper_investor.md", "CLAUDE.md",
+    "README.md", "docs/whitepaper/whitepaper.md", "docs/whitepaper/whitepaper_investor.md", "CLAUDE.md",
     # Bit 1.3 (Sprint 1 modularization): AGENTS.md is a symlink to CLAUDE.md.
     # Today the scan is redundant (same file via symlink, no false positives).
     # If a future Bit flips the GO/NO-GO to two-file mode (Phase α1 option 2,
