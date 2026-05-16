@@ -106,6 +106,20 @@ EXPECTED_CONTRACTS = (
     # (type=forbidden) pairs with the dedicated negative-injection
     # mutation test in tests/contracts/test_collector_no_bot_imports.py.
     "collector-no-bot",
+    # D1.1.5 (ticket 86b9zdhz2, 2026-05-16) — shared transport library
+    # `kalshi_wire/`. Per the 2026-05-16 AMENDMENT to D0.3 §5 (after
+    # external-advisor pivot), the wire library is consumed by BOTH
+    # bot/feeds/kalshi.py AND collector/ws_connection.py. The two
+    # forbidden contracts lock kalshi_wire as a pure-transport leaf:
+    # cannot reach `bot` (would couple to bot orderbook cache / blacklist
+    # / schema probes) and cannot reach `collector` (would invert the
+    # consumer → wire dependency arrow). Together they preserve the
+    # "two sides of the same coin" symmetry the advisor's pivot mandates.
+    # The shape pins here pair with the dedicated mutation tests in
+    # tests/contracts/test_kalshi_wire_no_bot.py +
+    # tests/contracts/test_kalshi_wire_no_collector.py.
+    "kalshi_wire-no-bot",
+    "kalshi_wire-no-collector",
 )
 
 # bot.constants is the only allowed internal dep for the helpers leaf.

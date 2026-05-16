@@ -26,9 +26,18 @@
 # ::test_importlinter_root_packages_is_plural_form (configparser-level check
 # that the singular key is absent and both `bot` + `collector` appear in the
 # plural list).
+#
+# D1.1.5 (ticket 86b9zdhz2, 2026-05-16) — extended with `kalshi_wire` for
+# the shared transport library (RSA-PSS auth + WS connect/reconnect/subscribe
+# protocol + bronze envelope). Same plural-list requirement: without listing
+# `kalshi_wire`, grimp wouldn't walk it and the two new `kalshi_wire-no-*`
+# forbidden contracts would silently no-op. Pinned by
+# tests/contracts/test_kalshi_wire_no_bot.py
+# ::test_importlinter_root_packages_includes_kalshi_wire.
 root_packages =
     bot
     collector
+    kalshi_wire
 # Bit 12.3 (Sprint 12, 2026-05-11): required for the bot-no-torch
 # and bot-no-pandas contracts, which name EXTERNAL packages (torch,
 # pandas) as forbidden_modules. Without this flag, import-linter
@@ -298,3 +307,57 @@ source_modules =
     collector
 forbidden_modules =
     bot
+
+# ---------------------------------------------------------------------------
+# Contract 9 — kalshi_wire must not import bot (pure-transport leaf)
+# ---------------------------------------------------------------------------
+# D1.1.5 (ticket 86b9zdhz2, 2026-05-16) — Per the 2026-05-16 AMENDMENT to
+# kb/decisions/data-corpus-architecture.md §5 (which SUPERSEDED §5 ¶6+7
+# after external-advisor pivot), `kalshi_wire/` is the shared transport
+# library consumed by BOTH bot/feeds/kalshi.py AND collector/ws_connection.py.
+# The "two sides of the same coin" symmetry requires that the wire layer
+# is bot-state-free: reaching into bot/ would couple the collector's view
+# to bot-specific machinery (orderbook cache, schema probes, blacklist).
+#
+# Listing `bot` (not `bot.X` for each subpackage) covers every bot.X
+# subpackage via grimp's package-tree resolution — any `from bot[.X]
+# import …` or `import bot[.X]` edge from any kalshi_wire module fails.
+#
+# Sibling-package status (NOT a `bot/` subpackage) makes this contract
+# enforceable structurally — `kalshi_wire/` lives at repo-root next to
+# `bot/` and `collector/`.
+#
+# Peer-pinned by tests/contracts/test_kalshi_wire_no_bot.py (AST
+# defense-in-depth + negative-injection mutation test that verifies
+# lint-imports actually catches a forbidden edge).
+[importlinter:contract:kalshi_wire-no-bot]
+name = kalshi_wire.* must not import bot.* (pure-transport leaf)
+type = forbidden
+source_modules =
+    kalshi_wire
+forbidden_modules =
+    bot
+
+# ---------------------------------------------------------------------------
+# Contract 10 — kalshi_wire must not import collector (pure-transport leaf)
+# ---------------------------------------------------------------------------
+# D1.1.5 (ticket 86b9zdhz2, 2026-05-16) — Sister contract to
+# `kalshi_wire-no-bot`. The dependency arrow is consumer → wire, never
+# wire → consumer:
+#
+#     bot.feeds.kalshi        ─┐
+#                              ├─→ kalshi_wire
+#     collector.ws_connection  ┘
+#
+# A `kalshi_wire → collector` edge would invert the layering, couple the
+# wire library to the bronze-archival pipeline, and break the symmetry
+# that makes the advisor's "two sides of the same coin" actually work.
+#
+# Peer-pinned by tests/contracts/test_kalshi_wire_no_collector.py.
+[importlinter:contract:kalshi_wire-no-collector]
+name = kalshi_wire.* must not import collector.* (pure-transport leaf)
+type = forbidden
+source_modules =
+    kalshi_wire
+forbidden_modules =
+    collector

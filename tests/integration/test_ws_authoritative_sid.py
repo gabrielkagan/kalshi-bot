@@ -30,7 +30,6 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import AsyncMock
 import bot.constants  # noqa: F401
 import bot.feeds  # noqa: F401
 
@@ -39,6 +38,38 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "bot/feeds/kalshi.py")  # Bit 4.5b: KalshiFeed moved here from bot/_impl.py
+
+
+class _MockWire:
+    """Stand-in for ``kalshi_wire.ws_client.WSClient`` in unit tests that
+    bypass __init__ (D1.1.5 Phase 3b). Records every ``send_frame`` call so
+    behavioural tests can assert on what would have been sent. Mirrors the
+    old AsyncMock-on-ws.send shape (one element per outgoing frame).
+    """
+    def __init__(self):
+        self.sent = []  # list of payload dicts in send order
+        self.send_frame_raises = None  # if set, send_frame raises this
+        self.reconnect_requested = False
+        self._connected_state = False
+        self._last_msg_ts = 0.0
+
+    def send_frame(self, payload):
+        if self.send_frame_raises is not None:
+            raise self.send_frame_raises
+        self.sent.append(payload)
+
+    def request_reconnect(self):
+        self.reconnect_requested = True
+
+    @property
+    def is_connected(self):
+        return self._connected_state
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 def _make_feed():
@@ -63,10 +94,6 @@ def _make_feed():
     f._delta_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
-    f._ws_last_seq = {}
-    f._ws_seq_gap_logs = 0
-    f._ws_seq_gap_max_logs = 0
-    f._ws_last_msg_ts = 0.0
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
     # Phase 2.6 — authoritative sid tracking.
@@ -74,14 +101,18 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    # Phase 2.6 R4: force-reconnect flag + late-unsub set.
-    f._force_reconnect_requested = False
+    # Phase 2.6 R4: force-reconnect flag now lives on the wire; the set
+    # of pending late-unsubscribes still lives on KalshiFeed.
     f._pending_late_unsubscribes = set()
     # Phase 2.9: raw-log counter + connect ts.
     f._raw_log_count = 0
     f._raw_log_capped_logged = False
     f._ws_connect_ts = 0.0
     f._lock = threading.Lock()
+    # D1.1.5 Phase 3b: transport (WS connection + seq/gap detection + watchdog)
+    # moved into kalshi_wire.ws_client.WSClient. Tests use _MockWire to capture
+    # sent frames in dict form (no JSON parsing needed).
+    f._wire = _MockWire()
     return f
 
 
@@ -89,14 +120,13 @@ def _make_feed():
 # 1. Subscribe sends a unique command id and registers it for response matching
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSubscribeUsesUniqueIds(unittest.IsolatedAsyncioTestCase):
-    async def test_each_subscribe_uses_distinct_id(self):
+class TestSubscribeUsesUniqueIds(unittest.TestCase):
+    def test_each_subscribe_uses_distinct_id(self):
         f = _make_feed()
-        ws = AsyncMock()
-        await f._send_ob_subscribe(ws, "BTC1")
-        await f._send_ob_subscribe(ws, "ETH1")
-        sent_a = json.loads(ws.send.await_args_list[0].args[0])
-        sent_b = json.loads(ws.send.await_args_list[1].args[0])
+        f._send_ob_subscribe("BTC1")
+        f._send_ob_subscribe("ETH1")
+        sent_a = f._wire.sent[0]
+        sent_b = f._wire.sent[1]
         self.assertNotEqual(
             sent_a["id"], sent_b["id"],
             "Each subscribe must use a UNIQUE id so we can match "
@@ -104,11 +134,10 @@ class TestSubscribeUsesUniqueIds(unittest.IsolatedAsyncioTestCase):
             "Pre-2.6 we used static id=2 for ALL subscribes, making "
             "response-matching impossible.")
 
-    async def test_subscribe_registers_outstanding(self):
+    def test_subscribe_registers_outstanding(self):
         f = _make_feed()
-        ws = AsyncMock()
-        await f._send_ob_subscribe(ws, "BTC1")
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_subscribe("BTC1")
+        sent = f._wire.sent[-1]
         self.assertIn(
             sent["id"], f._outstanding_subscribes,
             "Subscribe must register its id in _outstanding_subscribes "
@@ -158,7 +187,7 @@ class TestSubscribedResponseCapturesSid(unittest.TestCase):
 # 3. Unsubscribe uses sids array, not channels/market_tickers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
+class TestUnsubscribeUsesDeleteMarkets(unittest.TestCase):
     """Phase 2.10 supersedes Phase 2.6's sids-array schema. Phase
     2.9 raw logs revealed `sid` is CHANNEL-level (one sid for all
     100+ tickers on orderbook_delta). Sending `cmd: unsubscribe`
@@ -166,13 +195,12 @@ class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
     nuking ~100 tickers when we only wanted to remove one. Use
     `update_subscription` with `action: delete_markets` instead."""
 
-    async def test_unsub_sends_delete_markets(self):
+    def test_unsub_sends_delete_markets(self):
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7  # channel sid
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "BTC1")
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_unsubscribe("BTC1")
+        sent = f._wire.sent[-1]
         self.assertEqual(sent["cmd"], "update_subscription")
         self.assertEqual(
             sent["params"]["action"], "delete_markets")
@@ -184,19 +212,18 @@ class TestUnsubscribeUsesDeleteMarkets(unittest.IsolatedAsyncioTestCase):
             "sids array would cancel the WHOLE channel — must "
             "use delete_markets for surgical single-ticker removal.")
 
-    async def test_unsub_skips_when_sid_unknown(self):
+    def test_unsub_skips_when_sid_unknown(self):
         """Subscribe in flight (no sid yet) — unsubscribe can't be
         sent. Skip it; the subscribe will eventually succeed and a
         future unsub will work."""
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         # No entry in _ticker_to_sid.
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "BTC1")
+        f._send_ob_unsubscribe("BTC1")
         # Either sent nothing (skip) OR sent something safe — but
         # MUST NOT send the broken pre-2.6 schema.
-        if ws.send.await_count > 0:
-            sent = json.loads(ws.send.await_args.args[0])
+        if len(f._wire.sent) > 0:
+            sent = f._wire.sent[-1]
             self.assertNotIn(
                 "market_tickers", sent.get("params", {}),
                 "Unsubscribe with unknown sid must NOT fall back to "
@@ -241,7 +268,10 @@ class TestAstSchemaCorrectness(unittest.TestCase):
                     or cls.name != "KalshiFeed"):
                 continue
             for fn in cls.body:
-                if (isinstance(fn, ast.AsyncFunctionDef)
+                # D1.1.5 Phase 3b: _send_ob_unsubscribe became SYNC
+                # (no async ws send — frames now enqueue via
+                # self._wire.send_frame).
+                if (isinstance(fn, ast.FunctionDef)
                         and fn.name == "_send_ob_unsubscribe"):
                     body_src = ast.unparse(fn)
                     self.assertIn(
@@ -300,50 +330,46 @@ class TestR1A1ForceResubSkipsWhenSidUnknown(unittest.TestCase):
             "queued (would create duplicate subscription).")
 
 
-class TestR1A2UnsubscribePopsSidAtSendTime(unittest.IsolatedAsyncioTestCase):
+class TestR1A2UnsubscribePopsSidAtSendTime(unittest.TestCase):
     """R-review A2: pop _ticker_to_sid in _send_ob_unsubscribe
     after successful send, NOT via search-by-value in
     type=unsubscribed handler."""
 
-    async def test_unsubscribe_pops_sid_after_send(self):
+    def test_unsubscribe_pops_sid_after_send(self):
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "BTC1")
+        f._send_ob_unsubscribe("BTC1")
         self.assertNotIn(
             "BTC1", f._ticker_to_sid,
             "After _send_ob_unsubscribe, the sid mapping must be "
             "popped at send time (not via search-by-value on "
             "type=unsubscribed response).")
 
-    async def test_unsubscribe_send_failure_keeps_sid(self):
-        """If ws.send raises, the sid should NOT be popped — caller
-        may retry."""
+    def test_unsubscribe_send_failure_keeps_sid(self):
+        """If wire.send_frame raises, the sid should NOT be popped —
+        caller may retry."""
         f = _make_feed()
         f._subscribed_tickers.add("BTC1")
         f._ticker_to_sid["BTC1"] = 7
-        ws = AsyncMock()
-        ws.send.side_effect = ConnectionError("boom")
+        f._wire.send_frame_raises = ConnectionError("boom")
         with self.assertRaises(ConnectionError):
-            await f._send_ob_unsubscribe(ws, "BTC1")
+            f._send_ob_unsubscribe("BTC1")
         self.assertEqual(
             f._ticker_to_sid.get("BTC1"), 7,
             "Send failure must NOT pop the sid (caller may retry).")
 
 
-class TestR1A3SubscribeOrphanCleanupOnSendFailure(
-        unittest.IsolatedAsyncioTestCase):
+class TestR1A3SubscribeOrphanCleanupOnSendFailure(unittest.TestCase):
     """R-review A3: if _send_ob_subscribe raises after registering
     in _outstanding_subscribes, the entry orphans. Pop it on
     failure so retries can register a fresh cmd_id."""
 
-    async def test_send_failure_pops_outstanding_entry(self):
+    def test_send_failure_pops_outstanding_entry(self):
         f = _make_feed()
-        ws = AsyncMock()
-        ws.send.side_effect = ConnectionError("boom")
+        f._wire.send_frame_raises = ConnectionError("boom")
         with self.assertRaises(ConnectionError):
-            await f._send_ob_subscribe(ws, "BTC1")
+            f._send_ob_subscribe("BTC1")
         self.assertEqual(
             f._outstanding_subscribes, {},
             "Send failure must pop the orphan cmd_id from "
@@ -458,10 +484,12 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
             time.monotonic()
             - bot.constants.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
+        # D1.1.5 Phase 3b: reconnect request now routes through
+        # self._wire.request_reconnect() (recorded by _MockWire).
         self.assertTrue(
-            f._force_reconnect_requested,
+            f._wire.reconnect_requested,
             "Stuck subscribe for a still-subscribed ticker MUST "
-            "set _force_reconnect_requested. Otherwise drift "
+            "call self._wire.request_reconnect(). Otherwise drift "
             "recovery is permanently dead until natural "
             "disconnect.")
 
@@ -477,13 +505,15 @@ class TestR4StuckSubscribeRequestsForceReconnect(unittest.TestCase):
             time.monotonic()
             - bot.constants.WS_OUTSTANDING_SUBSCRIBE_TIMEOUT_S - 1.0)
         f._check_snapshot_timeouts()
+        # D1.1.5 Phase 3b: reconnect request now routes through
+        # self._wire.request_reconnect() (recorded by _MockWire).
         self.assertFalse(
-            f._force_reconnect_requested,
+            f._wire.reconnect_requested,
             "Stuck subscribe for an unsubscribed ticker should "
             "not trigger reconnect — nobody needs the data.")
 
 
-class TestR5BenignRaceUnsubAfterSubscribed(unittest.IsolatedAsyncioTestCase):
+class TestR5BenignRaceUnsubAfterSubscribed(unittest.TestCase):
     """Phase 2.6 R5 / P1: the BENIGN ordering race.
     type=subscribed lands first (sid bound), THEN unsubscribe_ticker
     is called. Pre-fix, unsubscribe_ticker would pop _ticker_to_sid,
@@ -491,7 +521,7 @@ class TestR5BenignRaceUnsubAfterSubscribed(unittest.IsolatedAsyncioTestCase):
     SKIP → Kalshi-side subscription leaks. Fix: unsubscribe_ticker
     does NOT pop sid; drain consumes it via _send_ob_unsubscribe."""
 
-    async def test_drain_can_send_unsub_after_subscribed_then_unsub(self):
+    def test_drain_can_send_unsub_after_subscribed_then_unsub(self):
         """Phase 2.10: drain sends update_subscription/delete_markets
         (NOT the channel-killing sids-array)."""
         f = _make_feed()
@@ -508,10 +538,9 @@ class TestR5BenignRaceUnsubAfterSubscribed(unittest.IsolatedAsyncioTestCase):
             f._ticker_to_sid.get("RACE1"), 50,
             "Sid must survive unsubscribe_ticker so drain can "
             "use it for delete_markets.")
-        ws = AsyncMock()
-        await f._send_ob_unsubscribe(ws, "RACE1")
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_unsubscribe("RACE1")
+        self.assertEqual(len(f._wire.sent), 1)
+        sent = f._wire.sent[-1]
         self.assertEqual(
             sent["params"]["action"], "delete_markets",
             "Phase 2.10: drain must use delete_markets, NOT the "

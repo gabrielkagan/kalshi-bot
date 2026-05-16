@@ -445,28 +445,45 @@ class TestDeltaDriftDetection(unittest.TestCase):
 
 
 class TestWsSilenceWatchdogFields(unittest.TestCase):
-    """State fields + _handle_message watchdog wiring for the silence
-    detector. The actual reconnect behavior is in _ws_loop which runs in
-    an asyncio task; we test the observable state that drives it.
+    """State fields + frame-ingress watchdog wiring for the silence
+    detector. The actual reconnect behavior is in WSClient's
+    ``_silence_watchdog`` async task; we test the observable state that
+    drives it.
 
-    Regression guard for the 2026-04-24 17:30 UTC 15M outage: Kalshi's WS
-    stayed "connected" (ping/pong healthy) while delivering zero protocol
-    messages for 32 min. Without this watchdog, pending subs never flush,
-    snapshots never arrive, 15M trading dies silently.
+    D1.1.5 Phase 3b: the silence-watchdog ``_last_msg_ts`` moved from
+    ``KalshiFeed._ws_last_msg_ts`` to ``WSClient._last_msg_ts``
+    (set BEFORE invoking the on_frame callback — Apr-24 ordering
+    invariant preserved). These tests now exercise the wire path via
+    ``feed._wire._handle_raw_frame(raw)`` which is the equivalent of
+    the pre-extraction ``feed._handle_message(raw)`` watchdog bump.
+
+    Regression guard for the 2026-04-24 17:30 UTC 15M outage: Kalshi's
+    WS stayed "connected" (ping/pong healthy) while delivering zero
+    protocol messages for 32 min. Without this watchdog, pending subs
+    never flush, snapshots never arrive, 15M trading dies silently.
     """
 
     def test_init_zeroes_watchdog_timestamps(self):
         feed = _make_feed()
-        self.assertEqual(feed._ws_last_msg_ts, 0.0)
+        # _last_msg_ts now lives on WSClient (D1.1.5 Phase 3b)
+        self.assertEqual(feed._wire._last_msg_ts, 0.0)
+        # _ws_connect_ts stays on KalshiFeed (used by _should_log_raw_in
+        # to gate the post-connect raw-log window — bot-specific
+        # log budget per pickup prompt L42)
         self.assertEqual(feed._ws_connect_ts, 0.0)
 
     def test_handle_message_updates_last_msg_ts(self):
-        """Every incoming frame bumps the watchdog, even unknown types."""
+        """Every incoming frame bumps the watchdog, even unknown types.
+
+        D1.1.5 Phase 3b: the bump happens in ``WSClient._handle_raw_frame``
+        BEFORE the on_frame dispatch (Apr-24 silence-watchdog ordering —
+        load-bearing).
+        """
         import time as _t
         feed = _make_feed()
         before = _t.time()
-        feed._handle_message(json.dumps({"type": "something_unknown"}))
-        self.assertGreaterEqual(feed._ws_last_msg_ts, before)
+        feed._wire._handle_raw_frame(json.dumps({"type": "something_unknown"}))
+        self.assertGreaterEqual(feed._wire._last_msg_ts, before)
 
     def test_handle_message_on_empty_json_still_bumps_watchdog(self):
         """Even an empty message body = Kalshi is talking to us. The
@@ -475,24 +492,24 @@ class TestWsSilenceWatchdogFields(unittest.TestCase):
         import time as _t
         feed = _make_feed()
         before = _t.time()
-        feed._handle_message(json.dumps({}))
-        self.assertGreaterEqual(feed._ws_last_msg_ts, before)
+        feed._wire._handle_raw_frame(json.dumps({}))
+        self.assertGreaterEqual(feed._wire._last_msg_ts, before)
 
     def test_handle_message_invalid_json_doesnt_crash(self):
         """Garbage frame — don't crash. Timestamp updated BEFORE json
         parse per design (server connectivity proven by frame arrival)."""
         feed = _make_feed()
-        feed._handle_message("not valid json")
+        feed._wire._handle_raw_frame("not valid json")
 
     def test_watchdog_timestamp_advances_across_messages(self):
         """Multiple messages → timestamp monotonically advances."""
         import time as _t
         feed = _make_feed()
-        feed._handle_message(json.dumps({"type": "a"}))
-        t1 = feed._ws_last_msg_ts
+        feed._wire._handle_raw_frame(json.dumps({"type": "a"}))
+        t1 = feed._wire._last_msg_ts
         _t.sleep(0.01)
-        feed._handle_message(json.dumps({"type": "b"}))
-        t2 = feed._ws_last_msg_ts
+        feed._wire._handle_raw_frame(json.dumps({"type": "b"}))
+        t2 = feed._wire._last_msg_ts
         self.assertGreater(t2, t1)
 
 
@@ -504,6 +521,12 @@ class TestWsSeqGapDetector(unittest.TestCase):
     Any gap = dropped/reordered/duplicate messages and is the leading
     hypothesis for the residual deep-level delta underflow warnings that
     persist even after the 2026-04-24 empty-snapshot fix.
+
+    D1.1.5 Phase 3b: the seq-gap detector moved from
+    ``KalshiFeed._handle_message`` to ``WSClient._handle_raw_frame``.
+    Tests now exercise the wire layer directly and read
+    ``feed._wire._ws_last_seq`` / ``feed._wire._ws_seq_gap_logs`` /
+    ``feed._wire._seq_gap_max_logs``.
 
     Diagnostic test — remove once H3 is confirmed/rejected and the
     instrumentation is cleaned up.
@@ -520,66 +543,71 @@ class TestWsSeqGapDetector(unittest.TestCase):
 
     def test_consecutive_seq_no_gap(self):
         feed = _make_feed()
-        feed._handle_message(self._msg(1, 1))
-        feed._handle_message(self._msg(1, 2))
-        feed._handle_message(self._msg(1, 3))
-        self.assertEqual(feed._ws_seq_gap_logs, 0)
-        self.assertEqual(feed._ws_last_seq[1], 3)
+        feed._wire._handle_raw_frame(self._msg(1, 1))
+        feed._wire._handle_raw_frame(self._msg(1, 2))
+        feed._wire._handle_raw_frame(self._msg(1, 3))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._wire._ws_last_seq[1], 3)
 
     def test_first_seq_per_sid_not_a_gap(self):
         """First message on a new sid — prev is None, skip gap check."""
         feed = _make_feed()
-        feed._handle_message(self._msg(42, 1000))
-        self.assertEqual(feed._ws_seq_gap_logs, 0)
-        self.assertEqual(feed._ws_last_seq[42], 1000)
+        feed._wire._handle_raw_frame(self._msg(42, 1000))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._wire._ws_last_seq[42], 1000)
 
     def test_gap_forward_logs(self):
         """Seq jumps 1 → 5 = 3 messages lost, gap=3."""
         feed = _make_feed()
-        feed._handle_message(self._msg(1, 1))
-        feed._handle_message(self._msg(1, 5))
-        self.assertEqual(feed._ws_seq_gap_logs, 1)
+        feed._wire._handle_raw_frame(self._msg(1, 1))
+        feed._wire._handle_raw_frame(self._msg(1, 5))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 1)
         # Tracker updates to latest — next gap check is against the new seq.
-        self.assertEqual(feed._ws_last_seq[1], 5)
+        self.assertEqual(feed._wire._ws_last_seq[1], 5)
 
     def test_reorder_backward_logs(self):
         """Seq goes 3 → 2 (out-of-order or duplicate) also trips detector."""
         feed = _make_feed()
-        feed._handle_message(self._msg(1, 3))
-        feed._handle_message(self._msg(1, 2))
-        self.assertEqual(feed._ws_seq_gap_logs, 1)
+        feed._wire._handle_raw_frame(self._msg(1, 3))
+        feed._wire._handle_raw_frame(self._msg(1, 2))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 1)
 
     def test_parallel_sids_tracked_independently(self):
         """Multiple subscriptions interleave. Each sid's seq monotonic
         independently — no cross-contamination."""
         feed = _make_feed()
-        feed._handle_message(self._msg(1, 1))
-        feed._handle_message(self._msg(2, 100))
-        feed._handle_message(self._msg(1, 2))
-        feed._handle_message(self._msg(2, 101))
-        feed._handle_message(self._msg(1, 3))
-        self.assertEqual(feed._ws_seq_gap_logs, 0)
-        self.assertEqual(feed._ws_last_seq[1], 3)
-        self.assertEqual(feed._ws_last_seq[2], 101)
+        feed._wire._handle_raw_frame(self._msg(1, 1))
+        feed._wire._handle_raw_frame(self._msg(2, 100))
+        feed._wire._handle_raw_frame(self._msg(1, 2))
+        feed._wire._handle_raw_frame(self._msg(2, 101))
+        feed._wire._handle_raw_frame(self._msg(1, 3))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._wire._ws_last_seq[1], 3)
+        self.assertEqual(feed._wire._ws_last_seq[2], 101)
 
     def test_missing_sid_or_seq_no_crash(self):
         """If Kalshi omits sid/seq (old protocol or malformed), skip silently."""
         feed = _make_feed()
-        feed._handle_message(json.dumps({"type": "heartbeat"}))
-        feed._handle_message(json.dumps({"type": "heartbeat", "sid": 1}))
-        feed._handle_message(json.dumps({"type": "heartbeat", "seq": 1}))
-        self.assertEqual(feed._ws_seq_gap_logs, 0)
-        self.assertEqual(feed._ws_last_seq, {})
+        feed._wire._handle_raw_frame(json.dumps({"type": "heartbeat"}))
+        feed._wire._handle_raw_frame(json.dumps({"type": "heartbeat", "sid": 1}))
+        feed._wire._handle_raw_frame(json.dumps({"type": "heartbeat", "seq": 1}))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 0)
+        self.assertEqual(feed._wire._ws_last_seq, {})
 
     def test_log_cap_prevents_flood(self):
-        """Gap logs are capped at _ws_seq_gap_max_logs to avoid log flood.
-        Past the cap, tracker still updates but no more warnings fire."""
+        """Gap logs are capped to avoid log flood. Past the cap, tracker
+        still updates but no more warnings fire.
+
+        D1.1.5 Phase 3b: the cap moved from
+        ``feed._ws_seq_gap_max_logs`` to ``feed._wire._seq_gap_max_logs``
+        (constructor kwarg ``seq_gap_max_logs``).
+        """
         feed = _make_feed()
-        feed._ws_seq_gap_max_logs = 3
+        feed._wire._seq_gap_max_logs = 3
         for i in range(10):
             # Force a gap on every message
-            feed._handle_message(self._msg(1, i * 10))
-        self.assertEqual(feed._ws_seq_gap_logs, 3)
+            feed._wire._handle_raw_frame(self._msg(1, i * 10))
+        self.assertEqual(feed._wire._ws_seq_gap_logs, 3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

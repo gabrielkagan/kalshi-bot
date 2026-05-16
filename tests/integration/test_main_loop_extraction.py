@@ -773,15 +773,18 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     assert "main_loop-no-impl-toplevel" not in contract_names, (
         "Unexpected `main_loop-no-impl-toplevel` contract added"
     )
-    # Sanity: 6 contracts post-D1.1 (2026-05-16). The 5 bot-side contracts
+    # Sanity: 8 contracts post-D1.1.5 (2026-05-16). The 5 bot-side contracts
     # post-Bit-9.3-iii.c (fetchers-no-engines, feeds-no-engines, helpers-leaf,
     # bot-no-torch, bot-no-pandas — engines-no-impl was retired when bot/_impl.py
     # was DELETED) plus D1.1's `collector-no-bot` (Data Corpus initiative,
-    # ticket 86b9ypn49) for the new top-level collector/ sibling package.
-    # This test's intent — "no main-loop-no-impl-toplevel carve-out was added" —
-    # is unchanged; only the unrelated 6th contract bumps the count.
-    assert len(contracts) == 6, (
-        f"Expected 6 .importlinter contracts post-D1.1 (5 bot-side + collector-no-bot); "
+    # ticket 86b9ypn49) plus D1.1.5's two new contracts (ticket 86b9zdhz2):
+    # `kalshi_wire-no-bot` + `kalshi_wire-no-collector` (shared transport
+    # library, 2026-05-16 AMENDMENT to D0.3 §5). This test's intent — "no
+    # main-loop-no-impl-toplevel carve-out was added" — is unchanged; only
+    # the unrelated 7th + 8th contracts bump the count.
+    assert len(contracts) == 8, (
+        f"Expected 8 .importlinter contracts post-D1.1.5 (5 bot-side + "
+        f"collector-no-bot + kalshi_wire-no-bot + kalshi_wire-no-collector); "
         f"found {len(contracts)}: {sorted(contract_names)}"
     )
 

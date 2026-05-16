@@ -61,18 +61,39 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   bot/snapshots/supabase_sync.py (Sprint 10.4, 2026-05-12; Bit 12.1
   2026-05-12 relocated `config.py` from repo root → `bot/config.py`).
 - **`collector/__main__.py` is the entrypoint shim for the Data Corpus
-  collector** — a NEW top-level Python package SIBLING to `bot/`
-  (D1.1 SHIPPED 2026-05-16, ticket `86b9ypn49`). Same sacred-boundary
-  discipline as `bot/__main__.py`: no business logic in the shim, body
-  lives in `collector/<module>.py` (`main_loop.py`, `ws_connection.py`,
-  `rest_snapshot.py`, `writer.py`, `uploader.py`, `subscription_manager.py`,
-  `auth.py`). Structural bot-isolation contract: `collector/` has ZERO
-  `bot.*` imports, enforced by the `[importlinter:contract:collector-no-bot]`
-  forbidden contract + AST defense-in-depth in
-  `tests/contracts/test_collector_no_bot_imports.py`. See
-  `kb/decisions/data-corpus-architecture.md` for the bronze/silver/gold
+  collector** — a top-level Python package SIBLING to `bot/`
+  (D1.1 SHIPPED 2026-05-16, ticket `86b9ypn49`; D1.1.5 SHIPPED 2026-05-16,
+  ticket `86b9zdhz2`). Same sacred-boundary discipline as `bot/__main__.py`:
+  no business logic in the shim, body lives in `collector/<module>.py`
+  (`main_loop.py`, `ws_connection.py`, `rest_snapshot.py`, `writer.py`,
+  `uploader.py`, `subscription_manager.py`). `collector/auth.py` was DELETED
+  at D1.1.5 — auth flows through `kalshi_wire.auth` instead. Structural
+  bot-isolation contract: `collector/` has ZERO `bot.*` imports, enforced
+  by the `[importlinter:contract:collector-no-bot]` forbidden contract +
+  AST defense-in-depth in `tests/contracts/test_collector_no_bot_imports.py`.
+  See `kb/decisions/data-corpus-architecture.md` for the bronze/silver/gold
   architecture. D1.1 is scaffolding-only — `collector/main_loop.py::run()`
-  raises NotImplementedError; real implementations land at D1.2-D1.5.
+  raises NotImplementedError; D1.1.5 wires `collector/ws_connection.py`'s
+  `BronzeArchiver` to `kalshi_wire.ws_client.WSClient`; remaining bodies
+  land at D1.2-D1.5.
+- **`kalshi_wire/` is the shared Kalshi WS transport library** — a
+  top-level Python package SIBLING to both `bot/` and `collector/`
+  (D1.1.5 SHIPPED 2026-05-16, ticket `86b9zdhz2`). Pure-transport leaf:
+  ZERO `bot.*` imports AND ZERO `collector.*` imports (pinned by
+  `[importlinter:contract:kalshi_wire-no-bot]` +
+  `[importlinter:contract:kalshi_wire-no-collector]`). Consumed by
+  `bot/feeds/kalshi.py` (KalshiFeed, via 4 sync callbacks:
+  `on_session_start` / `on_frame` / `on_session_end` / `on_drain_tick`)
+  AND `collector/ws_connection.py` (BronzeArchiver). The 2026-05-16
+  AMENDMENT to `kb/decisions/data-corpus-architecture.md` §5 adopted
+  the "two sides of the same coin" shared-transport shape after
+  external-advisor feedback. WSClient owns: asyncio thread, WS
+  connect/reconnect with exponential backoff, RSA-PSS handshake auth,
+  silence watchdog (Apr-24 ordering invariant: `_last_msg_ts` set BEFORE
+  invoking `on_frame`), thread-safe outgoing-frame queue, frame parse +
+  seq-gap detect. Differential test
+  `tests/equivalence/test_kalshi_wire_differential.py` pins byte-identical
+  frame capture across the two consumers (Pillar 3 load-bearing).
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
   Direct `import torch` / `import pandas` anywhere under `bot/` is
   blocked by `.importlinter` contracts (`bot-no-torch`, `bot-no-pandas`).

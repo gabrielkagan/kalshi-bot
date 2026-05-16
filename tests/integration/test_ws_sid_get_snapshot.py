@@ -35,13 +35,11 @@ This module pins:
 
 import ast
 import json
-import logging
 import os
 import sys
 import threading
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock
 import bot.constants  # noqa: F401
 import bot.feeds  # noqa: F401
 
@@ -50,6 +48,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 BOT_PY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "bot/feeds/kalshi.py")  # Bit 4.5b: KalshiFeed moved here from bot/_impl.py
+
+
+class _MockWire:
+    """Stand-in for ``kalshi_wire.ws_client.WSClient`` (D1.1.5 Phase 3b).
+    Captures send_frame payloads as dicts (one per call).
+    """
+    def __init__(self):
+        self.sent = []
+        self.send_frame_raises = None
+        self.reconnect_requested = False
+        self._connected_state = False
+        self._last_msg_ts = 0.0
+
+    def send_frame(self, payload):
+        if self.send_frame_raises is not None:
+            raise self.send_frame_raises
+        self.sent.append(payload)
+
+    def request_reconnect(self):
+        self.reconnect_requested = True
+
+    @property
+    def is_connected(self):
+        return self._connected_state
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 def _make_feed():
@@ -74,10 +102,6 @@ def _make_feed():
     f._delta_schema_probed = True
     f._delta_probe_count = 0
     f._delta_probe_max = 0
-    f._ws_last_seq = {}
-    f._ws_seq_gap_logs = 0
-    f._ws_seq_gap_max_logs = 0
-    f._ws_last_msg_ts = 0.0
     # Phase 2.5: ticker -> sid mapping (learned from envelope).
     f._ticker_to_sid = {}
     f._ws_error_frame_seen = set()
@@ -86,12 +110,13 @@ def _make_feed():
     f._outstanding_subscribes = {}
     f._outstanding_subscribe_ts = {}
     f._ws_orphan_sid_seen = set()
-    f._force_reconnect_requested = False
     f._pending_late_unsubscribes = set()
     f._raw_log_count = 0
     f._raw_log_capped_logged = False
     f._ws_connect_ts = 0.0
     f._lock = threading.Lock()
+    # D1.1.5 Phase 3b: transport moved into kalshi_wire.ws_client.WSClient.
+    f._wire = _MockWire()
     return f
 
 
@@ -149,7 +174,7 @@ class TestEnvelopeSidNoLongerLearned(unittest.TestCase):
 # 2. _send_ob_get_snapshot uses sid, not market_tickers
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestSendUsesSidAndMarketTickers(unittest.IsolatedAsyncioTestCase):
+class TestSendUsesSidAndMarketTickers(unittest.TestCase):
     """Phase 2.7: Kalshi's update_subscription requires BOTH:
       - sid (or sids)
       - At least one market identifier (market_tickers / market_ticker
@@ -159,14 +184,13 @@ class TestSendUsesSidAndMarketTickers(unittest.IsolatedAsyncioTestCase):
     ID'. Phase 2.6 sent only sid → code=14 'Market Ticker required'.
     Phase 2.7 sends BOTH."""
 
-    async def test_send_ob_get_snapshot_includes_sid_and_market_tickers(self):
+    def test_send_ob_get_snapshot_includes_sid_and_market_tickers(self):
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-FOO")
         f._ticker_to_sid["KXBTC15M-FOO"] = 456
-        ws = AsyncMock()
-        await f._send_ob_get_snapshot(ws, "KXBTC15M-FOO")
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.await_args.args[0])
+        f._send_ob_get_snapshot("KXBTC15M-FOO")
+        self.assertEqual(len(f._wire.sent), 1)
+        sent = f._wire.sent[-1]
         self.assertEqual(sent["cmd"], "update_subscription")
         self.assertEqual(sent["params"]["action"], "get_snapshot")
         self.assertEqual(
@@ -241,15 +265,15 @@ class TestSidMapCleanup(unittest.TestCase):
 
     def test_session_cleanup_clears_sid_map(self):
         """sids are session-scoped — Kalshi assigns new ones on
-        reconnect. _cleanup_session_state must clear the map."""
+        reconnect. _on_session_end (post-D1.1.5 successor to
+        ``_cleanup_session_state``) must clear the map."""
         f = _make_feed()
-        f._connected = True
         f._ticker_to_sid["A"] = 1
         f._ticker_to_sid["B"] = 2
-        f._cleanup_session_state()
+        f._on_session_end()
         self.assertEqual(
             f._ticker_to_sid, {},
-            "_cleanup_session_state must clear _ticker_to_sid "
+            "_on_session_end must clear _ticker_to_sid "
             "(sids don't survive across WS reconnects).")
 
 
@@ -408,10 +432,11 @@ class TestErrorFrameDedup(unittest.TestCase):
             "Different error code logs separately (not deduped).")
 
     def test_session_cleanup_clears_error_dedup(self):
+        """D1.1.5 Phase 3b: ``_cleanup_session_state`` renamed to
+        ``_on_session_end`` (callback invoked by WSClient)."""
         f = _make_feed()
-        f._connected = True
         f._ws_error_frame_seen.add((4, "invalid_params"))
-        f._cleanup_session_state()
+        f._on_session_end()
         self.assertEqual(
             f._ws_error_frame_seen, set(),
             "Session cleanup must clear error-frame dedup so a new "

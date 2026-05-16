@@ -56,7 +56,16 @@ def _make_main_loop():
 
     fake_kf = MagicMock()
     fake_kf.is_connected = True
-    fake_kf._force_reconnect_requested = False
+    # D1.1.5 Phase 3b: the force-reconnect flag now lives on WSClient
+    # (`kf._wire`) and is signaled via the thread-safe
+    # ``KalshiFeed.request_reconnect()`` shim. The R2 escalation path
+    # in `bot/scanner/__init__.py` calls `kf.request_reconnect()` —
+    # tests track invocations via this counter so the silent-no-op
+    # bug class (stray attribute writes) cannot recur.
+    fake_kf._reconnect_requests = 0
+    def _request_reconnect():
+        fake_kf._reconnect_requests += 1
+    fake_kf.request_reconnect = _request_reconnect
     fake_kf._fake_resubbed = []
 
     def _force_resub(t, *, purge_cache=True, bypass_cooldown=False,
@@ -174,7 +183,7 @@ class TestR2ForceReconnectAt10Ticks(unittest.TestCase):
         ml._scan_15m_unproductive_count = 9
         ml._check_scan_productive_15m(active, _tick_ts())
         self.assertTrue(
-            kf._force_reconnect_requested,
+            (kf._reconnect_requests > 0),
             "At 10+ consecutive unproductive ticks, "
             "_force_reconnect_requested MUST be set so silence "
             "watchdog triggers fresh WS session.")
@@ -189,7 +198,7 @@ class TestR2ForceReconnectAt10Ticks(unittest.TestCase):
         ml._scan_15m_unproductive_count = 8
         ml._check_scan_productive_15m(active, _tick_ts())
         self.assertFalse(
-            kf._force_reconnect_requested,
+            (kf._reconnect_requests > 0),
             "Below 10 ticks, must NOT request reconnect "
             "(let R1 force_resubscribe try first).")
 
@@ -200,14 +209,15 @@ class TestR2ForceReconnectAt10Ticks(unittest.TestCase):
         active = _active_windows_with_n_15m(4)
         ml._scan_15m_unproductive_count = 9
         ml._check_scan_productive_15m(active, _tick_ts())
-        # Reset the flag (simulating silence watchdog consumed it).
-        kf._force_reconnect_requested = False
+        # Reset the counter (simulating silence watchdog consumed
+        # the reconnect request and now ready for the NEXT one).
+        kf._reconnect_requests = 0
         # Tick again past threshold.
         ml._scan_15m_unproductive_count = 10
         ml._check_scan_productive_15m(active, _tick_ts())
         # Reconnect should NOT be re-requested (one-shot flag).
         self.assertFalse(
-            kf._force_reconnect_requested,
+            (kf._reconnect_requests > 0),
             "Reconnect is one-shot per stuck period — must not "
             "re-request until next productive→unproductive cycle.")
 
@@ -275,7 +285,7 @@ class TestR2A6PostReconnectNormalOperation(unittest.TestCase):
         for _ in range(5):
             sc._check_scan_productive_15m(active, _tick_ts())
         self.assertTrue(
-            kf._force_reconnect_requested,
+            (kf._reconnect_requests > 0),
             "Post-reconnect: R2 fires at counter 10. Transition "
             "reset doesn't break long-term escalation.")
 
@@ -298,7 +308,7 @@ class TestR_ReviewA1NoReconnectBomb(unittest.TestCase):
         self.assertGreater(sc._scan_15m_unproductive_count, 10)
         # No recovery actions fired (WS was down).
         self.assertEqual(len(kf._fake_resubbed), 0)
-        self.assertFalse(kf._force_reconnect_requested)
+        self.assertFalse((kf._reconnect_requests > 0))
         # Now reconnect.
         kf.is_connected = True
         sc._check_scan_productive_15m(active, _tick_ts())
@@ -310,7 +320,7 @@ class TestR_ReviewA1NoReconnectBomb(unittest.TestCase):
             "On disconnect→reconnect transition, counter MUST "
             "reset so R2 doesn't immediately fire reconnect-bomb.")
         self.assertFalse(
-            kf._force_reconnect_requested,
+            (kf._reconnect_requests > 0),
             "R2 reconnect MUST NOT fire on the transition tick — "
             "would tear down the freshly-reconnected WS.")
 
