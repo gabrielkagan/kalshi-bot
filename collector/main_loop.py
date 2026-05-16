@@ -45,8 +45,15 @@ re-polls hourly. On ticker-set changes the refresher invokes a callback
 that rebuilds per-conn subscribe frames + force-reconnects each WS conn
 so the new subscriptions take effect (Kalshi has no in-session
 add/remove; reconnect-and-resubscribe is the protocol-level mechanism).
-D1.5 deploys via the ``ops/kalshi-collector.service`` systemd unit
-(requires-approval; 3 D0.3 §12 operator decisions still pending).
+D1.5 (SHIPPED 2026-05-16, ticket ``86b9ypna4``, requires-approval)
+deploys this loop via the ``ops/kalshi-collector.service`` systemd
+unit on the VPS. The unit sources ``/home/botuser/.env.collector``
+(dedicated home-rooted env file — separate from the bot's repo-
+rooted ``.env``) so credential rotation cannot disturb the bot. The
+3 D0.3 §12 operator decisions resolved at D1.5 kickoff:
+``Restart=on-failure`` + ``RestartSec=10s`` + ``Nice=10`` lifecycle
+posture; lifecycle Standard → DEEP_ARCHIVE @ 30d (skip IA);
+``KALSHI_COLLECTOR_KEY_ID`` provisioned via operator runbook.
 
 Sync + threading per CLAUDE.md anti-pattern ("Don't add async. Synchronous
 + threading for WS feeds is the design."). The drain thread is a daemon
@@ -105,8 +112,10 @@ def _required_env(name: str) -> str:
     if not val:
         raise EnvironmentError(
             f"Required env var {name!r} is empty or unset. "
-            f"D0.3 §12 lists the 3 operator decisions blocking D1.5; "
-            f"the bronze collector cannot boot without auth credentials."
+            f"D1.5 sources /home/botuser/.env.collector (NOT the bot's "
+            f".env); confirm the env file exists and contains "
+            f"{name}=... (operator runbook in ops/CLAUDE.md). The "
+            f"bronze collector cannot boot without auth credentials."
         )
     return val
 

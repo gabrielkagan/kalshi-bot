@@ -50,22 +50,28 @@ def test_ops_install_sh_invokes_systemctl_daemon_reload():
     keeps using the cached unit until reload). A future edit that flips
     the order would brick the install.
 
-    Anchored at column 0 (re.M `^`) so a comment containing the phrase
-    `sudo cp` or `systemctl daemon-reload` mid-line can't satisfy the
-    ordering assertion (R1 M3: install.sh has both phrases in comment
-    bodies, which a substring search would match before the real lines).
+    Anchored at start-of-line with optional leading whitespace
+    (``^\\s*``) so a comment containing the phrase `sudo cp` or
+    `systemctl daemon-reload` mid-line can't satisfy the ordering
+    assertion (R1 M3: install.sh has both phrases in comment bodies,
+    which a substring search would match before the real lines). The
+    ``\\s*`` tolerance is required because D1.5 installs N units in a
+    `for` loop, putting the canonical ``sudo cp`` 4-space-indented
+    inside the loop body. The anti-comment defense survives because a
+    leading ``#`` would consume whitespace before the literal ``sudo``
+    (``^\\s*sudo`` doesn't match ``    # sudo cp ...``).
     """
     assert INSTALL_SH.exists(), f"{INSTALL_SH.relative_to(REPO_ROOT)} missing."
     text = INSTALL_SH.read_text()
-    cp_match = re.search(r"^sudo\s+cp\b", text, re.M)
+    cp_match = re.search(r"^\s*sudo\s+cp\b", text, re.M)
     assert cp_match, (
-        "install.sh missing `sudo cp` line at column 0 — without it, the "
+        "install.sh missing `sudo cp` line — without it, the "
         "unit never lands at /etc/systemd/system/."
     )
-    reload_match = re.search(r"^sudo\s+systemctl\s+daemon-reload\b", text, re.M)
+    reload_match = re.search(r"^\s*sudo\s+systemctl\s+daemon-reload\b", text, re.M)
     assert reload_match, (
-        "install.sh missing `sudo systemctl daemon-reload` line at column "
-        "0 — without it, systemd keeps using the cached unit, so the cp "
+        "install.sh missing `sudo systemctl daemon-reload` line — "
+        "without it, systemd keeps using the cached unit, so the cp "
         "is a silent no-op."
     )
     assert reload_match.start() > cp_match.start(), (
@@ -168,6 +174,78 @@ def test_pre_deploy_check_in_deploy_yml():
         "deploy.yml drift check is AFTER `git reset --hard <sha>`. The "
         "check must run BEFORE reset --hard so an aborted deploy leaves "
         "the VPS on the prior commit (untouched)."
+    )
+
+
+def test_install_sh_installs_both_kalshi_bot_and_kalshi_collector_units():
+    """D1.5 (ticket 86b9ypna4): install.sh extended to install BOTH
+    kalshi-bot.service AND kalshi-collector.service.
+
+    Pre-D1.5, install.sh installed only the bot unit. D1.5 ships
+    ops/kalshi-collector.service (Data Corpus collector) and extends
+    install.sh to install both in a single pass with shared validation
+    (executable wrapper, env-file present, directive paths match,
+    systemd-analyze verify). The detailed unit-shape contracts live in
+    tests/contracts/test_kalshi_collector_systemd_unit.py — this
+    test pins install.sh's awareness of both units so a future
+    accidental rollback to bot-only doesn't silently leave the
+    collector unit un-installed on next deploy.
+    """
+    assert INSTALL_SH.exists()
+    text = INSTALL_SH.read_text()
+    # Must reference both unit names (in some form — string literal,
+    # array member, or path component).
+    assert "kalshi-bot" in text, (
+        "install.sh no longer references `kalshi-bot` — D1.5's "
+        "multi-unit loop must include it."
+    )
+    assert "kalshi-collector" in text, (
+        "install.sh missing `kalshi-collector` reference. D1.5 "
+        "(86b9ypna4) extends install.sh to install the Data Corpus "
+        "collector unit alongside the bot."
+    )
+    # Must reference both destination paths.
+    assert "/etc/systemd/system/kalshi-bot.service" in text or "kalshi-bot.service" in text, (
+        "install.sh missing kalshi-bot.service destination/source reference."
+    )
+    assert (
+        "/etc/systemd/system/kalshi-collector.service" in text
+        or "kalshi-collector.service" in text
+    ), (
+        "install.sh missing kalshi-collector.service destination/source "
+        "reference. The unit file at ops/kalshi-collector.service must "
+        "be installed to /etc/systemd/system/kalshi-collector.service."
+    )
+
+
+def test_install_sh_enables_both_units_for_boot():
+    """install.sh must `systemctl enable` BOTH units so they auto-start
+    on VPS reboot. A future edit that enables only one would leave the
+    other dormant after the next host reboot (silent loss of bronze
+    capture)."""
+    assert INSTALL_SH.exists()
+    text = INSTALL_SH.read_text()
+    # Allow either explicit enable lines per unit, or a loop body that
+    # references the unit-name variable. Conservative check: the literal
+    # `systemctl enable` must appear, and both unit names must appear
+    # somewhere in the file (covered by the prior test).
+    enable_match = re.search(r"systemctl\s+enable\b", text)
+    assert enable_match, (
+        "install.sh missing `systemctl enable` — units installed but "
+        "not enabled won't auto-start on host reboot."
+    )
+
+
+def test_collector_unit_file_exists_at_canonical_path():
+    """D1.5: ops/kalshi-collector.service must exist as the source of
+    truth for the on-VPS collector unit. Detailed shape contracts live
+    in tests/contracts/test_kalshi_collector_systemd_unit.py; this is
+    the unit-tier presence pin."""
+    collector_unit = REPO_ROOT / "ops" / "kalshi-collector.service"
+    assert collector_unit.exists(), (
+        "ops/kalshi-collector.service missing — D1.5 (ticket "
+        "86b9ypna4) ships this file. Without it, install.sh's multi-"
+        "unit loop fails its first validation pass."
     )
 
 

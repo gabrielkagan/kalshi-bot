@@ -30,8 +30,12 @@ escalates to Telegram — bug or tampering alert. The live current-day
 to rotation.log every day, so its content changes between runs and
 --immutable would abort the sync on day 2 of the schedule.
 
-Bucket lifecycle for `journals/` prefix: Standard → Glacier IR @ 30d
-→ Deep Archive @ 90d, never expire. ~$0.50/mo year 1, ~$0.40/mo year 5.
+Bucket lifecycle for `journals/` prefix (audit-confirmed live state +
+canonical post-D1.5 template at `scripts/STATE_DB_BACKUP_SETUP.md` §2):
+Standard → DEEP_ARCHIVE @ 30d, never expire. ~$0.50/mo year 1,
+~$0.40/mo year 5. (Pre-D1.5 this docstring claimed a 30d→GLACIER_IR
+→90d→DEEP_ARCHIVE step pattern; that text was speculative and never
+matched the live bucket; D1.5 R3 corrected it.)
 """
 
 from __future__ import annotations

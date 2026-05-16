@@ -70,6 +70,38 @@ Save as `lifecycle.json`:
       ]
     },
     {
+      "ID": "journals-archive",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "journals/"},
+      "Transitions": [
+        {"Days": 30, "StorageClass": "DEEP_ARCHIVE"}
+      ]
+    },
+    {
+      "ID": "market-obs-archive",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "market_obs/"},
+      "Transitions": [
+        {"Days": 0, "StorageClass": "GLACIER_IR"}
+      ]
+    },
+    {
+      "ID": "bronze-archive",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "bronze/"},
+      "Transitions": [
+        {"Days": 30, "StorageClass": "DEEP_ARCHIVE"}
+      ]
+    },
+    {
+      "ID": "silver-archive",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "silver/"},
+      "Transitions": [
+        {"Days": 90, "StorageClass": "GLACIER_IR"}
+      ]
+    },
+    {
       "ID": "expire-install-probes",
       "Status": "Enabled",
       "Filter": {"Prefix": "_install_check/"},
@@ -79,15 +111,41 @@ Save as `lifecycle.json`:
 }
 ```
 
+D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the template from 2 rules (daily + install-probes) to 6 rules. Two pre-existing prefixes (`journals/` + `market_obs/`) had lifecycle rules applied on the live bucket via side-channel tickets (`86b9xgp7k` + `86b9xcdwg`) but were never folded back into the §2 template — that's exactly the F6 from D0.1 drift (the template lied about what production looked like). D1.5 folds those rules into the template at the AUDIT-CONFIRMED production cadences (`kb/findings/s3-existing-corpus-audit.md` §1): journals → DEEP_ARCHIVE @ 30d; market_obs → GLACIER_IR @ 0d. The NEW `bronze/` + `silver/` rules come from `kb/decisions/data-corpus-architecture.md` §8 (D0.3 operator decision: bronze skips IA — Standard → DEEP_ARCHIVE @ 30d; silver lands at GLACIER_IR @ 90d for regenerable typed-Parquet derivatives). `gold/` intentionally has NO rule (consumer-facing features stay hot at the Standard default; explicit no-op rule would clutter the policy).
+
+**Operator note for an existing pre-D1.5 bucket — GET-merge-PUT, NOT verbatim re-run.** The audit ground truth (`kb/findings/s3-existing-corpus-audit.md` §1) is: the live `kalshi-bot-archive` bucket has 4 rules — `tier-to-glacier-forever` for daily/ at cadence `→ GLACIER_IR @ 7d, never expires` (NOT the 30d→90d cadence in the template above; pre-existing per-bucket drift documented at D0.1 F6), plus the (unrelated) `journals-archive` + `market-obs-archive` + `expire-install-probes` rules that DO match the §2 template's cadences. 3 of 4 audit-state rules match the §2 template; the daily/ rule diverges. **A verbatim `put-bucket-lifecycle-configuration` against the live bucket would silently mutate daily/'s cadence from 7d→GLACIER_IR (the audited live state) to 30d→GLACIER_IR→90d→DEEP_ARCHIVE (the template state) — a real cost + latency change that the operator did not intend.** Always GET-merge-PUT instead:
+
+```bash
+aws s3api get-bucket-lifecycle-configuration --bucket "$BUCKET" > current-lifecycle.json
+# Hand-merge the NEW bronze-archive + silver-archive rules into current-lifecycle.json
+# (keep the live daily/ + journals/ + market_obs/ + install-probes rules verbatim).
+aws s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" --lifecycle-configuration file://current-lifecycle.json
+```
+
+The verbatim `lifecycle.json` template above is for a FRESH bucket where no prior lifecycle exists.
+
 ```bash
 aws s3api put-bucket-lifecycle-configuration \
     --bucket "$BUCKET" \
     --lifecycle-configuration file://lifecycle.json
 ```
 
-Two rules:
+Six rules (D1.5 template expansion; pre-D1.5 the TEMPLATE had only `tier-to-glacier-forever` + `expire-install-probes` — the live bucket separately picked up `journals-archive` + `market-obs-archive` via side-channel tickets pre-D1.5, see D0.1 F6):
 - **`tier-to-glacier-forever`** — daily snapshots never expire; tier
-  to cheaper storage classes over time.
+  to cheaper storage classes over time (Standard → GLACIER_IR @ 30d → DEEP_ARCHIVE @ 90d).
+- **`journals-archive`** — bot's per-tick JSONL streams sync'd via
+  `kalshi-journal-archives-sync.timer` (ticket `86b9xgp7k`). Standard
+  → DEEP_ARCHIVE @ 30d. Never expires.
+- **`market-obs-archive`** — bot's `market_observations_continuous`
+  table parquet-archived via `kalshi-market-obs-archive.timer` (ticket
+  `86b9xcdwg`). Rarely read but want instant retrieval; Standard →
+  GLACIER_IR @ 0d. Never expires.
+- **`bronze-archive`** — Data Corpus raw WS-frame JSONL.zst written by
+  the D1.5 collector. Standard → DEEP_ARCHIVE @ 30d (skip IA per
+  `kb/decisions/data-corpus-architecture.md` §8). Never expires.
+- **`silver-archive`** — D2.x ETL-produced typed Parquet from bronze.
+  Standard → GLACIER_IR @ 90d (regenerable; cheap to keep warm-ish for
+  dbt re-runs).  Never expires.
 - **`expire-install-probes`** — Round-1 finding A-M1: the installer's
   install-time sentinel (`_install_check/setup-<ts>.txt`) cannot be
   deleted by the writer-IAM (PutObject-only). Without this rule, every
@@ -117,22 +175,38 @@ Save as `bucket-policy.json`:
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "DenyDeleteOnDailySnapshots",
+      "Sid": "DenyDeleteOnArchivePrefixes",
       "Effect": "Deny",
       "Principal": "*",
       "Action": ["s3:DeleteObjectVersion"],
-      "Resource": "arn:aws:s3:::REPLACE_BUCKET_NAME/daily/*"
+      "Resource": [
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/daily/*",
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/journals/*",
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/market_obs/*",
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/bronze/*",
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/silver/*",
+        "arn:aws:s3:::REPLACE_BUCKET_NAME/gold/*"
+      ]
     }
   ]
 }
 ```
 
-**Important: scope to `daily/*` only.** A previous draft used
-`Resource: "arn:aws:s3:::BUCKET/*"` (whole bucket), which would block
-the `expire-install-probes` lifecycle rule (lifecycle DELETEs are
-evaluated against bucket policy in versioned buckets — the rule needs
-to delete `_install_check/` noncurrent versions to free storage).
-`daily/*` is the resource we actually care about protecting.
+**Important: scope to specific archive prefixes, NOT the whole bucket.**
+A previous draft used `Resource: "arn:aws:s3:::BUCKET/*"` (whole
+bucket), which would block the `expire-install-probes` lifecycle rule
+(lifecycle DELETEs are evaluated against bucket policy in versioned
+buckets — the rule needs to delete `_install_check/` noncurrent
+versions to free storage). Listing each archive prefix is verbose but
+correct: the install-probe deletion path stays clear, and any new
+archive prefix added in the future must be added here too.
+
+D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the deny scope from
+`daily/*` only to ALL six archive prefixes — closes F6 from D0.1 per
+`kb/decisions/data-corpus-architecture.md` §1 + §15. Without the
+extension, a compromised collector writer IAM key could silently
+DELETE bronze snapshots and the immutability guarantee would not
+hold.
 
 ```bash
 # Portable cross-platform sed (works on both GNU/Linux + macOS):
@@ -150,6 +224,16 @@ use `aws s3api put-bucket-policy` with an empty Statement array.
 This is the key paranoia: a compromised VPS can upload garbage but
 can't delete or read prior snapshots.
 
+D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the `PutObject`
+Resource set from `daily/*` only to ALL six archive prefixes
+(`daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`).
+Without the `bronze/*` grant, the collector's first
+`rclone copyto s3prod:kalshi-bot-archive/bronze/...` returns 403, the
+KEEP-local-on-failure posture (collector/uploader.py) accumulates
+chunks in `outbox/`, and the 2 GB VPS fills the root volume within
+hours of bronze day-zero — well before D1.6 disk-pressure alerting
+ships. Closes F6 from D0.1.
+
 ```bash
 aws iam create-user --user-name kalshi-state-db-backup-writer
 
@@ -162,7 +246,14 @@ cat > writer-policy.json <<EOF
             "Sid": "PutObjectsOnly",
             "Effect": "Allow",
             "Action": ["s3:PutObject"],
-            "Resource": "arn:aws:s3:::${BUCKET}/daily/*"
+            "Resource": [
+                "arn:aws:s3:::${BUCKET}/daily/*",
+                "arn:aws:s3:::${BUCKET}/journals/*",
+                "arn:aws:s3:::${BUCKET}/market_obs/*",
+                "arn:aws:s3:::${BUCKET}/bronze/*",
+                "arn:aws:s3:::${BUCKET}/silver/*",
+                "arn:aws:s3:::${BUCKET}/gold/*"
+            ]
         },
         {
             "Sid": "InstallProbe",
@@ -202,6 +293,12 @@ key; reader needs to enumerate prior versions to find the un-tampered
 one). Reader also needs `s3:RestoreObject` to thaw Glacier-tiered
 snapshots during incident recovery.
 
+D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the reader scope from
+`daily/*` only to ALL six archive prefixes, preemptively unblocking
+the D2.x off-VPS silver/gold ETL chain (DuckDB + dbt running on the
+operator's Mac reads bronze via this same reader profile — see
+`kb/decisions/data-corpus-architecture.md` §13).
+
 ```bash
 aws iam create-user --user-name kalshi-state-db-backup-reader
 
@@ -213,20 +310,41 @@ cat > reader-policy.json <<EOF
             "Sid": "ReadOnly",
             "Effect": "Allow",
             "Action": ["s3:GetObject", "s3:GetObjectVersion"],
-            "Resource": "arn:aws:s3:::${BUCKET}/daily/*"
+            "Resource": [
+                "arn:aws:s3:::${BUCKET}/daily/*",
+                "arn:aws:s3:::${BUCKET}/journals/*",
+                "arn:aws:s3:::${BUCKET}/market_obs/*",
+                "arn:aws:s3:::${BUCKET}/bronze/*",
+                "arn:aws:s3:::${BUCKET}/silver/*",
+                "arn:aws:s3:::${BUCKET}/gold/*"
+            ]
         },
         {
             "Sid": "ListBucketAndVersions",
             "Effect": "Allow",
             "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
             "Resource": "arn:aws:s3:::${BUCKET}",
-            "Condition": {"StringLike": {"s3:prefix": ["daily/*", "daily/"]}}
+            "Condition": {"StringLike": {"s3:prefix": [
+                "daily/*", "daily/",
+                "journals/*", "journals/",
+                "market_obs/*", "market_obs/",
+                "bronze/*", "bronze/",
+                "silver/*", "silver/",
+                "gold/*", "gold/"
+            ]}}
         },
         {
             "Sid": "RestoreObjectFromGlacier",
             "Effect": "Allow",
             "Action": ["s3:RestoreObject"],
-            "Resource": "arn:aws:s3:::${BUCKET}/daily/*"
+            "Resource": [
+                "arn:aws:s3:::${BUCKET}/daily/*",
+                "arn:aws:s3:::${BUCKET}/journals/*",
+                "arn:aws:s3:::${BUCKET}/market_obs/*",
+                "arn:aws:s3:::${BUCKET}/bronze/*",
+                "arn:aws:s3:::${BUCKET}/silver/*",
+                "arn:aws:s3:::${BUCKET}/gold/*"
+            ]
         }
     ]
 }
@@ -311,10 +429,11 @@ Document the row counts in the shipped KB doc as the AC artifact.
 
 ## 9. Restoring a tiered snapshot
 
-Round-1 finding B-C1 + Round-2 R2-M4: snapshots transition to **Glacier
-Instant Retrieval (GLACIER_IR)** at day 30 and **Deep Archive** at day
-90. The lifecycle here uses GLACIER_IR (instant access, no thaw needed)
-NOT GLACIER (Flexible Retrieval, which would need thaw).
+Round-1 finding B-C1 + Round-2 R2-M4: per the §2 TEMPLATE, snapshots
+transition to **Glacier Instant Retrieval (GLACIER_IR)** at day 30 and
+**Deep Archive** at day 90. The lifecycle uses GLACIER_IR (instant
+access, no thaw needed) NOT GLACIER (Flexible Retrieval, which would
+need thaw).
 
 | Age | Storage class | Restore needed? | Latency |
 |---|---|---|---|
@@ -322,7 +441,9 @@ NOT GLACIER (Flexible Retrieval, which would need thaw).
 | 30–90 d | GLACIER_IR | **no** (instant retrieval) | ms |
 | 90 d+ | DEEP_ARCHIVE | **yes** (RestoreObject + 12h thaw) | 12h |
 
-So in practice, only snapshots > 90 days old need a thaw step.
+**Audit-confirmed live cadence on `daily/`** (`kb/findings/s3-existing-corpus-audit.md` §1) DIVERGES from the §2 template: the live `tier-to-glacier-forever` rule is `7d → GLACIER_IR (forever)` with NO DEEP_ARCHIVE step. On the live bucket, `daily/` snapshots reach GLACIER_IR at day 7 and stay there forever — they never enter DEEP_ARCHIVE. The thaw path below applies to (a) a fresh bucket where the §2 template cadence has been applied verbatim, or (b) the D1.5 `bronze-archive` rule which DOES transition to DEEP_ARCHIVE @ 30d for bronze/* objects.
+
+So in practice on the audited live bucket: daily/ snapshots NEVER need a thaw step (GLACIER_IR is instant-access). bronze/* snapshots > 30 days old DO need the thaw step below.
 `state_db_restore.py` pre-checks via `rclone lsjson` and raises a clear
 error pointing here only if the storage class is GLACIER (the Flexible
 flavor — shouldn't appear in this lifecycle but defensive) or
@@ -529,31 +650,28 @@ the rotation cron.
 
 ### Bucket-side multi-prefix expansion (operator one-time)
 
-§1–§3's lifecycle, deny-policy, and writer-IAM as originally written only cover the `daily/*` prefix. The journals (and market_obs, ticket 86b9xcdwg) need the same protections extended to two additional prefixes. **Ticket 86b9xgz66 tracks updating §1-§3 in this runbook to reflect this multi-prefix shape**; until that lands, the operator must hand-extend:
+D1.5 (ticket `86b9ypna4`, 2026-05-16) folded §1-§3 + §5 templates above to the canonical 6-prefix shape: `daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`. Ticket `86b9xgz66` (F6 from D0.1) is **CLOSED** by D1.5 — re-running §1-§5 on a fresh bucket now produces the correct multi-prefix policy without hand-edits.
 
-1. **Lifecycle policy** — extend `Filter` from `{"Prefix": "daily/"}` to use `OrPrefixes`:
-   ```json
-   "Filter": {"And": {"Prefix": "", "ObjectSizeGreaterThan": 0}}
-   ```
-   Or split into 3 rules (one per prefix). Apply via `aws s3api put-bucket-lifecycle-configuration`.
-2. **Bucket policy** (§2b deny) — extend `Resource` array to include all three:
-   ```json
-   "Resource": [
-     "arn:aws:s3:::<bucket>/daily/*",
-     "arn:aws:s3:::<bucket>/journals/*",
-     "arn:aws:s3:::<bucket>/market_obs/*"
-   ]
-   ```
-3. **Writer IAM policy** (§3) — extend the `PutObject` resource list to include `arn:aws:s3:::<bucket>/journals/*` and `arn:aws:s3:::<bucket>/market_obs/*`.
+If you are operating an EXISTING bucket that was provisioned before D1.5 (i.e., before 2026-05-16), the templates partition into TWO classes per the **§2 Operator note** above:
+
+- **§2 lifecycle** — `put-bucket-lifecycle-configuration` is REPLACE semantics, but the audited live bucket has a `tier-to-glacier-forever` rule for `daily/` at cadence `7d → GLACIER_IR (forever)` that DIVERGES from the §2 template's `30d → GLACIER_IR → 90d → DEEP_ARCHIVE`. **Verbatim re-run would silently mutate daily/'s cadence — DON'T.** Use `GET-merge-PUT` per the §2 Operator note (`aws s3api get-bucket-lifecycle-configuration` → hand-merge the NEW `bronze-archive` + `silver-archive` rules into `current-lifecycle.json` → `put-bucket-lifecycle-configuration`).
+- **§2b bucket policy / §3 writer-IAM / §5 reader-IAM** — these `put-bucket-policy` / `put-user-policy` calls ARE idempotent and safe to re-run verbatim. No hand-extension required.
 
 Verify with:
 ```bash
-aws s3api get-bucket-lifecycle-configuration --bucket <bucket> | jq '.Rules[].Filter'
+aws s3api get-bucket-lifecycle-configuration --bucket <bucket> | jq '[.Rules[].ID] | sort'
+# Expected: ["bronze-archive", "expire-install-probes", "journals-archive", "market-obs-archive", "silver-archive", "tier-to-glacier-forever"]
 aws s3api get-bucket-policy --bucket <bucket> | jq -r '.Policy' | jq '.Statement[].Resource'
-aws iam get-user-policy --user-name kalshi-bot-vps-writer --policy-name <policy> | jq '.PolicyDocument.Statement[].Resource'
+# Expected: 6-element array covering daily/journals/market_obs/bronze/silver/gold *
+aws iam get-user-policy --user-name kalshi-state-db-backup-writer --policy-name s3-put-only | jq '.PolicyDocument.Statement[].Resource'
+# Expected: PutObjectsOnly Resource is a 6-element array; InstallProbe Resource is _install_check/*
+aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[].Resource'
+# Expected: ReadOnly + RestoreObjectFromGlacier each carry the 6-element array; ListBucketAndVersions resource is the bucket root
+aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[] | select(.Sid=="ListBucketAndVersions").Condition.StringLike."s3:prefix"'
+# Expected: 12-element array covering daily/, daily/*, journals/, journals/*, market_obs/, market_obs/*, bronze/, bronze/*, silver/, silver/*, gold/, gold/* — the bare + glob forms of all 6 prefixes. A half-extended Condition that omits bronze/* makes `aws s3 ls s3://<bucket>/bronze/` fail with AccessDenied even when ReadOnly's Resource lists bronze/*.
 ```
 
-All three must include both `daily/*` AND `journals/*` (AND `market_obs/*` if §86b9xcdwg shipped).
+All five must enumerate `daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/` prefixes post-D1.5. A bucket missing `bronze/*` on the writer-IAM is the canonical pre-D1.5 state and will 403 on the collector's first chunk upload.
 
 ### 12.1 Install the timer
 

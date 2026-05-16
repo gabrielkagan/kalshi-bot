@@ -41,9 +41,19 @@ Canonical Bit ⇄ submodule mapping (single source of truth):
          file-based seam from D1.3 as the production source of tickers;
          hourly refresh + on-change reconnect keeps the subscription
          set in lockstep with Kalshi's open-market universe.
-  D1.5 — systemd unit + collector-start.sh wiring (requires-approval).
-         3 D0.3 §12 operator decisions still pending: lifecycle deviation,
-         `Nice=10` confirmation, `KALSHI_COLLECTOR_KEY_ID` provisioning.
+  D1.5 — systemd unit + collector-start.sh wiring (SHIPPED 2026-05-16,
+         ticket ``86b9ypna4``, requires-approval discipline tier).
+         Installs ``ops/kalshi-collector.service`` + extends
+         ``ops/install.sh`` to a multi-unit installer + refreshes the
+         ``collector-start.sh`` body to source a DEDICATED home-rooted
+         ``.env.collector`` (separate from the bot's repo-rooted
+         ``.env``). 3 D0.3 §12 operator decisions resolved at kickoff:
+         (1) lifecycle Standard → DEEP_ARCHIVE @ 30d (skip IA — matches
+         existing journals/ precedent, saves ~$140/yr); (2) ``Nice=10``
+         (I/O-bound, not real-time); (3) ``KALSHI_COLLECTOR_KEY_ID``
+         provisioned via operator runbook into ``.env.collector``.
+         Bronze day-zero is the first-chunk-in-S3 timestamp after
+         ``systemctl start kalshi-collector``.
 
 See ``agent_docs/bot_layout.md`` "Data Corpus collector" section + the
 ``kb/decisions/d1-1-pickup-prompt-may16.md`` "Pickup chain" for the
