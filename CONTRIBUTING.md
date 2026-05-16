@@ -78,8 +78,16 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   (ticket `86b9ypn66`)**: `collector/writer.py` + `collector/uploader.py`
   + `collector/main_loop.py::run()` body + `BronzeArchiver.run()` body
   all wired (the bronze data plumbing — WS frame → JSONL.zst → S3 via
-  rclone). Remaining bodies land at D1.3 (`subscription_manager.py`),
-  D1.4 (`rest_snapshot.py`), D1.5 (systemd deploy unit).
+  rclone). **D1.3 SHIPPED 2026-05-16 (ticket `86b9ypn72`)**:
+  `collector/subscription_manager.py` body (tier-aware per-conn ticker
+  assignment + subscribe-frame batching at the Kalshi WS message-size
+  cap) + `BronzeArchiver.on_session_start` callback (dispatches the
+  pre-built subscribe frames + binds sid→channel from `type=subscribed`/
+  `type=ok` acks) + `main_loop` multi-conn fan-out (one BronzeArchiver
+  per conn, channel-aware `writers_by_channel` dispatch with `_unrouted`
+  fallback). First-bronze-flow happens at D1.3, not D1.2 (R1-C3
+  acceptance criterion deferred from D1.2 closed here). Remaining bodies
+  land at D1.4 (`rest_snapshot.py`), D1.5 (systemd deploy unit).
 - **`kalshi_wire/` is the shared Kalshi WS transport library** — a
   top-level Python package SIBLING to both `bot/` and `collector/`
   (D1.1.5 SHIPPED 2026-05-16, ticket `86b9zdhz2`). Pure-transport leaf:

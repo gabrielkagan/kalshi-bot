@@ -1,25 +1,32 @@
-"""Kalshi WS consumer — D1.1.5 + D1.2 (tickets 86b9zdhz2 + 86b9ypn66, 2026-05-16).
+"""Kalshi WS consumer — D1.1.5 + D1.2 + D1.3 (tickets 86b9zdhz2 +
+86b9ypn66 + 86b9ypn72, 2026-05-16).
 
 Thin consumer of ``kalshi_wire.ws_client.WSClient`` that pipes raw Kalshi
-WS frames into the bronze JSONL writer (``collector/writer.py``). Per the
-2026-05-16 AMENDMENT to ``kb/decisions/data-corpus-architecture.md`` §5,
-``kalshi_wire/`` is the shared transport that both this module AND
+WS frames into per-channel bronze JSONL writers (``collector/writer.py``).
+Per the 2026-05-16 AMENDMENT to ``kb/decisions/data-corpus-architecture.md``
+§5, ``kalshi_wire/`` is the shared transport that both this module AND
 ``bot/feeds/kalshi.py`` consume — the "two sides of the same coin"
 symmetry that makes bronze byte-equivalent to what the bot itself saw
 on the wire.
 
-D1.1.5 shipped the WIRE-UP skeleton (auth + WSClient consumer + on_frame
-plumbing); D1.2 (ticket 86b9ypn66) shipped ``BronzeArchiver.run()`` body
-(blocking run loop with signal-handler-installed shutdown) and wired the
-``_wire_recv_ts`` capture-at-ingress invariant (D0.3 §2) by passing
-``frame.wire_recv_ts`` into ``build_envelope``.
+Bit ordering:
+  - **D1.1.5** shipped the WIRE-UP skeleton (auth + WSClient consumer +
+    on_frame plumbing).
+  - **D1.2** (`86b9ypn66`) shipped ``BronzeArchiver.run()`` body
+    (blocking run loop with signal-handler-installed shutdown) and the
+    ``_wire_recv_ts`` capture-at-ingress invariant (D0.3 §2) by passing
+    ``frame.wire_recv_ts`` into ``build_envelope``.
+  - **D1.3** (`86b9ypn72`) wires the ``on_session_start`` callback that
+    dispatches subscribe frames assembled by
+    ``collector/subscription_manager.py``, binds sid→channel from
+    subscribe-acks (``type=subscribed``/``type=ok``), and routes data
+    frames to per-channel ``BronzeWriter`` instances via the
+    ``writers_by_channel`` constructor arg. **First-bronze-flow happens
+    here** — the R1-C3 acceptance criterion deferred from D1.2 lands at
+    D1.3 ship.
 
 NO ``bot.*`` imports (pinned by ``collector-no-bot`` import-linter
 contract). Auth + WS transport reach into ``kalshi_wire/`` only.
-
-D1.3 will add the ``on_session_start`` callback that sends Kalshi
-subscribe frames; until then, the WS connects but no data flows.
-First-bronze-flow is D1.3's acceptance criterion.
 """
 from __future__ import annotations
 
@@ -28,30 +35,44 @@ import signal
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Optional, Union
+from typing import Dict, Mapping, Optional, Sequence, Union
 
 from kalshi_wire.auth import load_private_key  # noqa: F401 — re-exported for callers
 from kalshi_wire.ws_client import Frame, WSClient, build_envelope
 
 
+# Kalshi subscribe-ack message types — both carry sid + cmd_id and bind
+# to the channel that issued the originating cmd_id.
+_SUBSCRIBE_ACK_TYPES = frozenset({"subscribed", "ok"})
+
+
 class BronzeArchiver:
-    """Collector-side WSClient consumer — pipes Frame.raw to a writer.
+    """Collector-side WSClient consumer — pipes Frame.raw to per-channel writers.
 
-    Architecture (per D0.3 §2 + §5 AMENDMENT 2026-05-16):
-        WSClient (kalshi_wire) ──► on_frame(Frame) ──► build_envelope ──►
-        writer(envelope_dict)
+    Architecture (post-D1.3):
 
-    The writer callable is the seam to ``collector/writer.py``'s
-    ``BronzeWriter.write(envelope)``; injecting it via constructor
-    keeps this module testable independent of the writer's body shape
-    (shipped at D1.2).
+        WSClient (kalshi_wire) ──► on_session_start() ──► dispatch
+                                                          subscribe_frames
+                                                          via send_frame
+                              └──► on_frame(Frame)   ──► _on_frame
+                                                            │
+                                ┌───────────────────────────┤
+                                │                           │
+                       (subscribed/ok ack)           (data frame)
+                                │                           │
+                       bind sid→channel via            resolve channel
+                       cmd_id_to_channel lookup        via sid→channel map
+                                │                           │
+                                └──── build_envelope ──────►│
+                                                            ▼
+                                           writers_by_channel[channel].write(env)
+                              └──► on_session_end()  ──► clear sid→channel map
 
-    D1.2 status: ``run()`` body landed. The class still does NOT send
-    subscribe frames (D1.3 owns ``on_session_start``); the WS connects
-    but receives zero data until D1.3 lands. The frame-routing path IS
-    exercised end-to-end by ``tests/equivalence/test_kalshi_wire_differential.py``
-    (Pillar 3) + the D1.2 wire-up integration tests in
-    ``tests/integration/test_collector_main_loop_wireup.py``.
+    Per-conn instance. The owner (collector/main_loop.py) constructs one
+    archiver per planned WS connection, each with its own
+    ``writers_by_channel`` dict (per-channel BronzeWriter instances scoped
+    to ``conn_id``) and its own pre-built ``subscribe_frames`` from the
+    SubscriptionManager planner.
 
     No ``bot.*`` imports — collector-no-bot contract.
     """
@@ -61,42 +82,151 @@ class BronzeArchiver:
         api_key: str,
         private_key_path: Union[str, Path],
         *,
-        writer: Callable[[Dict], None],
+        writers_by_channel: Mapping[Optional[str], object],
+        subscribe_frames: Sequence[Dict] = (),
+        cmd_id_to_channel: Mapping[int, str] = (),
         conn_id: str = "A",
         url: Optional[str] = None,
     ):
+        """Construct one per-conn BronzeArchiver.
+
+        Args:
+            api_key: Kalshi API key id.
+            private_key_path: filesystem path to the RSA-PSS PEM. Loaded
+                eagerly via ``kalshi_wire.auth.load_private_key``; a
+                missing/invalid PEM raises BEFORE any WS connect.
+            writers_by_channel: dict keyed by channel name (or ``None``
+                for the ``_unrouted`` fallback partition) → BronzeWriter
+                instance. Each writer must already be constructed for
+                its (source, channel, conn) tuple — the archiver does NOT
+                allocate writers, it only dispatches.
+            subscribe_frames: sequence of pre-built subscribe payloads
+                (from ``SubscriptionManager.build_subscribe_frames``). May
+                be empty (e.g. when the operator boots the collector
+                before D1.4 REST snapshot populates the ticker file) —
+                the WS still connects, just receives no data frames.
+            cmd_id_to_channel: mapping populated by
+                ``build_subscribe_frames`` so subscribe-acks
+                (``type=subscribed``/``type=ok``) bind ``sid`` → channel.
+            conn_id: identifier embedded in the bronze partition path
+                (``conn=<conn_id>``) and in envelope ``_conn``. Must
+                match the conn_id on every BronzeWriter in
+                writers_by_channel.
+            url: optional WS URL override (defaults to kalshi_wire's
+                production URL). Tests point at a localhost mock.
+        """
         self._api_key = api_key
         self._private_key = load_private_key(private_key_path)
-        self._writer = writer
+        # Defensive copies — caller mutating their dict mid-session would
+        # be a subtle bug class; freeze the mapping at construction.
+        self._writers_by_channel: Dict[Optional[str], object] = dict(
+            writers_by_channel)
+        self._subscribe_frames: Sequence[Dict] = tuple(subscribe_frames)
+        self._cmd_id_to_channel: Dict[int, str] = dict(cmd_id_to_channel)
         self._conn_id = conn_id
         self._lock = threading.Lock()
         self._collector_seq = 0
-        _wire_kwargs: Dict = {
-            "api_key": api_key,
-            "private_key": self._private_key,
-            "on_frame": self._on_frame,
-        }
-        if url is not None:
-            _wire_kwargs["url"] = url
-        self._wire = WSClient(**_wire_kwargs)
+        # Session-scoped sid → channel binding. Cleared in
+        # ``_on_session_end`` (matches kalshi_wire R3/P0-A invariant
+        # since Kalshi reassigns sids per session).
+        self._sid_to_channel: Dict[int, str] = {}
+
+        # Direct kwargs (not **dict-spread) so AST contract tests can
+        # statically verify on_session_start + on_session_end are wired
+        # without needing a dataflow analyzer (defense-in-depth against
+        # the D1.2 R1-C3 class: callback wired in test fixture but not
+        # in production code).
+        if url is None:
+            self._wire = WSClient(
+                api_key=api_key,
+                private_key=self._private_key,
+                on_frame=self._on_frame,
+                on_session_start=self._on_session_start,
+                on_session_end=self._on_session_end,
+            )
+        else:
+            self._wire = WSClient(
+                api_key=api_key,
+                private_key=self._private_key,
+                on_frame=self._on_frame,
+                on_session_start=self._on_session_start,
+                on_session_end=self._on_session_end,
+                url=url,
+            )
+
+    # ── Session callbacks ───────────────────────────────────────────────
+
+    def _on_session_start(self) -> None:
+        """WSClient callback fired AFTER WS connect, BEFORE frame reads.
+
+        Dispatches every pre-built subscribe frame via ``self._wire.send_frame``.
+        Mirrors ``bot/feeds/kalshi.py::_on_session_start``'s reconnect-
+        time re-subscribe pattern — Kalshi reassigns sids per session,
+        so we send every frame on every reconnect (idempotent at Kalshi
+        per their protocol). Per-frame exceptions are swallowed (mirroring
+        the bot's ``for ticker in resub_tickers: try: ... except: log``
+        shape) so a single send failure doesn't abort the dispatch of
+        the remaining frames.
+        """
+        for frame in self._subscribe_frames:
+            try:
+                self._wire.send_frame(frame)
+            except Exception:
+                cmd_id = frame.get("id") if isinstance(frame, dict) else None
+                logging.warning(
+                    "BronzeArchiver subscribe send FAILED on session_start "
+                    "(conn=%s cmd_id=%s); continuing with remaining frames.",
+                    self._conn_id, cmd_id, exc_info=True,
+                )
+
+    def _on_session_end(self) -> None:
+        """WSClient callback fired AFTER WS close, BEFORE the backoff
+        sleep (R3/P0-A invariant from kalshi_wire.WSClient).
+
+        Sids are Kalshi-session-scoped — fresh session = fresh sids.
+        Clearing the map here means a stale sid binding from session N
+        cannot mis-route data frames from session N+1 (which Kalshi may
+        assign sids starting at the same low numbers). Matches
+        ``bot/feeds/kalshi.py::_on_session_end``'s
+        ``_ticker_to_sid.clear()`` pattern.
+        """
+        with self._lock:
+            self._sid_to_channel.clear()
+
+    # ── Per-frame dispatch ──────────────────────────────────────────────
 
     def _on_frame(self, frame: Frame) -> None:
-        """WSClient callback: build the D0.3 §2 envelope around the
-        raw payload and forward to the writer.
+        """WSClient callback: route the frame.
 
-        The envelope is ALWAYS built — bronze stores every frame
-        verbatim, no filtering, no transformation. Silver ETL (D2.x)
-        dispatches on the ``_channel`` field downstream.
+        Three branches:
 
-        D1.2 scope-note: ``channel=None`` is the documented D0.3 §2
-        falsy fallback. The per-sid → channel-name mapping (mirroring
-        KalshiFeed's ``_ticker_to_sid``) is D1.3 work — it requires the
-        ``collector/subscription_manager.py`` body to know which sid
-        belongs to which channel. Until D1.3 lands, frames are written
-        with ``_channel = None`` and route to the
-        ``<root>/<source>/_unrouted/`` partition (per BronzeWriter's
-        channel=None fallback).
+          1. Subscribe-ack (``type=subscribed`` / ``type=ok``): bind
+             sid → channel via ``cmd_id_to_channel`` lookup. The ack
+             ALSO routes through the data path (we still write it to
+             bronze — the ack itself is part of the wire trace).
+          2. Data frame with sid mapped → envelope ``_channel`` set,
+             route to ``writers_by_channel[channel]``.
+          3. Data frame with sid unmapped (or sid=None) → envelope
+             ``_channel`` is None, route to ``writers_by_channel[None]``
+             (the ``_unrouted`` partition). Bronze captures every frame;
+             unrouted bytes go to a separate path for silver QA.
         """
+        # Branch 1: subscribe-ack binds sid → channel. Note: type=subscribed
+        # nests sid in ``msg.sid`` (NOT at the envelope top level) while
+        # kalshi_wire.WSClient only pulls top-level ``sid`` onto
+        # ``Frame.sid``. So Frame.sid is None for the type=subscribed
+        # case — _handle_subscribe_ack does its own msg.sid lookup.
+        # type=ok puts sid at top level and Frame.sid IS populated.
+        if frame.msg_type in _SUBSCRIBE_ACK_TYPES:
+            self._handle_subscribe_ack(frame)
+
+        # Resolve channel for this frame's envelope.
+        channel: Optional[str] = None
+        if frame.sid is not None:
+            with self._lock:
+                channel = self._sid_to_channel.get(frame.sid)
+
+        # Allocate seq + build envelope + dispatch.
         with self._lock:
             self._collector_seq += 1
             seq = self._collector_seq
@@ -109,35 +239,114 @@ class BronzeArchiver:
             # datetime.now() — which is dispatch-callback-time, NOT
             # wire-ingress-time, and the difference grows under load.
             wire_recv_ts = datetime.fromtimestamp(
-                frame.wire_recv_ts, tz=timezone.utc
+                frame.wire_recv_ts, tz=timezone.utc,
             )
             envelope = build_envelope(
                 raw=frame.raw,
                 source="kalshi_ws",
-                channel=None,
+                channel=channel,
                 conn=self._conn_id,
                 collector_seq=seq,
                 wire_recv_ts=wire_recv_ts,
             )
-            self._writer(envelope)
+            writer = self._writers_by_channel.get(channel)
+            if writer is None:
+                # Channel resolved but no writer for it — should not
+                # happen if main_loop pre-allocated writers for every
+                # channel in the planner's set. Fall back to _unrouted
+                # so the frame survives. Log so silver QA can detect
+                # the misconfig.
+                writer = self._writers_by_channel.get(None)
+                logging.warning(
+                    "BronzeArchiver no writer for channel=%r (conn=%s "
+                    "seq=%d); falling back to _unrouted.",
+                    channel, self._conn_id, seq,
+                )
+                if writer is None:
+                    # No fallback writer either — drop with WARNING; the
+                    # caller misconfigured writers_by_channel.
+                    logging.warning(
+                        "BronzeArchiver no _unrouted writer either "
+                        "(conn=%s seq=%d) — frame dropped.",
+                        self._conn_id, seq,
+                    )
+                    return
+                # When falling back to the _unrouted writer, the envelope
+                # must declare _channel=None to match the writer's
+                # constructor channel — BronzeWriter.write() validates
+                # this and would raise ValueError otherwise.
+                envelope["_channel"] = None
+            writer.write(envelope)
         except Exception:
             logging.warning(
-                "BronzeArchiver writer failed for frame seq=%d",
-                seq, exc_info=True)
+                "BronzeArchiver writer failed for frame seq=%d (conn=%s)",
+                seq, self._conn_id, exc_info=True,
+            )
+
+    def _handle_subscribe_ack(self, frame: Frame) -> None:
+        """Bind ``sid → channel`` for subsequent data frames.
+
+        Kalshi's two ack shapes (both carry sid + cmd_id, but in
+        DIFFERENT positions):
+
+          - ``type=subscribed`` (channel establishment, first per channel
+            per session): ``{"id": cmd_id, "type": "subscribed", "msg":
+            {"channel": "orderbook_delta", "sid": N}}`` — sid is in
+            ``msg.sid``.
+          - ``type=ok`` (subsequent subscribes): ``{"id": cmd_id, "type":
+            "ok", "sid": N, "seq": M, "msg": {"market_tickers": [...]}}``
+            — sid is at the envelope top level.
+
+        kalshi_wire.WSClient only lifts the TOP-LEVEL sid onto
+        ``Frame.sid``, so the type=subscribed branch has Frame.sid=None
+        and we must reach into ``parsed["msg"]["sid"]``. Matches the
+        bot-side dual-path in bot/feeds/kalshi.py:1372-1391.
+
+        We use the cmd_id echoed back to look up which channel WE
+        subscribed (via cmd_id_to_channel from the planner). More
+        reliable than reading ``msg.channel`` from the ack — only
+        ``type=subscribed`` carries that field, and trusting the
+        cmd_id→channel map (which we control) means a future Kalshi
+        protocol tweak that drops ``msg.channel`` from acks doesn't
+        silently break sid binding.
+        """
+        if not isinstance(frame.parsed, dict):
+            return
+        cmd_id = frame.parsed.get("id")
+        if not isinstance(cmd_id, int):
+            return
+        channel = self._cmd_id_to_channel.get(cmd_id)
+        if channel is None:
+            return
+        # Sid lookup — top-level first (type=ok shape), then msg.sid
+        # (type=subscribed shape).
+        sid_value: Optional[int] = frame.sid
+        if sid_value is None:
+            msg = frame.parsed.get("msg")
+            if isinstance(msg, dict):
+                _s = msg.get("sid")
+                if isinstance(_s, int):
+                    sid_value = _s
+        if sid_value is None:
+            return
+        with self._lock:
+            self._sid_to_channel[sid_value] = channel
+
+    # ── Lifecycle ───────────────────────────────────────────────────────
 
     def run(self, shutdown_event: Optional[threading.Event] = None) -> None:
         """Start the WS client and block until shutdown is signaled.
 
-        D1.2 single-conn no-tier shape (per pickup-prompt): one WSClient
-        per archiver, frames routed via _on_frame → writer callable.
-        D1.3 will generalize to per-tier multi-conn via the subscription
-        manager.
+        Per-conn instance — main_loop.run() constructs and starts one
+        archiver per planned WS connection.
 
         ``shutdown_event``: if provided, ``run`` blocks on
         ``event.wait()``; caller drives shutdown. If None, installs
         SIGINT/SIGTERM handlers on the (assumed-main) thread and waits
         on an internal Event. Tests pass a controlled event to avoid
-        signal-handler pollution.
+        signal-handler pollution. With multiple archivers per process
+        (D1.3 multi-conn), the caller should own the event and pass it
+        to all archivers so signals fan out — main_loop.run() does this.
         """
         owned_event = shutdown_event is None
         if owned_event:
@@ -162,8 +371,8 @@ class BronzeArchiver:
             self.stop()
 
     def start(self) -> None:
-        """Start the underlying WSClient — invoked by ``run()`` (D1.2)
-        and exercised independently by the kalshi_wire differential test.
+        """Start the underlying WSClient — invoked by ``run()`` and
+        exercised independently by the kalshi_wire differential test.
         Sync (matches WSClient.start)."""
         self._wire.start()
 

@@ -236,10 +236,11 @@ class BronzeWriter:
         REST snapshots have ``conn=None`` — D0.3 §3 doesn't apply a conn=
         segment to REST; for in-tree consistency we still nest under a
         conn= segment using the literal "none" string. Same fallback
-        applied to channel=None (D1.1.5 scaffold-scope BronzeArchiver
-        passes channel=None until D1.3 subscription_manager wires the
-        per-sid → channel mapping). Silver ETL dispatches on ``_source``
-        for the path-shape anyway.
+        applied to channel=None (the ``_unrouted`` partition that
+        BronzeArchiver routes data frames to when no sid→channel binding
+        exists yet — race window between subscribe-burst and first data
+        frame, or unmapped sid for any reason). Silver ETL dispatches on
+        ``_source`` for the path-shape anyway.
         """
         conn_str = "none" if self.conn is None else self.conn
         channel_str = "_unrouted" if self.channel is None else self.channel
