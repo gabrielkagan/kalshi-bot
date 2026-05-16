@@ -1,7 +1,7 @@
-"""D1.2 + D1.3 + D1.4 sister-doc lockstep — break the prose-drift cycle proactively (L97 + L99).
+"""D1.2 + D1.3 + D1.4 + D1.5 sister-doc lockstep — break the prose-drift cycle proactively (L97 + L99).
 
-Tickets `86b9ypn66` (D1.2) + `86b9ypn72` (D1.3) + `86b9ypn8r` (D1.4),
-all 2026-05-16.
+Tickets `86b9ypn66` (D1.2) + `86b9ypn72` (D1.3) + `86b9ypn8r` (D1.4)
++ `86b9ypna4` (D1.5), all 2026-05-16.
 Created post-D1.2 R2 adversarial review which surfaced 4 MAJOR findings
 all in the same drift class: tracked sister docs still saying
 "D1.2-D1.5" / "raises NotImplementedError" / "land at D1.2" after D1.2
@@ -67,6 +67,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # D1.3 adds: new D1.3 contract tests + collector/subscription_manager.py
 # (whose body lands at D1.3 — historical narrative referencing "D1.3
 # target" must flip).
+# SELF-EXCLUSION: this test file (`tests/contracts/test_d1_2_doc_lockstep.py`)
+# is DELIBERATELY NOT in TRACKED_DOCS. Its STALE_PATTERNS_POST_D1_{2,3,4,5}
+# lists contain Python string literals of every retracted phrase the
+# ratchet hunts — those literals would self-trigger the parametrized
+# scan_doc_for_pattern test if this file were included. A future
+# contributor who adds this file to TRACKED_DOCS would see ~100
+# spurious failures with no obvious cause. The exclusion is structural,
+# not coincidental.
 TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "CLAUDE.md",
     REPO_ROOT / "CONTRIBUTING.md",
@@ -93,6 +101,16 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_collector_rest_snapshot.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_main_loop_wireup.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_rest_snapshot_refresh_cycle.py",
+    # D1.5: systemd-deploy surface. ops/kalshi-collector.service +
+    # collector-start.sh + the contract tests pin the deploy shape.
+    REPO_ROOT / "ops" / "kalshi-collector.service",
+    REPO_ROOT / "ops" / "kalshi-bot.service",
+    REPO_ROOT / "ops" / "install.sh",
+    REPO_ROOT / "ops" / "CLAUDE.md",
+    REPO_ROOT / "collector-start.sh",
+    REPO_ROOT / "tests" / "contracts" / "test_kalshi_collector_systemd_unit.py",
+    REPO_ROOT / "tests" / "contracts" / "test_collector_start_sh_invokes_python_m.py",
+    REPO_ROOT / "tests" / "unit" / "test_ops_systemd_unit_matches_repo.py",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -205,6 +223,99 @@ STALE_PATTERNS_POST_D1_4: list[str] = [
     "return an empty / partial",
     "return an empty or partial",
     "return an empty/partial",
+]
+
+
+# Patterns that are FALSE post-D1.5 SHIPPED. L99 PARANOID-at-day-1
+# pattern coverage for D1.5 (systemd deploy: ops/kalshi-collector.service
+# + collector-start.sh body refresh + install.sh multi-unit + F6
+# bucket-policy/lifecycle extension + dedicated .env.collector).
+#
+# What's legitimately STILL forward-looking after D1.5:
+# - D1.6+ health monitoring (df<20%, conn-loss alert)
+# - D1.7+ lifecycle hygiene
+# - D1.8+ silver backfill
+# - D1.9-D1.13 multi-source
+# - D2.x silver/gold ETL
+# Patterns explicitly tagging those phases MUST NOT be added here.
+STALE_PATTERNS_POST_D1_5: list[str] = [
+    "D1.5 target",
+    "D1.5 will add",
+    "D1.5 will install",
+    "D1.5 will ship",
+    "D1.5 will write",
+    "D1.5 will wire",
+    "until D1.5 lands",
+    "until D1.5 systemd",
+    "until D1.5 deploys",
+    "after D1.5 lands",
+    "future D1.5",
+    "lands at D1.5",
+    "land at D1.5",
+    "D1.5 implementation target",
+    "D1.5 unit ops/kalshi-collector.service",  # forward-looking from D1.1 stub
+    "D1.5 (systemd deploy unit) remains",  # pre-ship status phrase
+    "D1.5 (systemd deploy) remains pending",  # pre-ship status phrase
+    # Note: do NOT add the longer "remains pending per the Data Corpus
+    # architecture decision" — the shorter pattern below ("pending per
+    # the Data Corpus architecture") subsumes it. R1-M4 trimmed the
+    # redundancy so parametrize doesn't generate a dead test case.
+    # The pre-D1.5 collector-start.sh stub claimed "SAME .env file as
+    # the bot"; D1.5 moved to dedicated .env.collector. Encode the
+    # retracted claim so it cannot drift back via copy-paste.
+    "SAME .env file as the bot",
+    "source /home/botuser/kalshi-bot-repo/.env",  # bot's repo-rooted env
+    "D1.1 stub: this script is not yet operator-installed on the VPS",
+    # D0.3 §12 operator decisions — post-D1.5 they are RESOLVED, not
+    # pending. The 3 specific phrases each retract to a SHIPPED claim.
+    "D0.3 §12 item #3 pending",
+    # NOTE: do NOT add "D0.3 §12 item #3 pending operator decision" —
+    # subsumed by the line above. R6 minor cleanup.
+    "pending per the Data Corpus architecture",
+    "operator decisions still pending",
+    "three D0.3 §12 operator decisions",
+    # F6 bucket-policy extension: pre-D1.5 it was a MINOR finding; at
+    # D1.5 kickoff it promotes to MAJOR; post-ship it is RESOLVED.
+    "F6 from D0.1 is a D1.5 blocker",
+    "F6 from D0.1 (refresh STATE_DB_BACKUP_SETUP.md",
+    # The D1.4 closeout's "first-bronze-in-S3 acceptance criterion:
+    # within 30 minutes of `systemctl start kalshi-collector`" is the
+    # D1.5 acceptance criterion specifically — post-ship it is past-
+    # tense, but the verbatim phrase is fine to retain in CLOSEOUT
+    # narrative under HISTORICAL_NARRATIVE_PATHS if needed.
+    # R2 retracts (D1.5 R3 adv: encode retracted phrases per L99
+    # meta-ratchet so a future Bit cannot drift them back via
+    # copy-paste from a git blame).
+    "the collector/ package files below are unchanged at D1.5",
+    "Two rules:",  # §2 lifecycle narrative — now "Six rules"
+    # R3-C1 retract: the "rules match what the audit observed" claim
+    # was factually false because daily/ cadence diverged from the §2
+    # template. Encode the retracted overclaim.
+    "the 4 pre-D1.5 rules above",  # paraphrase superset
+    "match what the audit observed on the live bucket",  # the false claim
+    # R3-M1 retract: ops/CLAUDE.md said "re-run the same AWS-CLI steps
+    # against the bucket — they are idempotent" for ALL of §1-§5. After
+    # R3, §2 specifically requires GET-merge-PUT; the broad "all
+    # idempotent" framing was misleading.
+    "On an existing pre-D1.5 bucket: re-run the same AWS-CLI steps against the bucket — they are idempotent",
+    # R4 retract: §12's "re-run §1-§5 verbatim — No hand-extension is
+    # required" prose contradicted §2's GET-merge-PUT requirement.
+    "re-run the AWS-CLI steps from those sections verbatim against your bucket",
+    "the templates are idempotent (`put-bucket-lifecycle-configuration` / `put-bucket-policy` / `put-user-policy` all REPLACE",
+    "No hand-extension is required",
+    # R5 retract: ops/CLAUDE.md:87 had a sister-paragraph echo of the
+    # R4-M1 retracted "verbatim — idempotent" claim. Same class as the
+    # §12 retract, different surface.
+    "re-run §1-§5 verbatim against it — the AWS-CLI templates are idempotent",
+    # R7 retract: stale forward-tense "stub" / "will exec" / "D1.5
+    # wires" phrasing in test_collector_no_bot_imports.py docstrings.
+    # Post-D1.5 the wrapper is no longer a stub and the unit has wired
+    # the ExecStart (past tense).
+    "collector-start.sh`` stub exists",  # the test-list bullet phrasing
+    "shell wrapper stub",
+    "D1.5 systemd unit will exec it",
+    "D1.5 wires the unit",
+    "D1.5 (systemd unit, requires-approval) wires",
 ]
 
 
@@ -340,6 +451,51 @@ def test_d1_4_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D1.4 SHIPPED — staleness ratchets clean "
+        "but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D1_5)
+def test_no_post_d1_5_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D1.5-pending phrase after D1.5 shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.5 (systemd deploy:
+    ops/kalshi-collector.service + collector-start.sh body refresh +
+    install.sh multi-unit + F6 bucket-policy/lifecycle extension +
+    dedicated .env.collector).
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.5-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed through D1.4): lockstep "
+        "ratchets must have PARANOID pattern coverage from day-1. If "
+        "THIS pattern is a legitimate D1.6+ forward-looking phrase, "
+        "narrow it (e.g., add a qualifier that won't match historical "
+        "D1.5 prose)."
+    )
+
+
+def test_d1_5_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks D1.5
+    as SHIPPED. Catches the inverse failure mode where staleness patterns
+    pass (no D1.5 mention at all) but the docs haven't been updated."""
+    shipped_re = re.compile(
+        r"D1\.5\s+SHIPPED|D1\.5.*shipped|shipped.*D1\.5",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.5 SHIPPED — staleness ratchets clean "
         "but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )

@@ -21,7 +21,7 @@ pins that mechanism at the contract layer:
      scope (top-level OR function-body).
   4. The 9 scaffolded files exist
      (``__init__.py`` + ``__main__.py`` + 7 submodules per D0.3 §5).
-  5. ``collector-start.sh`` stub exists (D1.5 systemd unit will exec it).
+  5. ``collector-start.sh`` exists (D1.5 systemd unit's ExecStart targets it).
   6. The orchestrator-pin in ``tests/contracts/test_import_linter_contracts.py``
      ``EXPECTED_CONTRACTS`` lists ``collector-no-bot`` — so a future
      rename of the contract id fails loudly at the orchestrator layer too.
@@ -171,16 +171,17 @@ def test_collector_scaffolded_files_exist(filename: str):
 
 
 def test_collector_start_sh_exists():
-    """``collector-start.sh`` exists as the shell wrapper stub.
+    """``collector-start.sh`` exists as the shell wrapper.
 
-    D1.5 (systemd unit, requires-approval) wires
+    D1.5 (systemd unit, requires-approval) wired
     ``ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh`` per
-    D0.3 §6 unit spec. The stub lands at D1.1 so the path-shape is
-    locked before D1.5 — no surprise rename mid-deploy.
+    D0.3 §6 unit spec. The wrapper landed at D1.1 (stub body) so the
+    path-shape was locked before D1.5; the D1.5 body refresh sources
+    /home/botuser/.env.collector instead of the bot's shared .env.
     """
     assert COLLECTOR_START_SH.is_file(), (
         f"{COLLECTOR_START_SH} missing. D0.3 §6 locks `collector-start.sh` "
-        "as the systemd ExecStart target; D1.5 wires the unit."
+        "as the systemd ExecStart target; D1.5 wired the unit."
     )
 
 

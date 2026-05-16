@@ -34,9 +34,13 @@ Architecture (one nightly run, 06:00 UTC, post H-4 cron chain):
   6. Exit 0; non-zero triggers Telegram alert via h4_run_with_alert.py
      wrapper (already wired in setup_state_db_backup_timer.sh).
 
-Lifecycle on the bucket transitions Standard -> Glacier IR (30 d) ->
-Deep Archive (90 d). Snapshots never expire — see plan doc for cost
-projection (~$0.30/mo at year 5).
+Lifecycle on the bucket transitions per `scripts/STATE_DB_BACKUP_SETUP.md`
+§2 (template: Standard -> Glacier IR (30 d) -> Deep Archive (90 d)) —
+but on the audited live `kalshi-bot-archive` bucket, daily/ goes
+Standard -> Glacier IR (7 d) and stays there forever; see the §2
+Operator note for the documented divergence and `kb/findings/s3-existing-corpus-audit.md`
+for the ground truth. Snapshots never expire either way — see plan
+doc for cost projection (~$0.30/mo at year 5).
 
 IAM scope:
   - Writer creds (this script, on VPS): s3:PutObject only. NO Delete,

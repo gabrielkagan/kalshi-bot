@@ -23,8 +23,13 @@
 # What this script does NOT do (operator owns):
 #   - Create the S3 bucket.
 #   - Create the IAM user + access keys (writer + reader, see plan doc D3).
-#   - Configure the S3 lifecycle rule (Standard -> Glacier IR @30d
-#     -> Deep Archive @90d; never expire).
+#   - Configure the S3 lifecycle rule per scripts/STATE_DB_BACKUP_SETUP.md
+#     §2 template (Standard -> Glacier IR @30d -> Deep Archive @90d;
+#     never expire). NOTE: the audited live bucket diverges — daily/
+#     is Standard -> Glacier IR @7d (forever, never Deep Archive). See
+#     the §2 Operator note + kb/findings/s3-existing-corpus-audit.md
+#     for the ground truth and the GET-merge-PUT instruction for
+#     pre-existing buckets.
 #   - Add S3_BACKUP_* keys to /home/botuser/kalshi-bot-repo/.env.
 #   - Run `rclone config` to create the s3prod remote.
 # All of these are documented in scripts/STATE_DB_BACKUP_SETUP.md

@@ -1,0 +1,30 @@
+[Unit]
+Description=Kalshi Data Corpus Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/.env.collector
+ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh
+Restart=on-failure
+RestartSec=10s
+
+# D0.3 §6 isolation knobs — load-bearing structural bounds on
+# collector blast radius (NOT documentation suggestions). Pinned by
+# tests/contracts/test_kalshi_collector_systemd_unit.py; a future
+# edit that loosens any of these must update the test in the same
+# commit (and update kb/decisions/data-corpus-architecture.md §6).
+CPUAffinity=1
+Nice=10
+MemoryMax=512M
+MemorySwapMax=0
+LimitNOFILE=4096
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

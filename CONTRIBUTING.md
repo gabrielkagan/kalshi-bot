@@ -95,8 +95,18 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   per-conn subscribe frames + force-reconnects WS sessions when the
   REST catalog refresh detects a ticker-set change). Hourly REST is
   now the default ticker source; `COLLECTOR_TICKERS_FILE` retained as
-  the offline/test boot seam. D1.5 (systemd deploy unit) remains
-  pending.
+  the offline/test boot seam. **D1.5 SHIPPED 2026-05-16, ticket
+  `86b9ypna4`** (REQUIRES-APPROVAL discipline tier) — wrote
+  `ops/kalshi-collector.service` (CPUAffinity=1, Nice=10,
+  MemoryMax=512M, MemorySwapMax=0, LimitNOFILE=4096,
+  `Restart=on-failure`+`RestartSec=10s`, `EnvironmentFile=/home/botuser/.env.collector`,
+  `ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh`),
+  extended `ops/install.sh` to a multi-unit installer (parallel-array
+  form; per-unit env-file check distinguishes the bot's repo-rooted
+  `.env` from the collector's home-rooted `.env.collector`), refreshed
+  `collector-start.sh` body to source `/home/botuser/.env.collector`
+  exclusively. Bronze day-zero = first-chunk-in-S3 timestamp after
+  `systemctl start kalshi-collector`.
 - **`kalshi_wire/` is the shared Kalshi WS transport library** — a
   top-level Python package SIBLING to both `bot/` and `collector/`
   (D1.1.5 SHIPPED 2026-05-16, ticket `86b9zdhz2`). Pure-transport leaf:
