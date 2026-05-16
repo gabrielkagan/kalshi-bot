@@ -189,10 +189,9 @@ def test_lint_imports_fails_when_kalshi_wire_imports_collector(tmp_path: Path):
 
     mutated_path = fixture_root / "kalshi_wire" / "ws_client.py"
     src_pre = mutated_path.read_text()
-    # Use a name we know exists in collector after D1.2 lands (uploader has
-    # rclone shell; writer has the BronzeWriter class scaffolded). Picking
-    # writer.BronzeWriter — even if the class body is empty post-scaffold,
-    # the IMPORT EDGE alone trips the contract.
+    # Pick a name in collector/writer.py — post-D1.2 `BronzeWriter` is
+    # the canonical writer class; the IMPORT EDGE alone trips the
+    # contract regardless of class-body details.
     mutated = (
         "# D1.1.5 regression smoke: forbidden kalshi_wire->collector edge\n"
         "import collector.writer  # noqa: F401\n"

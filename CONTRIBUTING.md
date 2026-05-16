@@ -72,10 +72,14 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   by the `[importlinter:contract:collector-no-bot]` forbidden contract +
   AST defense-in-depth in `tests/contracts/test_collector_no_bot_imports.py`.
   See `kb/decisions/data-corpus-architecture.md` for the bronze/silver/gold
-  architecture. D1.1 is scaffolding-only — `collector/main_loop.py::run()`
-  raises NotImplementedError; D1.1.5 wires `collector/ws_connection.py`'s
-  `BronzeArchiver` to `kalshi_wire.ws_client.WSClient`; remaining bodies
-  land at D1.2-D1.5.
+  architecture. D1.1 shipped scaffolding; D1.1.5 wired
+  `collector/ws_connection.py`'s `BronzeArchiver` to
+  `kalshi_wire.ws_client.WSClient`; **D1.2 SHIPPED 2026-05-16
+  (ticket `86b9ypn66`)**: `collector/writer.py` + `collector/uploader.py`
+  + `collector/main_loop.py::run()` body + `BronzeArchiver.run()` body
+  all wired (the bronze data plumbing — WS frame → JSONL.zst → S3 via
+  rclone). Remaining bodies land at D1.3 (`subscription_manager.py`),
+  D1.4 (`rest_snapshot.py`), D1.5 (systemd deploy unit).
 - **`kalshi_wire/` is the shared Kalshi WS transport library** — a
   top-level Python package SIBLING to both `bot/` and `collector/`
   (D1.1.5 SHIPPED 2026-05-16, ticket `86b9zdhz2`). Pure-transport leaf:

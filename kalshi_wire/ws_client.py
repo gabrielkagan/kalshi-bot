@@ -105,6 +105,7 @@ def build_envelope(
     channel: Optional[str],
     conn: Optional[str],
     collector_seq: int,
+    wire_recv_ts: Optional[_dt.datetime] = None,
 ) -> Dict[str, Any]:
     """Construct the D0.3 §2 6-field bronze envelope.
 
@@ -134,8 +135,15 @@ def build_envelope(
         ``_collector_seq``, ``_raw``. JSON-serializable as a single line
         (JSONL invariant).
     """
-    now = _dt.datetime.now(_dt.timezone.utc)
-    ts_iso = now.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    # wire_recv_ts kwarg (added 2026-05-16 in D1.2 for deterministic-ts
+    # testing). Default-None preserves the prior "capture-at-call-time"
+    # behavior used by the WS read loop — the differential test sees
+    # byte-identical output for default callers.
+    if wire_recv_ts is None:
+        wire_recv_ts = _dt.datetime.now(_dt.timezone.utc)
+    else:
+        wire_recv_ts = wire_recv_ts.astimezone(_dt.timezone.utc)
+    ts_iso = wire_recv_ts.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
     return {
         "_wire_recv_ts": ts_iso,
         "_source": source,

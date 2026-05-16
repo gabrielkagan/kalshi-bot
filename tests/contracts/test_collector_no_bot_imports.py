@@ -151,19 +151,19 @@ def test_collector_dir_exists():
 
 @pytest.mark.parametrize("filename", EXPECTED_SUBMODULES)
 def test_collector_scaffolded_files_exist(filename: str):
-    """Each of the 9 scaffolded files exists per D0.3 §5 source-tree shape.
+    """Each of the 8 expected files exists per D0.3 §5 source-tree shape
+    (down from 9 post-D1.1.5's auth.py deletion).
 
-    Empty submodule bodies are OK at D1.1 — real implementations land
-    across D1.2-D1.5 per the canonical Bit ⇄ submodule mapping in
-    ``collector/__init__.py``'s module docstring (writer + uploader =
-    D1.2 critical path; subscription_manager = D1.3; rest_snapshot =
-    D1.4; systemd wiring + auth provisioning = D1.5).
+    D1.2 (2026-05-16, ticket `86b9ypn66`) shipped writer.py + uploader.py
+    + main_loop.py + ws_connection.py bodies. Remaining bodies land at
+    D1.3 (subscription_manager) + D1.4 (rest_snapshot) + D1.5 (systemd
+    wiring); canonical mapping in ``collector/__init__.py``'s docstring.
     """
     path = COLLECTOR_DIR / filename
     assert path.is_file(), (
-        f"{path} missing. D0.3 §5 source-tree shape locks 7 submodules + "
-        "__init__.py + __main__.py at the D1.1 scaffolding ship; real "
-        "implementations land at D1.2-D1.5."
+        f"{path} missing. D0.3 §5 source-tree shape locks 6 submodules + "
+        "__init__.py + __main__.py post-D1.1.5; remaining stub bodies "
+        "(subscription_manager, rest_snapshot) land at D1.3-D1.4."
     )
 
 
@@ -330,13 +330,13 @@ def test_no_collector_module_imports_bot():
 
 def test_collector_main_module_invokes_main_loop():
     """``collector/__main__.py`` is an entrypoint SHIM — it dispatches into
-    ``collector/main_loop.py`` (or its successor at D1.2) and contains no
-    business logic.
+    ``collector/main_loop.py`` and contains no business logic.
 
     Mirrors the bot/__main__.py sacred-boundary rule per root CLAUDE.md.
-    At D1.1 scaffolding, the shim may be a no-op (just imports its
-    target); at D1.2 the actual collector run-loop wires in. Either
-    way, the entrypoint pattern is locked here.
+    D1.1 shipped this shim as scaffolding; D1.2 (2026-05-16, ticket
+    `86b9ypn66`) wired the underlying ``main_loop.run()`` body. The
+    entrypoint pattern is locked here regardless of which body is
+    present.
 
     Negative form: __main__.py must NOT define classes or top-level
     business logic (assignment patterns OK for `if __name__ == "__main__":`).
