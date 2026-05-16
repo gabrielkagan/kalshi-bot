@@ -116,3 +116,13 @@ DOC_DRIFT_REPORT.txt
 **/*\ 2.lock
 **/*\ 2.sh
 **/*\ 2/
+
+# Sprint 14 A5 (ticket 86b9zf7cc): transient per-Bit scratch directories.
+#   * `/.p*_run/` — operator/agent scratch dirs from prior pickup-bit runs
+#     (e.g. .p0_2_run/, .p1_2_run/, .p2_1_b_run/). Per-machine; never
+#     intentional in a commit.
+#   * `/.claude/worktrees/` — claude-code agent worktree mountpoints. Per
+#     -machine and may contain partial checkouts.
+# Leading `/` anchors to repo root only (per /data/, /state/ rationale above).
+/.p*_run/
+/.claude/worktrees/
