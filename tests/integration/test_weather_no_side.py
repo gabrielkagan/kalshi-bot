@@ -340,9 +340,18 @@ class TestNoSideObservationGate(unittest.TestCase):
 class TestNoSideConstants(unittest.TestCase):
     """Verify NO-side constants exist and have correct values."""
 
-    def test_weather_no_side_live_is_true(self):
-        """WEATHER_NO_SIDE_LIVE enabled (promoted with 1-contract fixed sizing)."""
-        self.assertTrue(bot.constants.WEATHER_NO_SIDE_LIVE)
+    def test_weather_no_side_live_is_false(self):
+        """WEATHER_NO_SIDE_LIVE KILLED 2026-05-16 (commit ce8e2d2).
+
+        Lifetime n=167 / 38.3% WR vs 70% assumed prior; Wilson 95% CI
+        [23.6%, 47.0%] empirically falsifies the prior. Near-ATM zone
+        (NO 39-40¢ ↔ YES 60-61¢) is the market-maker zone with no edge.
+        Re-research plan: ClickUp folder 90149436180 (A1-A2-B-C1..C4).
+
+        This test pins the KILLED state. Re-enable requires explicit
+        promotion gate clearance (C4 ticket 86b9zdbj0).
+        """
+        self.assertFalse(bot.constants.WEATHER_NO_SIDE_LIVE)
 
     def test_weather_no_side_min_stc_is_16h(self):
         """WEATHER_NO_SIDE_MIN_STC must be 57600 (16 hours)."""
