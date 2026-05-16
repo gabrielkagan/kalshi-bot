@@ -19,12 +19,14 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Bit 11.2 (2026-05-12): relocated to scripts/ops/; need 2 ".." levels.
 REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
-TEMPLATE_PATH = os.path.join(REPO_DIR, "whitepaper.md")
-STATS_PATH = os.path.join(REPO_DIR, "whitepaper_stats.json")
+# Sprint 14-A2 (2026-05-16): whitepaper artifacts moved to docs/whitepaper/.
+WHITEPAPER_DIR = os.path.join(REPO_DIR, "docs", "whitepaper")
+TEMPLATE_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper.md")
+STATS_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_stats.json")
 CONFIG_PATH = os.path.join(REPO_DIR, "config.json")
-OUTPUT_PATH = os.path.join(REPO_DIR, "whitepaper_rendered.md")
-INVESTOR_TEMPLATE_PATH = os.path.join(REPO_DIR, "whitepaper_investor.md")
-INVESTOR_OUTPUT_PATH = os.path.join(REPO_DIR, "whitepaper_investor_rendered.md")
+OUTPUT_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_rendered.md")
+INVESTOR_TEMPLATE_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_investor.md")
+INVESTOR_OUTPUT_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_investor_rendered.md")
 README_TEMPLATE_PATH = os.path.join(REPO_DIR, "README.template.md")
 README_OUTPUT_PATH = os.path.join(REPO_DIR, "README.md")
 

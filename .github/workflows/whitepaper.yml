@@ -10,8 +10,8 @@ on:
       - 'bot/main_loop.py'
       - 'bot/scanner/__init__.py'
       - 'bot/executor.py'
-      - 'whitepaper.md'
-      - 'whitepaper_investor.md'
+      - 'docs/whitepaper/whitepaper.md'
+      - 'docs/whitepaper/whitepaper_investor.md'
       - 'README.template.md'
       - 'scripts/ops/generate_whitepaper_stats.py'
       - 'scripts/ops/build_whitepaper.py'
@@ -89,8 +89,8 @@ jobs:
 
       - name: Generate technical PDF
         run: >-
-          pandoc whitepaper_rendered.md
-          -o whitepaper.pdf
+          pandoc docs/whitepaper/whitepaper_rendered.md
+          -o docs/whitepaper/whitepaper.pdf
           --from markdown
           --pdf-engine=xelatex
           --template eisvogel
@@ -99,8 +99,8 @@ jobs:
 
       - name: Generate investor PDF
         run: >-
-          pandoc whitepaper_investor_rendered.md
-          -o whitepaper_investor.pdf
+          pandoc docs/whitepaper/whitepaper_investor_rendered.md
+          -o docs/whitepaper/whitepaper_investor.pdf
           --from markdown
           --pdf-engine=xelatex
           --template eisvogel
@@ -109,6 +109,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add whitepaper.pdf whitepaper_investor.pdf README.md whitepaper_rendered.md whitepaper_investor_rendered.md whitepaper_stats.json config.json
+          git add docs/whitepaper/whitepaper.pdf docs/whitepaper/whitepaper_investor.pdf README.md docs/whitepaper/whitepaper_rendered.md docs/whitepaper/whitepaper_investor_rendered.md docs/whitepaper/whitepaper_stats.json config.json
           git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDFs and README stats [skip ci]"
           git push
