@@ -497,7 +497,7 @@ WEATHER_NO_SHADOW_MIN_YES_PROB = 0.55  # Only shadow when model is confident YES
 # YES-side remains fully gated by WEATHER_OBSERVATION_ONLY = True.
 # Data: 397 settled, 73.6% WR, +$181 sim PnL, 40pp+ cushion above breakeven.
 # Gate: STC >= 8h (short STC NO loses), fixed 1-contract sizing, all 19 cities.
-WEATHER_NO_SIDE_LIVE = True              # LIVE — NO ≤ 40c, STC ≥ 16h, 2-contract ex-LAS
+WEATHER_NO_SIDE_LIVE = False             # KILLED 2026-05-16: lifetime n=167, 38.3% WR vs 70% assumed prior (Wilson 95% CI [23.6%, 47.0%], far below 70%). Near-ATM zone (NO 39-40c ↔ YES 60-61c) is market-maker zone with no edge. Bracket_no_live (far-ITM NO 4-12c, 91.7% WR) is where NO edge actually lives. See ClickUp Weather Initiative folder (90149436180) for first-principles re-research plan.
 
 WEATHER_NO_SIDE_MIN_STC = 57600.0        # 16 hours — tightened from 8h (data: 77.1% WR at 16-24h, 32.5% at 0-8h)
 
