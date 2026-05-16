@@ -1,4 +1,4 @@
-"""Collector run loop — D1.2 + D1.3 (tickets 86b9ypn66 + 86b9ypn72, 2026-05-16).
+"""Collector run loop — D1.2 + D1.3 + D1.4 (tickets 86b9ypn66 + 86b9ypn72 + 86b9ypn8r, 2026-05-16).
 
 Orchestrates the bronze data plumbing in a multi-conn per-channel shape:
 
@@ -38,9 +38,15 @@ Orchestrates the bronze data plumbing in a multi-conn per-channel shape:
                                                             ▼
                                                   delete local outbox + in-flight
 
-D1.4 adds REST snapshot fallback (catalog refresh). D1.5 deploys via the
-``ops/kalshi-collector.service`` systemd unit (requires-approval; 3 D0.3
-§12 operator decisions still pending).
+D1.4 (`86b9ypn8r`) added the periodic REST catalog refresh: when no
+``COLLECTOR_TICKERS_FILE`` is configured, the collector pulls the open-
+market universe from Kalshi's REST ``/markets`` endpoint at boot and
+re-polls hourly. On ticker-set changes the refresher invokes a callback
+that rebuilds per-conn subscribe frames + force-reconnects each WS conn
+so the new subscriptions take effect (Kalshi has no in-session
+add/remove; reconnect-and-resubscribe is the protocol-level mechanism).
+D1.5 deploys via the ``ops/kalshi-collector.service`` systemd unit
+(requires-approval; 3 D0.3 §12 operator decisions still pending).
 
 Sync + threading per CLAUDE.md anti-pattern ("Don't add async. Synchronous
 + threading for WS feeds is the design."). The drain thread is a daemon
@@ -58,6 +64,11 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
+from collector.rest_snapshot import (
+    DEFAULT_REFRESH_INTERVAL_SECONDS,
+    RestSnapshotRefresher,
+    fetch_tickers_by_tier,
+)
 from collector.subscription_manager import (
     CHANNELS_DEFAULT,
     DEFAULT_BATCH_SIZE,
@@ -67,6 +78,7 @@ from collector.subscription_manager import (
 from collector.uploader import RcloneUploader
 from collector.writer import BronzeWriter
 from collector.ws_connection import BronzeArchiver
+from kalshi_wire.auth import load_private_key
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +124,10 @@ def _load_tickers_by_tier(
 
     D1.3 ship posture: the operator points ``COLLECTOR_TICKERS_FILE`` at
     a JSON file with shape ``{"<tier>": ["TICKER1", ...], ...}``. D1.4
-    (REST snapshot) will replace this with a live catalog refresh; D1.3
-    leaves the file-based seam so first-bronze-flow can be exercised
-    end-to-end with a small hand-curated ticker set.
+    SHIPPED the REST catalog refresh as the production default; this
+    file-based seam is retained for offline / test boot (when the
+    operator hand-curates a ticker set) and is selected when the env
+    var is present + non-empty.
 
     Empty string / missing file / empty dict ⇒ ``{}`` (empty plan: WS
     conns connect but no subscribes go out, no data flows). This is the
@@ -128,7 +141,7 @@ def _load_tickers_by_tier(
         logger.warning(
             "COLLECTOR_TICKERS_FILE=%r not found; running with no tickers "
             "(WS will connect but no data will flow). Populate this file "
-            "or wait for D1.4 REST snapshot.",
+            "or unset the env var to fall back to the D1.4 REST refresher.",
             path_str,
         )
         return {}
@@ -235,6 +248,75 @@ def _drain_rotated(
     _drain_writers_once()
 
 
+def _replan_for_archivers(
+    *,
+    new_tickers_by_tier: Mapping[object, Sequence[str]],
+    archivers: Sequence[BronzeArchiver],
+    conn_count: int,
+    batch_size: int,
+) -> None:
+    """REST-refresh callback: rebuild subscribe frames + force-reconnect.
+
+    Called by RestSnapshotRefresher when the REST ticker set changes.
+    Re-plans the per-conn ticker assignment using the same
+    SubscriptionManager round-robin shape used at boot, then for each
+    archiver:
+
+      1. ``update_subscriptions(new_frames, new_cmd_id_to_channel)`` —
+         atomically replaces the archiver's subscribe payload. The swap
+         itself is lock-held; the reader sites (``_on_session_start`` +
+         ``_handle_subscribe_ack``) rely on single-bytecode-op attribute
+         reads under the GIL — see ``BronzeArchiver.update_subscriptions``
+         docstring for the full safety model (R1-M4 retracted a broader
+         protection claim that would be false if a future change
+         iterated the dict multi-step).
+      2. ``request_reconnect()`` — signals the WSClient to drop the
+         current session. The session-end callback clears sid→channel;
+         the session-start callback dispatches the NEW subscribe frames
+         (Kalshi has no in-session add/remove, so reconnect-and-
+         re-subscribe is the protocol-level update mechanism).
+
+    cmd_id stride: refresh tick uses the same per-conn stride as boot
+    so log/journalctl correlation across boot + refresh stays
+    unambiguous (boot uses idx*100_000+1; refresh re-uses the same
+    starting cmd_id since Kalshi sids reset per session and ack
+    correlation is session-scoped anyway).
+    """
+    mgr = SubscriptionManager(
+        tickers_by_tier=new_tickers_by_tier,
+        conn_count=conn_count,
+        channels=CHANNELS_DEFAULT,
+        batch_size=batch_size,
+    )
+    plans = mgr.assign()
+    if len(plans) != len(archivers):
+        logger.warning(
+            "Replan: plan_count=%d ≠ archiver_count=%d; skipping replan.",
+            len(plans), len(archivers),
+        )
+        return
+    for idx, (plan, archiver) in enumerate(zip(plans, archivers)):
+        new_frames, new_map = SubscriptionManager.build_subscribe_frames(
+            plan,
+            cmd_id_start=idx * _PER_CONN_CMD_ID_STRIDE + 1,
+            batch_size=batch_size,
+        )
+        try:
+            archiver.update_subscriptions(new_frames, new_map)
+            archiver.request_reconnect()
+            logger.info(
+                "Replan conn=%s: subscribe_frames=%d → reconnect requested.",
+                plan.conn_id, len(new_frames),
+            )
+        except Exception:
+            logger.exception(
+                "Replan conn=%s: update_subscriptions/request_reconnect "
+                "raised; archiver may be in inconsistent state until next "
+                "refresh tick.",
+                plan.conn_id,
+            )
+
+
 def _build_writers_for_plan(
     plan: ConnPlan, bronze_root: Path,
 ) -> Dict[Optional[str], BronzeWriter]:
@@ -285,11 +367,15 @@ def run(
         ``/var/lib/kalshi-collector/bronze``)
       - ``COLLECTOR_CONN_COUNT`` — number of WS conns (default 1;
         D0.2 strict-tested floor is 7-8 at 10K subs/conn)
-      - ``COLLECTOR_TICKERS_FILE`` — path to JSON
-        ``{"<tier>": ["TICKER", ...]}`` map (default empty — no subs
-        sent, WS connects then idles; D1.4 replaces with REST snapshot)
+      - ``COLLECTOR_TICKERS_FILE`` — optional path to JSON
+        ``{"<tier>": ["TICKER", ...]}`` map. When set, the file is
+        authoritative and the REST refresher is NOT started (useful
+        for tests / offline dev). When unset, D1.4 REST snapshot is
+        used: synchronous fetch at boot + hourly background refresh.
       - ``COLLECTOR_BATCH_SIZE`` — subscribe-frame batch size (default
         1000; tunable for Kalshi WS message-size constraints)
+      - ``COLLECTOR_REST_REFRESH_SECONDS`` — REST poll cadence (default
+        3600 — hourly). Ignored when COLLECTOR_TICKERS_FILE is set.
       - ``RCLONE_REMOTE`` — rclone S3 remote name (default ``s3prod``)
       - ``S3_BUCKET`` — bucket name (default ``kalshi-bot-archive``)
 
@@ -328,6 +414,10 @@ def run(
     tickers_file = os.environ.get("COLLECTOR_TICKERS_FILE", "").strip()
     batch_size = int(os.environ.get(
         "COLLECTOR_BATCH_SIZE", str(DEFAULT_BATCH_SIZE)))
+    refresh_seconds = float(os.environ.get(
+        "COLLECTOR_REST_REFRESH_SECONDS",
+        str(DEFAULT_REFRESH_INTERVAL_SECONDS),
+    ))
 
     uploader = _build_uploader()
 
@@ -341,7 +431,48 @@ def run(
         )
 
     # Step 3 — plan subscriptions.
-    tickers_by_tier = _load_tickers_by_tier(tickers_file)
+    #
+    # Two seams:
+    #   (a) COLLECTOR_TICKERS_FILE set → file-based loader. Authoritative;
+    #       REST refresher is NOT started. Useful for tests + offline dev.
+    #   (b) Default (no file) → D1.4 REST snapshot. Synchronous fetch at
+    #       boot so the WS connects with a populated subscription set;
+    #       RestSnapshotRefresher polls hourly + force-reconnects on change.
+    #
+    # R1-C1 (D1.4 adv round 1): in seam (b) we eagerly load_private_key()
+    # at boot rather than wrapping it in try/except. The WS handshake
+    # (BronzeArchiver.__init__ → load_private_key, ws_connection.py) MUST
+    # succeed on the same PEM, so a soft-fail here would just defer the
+    # crash by a few lines while emitting a misleading log message. Crash
+    # loud + early at the REST step so the operator sees the real cause
+    # before any WS connect attempt. Matches `_required_env`'s posture for
+    # KALSHI_COLLECTOR_KEY_ID + KALSHI_COLLECTOR_KEY_PATH.
+    rest_private_key = None
+    if tickers_file:
+        tickers_by_tier = _load_tickers_by_tier(tickers_file)
+    else:
+        rest_private_key = load_private_key(private_key_path)
+        rest_initial = fetch_tickers_by_tier(
+            api_key=api_key, private_key=rest_private_key,
+        )
+        if rest_initial is None:
+            # Fetch failed (transient 5xx exhausted retries, partial
+            # pagination, malformed response). Boot with empty subs and
+            # rely on the refresher to recover; do NOT crash — the PEM
+            # is valid, the network is the issue.
+            logger.warning(
+                "Initial REST snapshot failed; booting with empty ticker "
+                "set. Refresher will retry every %.0fs.",
+                refresh_seconds,
+            )
+            tickers_by_tier = {}
+        else:
+            tickers_by_tier = rest_initial
+            logger.info(
+                "Initial REST snapshot loaded %d tickers across %d tier(s).",
+                sum(len(v) for v in tickers_by_tier.values()),
+                len(tickers_by_tier),
+            )
     mgr = SubscriptionManager(
         tickers_by_tier=tickers_by_tier,
         conn_count=conn_count,
@@ -408,15 +539,40 @@ def run(
     )
     drain_thread.start()
 
+    # Step 5b (D1.4) — REST snapshot refresher (only when no
+    # COLLECTOR_TICKERS_FILE override). Closes over `archivers` so an
+    # on_refresh tick can rebuild each archiver's subscribe frames +
+    # force-reconnect to push the new subscription set to Kalshi.
+    refresher: Optional[RestSnapshotRefresher] = None
+    if not tickers_file and rest_private_key is not None:
+        def _on_refresh(new_tickers_by_tier: Dict[str, List[str]]) -> None:
+            _replan_for_archivers(
+                new_tickers_by_tier=new_tickers_by_tier,
+                archivers=archivers,
+                conn_count=conn_count,
+                batch_size=batch_size,
+            )
+        refresher = RestSnapshotRefresher(
+            api_key=api_key,
+            private_key=rest_private_key,
+            on_refresh=_on_refresh,
+            shutdown_event=shutdown_event,
+            interval_seconds=refresh_seconds,
+        )
+
     logger.info(
-        "Collector booted — bronze_root=%s, conn_count=%d, archivers=%d",
+        "Collector booted — bronze_root=%s, conn_count=%d, archivers=%d, "
+        "rest_refresh=%s",
         bronze_root, conn_count, len(archivers),
+        "on" if refresher is not None else "off (file-mode)",
     )
 
     try:
         # Step 6 — start all archivers, then block until shutdown.
         for archiver in archivers:
             archiver.start()
+        if refresher is not None:
+            refresher.start()
         shutdown_event.wait()
     finally:
         # Step 7 — graceful shutdown.

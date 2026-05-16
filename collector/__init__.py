@@ -34,7 +34,13 @@ Canonical Bit ⇄ submodule mapping (single source of truth):
          (SHIPPED 2026-05-16, ticket ``86b9ypn72``). FIRST Bit where bronze
          files actually populate end-to-end — R1-C3 acceptance criterion
          deferred from D1.2 closed here.
-  D1.4 — rest_snapshot.py (REST-fallback redundancy for catalog refresh)
+  D1.4 — rest_snapshot.py body + RestSnapshotRefresher + main_loop
+         REST-driven catalog refresh wiring (SHIPPED 2026-05-16, ticket
+         ``86b9ypn8r``). Kalshi REST ``/markets?status=open`` paginated
+         fetch via ``kalshi_wire.auth.make_rest_headers`` replaces the
+         file-based seam from D1.3 as the production source of tickers;
+         hourly refresh + on-change reconnect keeps the subscription
+         set in lockstep with Kalshi's open-market universe.
   D1.5 — systemd unit + collector-start.sh wiring (requires-approval).
          3 D0.3 §12 operator decisions still pending: lifecycle deviation,
          `Nice=10` confirmation, `KALSHI_COLLECTOR_KEY_ID` provisioning.

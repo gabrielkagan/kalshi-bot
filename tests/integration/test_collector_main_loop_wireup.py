@@ -43,6 +43,38 @@ from collector.writer import BronzeWriter
 from kalshi_wire.ws_client import build_envelope
 
 
+def _generate_pem_file(tmp_path: Path) -> Path:
+    """D1.4 R1-C1: after the boot-time REST-path PEM-load was hardened
+    to raise-loud rather than soft-fail, the wireup tests can no longer
+    pass ``/nonexistent.pem`` against the real ``load_private_key``.
+    This helper generates a throwaway RSA key for tests that need a
+    real PEM. The collector NEVER signs anything against this key in
+    tests (REST fetch is mocked by stubbing out the network)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    pk = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem_path = tmp_path / "test_collector.pem"
+    pem_path.write_bytes(pk.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ))
+    return pem_path
+
+
+def _stub_rest_fetch(monkeypatch, returns=None) -> None:
+    """Replace ``collector.main_loop.fetch_tickers_by_tier`` with a stub
+    that returns ``returns`` (default empty dict). Lets wireup tests
+    exercise the REST seam without making real HTTP calls."""
+    if returns is None:
+        returns = {}
+    monkeypatch.setattr(
+        "collector.main_loop.fetch_tickers_by_tier",
+        lambda **kwargs: returns,
+    )
+
+
 def test_main_loop_wires_writer_uploader_archiver_and_shuts_down_cleanly(
     tmp_path: Path,
     monkeypatch,
@@ -86,10 +118,12 @@ def test_main_loop_wires_writer_uploader_archiver_and_shuts_down_cleanly(
     t = threading.Thread(target=_shutdown_soon, daemon=True)
     t.start()
 
+    pem_path = _generate_pem_file(tmp_path)
+    _stub_rest_fetch(monkeypatch)
     main_loop_run(
         bronze_root=bronze_root,
         api_key="fake-key-id",
-        private_key_path="/nonexistent.pem",
+        private_key_path=str(pem_path),
         shutdown_event=shutdown,
     )
 
@@ -97,12 +131,18 @@ def test_main_loop_wires_writer_uploader_archiver_and_shuts_down_cleanly(
     assert archiver_ctor.called, "BronzeArchiver was not constructed"
     ctor_kwargs = archiver_ctor.call_args.kwargs
     assert ctor_kwargs["api_key"] == "fake-key-id"
-    assert ctor_kwargs["private_key_path"] == "/nonexistent.pem"
+    assert ctor_kwargs["private_key_path"] == str(pem_path)
     # D1.3: writers_by_channel is a dict (None-keyed _unrouted writer
     # plus one writer per channel in CHANNELS_DEFAULT).
     assert isinstance(ctor_kwargs["writers_by_channel"], dict)
-    # D1.3: subscribe_frames + cmd_id_to_channel are present (empty when
-    # no tickers file is configured — D1.4 will populate).
+    # D1.3 surface: subscribe_frames + cmd_id_to_channel are present.
+    # This test exercises the WIRE-UP shape only. BronzeArchiver is
+    # monkey-patched above so we never call the real __init__ (which
+    # would eager-load the PEM). REST fetch is stubbed via
+    # ``_stub_rest_fetch`` to return ``{}``, so subscribe_frames is
+    # empty. The production PEM-load crash path is covered by
+    # ``test_main_loop_bad_pem_crashes_loud_at_rest_seam`` (R1-C1
+    # regression).
     assert "subscribe_frames" in ctor_kwargs
     assert "cmd_id_to_channel" in ctor_kwargs
     # The default-deploy posture is conn_count=1, no tickers file → 1
@@ -201,10 +241,12 @@ def test_main_loop_drain_routes_rotated_chunk_to_uploader(
         shutdown.set()
     threading.Thread(target=_shutdown_soon, daemon=True).start()
 
+    pem_path = _generate_pem_file(tmp_path)
+    _stub_rest_fetch(monkeypatch)
     main_loop_run(
         bronze_root=bronze_root,
         api_key="fake-key-id",
-        private_key_path="/nonexistent.pem",
+        private_key_path=str(pem_path),
         shutdown_event=shutdown,
     )
 
@@ -242,6 +284,31 @@ def test_main_loop_missing_credentials_raises_clean_error(
     assert "KALSHI_COLLECTOR_KEY_ID" in str(exc_info.value)
 
 
+def test_main_loop_bad_pem_crashes_loud_at_rest_seam(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """R1-C1: when COLLECTOR_TICKERS_FILE is unset (D1.4 REST path),
+    a missing/invalid PEM MUST raise immediately at the REST seam
+    (before any WS connect attempt). The pre-R1 code wrapped this in
+    try/except and continued — but BronzeArchiver._init__ would then
+    re-load the same bad PEM and crash, after a misleading "Refresher
+    will retry" log. Crash loud + early is the correct posture; this
+    test pins it."""
+    bronze_root = tmp_path / "bronze"
+    bronze_root.mkdir()
+    monkeypatch.delenv("COLLECTOR_TICKERS_FILE", raising=False)
+
+    import pytest as _pt
+    with _pt.raises(FileNotFoundError):
+        main_loop_run(
+            bronze_root=bronze_root,
+            api_key="fake-key-id",
+            private_key_path="/nonexistent.pem",
+            shutdown_event=threading.Event(),
+        )
+
+
 # ─── D1.3 multi-conn fan-out ────────────────────────────────────────────────
 
 
@@ -276,10 +343,12 @@ def test_main_loop_multi_conn_fan_out_constructs_one_archiver_per_conn(
         target=lambda: (time.sleep(0.2), shutdown.set()), daemon=True,
     ).start()
 
+    pem_path = _generate_pem_file(tmp_path)
+    _stub_rest_fetch(monkeypatch)
     main_loop_run(
         bronze_root=bronze_root,
         api_key="fake-key-id",
-        private_key_path="/nonexistent.pem",
+        private_key_path=str(pem_path),
         shutdown_event=shutdown,
     )
 

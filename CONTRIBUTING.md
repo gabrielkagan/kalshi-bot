@@ -86,8 +86,17 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   `type=ok` acks) + `main_loop` multi-conn fan-out (one BronzeArchiver
   per conn, channel-aware `writers_by_channel` dispatch with `_unrouted`
   fallback). First-bronze-flow happens at D1.3, not D1.2 (R1-C3
-  acceptance criterion deferred from D1.2 closed here). Remaining bodies
-  land at D1.4 (`rest_snapshot.py`), D1.5 (systemd deploy unit).
+  acceptance criterion deferred from D1.2 closed here). **D1.4 SHIPPED
+  2026-05-16, ticket `86b9ypn8r`** — `collector/rest_snapshot.py` body
+  (Kalshi REST `/markets?status=open` paginated fetch via
+  `kalshi_wire.auth.make_rest_headers` + `RestSnapshotRefresher` hourly
+  poll + `BronzeArchiver.update_subscriptions` / `request_reconnect`
+  surface + `main_loop._replan_for_archivers` callback that rebuilds
+  per-conn subscribe frames + force-reconnects WS sessions when the
+  REST catalog refresh detects a ticker-set change). Hourly REST is
+  now the default ticker source; `COLLECTOR_TICKERS_FILE` retained as
+  the offline/test boot seam. D1.5 (systemd deploy unit) remains
+  pending.
 - **`kalshi_wire/` is the shared Kalshi WS transport library** — a
   top-level Python package SIBLING to both `bot/` and `collector/`
   (D1.1.5 SHIPPED 2026-05-16, ticket `86b9zdhz2`). Pure-transport leaf:
