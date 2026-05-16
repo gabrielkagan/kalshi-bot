@@ -45,8 +45,8 @@ dispatcher — each reads TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID from .env
 and POSTs to Telegram HTTPS API directly. No router pin needed.
 
 R5 (doc-drift, L86): README.md, README.template.md, agent_docs/bot_layout.md,
-agent_docs/current_state.md, bot/CLAUDE.md (3 sites), TESTING_STRATEGY.md
-(3 sites), POSTMORTEMS.md (3 sites), whitepaper.md + whitepaper_rendered.md
+agent_docs/current_state.md, bot/CLAUDE.md (3 sites), docs/testing-strategy.md
+(3 sites), docs/postmortems.md (3 sites), whitepaper.md + whitepaper_rendered.md
 (4 sites each), kb/failures/database-contention.md (5 sites), kb/failures/
 hwm-bugs.md (1 site), kb/decisions/openclaw-deferred.md (3 sites),
 kb/decisions/config-models-extraction.md (1 site), kb/concepts/supabase-schema-

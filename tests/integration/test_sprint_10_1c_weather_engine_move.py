@@ -23,7 +23,7 @@ Path-literal refs:
   - README.template.md:223 (file-tree literal)
   - agent_docs/bot_layout.md (project file-map)
   - bot/CLAUDE.md (engines paragraph)
-  - TESTING_STRATEGY.md (call-site failure-mode + CalEngine triple-ship rules)
+  - docs/testing-strategy.md (call-site failure-mode + CalEngine triple-ship rules)
   - tests/integration/test_product_type_enum.py:55 (parametrize)
   - tests/integration/test_db_writer_registry.py:323 (parametrize)
   - tests/integration/test_insert_schema_parity.py:114 (parametrize)

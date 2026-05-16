@@ -29,7 +29,7 @@ Path-literal refs (~65 across):
   - README.template.md + README.md (file-tree literal)
   - agent_docs/bot_layout.md (project file-map)
   - bot/CLAUDE.md (engines paragraph)
-  - TESTING_STRATEGY.md (2 sites)
+  - docs/testing-strategy.md (2 sites)
   - supabase_sync.py:560 (comment line-number citation)
   - tests/contracts/test_call_sites.py (ENGINE_FILES + ALLOWED_RAW_INSERTERS + file-open)
   - tests/contracts/test_db_signatures.py (2 sites)

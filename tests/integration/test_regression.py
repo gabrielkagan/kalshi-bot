@@ -352,7 +352,7 @@ class TestBusyTimeout:
         assert not missing, (
             f"Missing PRAGMA busy_timeout after sqlite3.connect: {missing}. "
             f"Rule: every sqlite3.connect() on state.db MUST set busy_timeout. "
-            f"See POSTMORTEMS.md PM-001."
+            f"See docs/postmortems.md PM-001."
         )
 
     # Production files that write to state.db and MUST set WAL mode
@@ -389,7 +389,7 @@ class TestBusyTimeout:
         assert not missing, (
             f"Missing PRAGMA journal_mode=WAL after sqlite3.connect: {missing}. "
             f"Rule: every read-write sqlite3.connect() on state.db MUST set WAL mode. "
-            f"See POSTMORTEMS.md PM-001."
+            f"See docs/postmortems.md PM-001."
         )
 
 
@@ -1803,7 +1803,7 @@ class TestKellySizerZeroPayout:
 class TestNoBatchCommitInLoops:
     """conn.commit() must not appear inside for/while loops in bot/_impl.py.
     Per-row commits multiply the contention window with concurrent DB readers.
-    Rule: accumulate writes, commit once at the end. See POSTMORTEMS.md PM-001."""
+    Rule: accumulate writes, commit once at the end. See docs/postmortems.md PM-001."""
 
     # Known exceptions: methods where per-iteration commit is intentional and safe
     # (e.g., _backfill_weather_actual_temps operates on max 10 rows with HTTP delays)
@@ -1857,7 +1857,7 @@ class TestNoBatchCommitInLoops:
         assert not violations, (
             f"Found .commit() inside loops (causes DB contention): {violations}. "
             f"Rule: never commit inside a loop — always batch. "
-            f"See POSTMORTEMS.md PM-001."
+            f"See docs/postmortems.md PM-001."
         )
 
 
