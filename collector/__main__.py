@@ -2,12 +2,13 @@
 
 ENTRYPOINT-SHIM DISCIPLINE (mirrors bot/__main__.py sacred-boundary rule):
 this file contains NO business logic. Body lives in
-``collector/main_loop.py`` (D1.2 ship). At D1.1 scaffolding, both this
-shim and ``main_loop.py`` are stubs — invoking ``python -m collector``
-will raise ``NotImplementedError`` until D1.2 wires the writer + WS
-ingestion path.
+``collector/main_loop.py``. **D1.2 SHIPPED 2026-05-16 (ticket
+`86b9ypn66`)**: ``run()`` orchestrates writer + uploader + archiver in
+the single-conn no-tier shape; invoking ``python -m collector`` boots
+the bronze pipeline. (Note: WS connects but no data frames flow until
+D1.3 subscription_manager lands ``on_session_start`` subscribe wiring.)
 
-## Import ordering (forward-positioned for future log emitters)
+## Import ordering (load-bearing post-D1.2)
 
 ``logging.basicConfig(force=True)`` MUST come BEFORE
 ``from collector.main_loop import run`` for the same reason that
@@ -15,11 +16,9 @@ bot/__main__.py:17-26 hoisted basicConfig above ``from bot.main_loop
 import MainLoop`` in Bit 9.3-iii.b: any module-load-time
 ``logging.getLogger(...).info(...)`` calls triggered by the import
 chain would otherwise silent-drop against the unconfigured root logger.
-At D1.1 no collector module emits import-time logs (the ordering is
-NOT load-bearing today). Once a D1.2+ submodule does (the writer's
-rotation handler and the uploader's rclone-result branches are natural
-INFO-log sites), the pre-positioned hoist means log lines reach stderr
-without an observability regression.
+Post-D1.2, ``collector.main_loop`` + ``collector.uploader`` + ``collector
+.ws_connection`` all use module-level ``logging.getLogger(__name__)``;
+the pre-positioned basicConfig keeps INFO/ERROR lines reaching stderr.
 
 ## bot._thread_env invariant does NOT apply here
 
@@ -45,7 +44,7 @@ logging.basicConfig(
     force=True,
 )
 
-from collector.main_loop import run  # noqa: E402 — must come AFTER basicConfig so module-load logs (D1.2+) reach the configured stderr handler
+from collector.main_loop import run  # noqa: E402 — must come AFTER basicConfig so module-load logs (post-D1.2) reach the configured stderr handler
 
 
 if __name__ == "__main__":

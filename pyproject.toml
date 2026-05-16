@@ -23,6 +23,18 @@ dependencies = [
     "websocket-client",
     "websockets",
     "cryptography",
+    # D1.2 (ticket 86b9ypn66, 2026-05-16) — Data Corpus bronze archiver.
+    # zstandard is the in-process compressor for the rotation handler
+    # in collector/writer.py::BronzeWriter._rotate (zstd level 6 per
+    # kb/decisions/data-corpus-architecture.md §7; operator-side bulk
+    # re-compression may use level 9-19 at silver-tier backfill time).
+    # Chosen over shell-out to the `zstd` binary because: (a) testable
+    # without subprocess mocking, (b) avoids fork+exec overhead per
+    # rotation (~50/hr × 18 conn-channels at full peak), (c) explicit
+    # version pin shipped via this file. Required by collector/ ONLY;
+    # bot/ continues to have zero zstd touchpoints (rotate_journals.sh
+    # shells to the binary, but it's a bash script not a bot/ module).
+    "zstandard",
     "scipy",
     "numpy",
     "lightgbm",

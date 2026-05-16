@@ -118,3 +118,56 @@ def test_collector_ws_connection_does_not_reimplement_rsa_pss():
         f"lines {inline_pss_sites}. After D1.1.5, RSA-PSS lives in "
         "kalshi_wire.auth — delegate, don't reconstruct."
     )
+
+
+# ─── 3. D0.3 §2 wire_recv_ts capture-at-ingress (D1.2 R1-C1) ────────────────
+
+
+def test_bronze_archiver_passes_frame_wire_recv_ts_to_build_envelope():
+    """D0.3 §2 invariant: ``_wire_recv_ts`` is captured at frame ingress
+    BEFORE deserialization — not at on_frame-callback-dispatch time.
+
+    WSClient stamps ``Frame.wire_recv_ts`` at the recv site (BEFORE
+    ``json.loads``); BronzeArchiver._on_frame MUST forward it to
+    ``build_envelope(wire_recv_ts=...)`` rather than letting the
+    default-None substitute ``datetime.now(UTC)`` at dispatch time.
+    The difference grows under load — silver QA's "detect gaps via
+    _wire_recv_ts" stops being trustworthy if dispatch-time leaks in.
+
+    R1-C1 pin: the kwarg landed on ``build_envelope`` with a back-compat
+    default-None that masks the bug if the caller is silent. This test
+    AST-walks ``BronzeArchiver._on_frame`` and asserts the
+    ``build_envelope(...)`` call site passes ``wire_recv_ts=`` explicitly.
+    """
+    if not COLLECTOR_WS.is_file():
+        pytest.skip("collector/ws_connection.py missing")
+    src = COLLECTOR_WS.read_text()
+    tree = ast.parse(src)
+
+    found_build_envelope_calls: list[tuple[int, set[str]]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            fn_name = None
+            if isinstance(fn, ast.Name):
+                fn_name = fn.id
+            elif isinstance(fn, ast.Attribute):
+                fn_name = fn.attr
+            if fn_name == "build_envelope":
+                kwarg_names = {kw.arg for kw in node.keywords if kw.arg}
+                found_build_envelope_calls.append((node.lineno, kwarg_names))
+
+    assert found_build_envelope_calls, (
+        "no build_envelope(...) call found in collector/ws_connection.py — "
+        "BronzeArchiver._on_frame should construct the bronze envelope "
+        "via kalshi_wire.build_envelope."
+    )
+    for lineno, kwargs in found_build_envelope_calls:
+        assert "wire_recv_ts" in kwargs, (
+            f"collector/ws_connection.py:{lineno} calls build_envelope(...) "
+            f"WITHOUT the wire_recv_ts= kwarg (kwargs present: "
+            f"{sorted(kwargs)}). D0.3 §2 capture-at-ingress invariant "
+            f"REQUIRES forwarding Frame.wire_recv_ts; default-None falls "
+            f"back to datetime.now() at dispatch-callback time, which "
+            f"silently corrupts bronze timestamps under any load."
+        )
