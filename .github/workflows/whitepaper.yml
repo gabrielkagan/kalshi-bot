@@ -62,8 +62,9 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n" > ~/.ssh/config
           chmod 600 ~/.ssh/config
-          scp botuser@${{ secrets.VPS_HOST }}:/tmp/whitepaper_stats.json ./whitepaper_stats.json
-          cat whitepaper_stats.json
+          mkdir -p docs/whitepaper
+          scp botuser@${{ secrets.VPS_HOST }}:/tmp/whitepaper_stats.json ./docs/whitepaper/whitepaper_stats.json
+          cat docs/whitepaper/whitepaper_stats.json
 
       - uses: actions/setup-python@v6
         with:
