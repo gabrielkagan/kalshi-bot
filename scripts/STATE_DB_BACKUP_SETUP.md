@@ -148,8 +148,9 @@ Six rules (D1.5 template expansion; pre-D1.5 the TEMPLATE had only `tier-to-glac
   dbt re-runs).  Never expires.
 - **`expire-install-probes`** — Round-1 finding A-M1: the installer's
   install-time sentinel (`_install_check/setup-<ts>.txt`) cannot be
-  deleted by the writer-IAM (PutObject-only). Without this rule, every
-  re-run leaves another sentinel in Standard storage forever.
+  deleted by the writer-IAM (no `s3:DeleteObject*`; §2b Deny is the
+  defense-in-depth backstop). Without this rule, every re-run leaves
+  another sentinel in Standard storage forever.
 
 Cost projection (100 MB compressed × 365 daily snapshots/yr): ~$0.04/mo
 year 1 → ~$0.30/mo year 5 (mostly Deep Archive). Trivial. See plan
@@ -157,12 +158,16 @@ doc for the table.
 
 ## 2b. Bucket-policy: deny `DeleteObjectVersion` (ransomware protection)
 
-Round-1 finding A-C2: writer IAM grants `s3:PutObject` only — but
-PutObject **overwrites** an existing key. A compromised VPS can
-silently destroy a day's backup by PUTting garbage at the same key.
-Versioning saves the prior object as a noncurrent version, but the
-attacker can also keep PUTting more versions to bloat noncurrent
-storage.
+Round-1 finding A-C2 (May 9 2026, pre-D1.5): writer IAM granted
+`s3:PutObject` to the bucket — but PutObject **overwrites** an
+existing key. A compromised VPS can silently destroy a day's backup
+by PUTting garbage at the same key. Versioning saves the prior object
+as a noncurrent version, but the attacker can also keep PUTting more
+versions to bloat noncurrent storage. (Path C, ticket `86b9xgz66`,
+2026-05-16: §3 writer-IAM now grants Put + Get + List per the
+rclone HeadObject quirk — the overwrite-vs-versioning analysis here
+is unchanged because Get/List add read paths but no new write
+surface.)
 
 Defense-in-depth: deny `DeleteObjectVersion` to *all* principals on
 this bucket (including root). The reader account can still GET prior
@@ -202,11 +207,12 @@ correct: the install-probe deletion path stays clear, and any new
 archive prefix added in the future must be added here too.
 
 D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the deny scope from
-`daily/*` only to ALL six archive prefixes — closes F6 from D0.1 per
-`kb/decisions/data-corpus-architecture.md` §1 + §15. Without the
-extension, a compromised collector writer IAM key could silently
-DELETE bronze snapshots and the immutability guarantee would not
-hold.
+`daily/*` only to ALL six archive prefixes — the bucket-policy half of
+F6 from D0.1 per `kb/decisions/data-corpus-architecture.md` §1 + §15
+(F6's other half is §2 lifecycle template; D1.5 §2 closes that half).
+**D1.5 §2 + §2b together close F6 in full.** Without the extension, a
+compromised collector writer IAM key could silently DELETE bronze
+snapshots and the immutability guarantee would not hold.
 
 ```bash
 # Portable cross-platform sed (works on both GNU/Linux + macOS):
@@ -219,20 +225,46 @@ To recover from this protection (e.g., disposing of an old test
 bucket): edit the policy via console to remove the Deny statement, or
 use `aws s3api put-bucket-policy` with an empty Statement array.
 
-## 3. Create writer IAM user (PutObject ONLY, no Delete/Get/List)
+## 3. Create writer IAM user (Put + Get + List for rclone, NO Delete)
 
-This is the key paranoia: a compromised VPS can upload garbage but
-can't delete or read prior snapshots.
+The paranoia narrows post-Path-C (ticket `86b9xgz66`, 2026-05-16): a
+compromised VPS still cannot DELETE prior snapshots (§2b bucket-policy
+Deny on `s3:DeleteObjectVersion` is the defense-in-depth backstop), but
+the writer DOES need `s3:GetObject` + `s3:ListBucket` for rclone's
+pre-PUT `HeadObject` probe. The two grants cover two distinct AWS S3
+disclosure rules: `s3:GetObject` is required to HEAD an existing key
+(without it, HeadObject returns 403 unconditionally), and `s3:ListBucket`
+is required to receive a 404 (NoSuchKey) for a non-existent key
+(without it, HeadObject returns 403 to avoid leaking key-existence
+information). rclone's pre-PUT probe hits BOTH paths across the
+collector's lifetime (re-upload after restart vs first-chunk upload of
+a new key), so the writer needs both grants. Without them, `rclone
+copyto` fails on at least one of the two destination states.
 
-D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the `PutObject`
-Resource set from `daily/*` only to ALL six archive prefixes
-(`daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`).
-Without the `bronze/*` grant, the collector's first
+D1.5 (ticket `86b9ypna4`, 2026-05-16) extended the writer-IAM Resource
+set from `daily/*` only to ALL six archive prefixes (`daily/`,
+`journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`). This is
+NOT an F6 surface (F6 is §2 lifecycle + §2b bucket-policy per
+`kb/findings/s3-existing-corpus-audit.md` §4-F6) — it's adjacent
+template-vs-live drift in the same class as F6, surfaced at D1.5
+kickoff. Path C (ticket `86b9xgz66`, post-D1.5 follow-up) adds
+`s3:GetObject` + `s3:ListBucket` to align the template with the live
+policy (which carried Get + List all along — verbatim re-run of the
+pre-Path-C template against the live bucket would have silently
+DROPPED those grants, same REPLACE-semantics class as the §2
+lifecycle clobber). Without the `bronze/*` Resource grant, the
+collector's first
 `rclone copyto s3prod:kalshi-bot-archive/bronze/...` returns 403, the
 KEEP-local-on-failure posture (collector/uploader.py) accumulates
 chunks in `outbox/`, and the 2 GB VPS fills the root volume within
 hours of bronze day-zero — well before D1.6 disk-pressure alerting
-ships. Closes F6 from D0.1.
+ships.
+
+**Policy-name preserved.** The inline policy is still named `s3-put-only`
+for operational compatibility with the live IAM identifier — renaming
+would orphan the live policy and require a manual cleanup. The name is
+now a misnomer; the actual permission set is Put + Get + List
+(documented inline below).
 
 ```bash
 aws iam create-user --user-name kalshi-state-db-backup-writer
@@ -243,9 +275,12 @@ cat > writer-policy.json <<EOF
     "Version": "2012-10-17",
     "Statement": [
         {
-            "Sid": "PutObjectsOnly",
+            "Sid": "PutAndHeadObject",
             "Effect": "Allow",
-            "Action": ["s3:PutObject"],
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject"
+            ],
             "Resource": [
                 "arn:aws:s3:::${BUCKET}/daily/*",
                 "arn:aws:s3:::${BUCKET}/journals/*",
@@ -254,6 +289,12 @@ cat > writer-policy.json <<EOF
                 "arn:aws:s3:::${BUCKET}/silver/*",
                 "arn:aws:s3:::${BUCKET}/gold/*"
             ]
+        },
+        {
+            "Sid": "ListBucketForRclone",
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket"],
+            "Resource": "arn:aws:s3:::${BUCKET}"
         },
         {
             "Sid": "InstallProbe",
@@ -299,6 +340,21 @@ the D2.x off-VPS silver/gold ETL chain (DuckDB + dbt running on the
 operator's Mac reads bronze via this same reader profile — see
 `kb/decisions/data-corpus-architecture.md` §13).
 
+Path C (ticket `86b9xgz66`, post-D1.5 follow-up): the
+`ListBucketAndVersions` Sid previously carried a 12-element
+`Condition.StringLike` `s3:prefix` array (bare + glob form of all 6
+prefixes). Path C drops the Condition entirely — the 6 archive
+prefixes carry all the durable content; the only other prefix is
+`_install_check/` (installer sentinels auto-expired @ 7d by the
+`expire-install-probes` lifecycle rule, not durable). The reader can
+now `ListBucket` on the bucket root unconditionally, but `GetObject`
+remains gated to the 6 archive prefixes via the `ReadOnly` Sid
+Resource list — so listing `_install_check/` keys yields names but
+no readable bodies. Dropping the Condition removes a frequent
+half-extension trap (a bucket whose Condition omitted `bronze/*`
+would `AccessDenied` on `aws s3 ls s3://<bucket>/bronze/` even with
+`ReadOnly` Resource covering `bronze/*`).
+
 ```bash
 aws iam create-user --user-name kalshi-state-db-backup-reader
 
@@ -323,15 +379,7 @@ cat > reader-policy.json <<EOF
             "Sid": "ListBucketAndVersions",
             "Effect": "Allow",
             "Action": ["s3:ListBucket", "s3:ListBucketVersions"],
-            "Resource": "arn:aws:s3:::${BUCKET}",
-            "Condition": {"StringLike": {"s3:prefix": [
-                "daily/*", "daily/",
-                "journals/*", "journals/",
-                "market_obs/*", "market_obs/",
-                "bronze/*", "bronze/",
-                "silver/*", "silver/",
-                "gold/*", "gold/"
-            ]}}
+            "Resource": "arn:aws:s3:::${BUCKET}"
         },
         {
             "Sid": "RestoreObjectFromGlacier",
@@ -650,12 +698,12 @@ the rotation cron.
 
 ### Bucket-side multi-prefix expansion (operator one-time)
 
-D1.5 (ticket `86b9ypna4`, 2026-05-16) folded §1-§3 + §5 templates above to the canonical 6-prefix shape: `daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`. Ticket `86b9xgz66` (F6 from D0.1) is **CLOSED** by D1.5 — re-running §1-§5 on a fresh bucket now produces the correct multi-prefix policy without hand-edits.
+D1.5 (ticket `86b9ypna4`, 2026-05-16) closed F6 from D0.1 — `§2 lifecycle` + `§2b bucket-policy` templates folded to the canonical 6-prefix shape: `daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/`. D1.5 ALSO extended `§3 writer-IAM Resource` + `§5 reader-IAM scope` to the same 6 prefixes — adjacent template-vs-live drift in the same class as F6 but outside the original F6 scope. Path C (ticket `86b9xgz66`, 2026-05-16) closed the `§3 writer-IAM Actions` gap (rclone HeadObject quirk: added `s3:GetObject` + `s3:ListBucket`) + dropped `§5 reader-IAM Condition.StringLike` (cosmetic) — also adjacent template-vs-live drift, same class as F6 but outside F6's scope. Re-running §1-§5 on a fresh bucket now produces the correct multi-prefix policy AND the rclone-compatible Action set without hand-edits.
 
 If you are operating an EXISTING bucket that was provisioned before D1.5 (i.e., before 2026-05-16), the templates partition into TWO classes per the **§2 Operator note** above:
 
 - **§2 lifecycle** — `put-bucket-lifecycle-configuration` is REPLACE semantics, but the audited live bucket has a `tier-to-glacier-forever` rule for `daily/` at cadence `7d → GLACIER_IR (forever)` that DIVERGES from the §2 template's `30d → GLACIER_IR → 90d → DEEP_ARCHIVE`. **Verbatim re-run would silently mutate daily/'s cadence — DON'T.** Use `GET-merge-PUT` per the §2 Operator note (`aws s3api get-bucket-lifecycle-configuration` → hand-merge the NEW `bronze-archive` + `silver-archive` rules into `current-lifecycle.json` → `put-bucket-lifecycle-configuration`).
-- **§2b bucket policy / §3 writer-IAM / §5 reader-IAM** — these `put-bucket-policy` / `put-user-policy` calls ARE idempotent and safe to re-run verbatim. No hand-extension required.
+- **§2b bucket policy / §3 writer-IAM / §5 reader-IAM** — post-Path-C these `put-bucket-policy` / `put-user-policy` calls ARE idempotent and safe to re-run verbatim. (Pre-Path-C, verbatim re-run of §3 against a live bucket would have DROPPED the Get/List grants the live IAM carried for rclone — that gap is what Path C closes. Operators reading git blame on an existing bucket from before 2026-05-16 should run the post-Path-C templates.)
 
 Verify with:
 ```bash
@@ -663,15 +711,29 @@ aws s3api get-bucket-lifecycle-configuration --bucket <bucket> | jq '[.Rules[].I
 # Expected: ["bronze-archive", "expire-install-probes", "journals-archive", "market-obs-archive", "silver-archive", "tier-to-glacier-forever"]
 aws s3api get-bucket-policy --bucket <bucket> | jq -r '.Policy' | jq '.Statement[].Resource'
 # Expected: 6-element array covering daily/journals/market_obs/bronze/silver/gold *
-aws iam get-user-policy --user-name kalshi-state-db-backup-writer --policy-name s3-put-only | jq '.PolicyDocument.Statement[].Resource'
-# Expected: PutObjectsOnly Resource is a 6-element array; InstallProbe Resource is _install_check/*
-aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[].Resource'
-# Expected: ReadOnly + RestoreObjectFromGlacier each carry the 6-element array; ListBucketAndVersions resource is the bucket root
-aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[] | select(.Sid=="ListBucketAndVersions").Condition.StringLike."s3:prefix"'
-# Expected: 12-element array covering daily/, daily/*, journals/, journals/*, market_obs/, market_obs/*, bronze/, bronze/*, silver/, silver/*, gold/, gold/* — the bare + glob forms of all 6 prefixes. A half-extended Condition that omits bronze/* makes `aws s3 ls s3://<bucket>/bronze/` fail with AccessDenied even when ReadOnly's Resource lists bronze/*.
+aws iam get-user-policy --user-name kalshi-state-db-backup-writer --policy-name s3-put-only | jq '[.PolicyDocument.Statement[].Sid] | sort'
+# Expected post-Path-C: ["InstallProbe", "ListBucketForRclone", "PutAndHeadObject"]
+aws iam get-user-policy --user-name kalshi-state-db-backup-writer --policy-name s3-put-only | jq '.PolicyDocument.Statement[] | select(.Sid=="PutAndHeadObject").Action | sort'
+# Expected: ["s3:GetObject", "s3:PutObject"] — Get is the rclone HeadObject quirk requirement (closes ticket 86b9xgz66).
+aws iam get-user-policy --user-name kalshi-state-db-backup-writer --policy-name s3-put-only | jq '.PolicyDocument.Statement[] | select(.Sid=="PutAndHeadObject").Resource'
+# Expected: 6-element array covering daily/journals/market_obs/bronze/silver/gold * — the canonical D1.5 archive set.
+aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[] | select(.Sid=="ReadOnly" or .Sid=="RestoreObjectFromGlacier").Resource'
+# Expected: ReadOnly + RestoreObjectFromGlacier each carry the 6-element array.
+aws iam get-user-policy --user-name kalshi-state-db-backup-reader --policy-name s3-get-only | jq '.PolicyDocument.Statement[] | select(.Sid=="ListBucketAndVersions") | {Resource, Condition}'
+# Expected post-Path-C: Resource is the bucket root, Condition is null/absent. (Pre-Path-C this Sid carried a 12-element StringLike Condition; Path C dropped it because `GetObject` is still gated to the 6 archive prefixes via the `ReadOnly` Sid Resource list — listing the bucket root only exposes key NAMES, not bodies. The 7th prefix `_install_check/` auto-expires @ 7d.)
 ```
 
-All five must enumerate `daily/`, `journals/`, `market_obs/`, `bronze/`, `silver/`, `gold/` prefixes post-D1.5. A bucket missing `bronze/*` on the writer-IAM is the canonical pre-D1.5 state and will 403 on the collector's first chunk upload.
+All seven verify one-liners must return the post-Path-C shape:
+
+- Lifecycle: rule IDs include `bronze-archive`, `journals-archive`, `market-obs-archive`, `silver-archive`, `tier-to-glacier-forever`, `expire-install-probes`.
+- Bucket policy Deny: Resource is a 6-element archive-prefix array (`daily/*`, `journals/*`, `market_obs/*`, `bronze/*`, `silver/*`, `gold/*`).
+- Writer-IAM Sids: `[InstallProbe, ListBucketForRclone, PutAndHeadObject]`.
+- Writer-IAM `PutAndHeadObject` Actions: `[s3:GetObject, s3:PutObject]`.
+- Writer-IAM `PutAndHeadObject` Resource: 6-element archive-prefix array.
+- Reader-IAM `ReadOnly` + `RestoreObjectFromGlacier` Resources: 6-element archive-prefix array each.
+- Reader-IAM `ListBucketAndVersions`: Resource is bucket root, Condition is absent.
+
+A bucket whose `s3-put-only` user-policy is missing `bronze/*` from the Put-target Resource list is the canonical pre-D1.5 state and will 403 on the collector's first chunk upload (pre-D1.5 the Sid was `PutObjectsOnly` with `daily/*`-only scope; post-Path-C the equivalent Sid is `PutAndHeadObject` with 6-prefix scope). A bucket whose `s3-put-only` user-policy is missing `s3:GetObject` from the Put-target Actions is the canonical pre-Path-C state and will 403 on rclone's pre-PUT `HeadObject` probe.
 
 ### 12.1 Install the timer
 

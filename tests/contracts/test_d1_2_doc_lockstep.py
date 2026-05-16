@@ -111,6 +111,22 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_kalshi_collector_systemd_unit.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_start_sh_invokes_python_m.py",
     REPO_ROOT / "tests" / "unit" / "test_ops_systemd_unit_matches_repo.py",
+    # Ticket 86b9xgz66 (Path C, post-D1.5 follow-up): the §3 writer-IAM
+    # template and the writer-creds docstring both echoed the now-retracted
+    # "PutObject ONLY (no Delete/Get/List)" claim. The rclone HeadObject
+    # quirk requires s3:GetObject + s3:ListBucket; the live policy already
+    # had those Actions, so verbatim re-run of the pre-Path-C template
+    # against the live bucket would silently DROP the Get/List grants
+    # (same REPLACE-semantics class as the §2 lifecycle clobber). Adding
+    # both surfaces to TRACKED_DOCS so the ratchet covers the writer-IAM
+    # narrative going forward.
+    REPO_ROOT / "scripts" / "STATE_DB_BACKUP_SETUP.md",
+    REPO_ROOT / "scripts" / "ops" / "state_db_s3_backup.py",
+    # R1 N6: the operator-facing installer also carried a stale
+    # "writer IAM only has PutObject (no Delete)" comment that the
+    # initial Path C sweep missed. Add to TRACKED_DOCS so the ratchet
+    # catches future drift on this surface.
+    REPO_ROOT / "scripts" / "ops" / "setup_state_db_backup_timer.sh",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -316,6 +332,130 @@ STALE_PATTERNS_POST_D1_5: list[str] = [
     "D1.5 systemd unit will exec it",
     "D1.5 wires the unit",
     "D1.5 (systemd unit, requires-approval) wires",
+    # Ticket 86b9xgz66 (Path C post-D1.5 follow-up) — writer-IAM
+    # rclone-quirk retracts. The pre-Path-C §3 template + sister-doc
+    # narrative claimed the writer policy granted `s3:PutObject` only
+    # (no Delete/Get/List). The live policy already had Get + List
+    # (rclone HeadObject quirk), so verbatim re-run of the old template
+    # would drop those grants. Post-Path-C: §3 template adds Get/List;
+    # §5 reader-IAM Condition.StringLike is dropped (cosmetic — the 6
+    # prefixes are the entire content set). Encode the retracted claims
+    # as STALE patterns so sister docs cannot drift them back via
+    # copy-paste from a git blame.
+    "PutObject ONLY, no Delete/Get/List",  # § header form (line 222 pre-fix)
+    "PutObject ONLY",  # terse form
+    # R1 N4: hyphenated parenthetical form. The Path C R1 review found
+    # `expire-install-probes` rule narrative at §2 still echoed
+    # "(PutObject-only)" — same drift class, different surface form.
+    "PutObject-only",
+    "PutObject only)",  # closing-paren parenthetical
+    "writer IAM only has PutObject",  # setup_state_db_backup_timer.sh form
+    "s3:PutObject` only (no Delete/Get/List)",  # ops/CLAUDE.md:40 form
+    "writer creds have `s3:PutObject` only",  # ops/CLAUDE.md:40
+    "writer IAM grants `s3:PutObject` only",  # §2b RCA note (line 160 pre-fix)
+    "s3:PutObject only. NO Delete, NO Get, NO List",  # docstring form
+    "NO Delete, NO Get, NO List",  # docstring terse
+    "no Delete/Get/List",  # generic
+    # The "paranoia" claim that a compromised VPS "can't delete or read
+    # prior snapshots" — post-Path-C the "or read" half is false (writer
+    # can Get/List for HeadObject). Paranoia narrows to "no Delete"
+    # (preserved by §3 + §2b Deny defense-in-depth).
+    # NOTE: the `\n`-bearing multi-line form was removed (R7 NIT
+    # cleanup) — per `_scan` line-by-line semantics it could never
+    # match; the single-line variant below covers the load-bearing form.
+    "can't delete or read prior snapshots",
+    # The pre-Path-C §12 verify one-liner expected a 12-element Condition
+    # StringLike array for the reader-IAM ListBucketAndVersions Sid.
+    # Post-Path-C the Condition is dropped entirely; the verify checks
+    # absence-of-Condition instead.
+    "12-element array covering daily/, daily/*, journals/, journals/*",
+    "A half-extended Condition that omits bronze/* makes",
+    # Pre-Path-C the §3 template Sid was "PutObjectsOnly" — now a lie
+    # (the Sid includes Get + List). Replaced by the structured Sids
+    # below (PutAndHeadObject + ListBucketForRclone).
+    "PutObjectsOnly Resource is a 6-element array",  # §12 verify form
+    "\"Sid\": \"PutObjectsOnly\"",  # template-JSON form (escaped quotes)
+    # R1 M3 retract: D1.5 was a partial close of F6 (Resource gap only);
+    # Path C closes the rclone-Actions gap. "F6 closed by D1.5" claims
+    # are factually wrong — the joint close belongs to D1.5 + Path C.
+    "Ticket `86b9xgz66` (F6 from D0.1) is **CLOSED** by D1.5",
+    "F6 from D0.1 — RESOLVED at D1.5",
+    # R1 M5 retract: the per-prefix "All five must enumerate"
+    # closing-summary at §12 — Path C added 2 more one-liners (now 7)
+    # AND 2 of them check bucket-root Resource (not per-prefix).
+    "All five must enumerate",
+    # R1 M4 retract: the "6 prefixes are the bucket's entire content
+    # set" justification ignored `_install_check/` (the install-probe
+    # prefix that exists, has objects, but auto-expires @ 7d via the
+    # `expire-install-probes` lifecycle rule). Replaced with
+    # `_install_check/`-aware framing.
+    # NOTE: pattern strings with literal `\n` would never match the
+    # line-by-line scan in `_scan`; the single-line variant below is
+    # the load-bearing form. R2 N2 cleanup removed the dead `\n` form.
+    "the 6 prefixes are the bucket's entire content set",  # §12 verify form
+    "no objects exist outside them",
+    # R2 M1 retract: per-section "closes F6 from D0.1" overclaims at
+    # §2b (D1.5 §2b alone) + §3 (D1.5 + Path C §3 alone). The actual
+    # F6 close (per `kb/findings/s3-existing-corpus-audit.md` §4-F6)
+    # is D1.5 §2 + §2b alone — both surfaces belong to F6.
+    "— closes F6 from D0.1 per",  # §2b form
+    "ships. Closes F6 from D0.1.",  # §3 form (terminal sentence)
+    # R3 M1 retract: F6 redefined from canonical 2-surface (§2 lifecycle
+    # + §2b bucket-policy per s3-existing-corpus-audit.md §4-F6) to a
+    # 4-surface gap including writer-IAM + reader-IAM. The canonical
+    # sources (kb/findings/s3-existing-corpus-audit.md:240-291 +
+    # kb/decisions/data-corpus-architecture.md:75,446) explicitly scope
+    # F6 to §2/§2b template drift. Path C §3 (Actions) + D1.5 §3/§5
+    # (Resource) are ADJACENT template-drift fixes in the same class
+    # but outside the original F6 scope.
+    "F6 is a 4-surface gap",
+    "4-surface gap — lifecycle / bucket-policy Deny / writer-IAM / reader-IAM",
+    # R4 MN1 cleanup: keep only the broader substrings; narrower forms
+    # were subsumed (substring `in` semantics in `_scan` means the
+    # broader pattern catches every longer variant). Retracted longer
+    # forms: "D1.5 §2 + §2b + §5 + Path C §3 jointly close F6 in full",
+    # "Together, D1.5 + Path C close F6 from D0.1",
+    # "F6 from D0.1 — RESOLVED by D1.5 + Path C", "...— RESOLVED at...".
+    "D1.5 §2 + §2b + §5 + Path C §3 jointly close F6",
+    "Together, D1.5 + Path C close F6",
+    "F6 from D0.1 — RESOLVED by",  # subsumes "by D1.5 + Path C" + "(...)" variants
+    # R3 MN2 retract: the "AWS returns 403-instead-of-404 when caller
+    # lacks BOTH GetObject and ListBucket" mechanism description was
+    # technically imprecise — the 403-vs-404 disclosure rule is gated
+    # by ListBucket alone, not the conjunction with GetObject. Replaced
+    # with the two-disclosure-rule explanation (GetObject for existing
+    # keys, ListBucket for non-existent keys).
+    "AWS returns 403-instead-of-404 for HeadObject when the caller lacks both",
+    "lacks both `s3:GetObject` and `s3:ListBucket` on the resource",
+    "granting both unconditionally avoids the quirk",
+    # R3 MN3 retract: the "marginal regression because a compromised
+    # VPS already holds the live state.db" rationale undersold the
+    # post-Path-C exfiltration widening (writer can now also read
+    # historical journals/, market_obs/, daily/ snapshots). The new
+    # prose acknowledges the strict widening + explains the load-
+    # bearing immutability property survives.
+    "accepted as a marginal regression because a compromised VPS already holds the live state.db",
+    "accepted as marginal regression because",
+    # R3 ops/CLAUDE.md:135 header retract — the "F6 ... RESOLVED by
+    # D1.5 + Path C" overclaim. Replaced with "S3 bucket-side template
+    # alignment (D1.5 + Path C)". The "F6 from D0.1 — RESOLVED by"
+    # pattern above already subsumes the parenthetical (F6...) form.
+    # R5 M1+M2 retract: sister-doc echoes of the R3 MN2 retracted
+    # mechanism explanation crept back in via different phrasings
+    # in state_db_s3_backup.py:49 + ops/CLAUDE.md:40-(a). The
+    # 403-instead-of-404 disclosure rule is gated by `s3:ListBucket`
+    # alone (not the conjunction with GetObject); lacking GetObject
+    # returns 403 unconditionally regardless of key existence. Encode
+    # the regressing phrasings explicitly so the ratchet catches the
+    # drift class going forward.
+    "403-instead-of-404 when the caller lacks s3:GetObject",
+    "the collector cannot upload to ANY destination",
+    # R5 Mn1 retract: pinning a Path-C-era Sid name (`PutAndHeadObject`)
+    # to the pre-D1.5 state is anachronistic; pre-D1.5 the Sid was
+    # `PutObjectsOnly`. Better to refer to the user-policy name
+    # `s3-put-only` (stable across eras) or just describe the
+    # Resource shape.
+    "writer-IAM `PutAndHeadObject` Resource is the canonical pre-D1.5",
 ]
 
 

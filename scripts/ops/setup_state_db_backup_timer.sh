@@ -23,13 +23,15 @@
 # What this script does NOT do (operator owns):
 #   - Create the S3 bucket.
 #   - Create the IAM user + access keys (writer + reader, see plan doc D3).
-#   - Configure the S3 lifecycle rule per scripts/STATE_DB_BACKUP_SETUP.md
-#     §2 template (Standard -> Glacier IR @30d -> Deep Archive @90d;
-#     never expire). NOTE: the audited live bucket diverges — daily/
-#     is Standard -> Glacier IR @7d (forever, never Deep Archive). See
-#     the §2 Operator note + kb/findings/s3-existing-corpus-audit.md
-#     for the ground truth and the GET-merge-PUT instruction for
-#     pre-existing buckets.
+#   - Configure the S3 lifecycle rules per scripts/STATE_DB_BACKUP_SETUP.md
+#     §2 template (6 rules covering daily/, journals/, market_obs/,
+#     bronze/, silver/, _install_check/ — the bucket-wide template
+#     post-D1.5; daily/ template cadence is Standard -> Glacier IR
+#     @30d -> Deep Archive @90d; never expire). NOTE: the audited
+#     live bucket diverges — daily/ is Standard -> Glacier IR @7d
+#     (forever, never Deep Archive). See the §2 Operator note +
+#     kb/findings/s3-existing-corpus-audit.md for the ground truth
+#     and the GET-merge-PUT instruction for pre-existing buckets.
 #   - Add S3_BACKUP_* keys to /home/botuser/kalshi-bot-repo/.env.
 #   - Run `rclone config` to create the s3prod remote.
 # All of these are documented in scripts/STATE_DB_BACKUP_SETUP.md
@@ -251,10 +253,12 @@ fi
 
 # ── pre-flight: bucket reachable + writer creds work ─────────────────────
 # Touch a sentinel object then immediately delete. Wait — the writer
-# IAM only has PutObject (no Delete), so we can't delete. Instead, just
-# attempt PutObject of a tiny sentinel; if it succeeds the creds work.
-# Use a date-stamped key under a `_install_check/` prefix so it's
-# obvious this is a one-off.
+# IAM lacks `s3:DeleteObject*` (§2b Deny is the defense-in-depth
+# backstop), so we can't delete. Instead, just attempt PutObject of a
+# tiny sentinel; if it succeeds the creds work. The `expire-install-
+# probes` lifecycle rule auto-cleans the sentinel @ 7d so the bucket
+# doesn't accumulate them forever. Use a date-stamped key under a
+# `_install_check/` prefix so it's obvious this is a one-off.
 SENTINEL_KEY="_install_check/setup-$(date -u +%Y%m%dT%H%M%S).txt"
 TMP_SENTINEL="$(mktemp)"
 echo "kalshi-bot install probe at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMP_SENTINEL"

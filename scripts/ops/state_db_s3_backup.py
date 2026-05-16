@@ -43,10 +43,20 @@ for the ground truth. Snapshots never expire either way — see plan
 doc for cost projection (~$0.30/mo at year 5).
 
 IAM scope:
-  - Writer creds (this script, on VPS): s3:PutObject only. NO Delete,
-    NO Get, NO List. Compromised VPS cannot ransomware backups.
+  - Writer creds (this script, on VPS): s3:PutObject + s3:GetObject +
+    s3:ListBucket (the Get + List grants close the rclone HeadObject
+    quirk — rclone probes the destination before PUT, and the two
+    grants cover two distinct AWS S3 disclosure rules across the
+    existing-key vs non-existent-key paths; see
+    `scripts/STATE_DB_BACKUP_SETUP.md` §3 for the
+    GetObject-vs-ListBucket breakdown). NO Delete on the writer; §2b
+    bucket-policy Deny on s3:DeleteObjectVersion is the
+    defense-in-depth backstop. A compromised VPS still cannot delete
+    prior snapshots. Path C ticket `86b9xgz66`.
   - Reader creds (state_db_restore.py, on dev Mac, ~/.aws profile
-    `kalshi-state-db-restore`): GetObject + ListBucket. Read-only.
+    `kalshi-state-db-restore`): GetObject + GetObjectVersion +
+    ListBucket + ListBucketVersions + RestoreObject. Read-only (no
+    write surface).
 
 Ticket: 86b9vd9e3.
 Plan: kb/decisions/auto-research-phase-0a-plan-may09.md.
