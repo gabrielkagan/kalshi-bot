@@ -16,6 +16,13 @@ bot's loop is fast (~50-100 tickers).
 This file pins both call sites carry the kwarg. Drift would re-open the 1011
 storm class.
 
+Post-D1.3-fu4 (`86b9zk4hz`, 2026-05-17): the worker-thread decouple of
+`BronzeArchiver._on_frame` closed the 1011 storm class structurally by
+moving the heavy `build_envelope` + `writer.write` work off the asyncio
+thread. This 30s pin remains as defense-in-depth — even with steps 4-5
+relocated, an unforeseen residual block on the asyncio thread should not
+cross the keepalive-ping-timeout window.
+
 Pins:
   1. Both `WSClient(...)` calls in `collector/ws_connection.py` pass
      `ping_timeout=` as a keyword argument.

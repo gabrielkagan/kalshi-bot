@@ -122,11 +122,49 @@ def test_collector_ws_connection_passes_on_session_start_to_wsclient():
 # ─── 3. on_session_start dispatches all subscribe frames ─────────────────────
 
 
+# R2-M2: module-level list of archivers spawned by ``_make_archiver``.
+# Drained by the ``_stop_archivers`` autouse fixture in teardown so each
+# test's daemon worker thread is joined deterministically (rather than
+# leaking + reaping at process exit). Prevents daemon-thread accumulation
+# under pytest-xdist and mock-held-reference issues during monkeypatch
+# teardown.
+_ARCHIVERS_TO_CLEANUP: list = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_archivers():
+    """Autouse teardown: stop every archiver ``_make_archiver`` spawned
+    in this test. Pairs with the R2-M2 fix for fixture-leak hazard."""
+    yield
+    while _ARCHIVERS_TO_CLEANUP:
+        archiver = _ARCHIVERS_TO_CLEANUP.pop()
+        try:
+            archiver.stop()
+        except Exception:
+            # Best-effort cleanup — a wedged stop() shouldn't fail the
+            # test (the original test's assertions are the source of
+            # truth).
+            pass
+
+
 def _make_archiver(monkeypatch, **overrides):
     """Helper: build a BronzeArchiver with a mocked WSClient and dummy writers.
 
     The BronzeArchiver's _wire (WSClient) is replaced after construction so
     on_session_start dispatches via the mock's ``send_frame``.
+
+    Post-D1.3-fu4 (worker-thread decouple): the writer-dispatch path is
+    asynchronous — ``_on_frame`` enqueues to ``_write_queue`` and a
+    daemon worker drains it. To preserve the synchronous-feeling
+    "call _on_frame, then assert on writers[X].write.call_args" pattern
+    that these tests use, the helper starts the worker so dispatch
+    actually happens, and tests use ``_wait_for_write`` below to bound
+    the polling wait.
+
+    R2-M2: each constructed archiver is appended to
+    ``_ARCHIVERS_TO_CLEANUP``; the ``_stop_archivers`` autouse fixture
+    above stops them in teardown so the daemon worker doesn't leak
+    across tests.
     """
     from collector import ws_connection as wc
 
@@ -168,7 +206,32 @@ def _make_archiver(monkeypatch, **overrides):
         conn_id="A",
         **overrides,
     )
+    # D1.3-fu4: spawn the write worker so _on_frame's enqueue actually
+    # dispatches to writers within the test. (We don't start fake_wire;
+    # frames are injected directly via archiver._on_frame.)
+    archiver.start()
+    # R2-M2: register for autouse teardown stop().
+    _ARCHIVERS_TO_CLEANUP.append(archiver)
     return archiver, fake_wire, writers_by_channel
+
+
+def _wait_for_write(mock_writer, *, count=1, timeout=5.0, interval=0.005):
+    """Bounded polling helper: returns True once ``mock_writer.write`` has
+    been called at least ``count`` times, or False on timeout.
+
+    Used by tests post-D1.3-fu4 to bridge the asyncio-thread → worker-thread
+    handoff that ``_on_frame`` performs.
+
+    R4-MINOR-3: timeout raised from 2.0s → 5.0s to absorb pytest-xdist
+    parallel-tier load.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if mock_writer.write.call_count >= count:
+            return True
+        time.sleep(interval)
+    return False
 
 
 def test_on_session_start_dispatches_every_subscribe_frame(monkeypatch):
@@ -243,11 +306,12 @@ def test_subscribed_ack_binds_sid_to_channel(monkeypatch):
     )
     archiver._on_frame(data)
     # The orderbook_delta writer should have been called with an envelope
-    # whose _channel is "orderbook_delta".
-    assert writers["orderbook_delta"].call_count + len(
-        writers["orderbook_delta"].call_args_list
-    ) >= 1 or writers["orderbook_delta"].write.call_count >= 1, (
-        "orderbook_delta writer was not invoked after sid binding"
+    # whose _channel is "orderbook_delta". Post-D1.3-fu4 the dispatch
+    # runs on the worker thread, so poll briefly.
+    assert _wait_for_write(writers["orderbook_delta"], count=1), (
+        "orderbook_delta writer was not invoked after sid binding within "
+        "the polling timeout. Worker may not be draining, OR the data "
+        "frame routed elsewhere (check sid binding)."
     )
 
 
@@ -266,8 +330,12 @@ def test_ok_ack_binds_sid_to_channel(monkeypatch):
          "msg": {"market_ticker": "T1", "price": "0.50", "size": "10"}},
     )
     archiver._on_frame(data)
-    # writers["trade"] should have a .write() call where envelope._channel="trade"
-    assert writers["trade"].call_count + writers["trade"].write.call_count >= 1
+    # writers["trade"] should have a .write() call where envelope._channel="trade".
+    # Post-D1.3-fu4 dispatch runs on the worker thread; poll briefly.
+    assert _wait_for_write(writers["trade"], count=1), (
+        "trade writer was not invoked after type=ok sid binding within "
+        "the polling timeout."
+    )
 
 
 # ─── 5. data-frame routing via sid→channel map ───────────────────────────────
@@ -286,8 +354,10 @@ def test_data_frame_with_unmapped_sid_routes_to_unrouted_writer(monkeypatch):
          "msg": {"market_ticker": "T1"}},
     )
     archiver._on_frame(data)
-    assert writers[None].write.call_count == 1, (
-        "Unmapped sid did not route to the _unrouted writer."
+    # Post-D1.3-fu4 worker dispatch — poll for the call to land.
+    assert _wait_for_write(writers[None], count=1), (
+        "Unmapped sid did not route to the _unrouted writer within the "
+        "polling timeout."
     )
     # Envelope routed to _unrouted must carry _channel=None to match
     # the writer's constructor channel.
@@ -310,6 +380,11 @@ def test_data_frame_with_mapped_sid_envelope_channel_populated(monkeypatch):
         {"sid": 42, "seq": 1, "type": "orderbook_delta",
          "msg": {"market_ticker": "T1"}},
     ))
+    # Post-D1.3-fu4: dispatch is on the worker; wait for the orderbook_delta
+    # write (the subscribe-ack itself went to writers[None]).
+    assert _wait_for_write(writers["orderbook_delta"], count=1), (
+        "data frame did not reach orderbook_delta writer within polling timeout."
+    )
     envelope = writers["orderbook_delta"].write.call_args.args[0]
     assert envelope["_channel"] == "orderbook_delta", (
         f"envelope _channel should be `orderbook_delta` after sid binding; "
@@ -366,6 +441,10 @@ def test_data_frame_envelope_carries_frame_wire_recv_ts(monkeypatch):
         sid=42, seq=1,
     )
     archiver._on_frame(frame)
+    # Post-D1.3-fu4: wait for worker dispatch.
+    assert _wait_for_write(writers["orderbook_delta"], count=1), (
+        "data frame did not reach orderbook_delta writer within polling timeout."
+    )
     envelope = writers["orderbook_delta"].write.call_args.args[0]
     # ISO-8601 µs serialization: "1970-08-15T01:53:21.234567Z" — first
     # 7 chars match year/month/day so we can spot-check the suffix.

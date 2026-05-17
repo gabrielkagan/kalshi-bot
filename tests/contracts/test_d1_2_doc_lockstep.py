@@ -98,6 +98,11 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_collector_ws_consumes_wire.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_subscription_manager.py",
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_on_session_start.py",
+    # D1.3-fu4 R2-M3: the worker-thread contract test file is the new
+    # canonical pin for the BronzeArchiver._on_frame asyncio→worker
+    # split. Adding to TRACKED_DOCS so the L99 ratchet covers it
+    # (closes the asymmetric-coverage gap the R2 reviewer flagged).
+    REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_worker_thread.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_rest_snapshot.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_main_loop_wireup.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_rest_snapshot_refresh_cycle.py",
@@ -660,5 +665,104 @@ def test_d1_3_shipped_status_in_at_least_one_tracked_doc():
     assert matched_docs, (
         "No tracked doc claims D1.3 SHIPPED — staleness ratchets clean "
         "but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D1.3-fu4 (worker-thread decouple, 2026-05-17, ticket 86b9zk4hz) ────────
+#
+# L99 PARANOID-at-day-1: when fu4 pivots BronzeArchiver._on_frame from
+# inline writer.write to worker-thread dispatch, retract the prior
+# phrasings so sister docs cannot re-introduce them via copy-paste from
+# a git blame. Same R1-M4 lesson as the D1.4 + D1.5 patterns above.
+
+STALE_PATTERNS_POST_D1_3_FU4: list[str] = [
+    # The fu4-PROVED-INSUFFICIENT D1.3-fu3 forward-tense "proper fix" prose.
+    "proper fix is to decouple the bronze write from the asyncio loop",
+    # Pre-fu4 KB / plan-doc framing — "loop blocks > 30s" framed as a
+    # future-to-fix rather than a past-pivot. (Past-tense framing
+    # "the loop USED TO block > 30s" or "the loop blocked past the
+    # keepalive-ping-timeout window" is legitimate post-fix narrative
+    # and won't substring-match these literals.)
+    "Loop blocks > 30s",
+    "loop blocks > 30s",
+    # Pre-fu4 stopgap-still-stands phrasing.
+    "ping_timeout stopgap PROVED INSUFFICIENT",  # past, but framed open-loop
+    "82 × 1011 errors in 32 min, collector self-restart",
+    "the collector is in a 1011 reconnect cycle every ~30 min until D1.3-fu4 lands",
+    "until D1.3-fu4 lands",
+    "until D1.3-fu4 ships",
+    "D1.3-fu4 target",
+    "D1.3-fu4 will",
+    "after D1.3-fu4 lands",
+    "future D1.3-fu4",
+    # Pre-fu4 D1.6 health-monitor commentary about cadence.
+    "Expected initial WS-reconnect alert cadence ~288/day",
+    "~288 WS-reconnect alerts/day",
+    # Pre-fu4 architectural framing — synchronous writer dispatch claim.
+    "BronzeArchiver writes synchronously on the asyncio thread",
+    # Pre-fu4 WSClient.stop() fire-and-forget claim (the bug C1 retracted).
+    "WSClient.stop is fire-and-forget",
+    "wire.stop is fire-and-forget",
+    # R2-M1 narrowing — the broader "wire.stop guarantees no callbacks
+    # after return" claim is also wrong (R2-M1 narrowed the claim to
+    # "joins the asyncio thread with bounded timeout").
+    "wire.stop guarantees no callbacks after return",
+    # R2-m2 cleanup: the 3 dead-regex patterns from R1
+    # (substring-with-.*) removed entirely rather than kept as
+    # documented-but-never-matching anti-patterns — they were
+    # misleading to a future maintainer assuming regex semantics.
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D1_3_FU4)
+def test_no_post_d1_3_fu4_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D1.3-fu4-pending phrase after
+    D1.3-fu4 shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.3-fu4 (worker-thread
+    decouple of BronzeArchiver._on_frame + WSClient.stop join_timeout
+    kwarg). Same lesson as D1.4 / D1.5 R1-M4: encode retracted prose at
+    ship time so sister-doc drift cannot re-introduce it.
+
+    NOTE: pattern matching is plain substring (not regex). R1 included
+    3 patterns with ``.*`` wildcards which (per the substring matcher)
+    would never fire — those were removed in R2-m2 cleanup. To match a
+    range of phrasings, add multiple literal-substring entries.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.3-fu4-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed D1.3/D1.4/D1.5): lockstep "
+        "ratchets must have PARANOID pattern coverage from day-1. If "
+        "THIS pattern is a legitimate forward-looking phrase for a "
+        "subsequent Bit, narrow it (add a qualifier that won't match "
+        "historical D1.3-fu4 prose)."
+    )
+
+
+def test_d1_3_fu4_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D1.3-fu4 as SHIPPED. Catches the inverse failure mode where
+    staleness patterns pass (no D1.3-fu4 mention at all) but the docs
+    haven't been updated to claim D1.3-fu4 SHIPPED.
+    """
+    shipped_re = re.compile(
+        r"D1\.3-fu4\s+SHIPPED|D1\.3-fu4.*shipped|shipped.*D1\.3-fu4",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.3-fu4 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )
