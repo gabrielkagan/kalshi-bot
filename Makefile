@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-integration-serial test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-integration-shard-0 test-integration-shard-1 test-integration-serial test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -123,7 +123,9 @@ help:
 	@echo "  make test-unit        pure invariants, no DB/network    (<10s)"
 	@echo "  make test-contract    public_api + import-linter + AST  (<5s)"
 	@echo "  make test-equivalence Pillar 3 engine snapshots         (<30s)"
-	@echo "  make test-integration parallel via xdist, excludes @serial (<30s)"
+	@echo "  make test-integration full integration tier (alias for shard-0 + shard-1)"
+	@echo "  make test-integration-shard-0 first half of integration, xdist (<30s)"
+	@echo "  make test-integration-shard-1 second half of integration, xdist (<30s)"
 	@echo "  make test-integration-serial @serial-marked timing-sensitive tests (<20s)"
 	@echo "  make test             all tiers + serial, fail-fast    (<2min)"
 	@echo
@@ -216,7 +218,8 @@ test:
 	$(MAKE) test-unit
 	$(MAKE) test-contract
 	$(MAKE) test-equivalence
-	$(MAKE) test-integration
+	$(MAKE) test-integration-shard-0
+	$(MAKE) test-integration-shard-1
 	$(MAKE) test-integration-serial
 
 # Tier 1: unit. Pure-Python invariants (pyproject parsing, Makefile
@@ -293,8 +296,21 @@ test-equivalence:
 # subprocess/threading-Barrier/SIGALRM tests with tight wall-clock
 # buffers) run in a separate single-worker pass via
 # test-integration-serial.
-test-integration:
-	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile and not serial" -n auto --dist=loadfile $(INTEGRATION_IGNORES)
+#
+# Bit-9 (CI perf umbrella 86b9zjtzk, 2026-05-17): the integration tier
+# is further split into TWO hash-balanced shards via pytest-shard's
+# `--shard-id=N --num-shards=2` flags. Each shard runs ~half the test
+# corpus on its own concurrent GH job, halving the integration-tier
+# wall time. `test-integration` retained as an alias that runs both
+# shards sequentially (operator convenience for local-mac dev — CI
+# uses the per-shard targets directly).
+test-integration: test-integration-shard-0 test-integration-shard-1
+
+test-integration-shard-0:
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile and not serial" -n auto --dist=loadfile --shard-id=0 --num-shards=2 $(INTEGRATION_IGNORES)
+
+test-integration-shard-1:
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile and not serial" -n auto --dist=loadfile --shard-id=1 --num-shards=2 $(INTEGRATION_IGNORES)
 
 test-integration-serial:
 	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "serial" $(INTEGRATION_IGNORES)

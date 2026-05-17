@@ -7,19 +7,22 @@ on:
     branches: [main]
 
 # Bit-7 (CI perf umbrella 86b9zjtzk, 2026-05-17): split the historical
-# single `test` job into 3 parallel jobs so the long-pole integration
-# tier no longer gates the fast tiers.
+# single `test` job into parallel jobs so the long-pole integration
+# tier no longer gates the fast tiers. Bit-9 (2026-05-17) further
+# splits integration-parallel into 2 hash-balanced shards via
+# pytest-shard. Final structure (4 jobs):
 #
-#   fast-tiers          — unit + contract + equivalence + fragile (BLOCKING)
-#   integration-parallel — make test-integration (xdist)  (INFORMATIONAL)
-#   integration-serial   — make test-integration-serial   (INFORMATIONAL)
+#   fast-tiers           — unit + contract + equivalence + fragile (BLOCKING)
+#   integration-shard-0  — make test-integration-shard-0 (INFORMATIONAL)
+#   integration-shard-1  — make test-integration-shard-1 (INFORMATIONAL)
+#   integration-serial   — make test-integration-serial  (INFORMATIONAL)
 #
-# Wall-time projection: 220s (pre-Bit-7) → ~90-110s (post-Bit-7), the
-# `max(fast-tiers wall, integration-parallel wall, integration-serial wall)`
-# plus per-job setup overhead. Each job independently restores Bit-2's pip
-# cache (no cross-job sharing in GH Actions, but the cache key is shared so
-# all 3 jobs hit the same cached wheels). Contract pin at
-# tests/contracts/test_ci_workflows_parallel_jobs.py.
+# Wall-time projection: 220s (pre-Bit-7) → ~70-90s (post-Bit-9), the
+# `max(...)` of the 4 jobs' walls plus per-job setup overhead. Each
+# job independently restores Bit-2's pip cache + Bit-8's venv cache.
+# Contract pins:
+#   tests/contracts/test_ci_workflows_parallel_jobs.py
+#   tests/contracts/test_ci_workflows_integration_sharding.py
 
 jobs:
   fast-tiers:
@@ -73,7 +76,7 @@ jobs:
         if: always()
         run: pytest tests/ -m "fragile" -v --tb=short --ignore=venv --ignore=tests/equivalence || true
 
-  integration-parallel:
+  integration-shard-0:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,17 +87,6 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
-      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
-      # Caches the FULL installed Python location across runs, so
-      # subsequent `pip install -r requirements.txt && pip install -e .[dev]`
-      # become near no-op (~3-5s) on cache hit. Bit-2's `cache: 'pip'`
-      # above only caches the pip download/wheel-build dir; the wheel
-      # install step itself still ran ~29s per job. Combined wall-time
-      # saving: ~24s per job × 3 parallel jobs (paid concurrently so
-      # net wall = ~24s). Key hashes requirements.txt + pyproject.toml
-      # so any dep change busts the cache. Same key across all 6 jobs
-      # (test.yml × 3 + deploy.yml × 3) for cross-workflow reuse.
-      # Contract pin: tests/contracts/test_ci_workflows_venv_cache.py.
       - name: Cache installed venv
         uses: actions/cache@v4
         with:
@@ -104,13 +96,40 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -e '.[dev]'
-      - name: Integration tier — parallel (xdist)
-        # Bit-5 (CI perf umbrella 86b9zjtzk): pytest-xdist parallelizes
-        # the integration tier via -n auto --dist=loadfile. Bit-7 lifts
-        # this into its own GH job so it runs concurrently with
-        # fast-tiers + integration-serial.
+      - name: Integration tier — shard 0 of 2 (xdist + pytest-shard)
+        # Bit-9 (CI perf umbrella 86b9zjtzk): pytest-shard hash-splits
+        # the integration tier into 2 jobs that run concurrently. Each
+        # shard handles ~half the test corpus. Same xdist `--dist=loadfile
+        # -n auto` semantics WITHIN the shard. @serial-marked tests are
+        # excluded (test-integration-serial owns them).
         continue-on-error: true
-        run: make test-integration
+        run: make test-integration-shard-0
+
+  integration-shard-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e '.[dev]'
+      - name: Integration tier — shard 1 of 2 (xdist + pytest-shard)
+        # Bit-9: sister to integration-shard-0; runs the other ~half
+        # via pytest-shard --shard-id=1.
+        continue-on-error: true
+        run: make test-integration-shard-1
 
   integration-serial:
     runs-on: ubuntu-latest
