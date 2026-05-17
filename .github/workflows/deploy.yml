@@ -66,7 +66,11 @@ jobs:
         # Mirrors test.yml's integration step but without
         # continue-on-error. Deploy gate, last chance to catch a
         # behavioral regression before the VPS pulls.
-        run: make test-integration
+        #
+        # Bit-5 (CI perf umbrella 86b9zjtzk): test-integration now runs
+        # pytest-xdist (-n auto --dist=loadfile); @serial-marked tests
+        # run in a separate single-worker pass.
+        run: make test-integration test-integration-serial
 
   deploy:
     needs: test

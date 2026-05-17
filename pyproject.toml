@@ -120,6 +120,13 @@ dev = [
     # 3.x is a rewrite with a different config schema and runner
     # contract; stay on 2.x until the 3.x ergonomics settle.
     "mutmut>=2.4,<3",
+    # Bit-5 (CI perf umbrella 86b9zjtzk): parallel test execution on
+    # the integration tier via `pytest -n auto --dist=loadfile`.
+    # `--dist=loadfile` keeps all tests in one file on the same worker
+    # so module-scoped fixtures + intra-file shared state stay coherent.
+    # Pinned to 3.x — current major; cap at <4 to require deliberate
+    # bump on any future 4.x release.
+    "pytest-xdist>=3.5,<4",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.
@@ -178,6 +185,7 @@ markers = [
     "integration: marks integration tests",
     "smoke: marks quick smoke tests for CI",
     "fragile: marks tests that verify code structure via string matching (non-blocking in CI)",
+    "serial: test must run in a single worker — CPU/timing sensitive under pytest-xdist (Bit-5)",
 ]
 # List form (not space-split string) is shell-safe — pytest splits the
 # string on whitespace, so a future flag value with a space would silently

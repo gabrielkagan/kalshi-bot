@@ -189,6 +189,16 @@ def setUpModule():
     os.environ["CALMLP_ENABLED"] = "0"
 
 
+def tearDownModule():
+    # Bit-5 (CI perf umbrella 86b9zjtzk): under `pytest-xdist --dist=loadfile`,
+    # worker processes are reused across files. Without this cleanup, the
+    # `CALMLP_ENABLED=0` set in setUpModule leaks into the worker's env for
+    # any subsequent file dispatched to the same worker — sister tests that
+    # `pop('CALMLP_ENABLED', None)` (e.g., tests/integration/test_cal_mlp_invariants.py)
+    # would then pop the upstream-set value rather than their own.
+    os.environ.pop("CALMLP_ENABLED", None)
+
+
 class TestExistingWindowCostForTimeslotHelper(unittest.TestCase):
     """Direct-call tests on the production source-of-truth helper."""
 

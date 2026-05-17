@@ -80,9 +80,14 @@ jobs:
         # workflow. Combined with the blocking tiers above, agents get
         # fast PR feedback while real integration regressions still
         # surface in the UI. Deploy.yml's mirror step IS blocking.
+        #
+        # Bit-5 (CI perf umbrella 86b9zjtzk): test-integration now runs
+        # pytest-xdist (-n auto --dist=loadfile) for ~4× speedup on the
+        # 2-vCPU GH runner. test-integration-serial runs the timing-
+        # sensitive @serial-marked tests in a separate single-worker pass.
         if: always()
         continue-on-error: true
-        run: make test-integration
+        run: make test-integration test-integration-serial
       - name: Fragile tests (informational)
         # Existing fragile-marker informational step. Kept as-is —
         # Pillar 5 didn't reclassify fragile tests.

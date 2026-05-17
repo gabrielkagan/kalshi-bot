@@ -587,7 +587,13 @@ class TestConcurrentAcquire:
             assert b.lockfile_path.exists()
             assert a.lockfile_path != b.lockfile_path
 
+    @pytest.mark.serial
     def test_concurrent_subprocess_acquire_blocks(self, lock_root, tmp_path):
+        # Bit-5 (CI perf umbrella 86b9zjtzk): @serial because this test
+        # spawns multiple subprocesses that rendezvous on a Barrier.
+        # Under pytest-xdist parallel workers, CPU contention on a 2-vCPU
+        # CI runner could starve the rendezvous and flake the assertion.
+        #
         # R1 M3 — REAL race. Both children rendezvous on a Barrier and call
         # acquire_raw() within microseconds of each other; over N trials,
         # we must see exactly one "acquired" + one "held" (or in rare
@@ -769,9 +775,17 @@ def _child_acquire_then_die(root_path: str, reclaim_log_path: str, target: str):
 
 
 class TestProcessDeathCleanup:
+    @pytest.mark.serial
     def test_lockfile_persists_after_kill_then_reclaim_recovers(
         self, lock_root, tmp_path, monkeypatch
     ):
+        # Bit-5 (CI perf umbrella 86b9zjtzk): @serial because this test
+        # scales STALE_THRESHOLD_S=0.5s + time.sleep(1.0s) — only 0.5s
+        # of buffer beyond the stale threshold. Under pytest-xdist CPU
+        # contention, subprocess startup + heartbeat-thread stop overhead
+        # can consume that buffer, flaking the reclaim assertion.
+        # (Sister @serial: test_concurrent_subprocess_acquire_blocks.)
+        #
         # R1 M5 — exercise the real "stale threshold elapsed" path without
         # cheating the timestamp. Scale STALE_THRESHOLD_S down to 0.5s and
         # sleep 1.0s after the child exits.
@@ -987,7 +1001,16 @@ class TestStress:
         leftovers = list(lock_root.glob("*.lock"))
         assert leftovers == []
 
+    @pytest.mark.serial
     def test_thread_concurrent_acquire_serializes(self, lock_root):
+        # Bit-5 (CI perf umbrella 86b9zjtzk): @serial because this test
+        # uses threading.Barrier(N_THREADS=5) + 150ms holder window over
+        # N_TRIALS=10 to assert exactly-one-success per trial. Under
+        # pytest-xdist CPU starvation, the holder's 150ms sleep can elapse
+        # in wall-clock before losing threads reach acquire_raw(), so
+        # the losers succeed sequentially and the EXACTLY-ONE assertion
+        # flakes. Sister to test_concurrent_subprocess_acquire_blocks.
+        #
         # R1 M4 — REAL serialization test. Previous version's assertion
         # `successes >= 1 and successes + held_errors == 5` would pass
         # if all 5 threads acquired sequentially (5 successes, 0 errors)

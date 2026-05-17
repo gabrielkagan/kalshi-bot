@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-integration-serial test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -123,8 +123,9 @@ help:
 	@echo "  make test-unit        pure invariants, no DB/network    (<10s)"
 	@echo "  make test-contract    public_api + import-linter + AST  (<5s)"
 	@echo "  make test-equivalence Pillar 3 engine snapshots         (<30s)"
-	@echo "  make test-integration full suite minus the above        (<2min)"
-	@echo "  make test             all tiers, fail-fast              (<3min)"
+	@echo "  make test-integration parallel via xdist, excludes @serial (<30s)"
+	@echo "  make test-integration-serial @serial-marked timing-sensitive tests (<20s)"
+	@echo "  make test             all tiers + serial, fail-fast    (<2min)"
 	@echo
 	@echo "Incremental:"
 	@echo "  make test-affected    testmon-driven, only changed-touch (<5s typical)"
@@ -216,6 +217,7 @@ test:
 	$(MAKE) test-contract
 	$(MAKE) test-equivalence
 	$(MAKE) test-integration
+	$(MAKE) test-integration-serial
 
 # Tier 1: unit. Pure-Python invariants (pyproject parsing, Makefile
 # parsing, repo hygiene). Sub-second. Run on every save.
@@ -283,8 +285,19 @@ test-equivalence:
 # Ticket 86b9vgh1a — same guard as test-equivalence: parallel
 # mutmut would corrupt the broad integration run via in-place
 # mutation of bot/engines/.
+#
+# Bit-5 (CI perf umbrella 86b9zjtzk): pytest-xdist parallelizes across
+# workers. `--dist=loadfile` keeps all tests in one file on the same
+# worker so module-scoped fixtures + intra-file shared state stay
+# coherent. Tests marked `@pytest.mark.serial` (timing-sensitive
+# subprocess/threading-Barrier/SIGALRM tests with tight wall-clock
+# buffers) run in a separate single-worker pass via
+# test-integration-serial.
 test-integration:
-	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile" $(INTEGRATION_IGNORES)
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "not fragile and not serial" -n auto --dist=loadfile $(INTEGRATION_IGNORES)
+
+test-integration-serial:
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest tests/ -m "serial" $(INTEGRATION_IGNORES)
 
 # testmon-driven incremental run. First invocation seeds .testmondata
 # with a full pass (slow); subsequent invocations re-run only tests

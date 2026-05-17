@@ -140,7 +140,8 @@ Per `CLAUDE.md` interaction rules + the modularization plan
 | `test-unit` | <10s | Every save |
 | `test-contract` | <5s budget / ~12s actual on Mac | Every `bot/` / `pyproject.toml` / `.importlinter` edit |
 | `test-equivalence` | <30s | Every `bot/engines/` / `bot/constants.py` edit |
-| `test-integration` | <2min | Before PR |
+| `test-integration` | <30s (parallel via xdist) | Before PR |
+| `test-integration-serial` | <20s (timing-sensitive @serial) | Before PR (auto-runs via `make test`) |
 
 `make test-affected` is testmon-driven (re-runs only tests with
 changed dependencies). Right tool for the tight inner loop.
