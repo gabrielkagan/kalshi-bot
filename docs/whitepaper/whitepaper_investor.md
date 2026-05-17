@@ -85,12 +85,12 @@ The third structural fact is that the entire platform is **operated by one perso
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
 \begin{metricbox}
-\textbf{Live trading snapshot (auto-updated, last refresh \{\{GENERATED\_AT\}\}):}
+\textbf{Live trading snapshot (auto-updated, last refresh {{GENERATED_AT}}):}
 \begin{itemize}
-\item \textbf{\{\{LIVE\_SETTLED\}\}} settled trades since 2026-02-22 — \{\{LIVE\_WINS\}\}W / \{\{LIVE\_LOSSES\}\}L / \{\{LIVE\_BREAKEVENS\}\} BE; win rate \{\{LIVE\_WR\}\}
+\item \textbf{ {{LIVE_SETTLED}} } settled trades since 2026-02-22 --- {{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} BE; win rate {{LIVE_WR}}
 \item Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
 \item Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
-\item \{\{WEATHER\_CITY\_COUNT\}\} weather cities, \{\{SPORTS\_LEAGUE\_COUNT\}\} sports leagues, and S\&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
+\item {{WEATHER_CITY_COUNT}} weather cities, {{SPORTS_LEAGUE_COUNT}} sports leagues, and S\&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
 \item Hourly crypto disabled since Apr 18 after a correlated multi-strike loss event; re-enable path preserved behind two environment variables
 \end{itemize}
 \end{metricbox}
