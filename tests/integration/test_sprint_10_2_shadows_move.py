@@ -88,26 +88,19 @@ def test_new_shadow_path_exists(shadow):
 
 
 @pytest.mark.parametrize("shadow", SHADOWS)
-def test_no_stale_from_shadow_imports(shadow):
-    """No `from <shadow> import ...` AST nodes outside worktrees."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+def test_no_stale_from_shadow_imports(shadow, repo_ast_cache):
+    """No `from <shadow> import ...` AST nodes outside worktrees.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale: list[str] = []
     new_path = SHADOW_NEW_PATHS[shadow]
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if path == new_path:
             continue
         if " " in path.stem:
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == shadow:
@@ -119,23 +112,16 @@ def test_no_stale_from_shadow_imports(shadow):
 
 
 @pytest.mark.parametrize("shadow", SHADOWS)
-def test_no_stale_import_shadow(shadow):
-    """No bare `import <shadow>` AST nodes outside worktrees."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+def test_no_stale_import_shadow(shadow, repo_ast_cache):
+    """No bare `import <shadow>` AST nodes outside worktrees.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

@@ -91,7 +91,10 @@ def test_bot_impl_module_import_fails():
         )
 
 
-def test_no_production_caller_imports_bot_impl():
+_PROD_TREE_ROOTS = (REPO_ROOT / "bot", REPO_ROOT / "scripts")
+
+
+def test_no_production_caller_imports_bot_impl(repo_ast_cache):
     """Production-tree files (bot/, dashboard_snapshot.py, supabase_sync.py,
     scripts/) must have ZERO bot._impl references after the retargets land.
 
@@ -100,31 +103,20 @@ def test_no_production_caller_imports_bot_impl():
       - docstrings / comments — these are doc-drift and caught by sweep
         sub-agents; the AST scan here looks at actual import / attribute /
         string-form ast nodes only.
-    """
-    forbidden_roots = ["bot", "scripts"]
-    # Sprint 10 Bit 10.4 (2026-05-12): dashboard_snapshot.py + supabase_sync.py
-    # relocated under bot/snapshots/. They are now reached by the
-    # `forbidden_roots = ["bot", "scripts"]` rglob walk below; the explicit
-    # forbidden_files list is empty post-relocation but kept as a hook for
-    # any future repo-root sentinel files that may need the same treatment.
-    forbidden_files: list[Path] = []
-    py_files: list[Path] = []
-    for root in forbidden_roots:
-        for p in (REPO_ROOT / root).rglob("*.py"):
-            if "/.claude/worktrees/" in str(p):
-                continue
-            if p.name == "_impl.py":  # excluded — file is gone anyway
-                continue
-            py_files.append(p)
-    for f in forbidden_files:
-        if f.exists():
-            py_files.append(f)
 
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``
+    filtered to bot/+scripts/ (subset of 4-glob). Sprint 10 Bit 10.4
+    (2026-05-12) relocated dashboard_snapshot.py + supabase_sync.py
+    under bot/snapshots/ so they fall naturally under the bot/ filter
+    below (no explicit forbidden_files list needed).
+    """
     offenders: list[str] = []
-    for py in py_files:
-        try:
-            tree = ast.parse(py.read_text())
-        except (SyntaxError, UnicodeDecodeError):
+    for py, tree in repo_ast_cache.items():
+        if tree is None:
+            continue
+        if not any(root in py.parents for root in _PROD_TREE_ROOTS):
+            continue
+        if py.name == "_impl.py":  # excluded — file is gone anyway
             continue
         for node in ast.walk(tree):
             # `import bot._impl` / `import bot._impl as X`

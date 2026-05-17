@@ -154,25 +154,18 @@ def test_no_mock_patch_string_form_for_migration(name, _old):
 
 
 @pytest.mark.parametrize("name,_old", MIGRATIONS)
-def test_no_stale_import_migration(name, _old):
+def test_no_stale_import_migration(name, _old, repo_ast_cache):
     """No stale `from <migration_stem> import` or `import <migration_stem>` AST
-    nodes anywhere (these are one-shot scripts; no production code should import them)."""
+    nodes anywhere (these are one-shot scripts; no production code should import them).
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stem = name.rsplit(".", 1)[0]
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
     stale: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == stem:

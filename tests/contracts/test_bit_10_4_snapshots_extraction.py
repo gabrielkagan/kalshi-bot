@@ -136,32 +136,23 @@ def test_smoke_importable_at_new_path(module_path, names):
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _repo_py_files():
-    return (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
-
-
 @pytest.mark.parametrize("stem", MODULE_STEMS)
-def test_no_stale_from_imports(stem):
+def test_no_stale_from_imports(stem, repo_ast_cache):
     """No `from <stem> import …` AST nodes outside worktrees + iCloud dups.
 
     Files under `bot/snapshots/` itself are intra-package and excluded.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``
+    (canonical 4-glob; ``_repo_py_files`` helper retired in favor of
+    the shared fixture).
     """
     stale: list[str] = []
-    for path in _repo_py_files():
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:  # iCloud "file 2.py" / "file 3.py" duplicates
             continue
         if str(NEW_DIR) in str(path.parent):
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == stem:
@@ -173,19 +164,18 @@ def test_no_stale_from_imports(stem):
 
 
 @pytest.mark.parametrize("stem", MODULE_STEMS)
-def test_no_stale_bare_imports(stem):
-    """No bare `import <stem>` AST nodes outside worktrees + iCloud dups."""
+def test_no_stale_bare_imports(stem, repo_ast_cache):
+    """No bare `import <stem>` AST nodes outside worktrees + iCloud dups.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale: list[str] = []
-    for path in _repo_py_files():
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:
             continue
         if str(NEW_DIR) in str(path.parent):
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
