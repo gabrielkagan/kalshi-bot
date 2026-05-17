@@ -66,32 +66,99 @@ def _fake_list_objects_v2(keys_and_dates):
 
 
 class TestSnapshotAgeHours:
-    """Parse `daily/state-db-YYYY-MM-DD.db.{zst,gz}` -> hours since 06:00 UTC.
+    """Compute snapshot age.
 
-    Vendored from state_db_restore.snapshot_age_hours; the heartbeat MUST
-    be decoupled from the backup chain (per ticket: "Heartbeat must NOT
-    depend on the backup timer being healthy") so we don't import it."""
+    Post-86b9zkp89 (sub-daily 4h cadence): the PRODUCTION path passes
+    ``last_modified`` (S3 ``LastModified``) for exact-second accuracy.
+    The legacy date-parse fallback (when ``last_modified`` is None)
+    treats snapshot as taken at START of NEXT UTC day — a CONSERVATIVE
+    overestimate that clamps negatives to 0. Sister copy lives in
+    state_db_restore.snapshot_age_hours; the heartbeat MUST stay
+    decoupled from the backup chain (per ticket "Heartbeat must NOT
+    depend on the backup timer being healthy") so we vendor not import.
+    """
 
-    def test_parses_iso_date_zst(self, heartbeat_module):
-        # Snapshot 2026-05-09 (taken at 06:00 UTC); query 2026-05-10 18:00 UTC.
-        # 24h + 12h = 36h.
+    # ── PRODUCTION path (LastModified preferred) ─────────────────────
+
+    def test_uses_last_modified_when_provided(self, heartbeat_module):
+        """Production path: exact age from S3 LastModified, no date parse."""
+        lm = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
         now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
         age = heartbeat_module.snapshot_age_hours(
-            "daily/state-db-2026-05-09.db.zst", now=now
+            "daily/state-db-2026-05-10.db.zst", now=now, last_modified=lm,
         )
-        assert age == pytest.approx(36.0)
+        assert age == pytest.approx(6.0)
 
-    def test_parses_iso_date_gz(self, heartbeat_module):
+    def test_negative_age_from_late_tick_clamps_to_zero(self, heartbeat_module):
+        """Edge: LastModified > now (clock skew or future LM). Clamp to 0,
+        not negative — negative would silently pass any positive threshold."""
+        lm = datetime(2026, 5, 10, 21, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 10, 20, 0, tzinfo=timezone.utc)
+        age = heartbeat_module.snapshot_age_hours(
+            "daily/state-db-2026-05-10.db.zst", now=now, last_modified=lm,
+        )
+        assert age == 0.0
+
+    def test_naive_last_modified_treated_as_utc(self, heartbeat_module):
+        """Defensive: boto3 returns tz-aware datetimes but mocks may pass
+        naive; normalize as UTC."""
+        lm = datetime(2026, 5, 10, 12, 0)  # naive
+        now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
+        age = heartbeat_module.snapshot_age_hours(
+            "daily/state-db-2026-05-10.db.zst", now=now, last_modified=lm,
+        )
+        assert age == pytest.approx(6.0)
+
+    # ── LEGACY fallback path (no LastModified) ───────────────────────
+
+    def test_legacy_path_uses_end_of_next_day_overestimate(self, heartbeat_module):
+        """Post-86b9zkp89 fallback semantic: snap_date interpreted as
+        start of NEXT UTC day (conservative overestimate). Snapshot
+        2026-05-09 means "taken any time on 5/9 — assume worst case
+        start of 5/10". Query 2026-05-10 18:00 UTC → age = 18h, NOT
+        the pre-86b9zkp89 value of 36h (which used 06:00 UTC anchor)."""
+        now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
+        age = heartbeat_module.snapshot_age_hours(
+            "daily/state-db-2026-05-09.db.zst", now=now,
+        )
+        assert age == pytest.approx(18.0)
+
+    def test_legacy_path_same_day_query_clamps_to_zero(self, heartbeat_module):
+        """Snapshot 2026-05-10 (today UTC); query 2026-05-10 18:00 UTC →
+        legacy date-only logic computes (now - end_of_today) = -6h, clamps
+        to 0. This is THE failure case the reviewer flagged: late-tick
+        snapshot on same UTC day must NOT report negative age (would
+        silently pass any threshold)."""
+        now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
+        age = heartbeat_module.snapshot_age_hours(
+            "daily/state-db-2026-05-10.db.zst", now=now,
+        )
+        assert age == 0.0
+
+    def test_legacy_path_gz_extension(self, heartbeat_module):
+        """Snapshot 2026-05-09.gz; query 2026-05-10 06:00 UTC → age =
+        6h via legacy (end-of-day = 2026-05-10 00:00)."""
         now = datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc)
         age = heartbeat_module.snapshot_age_hours(
-            "daily/state-db-2026-05-09.db.gz", now=now
+            "daily/state-db-2026-05-09.db.gz", now=now,
         )
-        assert age == pytest.approx(24.0)
+        assert age == pytest.approx(6.0)
 
     def test_returns_none_for_unrecognized(self, heartbeat_module):
+        """Unrecognized key + no last_modified → None (caller decides)."""
         assert heartbeat_module.snapshot_age_hours("daily/garbage.zst") is None
         assert heartbeat_module.snapshot_age_hours("_install_check/probe.txt") is None
         assert heartbeat_module.snapshot_age_hours("") is None
+
+    def test_unrecognized_key_with_last_modified_still_computes(self, heartbeat_module):
+        """If LastModified is provided, key shape is irrelevant — we
+        compute age from the wall-clock, not the key date."""
+        lm = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
+        age = heartbeat_module.snapshot_age_hours(
+            "daily/manual-upload-debug.zst", now=now, last_modified=lm,
+        )
+        assert age == pytest.approx(6.0)
 
 
 # ── core check ─────────────────────────────────────────────────────────
@@ -101,33 +168,99 @@ class TestCheckLatestSnapshot:
     """Pure-function check given a (mocked) s3_client.
 
     Returns (status, key, age_hours, message). status is one of:
-      - 'ok' (latest snapshot <= 36h)
-      - 'stale' (latest snapshot > 36h)
+      - 'ok' (latest snapshot age <= DEFAULT_MAX_SNAPSHOT_AGE_HOURS)
+      - 'stale' (latest snapshot age > threshold)
       - 'empty' (no daily/ keys at all)
       - 'unparseable' (latest key doesn't match daily pattern — manual upload,
         install probe, etc.)
+
+    Post-86b9zkp89: threshold is 8h (= 2 missed 4h ticks of slack), down
+    from 36h pre-86b9zkp89. Age computed via S3 ``LastModified`` from
+    list_objects_v2 response — accurate to the second under sub-daily
+    cadence (was lossy by up to ±14h under the old date-parse anchor).
     """
 
     def test_fresh_snapshot_returns_ok(self, heartbeat_module):
+        """Latest snapshot 4h old via LastModified → under 8h threshold."""
         s3 = MagicMock()
-        # Latest snapshot was yesterday (~24h old at query time).
         s3.list_objects_v2.return_value = _fake_list_objects_v2([
-            ("daily/state-db-2026-05-08.db.zst", datetime(2026, 5, 8, 6, 0, tzinfo=timezone.utc)),
-            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 6, 0, tzinfo=timezone.utc)),
+            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 16, 0, tzinfo=timezone.utc)),
+            ("daily/state-db-2026-05-10.db.zst", datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)),
         ])
-        now = datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc)  # 24h after latest
+        now = datetime(2026, 5, 10, 16, 0, tzinfo=timezone.utc)  # 4h after latest LM
         result = heartbeat_module.check_latest_snapshot(
             s3, bucket="kalshi-test", now=now,
         )
         assert result.status == "ok"
-        assert result.key == "daily/state-db-2026-05-09.db.zst"
-        assert result.age_hours == pytest.approx(24.0)
+        assert result.key == "daily/state-db-2026-05-10.db.zst"
+        assert result.age_hours == pytest.approx(4.0)
 
-    def test_stale_snapshot_48h_returns_stale(self, heartbeat_module):
-        """The headline acceptance test: simulate a 48h-old snapshot
-        (timer hung 2 days), verify check_latest_snapshot reports stale."""
+    def test_stale_snapshot_12h_returns_stale(self, heartbeat_module):
+        """Headline acceptance: 12h-old snapshot (3 missed 4h ticks) →
+        stale at 8h threshold. Pre-86b9zkp89 this would have been ok
+        (12h < 36h)."""
         s3 = MagicMock()
-        # Latest key is 2026-05-08; query at 2026-05-10 06:00 = 48h.
+        s3.list_objects_v2.return_value = _fake_list_objects_v2([
+            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 18, 0, tzinfo=timezone.utc)),
+        ])
+        now = datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc)  # 12h after LM
+        result = heartbeat_module.check_latest_snapshot(
+            s3, bucket="kalshi-test", now=now,
+        )
+        assert result.status == "stale"
+        assert result.key == "daily/state-db-2026-05-09.db.zst"
+        assert result.age_hours == pytest.approx(12.0)
+        assert "stale" in result.message.lower() or "old" in result.message.lower()
+
+    def test_just_under_8h_threshold_returns_ok(self, heartbeat_module):
+        """Boundary: 7h59m must be 'ok', not 'stale'. Post-86b9zkp89 threshold."""
+        s3 = MagicMock()
+        lm = datetime(2026, 5, 10, 10, 0, tzinfo=timezone.utc)
+        s3.list_objects_v2.return_value = _fake_list_objects_v2([
+            ("daily/state-db-2026-05-10.db.zst", lm),
+        ])
+        now = datetime(2026, 5, 10, 17, 59, tzinfo=timezone.utc)  # 7h59m later
+        result = heartbeat_module.check_latest_snapshot(
+            s3, bucket="kalshi-test", now=now,
+        )
+        assert result.status == "ok"
+
+    def test_just_over_8h_threshold_returns_stale(self, heartbeat_module):
+        """Boundary: 8h01m must be 'stale'. Post-86b9zkp89 threshold."""
+        s3 = MagicMock()
+        lm = datetime(2026, 5, 10, 10, 0, tzinfo=timezone.utc)
+        s3.list_objects_v2.return_value = _fake_list_objects_v2([
+            ("daily/state-db-2026-05-10.db.zst", lm),
+        ])
+        now = datetime(2026, 5, 10, 18, 1, tzinfo=timezone.utc)  # 8h01m later
+        result = heartbeat_module.check_latest_snapshot(
+            s3, bucket="kalshi-test", now=now,
+        )
+        assert result.status == "stale"
+
+    def test_late_tick_same_day_not_negative(self, heartbeat_module):
+        """R-last M4 regression: pre-fix logic computed (now - 06:00) for
+        a same-day late-tick snapshot. With LastModified-driven age, the
+        20:00 UTC tick produces age = (21:00 UTC - 20:00 UTC) = 1h → ok.
+        This is exactly the 'fresh snapshot from late tick wrongly read
+        as 15h-old' regression class from the R-last review."""
+        s3 = MagicMock()
+        lm = datetime(2026, 5, 10, 20, 0, tzinfo=timezone.utc)
+        s3.list_objects_v2.return_value = _fake_list_objects_v2([
+            ("daily/state-db-2026-05-10.db.zst", lm),
+        ])
+        now = datetime(2026, 5, 10, 21, 0, tzinfo=timezone.utc)
+        result = heartbeat_module.check_latest_snapshot(
+            s3, bucket="kalshi-test", now=now,
+        )
+        assert result.status == "ok"
+        assert result.age_hours == pytest.approx(1.0)
+
+    def test_message_says_scheduled_not_daily_backup(self, heartbeat_module):
+        """R-last M4: alert wording was 'daily backup timer may be broken'
+        which is wrong post-86b9zkp89 (no more daily timer). Should say
+        'scheduled' or 'every 4h' so the operator knows what timer to check."""
+        s3 = MagicMock()
         s3.list_objects_v2.return_value = _fake_list_objects_v2([
             ("daily/state-db-2026-05-08.db.zst", datetime(2026, 5, 8, 6, 0, tzinfo=timezone.utc)),
         ])
@@ -136,34 +269,10 @@ class TestCheckLatestSnapshot:
             s3, bucket="kalshi-test", now=now,
         )
         assert result.status == "stale"
-        assert result.key == "daily/state-db-2026-05-08.db.zst"
-        assert result.age_hours == pytest.approx(48.0)
-        assert "stale" in result.message.lower() or "old" in result.message.lower()
-
-    def test_just_under_36h_threshold_returns_ok(self, heartbeat_module):
-        """Boundary: 35h59m must be 'ok', not 'stale'."""
-        s3 = MagicMock()
-        s3.list_objects_v2.return_value = _fake_list_objects_v2([
-            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 6, 0, tzinfo=timezone.utc)),
-        ])
-        # 06:00 + 35:59 = 17:59 the next day
-        now = datetime(2026, 5, 10, 17, 59, tzinfo=timezone.utc)
-        result = heartbeat_module.check_latest_snapshot(
-            s3, bucket="kalshi-test", now=now,
+        msg_lower = result.message.lower()
+        assert "scheduled" in msg_lower or "every 4h" in msg_lower or "4h" in msg_lower, (
+            f"alert message must mention sub-daily cadence; got: {result.message!r}"
         )
-        assert result.status == "ok"
-
-    def test_just_over_36h_threshold_returns_stale(self, heartbeat_module):
-        """Boundary: 36h01m must be 'stale'."""
-        s3 = MagicMock()
-        s3.list_objects_v2.return_value = _fake_list_objects_v2([
-            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 6, 0, tzinfo=timezone.utc)),
-        ])
-        now = datetime(2026, 5, 10, 18, 1, tzinfo=timezone.utc)
-        result = heartbeat_module.check_latest_snapshot(
-            s3, bucket="kalshi-test", now=now,
-        )
-        assert result.status == "stale"
 
     def test_empty_bucket_returns_empty(self, heartbeat_module):
         """Brand-new bucket / catastrophic deletion — no snapshots at all."""
@@ -189,14 +298,20 @@ class TestCheckLatestSnapshot:
         assert result.status == "empty"
 
     def test_unparseable_latest_returns_unparseable(self, heartbeat_module):
-        """If the lexicographically-last key doesn't match the daily/state-db-*
-        pattern, we can't compute age. Treat as 'unparseable' so the alert
-        message tells the operator to investigate manually rather than
-        silently returning ok."""
+        """If the lex-last key doesn't match the daily/state-db-* pattern
+        AND there is no LastModified to fall back on, treat as
+        'unparseable'. Post-86b9zkp89 production path always has
+        LastModified (boto3 returns it) so unparseable is now rare —
+        it surfaces only when a mock omits LastModified entirely (legacy
+        test fixture). The case is preserved as a defensive surface for
+        malformed/manual uploads where neither shape works."""
         s3 = MagicMock()
-        s3.list_objects_v2.return_value = _fake_list_objects_v2([
-            ("daily/manual-upload-debug.db.zst", datetime(2026, 5, 9, 6, 0, tzinfo=timezone.utc)),
-        ])
+        # Intentionally omit LastModified to exercise the legacy
+        # date-parse path; key doesn't match pattern → unparseable.
+        s3.list_objects_v2.return_value = {
+            "Contents": [{"Key": "daily/manual-upload-debug.db.zst"}],
+            "KeyCount": 1, "IsTruncated": False,
+        }
         now = datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc)
         result = heartbeat_module.check_latest_snapshot(
             s3, bucket="kalshi-test", now=now,
@@ -291,10 +406,14 @@ class TestMain:
     lives here."""
 
     def test_main_fresh_snapshot_no_alert(self, heartbeat_module, monkeypatch):
-        """24h-old snapshot — exit 0, no Telegram POST."""
+        """4h-old snapshot (post-86b9zkp89 every-4h cadence) — exit 0,
+        no Telegram POST. Pre-86b9zkp89 this test used 24h which was
+        under the 36h threshold; post-86b9zkp89 threshold is 8h so we
+        use 4h (one tick ago) to stay clearly under."""
         s3 = MagicMock()
+        # 4h-old snapshot via LastModified (within 8h threshold).
         s3.list_objects_v2.return_value = _fake_list_objects_v2([
-            ("daily/state-db-2026-05-09.db.zst", datetime(2026, 5, 9, 6, 0, tzinfo=timezone.utc)),
+            ("daily/state-db-2026-05-10.db.zst", datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc)),
         ])
 
         alerts = []
@@ -307,7 +426,7 @@ class TestMain:
         rc = heartbeat_module.run_heartbeat(
             s3_client=s3,
             bucket="kalshi-test",
-            now=datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 5, 10, 6, 0, tzinfo=timezone.utc),  # 4h after LM
         )
         assert rc == 0
         assert alerts == []

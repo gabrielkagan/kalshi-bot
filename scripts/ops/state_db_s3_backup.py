@@ -24,7 +24,10 @@ on its next pass. Stdlib. The VPS has no `sqlite3` CLI installed (see
 ops/CLAUDE.md Bit 2.0.5.3 docs) so the Python stdlib API is the only
 realistic path on the VPS anyway.
 
-Architecture (one nightly run, 06:00 UTC, post H-4 cron chain):
+Architecture (every-4h run, 00/04/08/12/16/20:00 UTC; the 04:00 tick
+overlaps the H-4 cron chain — acceptable per ticket 86b9zkp89 rationale
+since sub-daily ticks share the same daily/<UTC-date>.db.zst S3 key and
+S3 retains latest-of-day):
   1. Pre-flight df check (need ~2x state.db worth of free tmp space).
   2. Snapshot live state.db -> /tmp/state-db-snapshot-<ts>.db via
      sqlite3.Connection.backup().
@@ -221,7 +224,8 @@ def compress(src: Path, dst: Path, algorithm: str = DEFAULT_ALGORITHM) -> None:
         # `-6` is zstd's balanced level (ticket 86b9xgu9c). The original
         # Phase 0a script used `-19` (highest compression) which took
         # ~11 min wall-clock on the first manual VPS backup — unacceptable
-        # for a 06:00 UTC daily cron that overlaps the next H-4 chain. -6
+        # for any cadence overlapping the next H-4 chain (pre-86b9zkp89
+        # daily 06:00 UTC; now every-4h with 04:00 tick overlapping H-4). -6
         # produces ~10-15% larger output for ~5-15× faster compression
         # (Silesia-corpus benchmark; SQLite sparse pages tend toward the
         # tighter end of both ranges). Pinned by

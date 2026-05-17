@@ -453,7 +453,7 @@ to fix.
 
 ## 8. Verified-restore acceptance test (AC #3)
 
-After the first nightly backup runs (next 06:00 UTC), on the Mac:
+After the first sub-daily backup runs (next 4h tick: 00/04/08/12/16/20:00 UTC), on the Mac:
 
 ```bash
 python3 scripts/ops/state_db_restore.py \
@@ -744,7 +744,7 @@ ssh -t botuser@$VPS_HOST 'bash /home/botuser/kalshi-bot-repo/scripts/ops/setup_j
 The installer:
 - Pre-flights: rclone present, `s3prod` remote configured, `S3_BACKUP_BUCKET` in `.env`, `/var/lock` writable, Telegram creds present (warn-only).
 - Installs `kalshi-journal-archives-sync.{service,timer}` at `/etc/systemd/system/`.
-- Enables + starts the timer (next fire: 04:30 UTC).
+- Enables + starts the timer (next fire: next 4h tick at HH:30 UTC ∈ {00,04,08,12,16,20}; cadence revised by ticket `86b9zkp89` 2026-05-17).
 
 The service wraps via `h4_run_with_alert.py` so non-zero exits Telegram-alert.
 
