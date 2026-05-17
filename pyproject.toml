@@ -182,7 +182,7 @@ markers = [
 # List form (not space-split string) is shell-safe — pytest splits the
 # string on whitespace, so a future flag value with a space would silently
 # misroute.
-addopts = ["-v", "--tb=short", "--ignore=venv"]
+addopts = ["--tb=short", "--ignore=venv"]
 
 # Pillar 5: mutmut configuration. One-time baseline run against the
 # extracted engines (Bits 6.1+6.2) to grade the equivalence harness

@@ -218,7 +218,13 @@ def test_pyproject_pytest_config_ported_from_pytest_ini():
     addopts = pt.get("addopts", "")
     if isinstance(addopts, list):
         addopts = " ".join(addopts)
-    for flag in ("-v", "--tb=short", "--ignore=venv"):
+    # CI perf Bit-3 (umbrella `86b9zjtzk`, this Bit `86b9zju0v`, 2026-05-17)
+    # removed `-v` from addopts to drop the verbose-reporter cost on CI's
+    # ~4500 tests (~5-15s saving). The remaining flags are correctness/
+    # output flags that must stay; `tests/contracts/test_pytest_addopts_no_v.py`
+    # is the forward-looking contract that `-v` cannot return without a
+    # deliberate edit.
+    for flag in ("--tb=short", "--ignore=venv"):
         assert flag in addopts, (
             f"pytest addopts missing {flag!r}; pytest.ini had it. Got: {addopts!r}"
         )
