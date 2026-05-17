@@ -83,14 +83,16 @@ def test_test_yml_fast_tiers_has_venv_cache(test_yml_parsed):
     )
 
 
-def test_test_yml_integration_parallel_has_venv_cache(test_yml_parsed):
-    job = test_yml_parsed["jobs"]["integration-parallel"]
-    cache_step = _cache_step(job)
-    assert cache_step is not None, (
-        "test.yml integration-parallel missing actions/cache@v4 (Bit-8)"
-    )
-    assert "pythonLocation" in str(cache_step["with"]["path"])
-    assert "hashFiles" in str(cache_step["with"]["key"])
+def test_test_yml_integration_shards_have_venv_cache(test_yml_parsed):
+    """Both Bit-9 integration shards must have actions/cache@v4 (venv cache)."""
+    for shard in ("0", "1"):
+        job = test_yml_parsed["jobs"][f"integration-shard-{shard}"]
+        cache_step = _cache_step(job)
+        assert cache_step is not None, (
+            f"test.yml integration-shard-{shard} missing actions/cache@v4 (Bit-8)"
+        )
+        assert "pythonLocation" in str(cache_step["with"]["path"])
+        assert "hashFiles" in str(cache_step["with"]["key"])
 
 
 def test_test_yml_integration_serial_has_venv_cache(test_yml_parsed):
@@ -116,14 +118,16 @@ def test_deploy_yml_fast_tiers_has_venv_cache(deploy_yml_parsed):
     assert "hashFiles" in str(cache_step["with"]["key"])
 
 
-def test_deploy_yml_integration_parallel_has_venv_cache(deploy_yml_parsed):
-    job = deploy_yml_parsed["jobs"]["integration-parallel"]
-    cache_step = _cache_step(job)
-    assert cache_step is not None, (
-        "deploy.yml integration-parallel missing actions/cache@v4 (Bit-8)"
-    )
-    assert "pythonLocation" in str(cache_step["with"]["path"])
-    assert "hashFiles" in str(cache_step["with"]["key"])
+def test_deploy_yml_integration_shards_have_venv_cache(deploy_yml_parsed):
+    """Both Bit-9 integration shards in deploy.yml must have venv cache."""
+    for shard in ("0", "1"):
+        job = deploy_yml_parsed["jobs"][f"integration-shard-{shard}"]
+        cache_step = _cache_step(job)
+        assert cache_step is not None, (
+            f"deploy.yml integration-shard-{shard} missing actions/cache@v4 (Bit-8)"
+        )
+        assert "pythonLocation" in str(cache_step["with"]["path"])
+        assert "hashFiles" in str(cache_step["with"]["key"])
 
 
 def test_deploy_yml_integration_serial_has_venv_cache(deploy_yml_parsed):
@@ -140,7 +144,8 @@ def test_deploy_yml_integration_serial_has_venv_cache(deploy_yml_parsed):
 
 
 def test_all_cache_keys_consistent_across_jobs(test_yml_parsed, deploy_yml_parsed):
-    """All 6 jobs (3 in test.yml + 3 in deploy.yml) must use IDENTICAL
+    """All 8 jobs (4 in test.yml + 4 in deploy.yml — Bit-9 raised count
+    from 6 to 8 by sharding integration-parallel) must use IDENTICAL
     cache keys so they share the same cache entry across workflows.
 
     Without this: a fresh cache fill in test.yml wouldn't be reusable
@@ -149,11 +154,11 @@ def test_all_cache_keys_consistent_across_jobs(test_yml_parsed, deploy_yml_parse
     """
     keys = []
     for jobs in (test_yml_parsed["jobs"], deploy_yml_parsed["jobs"]):
-        for job_name in ("fast-tiers", "integration-parallel", "integration-serial"):
+        for job_name in ("fast-tiers", "integration-shard-0", "integration-shard-1", "integration-serial"):
             cache = _cache_step(jobs[job_name])
             keys.append(cache["with"]["key"])
     assert len(set(keys)) == 1, (
-        f"Cache keys must be identical across all 6 jobs for cross-workflow reuse. "
+        f"Cache keys must be identical across all 8 jobs for cross-workflow reuse. "
         f"Got {len(set(keys))} distinct keys: {set(keys)}"
     )
 
@@ -163,7 +168,7 @@ def test_cache_step_runs_before_install_dependencies(test_yml_parsed, deploy_yml
     cache restore (if any) is in place when pip install runs.
     """
     for workflow_name, parsed in [("test.yml", test_yml_parsed), ("deploy.yml", deploy_yml_parsed)]:
-        for job_name in ("fast-tiers", "integration-parallel", "integration-serial"):
+        for job_name in ("fast-tiers", "integration-shard-0", "integration-shard-1", "integration-serial"):
             steps = parsed["jobs"][job_name]["steps"]
             cache_idx = None
             install_idx = None

@@ -127,6 +127,16 @@ dev = [
     # Pinned to 3.x — current major; cap at <4 to require deliberate
     # bump on any future 4.x release.
     "pytest-xdist>=3.5,<4",
+    # Bit-9 (CI perf umbrella 86b9zjtzk, ticket 86b9zkk5j, 2026-05-17):
+    # hash-balanced test sharding so the post-Bit-5+7 integration-tier
+    # job (the long pole at ~2:08 wall) splits into 2 concurrent GH
+    # jobs running ~half the test corpus each. pytest-shard adds
+    # `--shard-id=N --num-shards=M` flags that hash test IDs evenly
+    # across N shards. Stable across runs (same test always lands in
+    # same shard) so xdist + shard compose deterministically.
+    # 0.1.x pinned floor — only published series; cap <2 to require
+    # deliberate bump on any future 1.x release.
+    "pytest-shard>=0.1.2,<2",
 ]
 # ML extras used by cal_mlp + analysis paths. Not required for the live bot
 # loop, so kept optional.

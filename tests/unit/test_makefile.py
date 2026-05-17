@@ -50,6 +50,8 @@ PILLAR_5_TARGETS = (
     "test-contract-lint",
     "test-equivalence",
     "test-integration",
+    "test-integration-shard-0",
+    "test-integration-shard-1",
     "test-integration-serial",
     "test-affected",
     "test-changed",
@@ -282,7 +284,7 @@ def test_test_target_chains_tiered_targets():
     tier's failure aborts the next via Make's default fail-on-nonzero.
     The CI symmetry that Bit 1.2 pinned (filter alignment with
     .github/workflows/test.yml) now holds at the tier level — see
-    `test_test_integration_matches_ci_blocking_filter` for the
+    `test_test_integration_shard_recipes_match_ci_blocking_filter` for the
     integration-tier pin and `test_pillar_5_workflow_calls_tier_targets`
     for CI's parallel obligation.
     """
@@ -306,34 +308,36 @@ def test_test_target_chains_tiered_targets():
         cursor = idx + len(tier)
 
 
-def test_test_integration_matches_ci_blocking_filter():
-    """test-integration must use the same -m filter as CI's broad pytest step.
+def test_test_integration_shard_recipes_match_ci_blocking_filter():
+    """test-integration-shard-{0,1} must use the same -m filter as CI's
+    integration step. Bit-9 (2026-05-17) sharded the broad integration
+    invocation into 2 hash-balanced targets via pytest-shard; each shard
+    runs ~half the corpus with identical marker filters.
 
-    With Pillar 5, the historical `pytest tests/ -m "not fragile"` lives
-    in test-integration (the catch-all tier). CI's broad pytest step in
-    .github/workflows/test.yml + deploy.yml mirrors this — drift breaks
-    the local-CI symmetry the Bit 1.2 contract guarded.
-
-    Bit-5 (CI perf umbrella 86b9zjtzk): the parallel pass now uses
-    `-m "not fragile and not serial"` (excludes @serial-marked
-    timing-sensitive tests, which run in `test-integration-serial`).
-    Both marker filters must be present.
+    Pre-Bit-9 this contract checked `test-integration` directly. Post-Bit-9
+    `test-integration` is a deps-alias for both shards; the filters live
+    in the shard recipes.
     """
-    recipe = _recipe_for("test-integration")
-    assert "pytest" in recipe, "`make test-integration` recipe must invoke pytest."
-    assert "tests/" in recipe or "tests " in recipe, (
-        "`make test-integration` recipe must target tests/ (CI does)."
-    )
-    assert "not fragile" in recipe, (
-        f"`make test-integration` recipe missing `not fragile` marker. "
-        f"CI's broad pytest step in .github/workflows/test.yml uses this "
-        f"filter; drift breaks the local-CI symmetry. Recipe was: {recipe!r}"
-    )
-    assert "not serial" in recipe, (
-        f"`make test-integration` recipe missing `not serial` marker "
-        f"(Bit-5: @serial-marked timing-sensitive tests run in "
-        f"test-integration-serial under a single worker). Recipe was: {recipe!r}"
-    )
+    for shard in ("0", "1"):
+        recipe = _recipe_for(f"test-integration-shard-{shard}")
+        assert "pytest" in recipe, (
+            f"`make test-integration-shard-{shard}` recipe must invoke pytest."
+        )
+        assert "tests/" in recipe or "tests " in recipe, (
+            f"`make test-integration-shard-{shard}` recipe must target tests/."
+        )
+        assert "not fragile" in recipe, (
+            f"`make test-integration-shard-{shard}` recipe missing `not fragile`."
+        )
+        assert "not serial" in recipe, (
+            f"`make test-integration-shard-{shard}` recipe missing `not serial` "
+            f"(Bit-5: @serial-marked tests own test-integration-serial)."
+        )
+        # Bit-9: each shard recipe must invoke pytest-shard with its specific ID
+        assert f"--shard-id={shard}" in recipe and "--num-shards=2" in recipe, (
+            f"`make test-integration-shard-{shard}` recipe missing pytest-shard flags. "
+            f"Recipe was: {recipe!r}"
+        )
 
 
 def test_test_integration_serial_target_exists():
@@ -382,7 +386,7 @@ def test_makefile_ci_symmetry_via_pyproject_addopts():
     Sibling-pair note: `testpaths = ['.']` in pyproject means a future
     edit that drops the explicit `tests/` arg from any tier recipe
     would silently expand collection to the whole repo (snapshot DBs,
-    scripts/, etc.) — `test_test_integration_matches_ci_blocking_filter`
+    scripts/, etc.) — `test_test_integration_shard_recipes_match_ci_blocking_filter`
     pins the integration tier's `tests/` arg, so the pair (this test +
     that test) together enforce CI symmetry.
     """
@@ -762,20 +766,20 @@ def test_test_equivalence_invokes_pytest_on_equivalence_dir():
 
 
 def test_test_integration_ignores_other_tiers():
-    """test-integration must NOT re-run tests already covered by
-    earlier tiers — that's the whole point of tiering.
+    """test-integration shard recipes must NOT re-run tests already
+    covered by earlier tiers — that's the whole point of tiering.
 
-    The recipe should ignore tests/equivalence (Pillar 3) at minimum;
-    the unit + contract file lists are referenced via INTEGRATION_IGNORES
-    (or equivalent) so adding a file to a tier auto-removes it from
-    integration.
+    Bit-9 (2026-05-17): post-sharding, the recipes live in
+    test-integration-shard-{0,1}; each must reference INTEGRATION_IGNORES
+    (or pass --ignore=tests/equivalence directly).
     """
-    recipe = _recipe_for("test-integration")
-    assert "tests/equivalence" in recipe or "INTEGRATION_IGNORES" in recipe, (
-        f"test-integration recipe doesn't ignore tests/equivalence. "
-        f"Either pass `--ignore=tests/equivalence` directly or include it "
-        f"in $(INTEGRATION_IGNORES). Recipe was: {recipe!r}"
-    )
+    for shard in ("0", "1"):
+        recipe = _recipe_for(f"test-integration-shard-{shard}")
+        assert "tests/equivalence" in recipe or "INTEGRATION_IGNORES" in recipe, (
+            f"test-integration-shard-{shard} recipe doesn't ignore tests/equivalence. "
+            f"Either pass `--ignore=tests/equivalence` directly or include it "
+            f"in $(INTEGRATION_IGNORES). Recipe was: {recipe!r}"
+        )
     # If using a Make variable, sanity-check it resolves to the unit +
     # contract file lists. Substring check is sufficient — the integrity
     # of the variable expansion is exercised by `make -n test-integration`
@@ -887,7 +891,8 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
         direct = re.search(rf"run:\s*make\s+{re.escape(tier)}(?![\w-])", text)
         if direct:
             continue
-        # Fall-through only legal for `test-contract` (split form).
+        # Fall-through only legal for `test-contract` (split form) AND
+        # `test-integration` (Bit-9 shard form: shard-0 + shard-1 pair).
         if tier == "test-contract":
             pytest_half = re.search(r"run:\s*make\s+test-contract-pytest(?![\w-])", text)
             lint_half = re.search(r"run:\s*make\s+test-contract-lint(?![\w-])", text)
@@ -899,6 +904,18 @@ def test_pillar_5_workflow_calls_tier_targets(wf_name, blocking_integration):
                 f"split pair is present. Ticket 86b9vgh3t allows either "
                 f"the orchestrator OR the split halves; CI must invoke "
                 f"one of those shapes."
+            )
+        if tier == "test-integration":
+            shard0 = re.search(r"run:\s*make\s+test-integration-shard-0(?![\w-])", text)
+            shard1 = re.search(r"run:\s*make\s+test-integration-shard-1(?![\w-])", text)
+            if shard0 and shard1:
+                continue
+            assert False, (
+                f"{wf_name} missing `run: make test-integration` step AND "
+                f"neither the test-integration-shard-0+test-integration-shard-1 "
+                f"split pair is present. Bit-9 (2026-05-17, ticket 86b9zkk5j) "
+                f"allows either the orchestrator OR the split shards; CI must "
+                f"invoke one of those shapes."
             )
         assert False, (
             f"{wf_name} missing `run: make {tier}` step. Pillar 5 "
@@ -1352,7 +1369,9 @@ def test_mutmut_lock_recipes_guard_long_running_tiers():
     script invocation. Both shapes are valid.
     """
     text = _content()
-    for tgt in ("test-mutmut", "test-equivalence", "test-integration"):
+    # Bit-9 (2026-05-17): test-integration is now a deps-alias for shard-{0,1};
+    # the MUTMUT_GUARD lives in the shard recipes. Iterate them directly.
+    for tgt in ("test-mutmut", "test-equivalence", "test-integration-shard-0", "test-integration-shard-1"):
         recipe = _recipe_for(tgt)
         if "_mutmut_lock.py" in recipe:
             continue

@@ -1,27 +1,37 @@
-"""Bit-7 (CI perf umbrella 86b9zjtzk) — pin the parallel-jobs structure
-of test.yml and deploy.yml.
+"""Bit-7 + Bit-9 (CI perf umbrella 86b9zjtzk) — pin the parallel-jobs
+structure of test.yml and deploy.yml.
 
 Pre-Bit-7, both workflows had a single `test` job with sequential steps:
 unit → contract → equivalence → integration → fragile. Integration was
 the long pole (~157s on CI); the other tiers (~73s combined) waited.
 
-Bit-7 splits the workflows into 3 parallel jobs:
+Bit-7 (2026-05-17) split the workflows into 3 parallel jobs. Bit-9
+(2026-05-17) further split integration-parallel into 2 hash-balanced
+shards via pytest-shard. Post-Bit-9 structure (4 jobs):
 
   - `fast-tiers` (BLOCKING)   — unit + contract-pytest + contract-lint
                                 + equivalence + fragile.
-  - `integration-parallel`    — `make test-integration` (xdist-n-auto).
+  - `integration-shard-0`     — `make test-integration-shard-0`
+                                (pytest-shard --shard-id=0 --num-shards=2
+                                + xdist --dist=loadfile -n auto).
+  - `integration-shard-1`     — `make test-integration-shard-1`
+                                (pytest-shard --shard-id=1 --num-shards=2
+                                + xdist --dist=loadfile -n auto).
   - `integration-serial`      — `make test-integration-serial`.
 
-In test.yml, the 2 integration jobs are INFORMATIONAL (continue-on-error)
+In test.yml, the 3 integration jobs are INFORMATIONAL (continue-on-error)
 matching pre-Bit-7 semantics; fast-tiers is BLOCKING.
 
-In deploy.yml, all 3 jobs are BLOCKING, and the `deploy` job depends on
-all 3 via `needs: [fast-tiers, integration-parallel, integration-serial]`.
+In deploy.yml, all 4 jobs are BLOCKING, and the `deploy` job depends
+on all 4 via
+`needs: [fast-tiers, integration-shard-0, integration-shard-1, integration-serial]`.
 
 Each job independently runs `actions/setup-python@v5` with `cache: 'pip'`
-(Bit-2 pip-cache reused per-job).
+(Bit-2 pip-cache) AND `actions/cache@v4` for `${{ env.pythonLocation }}`
+(Bit-8 venv cache).
 
-Status: RED until Bit-7 lands the restructure. GoesGREEN after.
+Status: post-Bit-9 spec; sister contract pin at
+`tests/contracts/test_ci_workflows_integration_sharding.py`.
 """
 from __future__ import annotations
 
@@ -52,17 +62,18 @@ def deploy_yml_parsed():
 # ─── Section 1 — test.yml job structure ─────────────────────────────────
 
 
-def test_test_yml_has_three_parallel_jobs(test_yml_parsed):
-    """test.yml must define exactly the 3 Bit-7 jobs.
+def test_test_yml_has_four_parallel_jobs(test_yml_parsed):
+    """test.yml must define exactly the 4 post-Bit-9 jobs.
 
-    Pre-Bit-7 the file had 1 job ("test"). Bit-7 splits into 3 named
-    jobs so the long-pole integration tier doesn't gate the fast tiers.
+    Pre-Bit-7 the file had 1 job ("test"). Bit-7 split into 3 jobs.
+    Bit-9 (2026-05-17) further splits integration-parallel into 2
+    hash-balanced shards via pytest-shard → 4 total.
     """
     jobs = test_yml_parsed.get("jobs", {})
-    expected = {"fast-tiers", "integration-parallel", "integration-serial"}
+    expected = {"fast-tiers", "integration-shard-0", "integration-shard-1", "integration-serial"}
     actual = set(jobs.keys())
     assert actual == expected, (
-        f"test.yml jobs drifted from Bit-7 spec.\n"
+        f"test.yml jobs drifted from Bit-9 spec.\n"
         f"  expected: {sorted(expected)}\n"
         f"  actual:   {sorted(actual)}"
     )
@@ -112,7 +123,7 @@ def test_test_yml_integration_jobs_are_informational(test_yml_parsed):
     """Both integration jobs in test.yml must have `continue-on-error: true`
     (informational, matches pre-Bit-7 test.yml semantics).
     """
-    for job_name in ("integration-parallel", "integration-serial"):
+    for job_name in ("integration-shard-0", "integration-shard-1", "integration-serial"):
         job = test_yml_parsed["jobs"][job_name]
         tier_steps = [
             s for s in job["steps"]
@@ -128,19 +139,21 @@ def test_test_yml_integration_jobs_are_informational(test_yml_parsed):
             )
 
 
-def test_test_yml_integration_parallel_invokes_make_test_integration(test_yml_parsed):
-    """integration-parallel must invoke `make test-integration` (the
-    xdist-parallel target), NOT chain with serial.
+def test_test_yml_integration_shard_jobs_invoke_their_targets(test_yml_parsed):
+    """Each integration-shard-N job must invoke its specific
+    `make test-integration-shard-N` target. Bit-9 (2026-05-17) replaced
+    the single integration-parallel job with two shard jobs.
     """
-    job = test_yml_parsed["jobs"]["integration-parallel"]
-    runs = " ".join(str(s.get("run", "")) for s in job["steps"])
-    assert "make test-integration" in runs, (
-        "integration-parallel must invoke `make test-integration`"
-    )
-    assert "test-integration-serial" not in runs, (
-        "integration-parallel must NOT invoke test-integration-serial "
-        "(it has its own job per Bit-7)."
-    )
+    for shard in ("0", "1"):
+        job = test_yml_parsed["jobs"][f"integration-shard-{shard}"]
+        runs = " ".join(str(s.get("run", "")) for s in job["steps"])
+        assert f"make test-integration-shard-{shard}" in runs, (
+            f"integration-shard-{shard} must invoke `make test-integration-shard-{shard}`"
+        )
+        assert "test-integration-serial" not in runs, (
+            f"integration-shard-{shard} must NOT invoke test-integration-serial "
+            "(serial pass has its own job)."
+        )
 
 
 def test_test_yml_integration_serial_invokes_make_test_integration_serial(test_yml_parsed):
@@ -155,36 +168,40 @@ def test_test_yml_integration_serial_invokes_make_test_integration_serial(test_y
 # ─── Section 2 — deploy.yml job structure ────────────────────────────────
 
 
-def test_deploy_yml_has_three_test_jobs_plus_deploy(deploy_yml_parsed):
-    """deploy.yml must have the same 3 test jobs + the deploy job.
+def test_deploy_yml_has_four_test_jobs_plus_deploy(deploy_yml_parsed):
+    """deploy.yml must have the 4 post-Bit-9 test jobs + deploy job.
 
-    Pre-Bit-7 deploy.yml had `test` + `deploy`. Bit-7 splits `test` into
-    fast-tiers + integration-parallel + integration-serial; `deploy`
-    needs all 3.
+    Bit-7 split `test` into fast-tiers + integration-parallel +
+    integration-serial. Bit-9 (2026-05-17) further split integration-
+    parallel into 2 hash-balanced shards → 4 test jobs + deploy = 5.
     """
     jobs = deploy_yml_parsed.get("jobs", {})
     expected = {
-        "fast-tiers", "integration-parallel", "integration-serial", "deploy",
+        "fast-tiers", "integration-shard-0", "integration-shard-1",
+        "integration-serial", "deploy",
     }
     actual = set(jobs.keys())
     assert actual == expected, (
-        f"deploy.yml jobs drifted from Bit-7 spec.\n"
+        f"deploy.yml jobs drifted from Bit-9 spec.\n"
         f"  expected: {sorted(expected)}\n"
         f"  actual:   {sorted(actual)}"
     )
 
 
-def test_deploy_yml_deploy_needs_all_three_test_jobs(deploy_yml_parsed):
-    """deploy job's `needs:` must list all 3 test jobs so deploy is
-    BLOCKING on each.
+def test_deploy_yml_deploy_needs_all_four_test_jobs(deploy_yml_parsed):
+    """deploy job's `needs:` must list all 4 test jobs so deploy is
+    BLOCKING on each. Bit-9 raised count 3 → 4 (two integration shards).
     """
     deploy_job = deploy_yml_parsed["jobs"]["deploy"]
     needs = deploy_job.get("needs", [])
     if isinstance(needs, str):
         needs = [needs]
-    expected = {"fast-tiers", "integration-parallel", "integration-serial"}
+    expected = {
+        "fast-tiers", "integration-shard-0", "integration-shard-1",
+        "integration-serial",
+    }
     assert set(needs) == expected, (
-        f"deploy.yml deploy job `needs:` drifted from Bit-7 spec.\n"
+        f"deploy.yml deploy job `needs:` drifted from Bit-9 spec.\n"
         f"  expected: {sorted(expected)}\n"
         f"  actual:   {sorted(needs)}"
     )
@@ -194,7 +211,7 @@ def test_deploy_yml_integration_jobs_are_blocking(deploy_yml_parsed):
     """In deploy.yml, both integration jobs must be BLOCKING (NO
     `continue-on-error: true`). Deploy is the higher-stakes gate.
     """
-    for job_name in ("integration-parallel", "integration-serial"):
+    for job_name in ("integration-shard-0", "integration-shard-1", "integration-serial"):
         job = deploy_yml_parsed["jobs"][job_name]
         tier_steps = [
             s for s in job["steps"]
@@ -211,10 +228,11 @@ def test_deploy_yml_integration_jobs_are_blocking(deploy_yml_parsed):
 
 
 def test_deploy_yml_each_test_job_has_setup_python_with_pip_cache(deploy_yml_parsed):
-    """deploy.yml's 3 test jobs each independently `actions/setup-python@v5`
-    with `cache: 'pip'`. Same per-job-cache-reuse pattern as test.yml.
+    """deploy.yml's 4 test jobs (post-Bit-9) each independently
+    `actions/setup-python@v5` with `cache: 'pip'`. Same per-job-cache-
+    reuse pattern as test.yml.
     """
-    for job_name in ("fast-tiers", "integration-parallel", "integration-serial"):
+    for job_name in ("fast-tiers", "integration-shard-0", "integration-shard-1", "integration-serial"):
         job = deploy_yml_parsed["jobs"][job_name]
         steps = job.get("steps", [])
         setup_step = next(
