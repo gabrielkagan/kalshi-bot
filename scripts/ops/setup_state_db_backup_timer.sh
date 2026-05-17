@@ -3,17 +3,22 @@
 # on the VPS. Run once: bash scripts/ops/setup_state_db_backup_timer.sh
 #
 # Phase 0a per kb/decisions/autoresearch-design-may05.md hazards table.
-# Ticket: 86b9vd9e3.
+# Ticket: 86b9vd9e3. Cadence-revised by ticket 86b9zkp89 (2026-05-17,
+# Bronze durability — sub-daily backup to close the 24h loss window).
 #
 # Creates 2 service+timer pairs:
 #   /etc/systemd/system/kalshi-state-db-backup.{service,timer}
-#       Daily at 06:00 UTC. Wrapped via h4_run_with_alert.py for
-#       Telegram failure alerts. Schedule slot is post H-4 cron chain
-#       (04:00/04:30/05:00 UTC) to avoid contention.
+#       Every 4h on the hour (00:00, 04:00, 08:00, 12:00, 16:00, 20:00
+#       UTC). Wrapped via h4_run_with_alert.py for Telegram failure
+#       alerts. The 04:00 slot overlaps the H-4 cron chain
+#       (04:00/04:30/05:00 UTC) but the steady-state backup is ~2-3 min
+#       on the 1-vCPU VPS and the H-4 jobs are I/O-light JSON pulls;
+#       contention is acceptable. Pre-86b9zkp89 cadence was daily 06:00 UTC.
 #   /etc/systemd/system/kalshi-state-db-restore-verify.{service,timer}
-#       Weekly Sunday 07:00 UTC (1h after Sunday backup). Pulls the
-#       latest snapshot, runs PRAGMA integrity_check + row-count
-#       parity (±5%) vs live state.db. Telegram alert on divergence.
+#       Weekly Sunday 07:00 UTC. Pulls the latest snapshot, runs
+#       PRAGMA integrity_check + row-count parity (±5%) vs live
+#       state.db. Telegram alert on divergence. UNCHANGED by 86b9zkp89
+#       (this Bit's scope is BACKUP cadence; verification stays weekly).
 #
 # Re-runnable: tee overwrites unit files, daemon-reload picks up changes.
 #
@@ -277,7 +282,7 @@ echo "=== Installing kalshi-state-db-backup systemd timer ==="
 
 sudo tee /etc/systemd/system/kalshi-state-db-backup.service > /dev/null <<EOF
 [Unit]
-Description=Kalshi state.db nightly backup to S3 (Phase 0a)
+Description=Kalshi state.db sub-daily backup to S3 (Phase 0a, every 4h post-86b9zkp89)
 After=network-online.target
 Wants=network-online.target
 
@@ -293,8 +298,9 @@ ExecStart=${VENV_PYTHON} ${WRAPPER} --label state-db-backup -- ${VENV_PYTHON} ${
 # Round-1 B-M2: sqlite3.Connection.backup() is a blocking C call that
 # does not respond to SIGTERM until the current page batch finishes.
 # 2400s = 40 min gives the snapshot+compress+upload chain plenty of
-# headroom on the 1 vCPU VPS (steady-state ~2-3 min) without running
-# the daily backup into the next deploy window.
+# headroom on the 1 vCPU VPS (steady-state ~2-3 min). Post-86b9zkp89
+# the cadence is every-4h so the timeout still fits comfortably inside
+# the 4h window (2400s = 40 min ≪ 240 min between triggers).
 TimeoutStartSec=2400
 RuntimeMaxSec=2400
 # Round-1 MN6: PrivateTmp gives the unit its own /tmp namespace so the
@@ -305,17 +311,21 @@ EOF
 
 sudo tee /etc/systemd/system/kalshi-state-db-backup.timer > /dev/null <<EOF
 [Unit]
-Description=Daily timer for Kalshi state.db backup (06:00 UTC)
+Description=Sub-daily timer for Kalshi state.db backup (every 4h, post-86b9zkp89)
 
 [Timer]
-OnCalendar=*-*-* 06:00:00
+# Fires at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC. The systemd
+# `start/step` shorthand `00/4` means: start at hour=00, step every 4h
+# until the field repeats. Pre-86b9zkp89 cadence was `*-*-* 06:00:00`
+# (daily); the every-4h cadence caps the VPS-failure data-loss window
+# at ~4h instead of ~24h. Bronze durability per ticket 86b9zkp89.
+OnCalendar=*-*-* 00/4:00:00
 AccuracySec=1min
-# Round-1 B-M1: Persistent=false. If the VPS is rebooted at 14:00 UTC
-# and the 06:00 backup was missed, we DO NOT want a catch-up backup
-# to fire immediately at boot — that competes with bot startup + the
-# H-4 cron chain for SQLite + disk. Daily snapshots are losable; the
-# next 06:00 will pick it up. Tomorrow's daily is also tomorrow's
-# weekly verify baseline; one missed daily is acceptable.
+# Round-1 B-M1: Persistent=false. If the VPS is rebooted between
+# triggers we DO NOT want a catch-up backup to fire immediately at
+# boot — that competes with bot startup + the H-4 cron chain for
+# SQLite + disk. Sub-daily snapshots are losable; the next 4h tick
+# will pick it up (max ~4h gap). One missed tick is acceptable.
 Persistent=false
 
 [Install]
@@ -348,16 +358,21 @@ sudo tee /etc/systemd/system/kalshi-state-db-restore-verify.timer > /dev/null <<
 Description=Weekly timer for Kalshi state.db restore-verify (Sun 07:00 UTC)
 
 [Timer]
-# Sunday 07:00 UTC — 1h after the daily backup, so the latest snapshot
-# is fresh and we exercise the get-path while creds are still valid.
+# Sunday 07:00 UTC — falls 3h after the 04:00 sub-daily backup tick
+# (the every-4h ticks are 00/04/08/12/16/20), so the latest S3
+# snapshot is at most 3h old when the verify fires. Pre-86b9zkp89
+# the comment read "1h after the daily backup (06:00 UTC)"; post-
+# 86b9zkp89 there is no 06:00 tick, but the post-tick-staleness
+# bound is even tighter (3h vs 1h-then-23h previously).
 OnCalendar=Sun *-*-* 07:00:00
 AccuracySec=1min
-# Round-2 R2-M6: weekly verify uses Persistent=true (unlike the daily
-# backup). A reboot near Sunday 07:00 with Persistent=false would skip
-# the verify entirely — meaning a 7-day blind window for silent
-# corruption to go undetected. Persistent=true catches it at next boot.
-# (Daily backup keeps Persistent=false because losing one daily
-# snapshot is acceptable; losing a week of integrity verification is not.)
+# Round-2 R2-M6: weekly verify uses Persistent=true (unlike the
+# sub-daily backup). A reboot near Sunday 07:00 with Persistent=false
+# would skip the verify entirely — meaning a 7-day blind window for
+# silent corruption to go undetected. Persistent=true catches it at
+# next boot. (The every-4h backup keeps Persistent=false because
+# losing one sub-daily tick is acceptable — next tick fires within
+# ~4h; losing a week of integrity verification is not.)
 Persistent=true
 
 [Install]
@@ -377,7 +392,7 @@ echo ""
 echo "=== Timers installed and started ==="
 systemctl list-timers 'kalshi-state-db-*' --no-pager
 echo ""
-echo "First backup will fire at next 06:00 UTC."
+echo "First backup will fire at next 4h tick (00/04/08/12/16/20:00 UTC)."
 echo "First restore-verify will fire at next Sunday 07:00 UTC."
 echo ""
 echo "Run a backup on demand:"

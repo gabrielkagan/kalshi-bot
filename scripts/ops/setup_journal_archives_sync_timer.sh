@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# Setup systemd timer for nightly journal_archives/ → S3 sync on the VPS.
-# Run once: bash scripts/ops/setup_journal_archives_sync_timer.sh
+# Setup systemd timer for sub-daily (every-4h) journal_archives/ → S3
+# sync on the VPS. Run once: bash scripts/ops/setup_journal_archives_sync_timer.sh
 #
-# Ticket: 86b9xgp7k. Companion to setup_state_db_backup_timer.sh —
-# expects that one to have already run (rclone, s3prod remote,
-# kalshi-bot-archive bucket + IAM creds in .env).
+# Ticket: 86b9xgp7k. Cadence-revised by ticket 86b9zkp89 (2026-05-17,
+# Bronze durability — sub-daily sync to close the 24h loss window).
+# Companion to setup_state_db_backup_timer.sh — expects that one to
+# have already run (rclone, s3prod remote, kalshi-bot-archive bucket
+# + IAM creds in .env).
 #
 # Creates 1 service+timer pair:
 #   /etc/systemd/system/kalshi-journal-archives-sync.{service,timer}
-#       Daily 04:30 UTC — 30 min AFTER rotate_journals.sh 04:00 UTC
-#       (so yesterday's journal is fully compressed before sync fires).
-#       Wrapped via h4_run_with_alert.py for Telegram failure alerts.
+#       Every 4h, 30 min offset (00:30, 04:30, 08:30, 12:30, 16:30,
+#       20:30 UTC) — each tick fires 30 min AFTER its paired
+#       rotate_journals.sh tick (rotation cadence was SSH-changed to
+#       every-4h on 2026-05-17; the rotate_journals.sh script is
+#       local-only on the VPS, not in git). The 30-min offset gives
+#       the most-recently-rotated journal time to fully zstd-compress
+#       before sync fires. Wrapped via h4_run_with_alert.py for
+#       Telegram failure alerts. Pre-86b9zkp89 cadence was daily 04:30 UTC.
 #
 # Re-runnable: tee overwrites unit files, daemon-reload picks up changes.
 
@@ -108,7 +115,7 @@ echo "=== Installing kalshi-journal-archives-sync systemd timer ==="
 
 sudo tee /etc/systemd/system/kalshi-journal-archives-sync.service > /dev/null <<EOF
 [Unit]
-Description=Kalshi journal_archives/ nightly S3 sync (86b9xgp7k)
+Description=Kalshi journal_archives/ sub-daily S3 sync (86b9xgp7k, every 4h post-86b9zkp89)
 After=network-online.target
 Wants=network-online.target
 
@@ -129,15 +136,22 @@ EOF
 
 sudo tee /etc/systemd/system/kalshi-journal-archives-sync.timer > /dev/null <<EOF
 [Unit]
-Description=Daily timer for Kalshi journal_archives/ S3 sync (04:30 UTC)
+Description=Sub-daily timer for Kalshi journal_archives/ S3 sync (every 4h, post-86b9zkp89)
 
 [Timer]
-# 30 min after rotate_journals.sh @04:00 UTC, so yesterday's journal is
-# fully zstd-compressed before this fires.
-OnCalendar=*-*-* 04:30:00
+# Fires at 00:30, 04:30, 08:30, 12:30, 16:30, 20:30 UTC. The systemd
+# `start/step` shorthand `00/4` on the hour field, with minute=30,
+# gives each tick a 30-min gap after the paired rotate_journals.sh
+# tick (rotation now runs every 4h on the hour; the script itself is
+# local-only on the VPS, not in git). The 30-min gap is load-bearing:
+# zstd compression of the most-recently-rotated journal must complete
+# before sync, else rclone --immutable would treat the partial file
+# as content divergence and surface exit 6. Pre-86b9zkp89 cadence was
+# `*-*-* 04:30:00` (daily); every-4h caps loss to ~4h instead of ~24h.
+OnCalendar=*-*-* 00/4:30:00
 AccuracySec=1min
 # Persistent=false — same posture as the state.db backup timer. Sync is
-# idempotent; missing a day is recoverable by tomorrow's run (rclone
+# idempotent; missing a tick is recoverable by the next tick (rclone
 # checksum picks up the gap automatically).
 Persistent=false
 
@@ -154,7 +168,7 @@ echo ""
 echo "=== Timer installed and started ==="
 systemctl list-timers 'kalshi-journal-archives-sync.*' --no-pager
 echo ""
-echo "First sync will fire at next 04:30 UTC (uploads ~11 GB backlog)."
+echo "First sync will fire at next 4h tick (00/04/08/12/16/20:30 UTC; first run uploads any backlog)."
 echo ""
 echo "Run on demand:"
 echo "  sudo systemctl start kalshi-journal-archives-sync.service"
