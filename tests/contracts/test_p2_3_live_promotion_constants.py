@@ -372,8 +372,8 @@ PROSE_DRIFT_FORBIDDEN_PHRASES = [
 PROSE_DRIFT_TRACKED_DOCS = [
     "README.md",
     "README.template.md",
-    "whitepaper.md",
-    "whitepaper_investor.md",
+    "docs/whitepaper/whitepaper.md",
+    "docs/whitepaper/whitepaper_investor.md",
     "agent_docs/current_state.md",
     "agent_docs/db_schema.md",
     "agent_docs/calibration_pipeline.md",
