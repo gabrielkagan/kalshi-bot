@@ -43,7 +43,9 @@ header-includes:
     \definecolor{calloutbg}{HTML}{FFF8F0}
     \definecolor{calloutborder}{HTML}{D4883E}
 
-    \newenvironment{Shaded}{%
+    % renewenvironment (not new) — pandoc's default highlighting engine pre-defines
+    % \Shaded; we override it to render code blocks as styled tcolorbox callouts.
+    \renewenvironment{Shaded}{%
       \begin{tcolorbox}[
         breakable,
         colback=codebg,
