@@ -102,7 +102,8 @@ class TestMarketConfigSync:
         assert cfg.min_stc_entry == 600
         assert cfg.max_stc_entry == 1800
         # T1 (2026-05-10): HYPE/DOGE added for shadow observation until T4.
-        assert cfg.excluded_assets == frozenset({"SOL", "XRP", "HYPE", "DOGE"})
+        # T1 (2026-05-17): BNB added for shadow observation (ticket 86b9zmj0c).
+        assert cfg.excluded_assets == frozenset({"SOL", "XRP", "HYPE", "DOGE", "BNB"})
 
     def test_validate_market_configs_passes(self):
         """Full validation against bot/_impl.py constants."""

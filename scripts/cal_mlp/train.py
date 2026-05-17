@@ -592,7 +592,7 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Phase 4 cal_mlp training")
     ap.add_argument(
         '--asset', required=True,
-        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE', 'BNB'],
     )
     ap.add_argument('--extract-train-id', default=None)
     ap.add_argument('--folds-to-train', type=str, default=None,

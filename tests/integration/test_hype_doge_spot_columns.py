@@ -295,7 +295,8 @@ class TestHypeDogeSpotAtDecisionBackfill:
         def _mock_fetch(asset, start_iso, end_iso):
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
-                    "HYPE": 24.512, "DOGE": 0.1837}[asset]
+                    "HYPE": 24.512, "DOGE": 0.1837,
+                    "BNB": 655.4}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)
@@ -331,7 +332,8 @@ class TestHypeDogeSpotAtDecisionBackfill:
         def _mock_fetch(asset, start_iso, end_iso):
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
-                    "HYPE": 24.512, "DOGE": 0.1837}[asset]
+                    "HYPE": 24.512, "DOGE": 0.1837,
+                    "BNB": 655.4}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)

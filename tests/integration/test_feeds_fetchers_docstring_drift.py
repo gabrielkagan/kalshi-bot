@@ -34,7 +34,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 
-SIX_ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE")
+ALL_ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB")
 
 
 _TARGET_MODULES = [
@@ -46,20 +46,22 @@ _TARGET_MODULES = [
 
 
 @pytest.mark.parametrize("module_name", _TARGET_MODULES)
-def test_module_docstring_lists_all_six_assets(module_name: str):
-    """Module docstring must mention all 6 assets in `config.ASSETS`.
+def test_module_docstring_lists_all_assets(module_name: str):
+    """Module docstring must mention every asset in `config.ASSETS`.
 
     These modules describe feeds/fetchers that runtime-iterate over
     `ASSETS` — the docstring is the human-readable contract and must
-    stay in sync.
+    stay in sync. Asset list grows over time (T1 added HYPE/DOGE
+    2026-05-10; BNB added 2026-05-17, ticket 86b9zmj0c).
     """
     mod = importlib.import_module(module_name)
     doc = (mod.__doc__ or "")
-    missing = [a for a in SIX_ASSETS if a not in doc]
+    missing = [a for a in ALL_ASSETS if a not in doc]
     assert not missing, (
         f"{module_name} module docstring is missing asset symbols: "
-        f"{missing}. Update `__doc__` to list all 6 assets in "
-        f"`config.ASSETS = {list(SIX_ASSETS)}`. ClickUp 86b9vrr9c."
+        f"{missing}. Update `__doc__` to list every asset in "
+        f"`config.ASSETS = {list(ALL_ASSETS)}`. "
+        f"ClickUp 86b9vrr9c (HYPE/DOGE) + 86b9zmj0c (BNB)."
     )
 
 

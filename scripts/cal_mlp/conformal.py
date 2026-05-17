@@ -399,7 +399,7 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Phase 5 conformal wrapper")
     ap.add_argument(
         '--asset', required=True,
-        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE', 'BNB'],
     )
     ap.add_argument('--bundle-sha', required=True,
                     help='Phase 4 bundle_sha to wrap')

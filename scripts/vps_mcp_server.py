@@ -186,7 +186,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "asset": {
                         "type": "string",
-                        "description": "Asset symbol filter (BTC/ETH/SOL/XRP/HYPE/DOGE). Omit for all.",
+                        "description": "Asset symbol filter (BTC/ETH/SOL/XRP/HYPE/DOGE/BNB). Omit for all.",
                         "default": None,
                     },
                     "since_minutes": {
@@ -553,7 +553,7 @@ async def _tool_get_settled_outcomes(args: dict) -> list[TextContent]:
     Read-only? Yes. Pure SELECTs against `settled_trades`.
 
     Args:
-        asset (str | None): asset symbol filter (BTC/ETH/SOL/XRP/HYPE/DOGE).
+        asset (str | None): asset symbol filter (BTC/ETH/SOL/XRP/HYPE/DOGE/BNB).
         since_minutes (int): trade-settlement window in minutes (default 60).
         limit (int): max rows to return (default 20, max 500).
 

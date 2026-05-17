@@ -143,7 +143,7 @@ class TestG2BackfillIntegrationWithMockedAPI:
             # the new asset iteration.
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
-                    "DOGE": 0.18, "HYPE": 24.5}[asset]
+                    "DOGE": 0.18, "HYPE": 24.5, "BNB": 655.4}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)

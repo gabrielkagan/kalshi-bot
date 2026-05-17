@@ -131,7 +131,9 @@ and requires a sister anchor in the dispatch test):
 
 **Consumer wiring** (post-fu1):
 - `train.py`, `validate.py`, `conformal.py`: argparse `--asset` choices
-  widened to `['BTC','ETH','SOL','XRP','HYPE','DOGE']`.
+  widened to `['BTC','ETH','SOL','XRP','HYPE','DOGE','BNB']` (BNB added
+  2026-05-17 with T1 shadow onboarding, ticket 86b9zmj0c — kept in lock-step
+  with `bot.config.ASSETS` so cal_mlp scripts don't drift behind activation).
 - `train.py`, `validate.py`: load `ext_bundle['recipe_namespace']`,
   resolve recipe, hard-fail if `--asset` ∉ `recipe.asset_floors`
   (catches `--asset HYPE` paired with production bundle and vice versa).

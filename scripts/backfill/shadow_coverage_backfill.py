@@ -380,6 +380,7 @@ COINBASE_PRODUCTS = {
     "XRP": "XRP-USD",
     "DOGE": "DOGE-USD",
     "HYPE": "HYPE-USD",
+    "BNB": "BNB-USD",       # T1 onboarding 2026-05-17 (86b9zmj0c) — mirror of bot.constants.COINBASE_PRODUCTS
 }
 
 COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product_id}/candles"
