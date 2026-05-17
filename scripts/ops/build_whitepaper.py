@@ -27,6 +27,11 @@ CONFIG_PATH = os.path.join(REPO_DIR, "config.json")
 OUTPUT_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_rendered.md")
 INVESTOR_TEMPLATE_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_investor.md")
 INVESTOR_OUTPUT_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_investor_rendered.md")
+# Layperson whitepaper carries no {{PLACEHOLDER}} markers by design (audience: family/friends,
+# no live-stats embeds). We still produce a *_rendered.md copy for pipeline symmetry so the
+# pandoc step in .github/workflows/whitepaper.yml has one consistent input convention.
+LAYPERSON_TEMPLATE_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_layperson.md")
+LAYPERSON_OUTPUT_PATH = os.path.join(WHITEPAPER_DIR, "whitepaper_layperson_rendered.md")
 README_TEMPLATE_PATH = os.path.join(REPO_DIR, "README.template.md")
 README_OUTPUT_PATH = os.path.join(REPO_DIR, "README.md")
 
@@ -511,6 +516,22 @@ def main():
         unreplaced_investor = re.findall(r"\{\{(\w+)\}\}", investor_rendered)
         if unreplaced_investor:
             print(f"Warning: {len(unreplaced_investor)} unreplaced placeholders in investor whitepaper: {unreplaced_investor}", file=sys.stderr)
+
+    # Render layperson whitepaper (passthrough — no placeholders by design;
+    # substitution is a no-op but produces a *_rendered.md for pandoc symmetry).
+    if os.path.exists(LAYPERSON_TEMPLATE_PATH):
+        with open(LAYPERSON_TEMPLATE_PATH) as f:
+            layperson_template = f.read()
+
+        layperson_rendered = re.sub(r"\{\{(\w+)\}\}", replace_placeholder, layperson_template)
+
+        with open(LAYPERSON_OUTPUT_PATH, "w") as f:
+            f.write(layperson_rendered)
+
+        print(f"Rendered layperson whitepaper written to {LAYPERSON_OUTPUT_PATH}")
+        unreplaced_layperson = re.findall(r"\{\{(\w+)\}\}", layperson_rendered)
+        if unreplaced_layperson:
+            print(f"Warning: {len(unreplaced_layperson)} unreplaced placeholders in layperson whitepaper: {unreplaced_layperson}", file=sys.stderr)
 
     # Render README
     if os.path.exists(README_TEMPLATE_PATH):

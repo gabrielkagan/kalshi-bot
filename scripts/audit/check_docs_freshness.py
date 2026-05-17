@@ -24,12 +24,14 @@ RENDERED_DOCS = [
     os.path.join(REPO_DIR, "README.md"),
     os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_rendered.md"),
     os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_investor_rendered.md"),
+    os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_layperson_rendered.md"),
 ]
 
 # Also check the template sources for hardcoded values
 TEMPLATE_DOCS = [
     os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper.md"),
     os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_investor.md"),
+    os.path.join(REPO_DIR, "docs", "whitepaper", "whitepaper_layperson.md"),
 ]
 
 

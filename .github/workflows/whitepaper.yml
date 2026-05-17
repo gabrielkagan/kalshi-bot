@@ -12,6 +12,7 @@ on:
       - 'bot/executor.py'
       - 'docs/whitepaper/whitepaper.md'
       - 'docs/whitepaper/whitepaper_investor.md'
+      - 'docs/whitepaper/whitepaper_layperson.md'
       - 'README.template.md'
       - 'scripts/ops/generate_whitepaper_stats.py'
       - 'scripts/ops/build_whitepaper.py'
@@ -106,10 +107,18 @@ jobs:
           --pdf-engine=xelatex
           --template eisvogel
 
+      - name: Generate layperson PDF
+        run: >-
+          pandoc docs/whitepaper/whitepaper_layperson_rendered.md
+          -o docs/whitepaper/whitepaper_layperson.pdf
+          --from markdown
+          --pdf-engine=xelatex
+          --template eisvogel
+
       - name: Commit PDFs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/whitepaper/whitepaper.pdf docs/whitepaper/whitepaper_investor.pdf README.md docs/whitepaper/whitepaper_rendered.md docs/whitepaper/whitepaper_investor_rendered.md docs/whitepaper/whitepaper_stats.json config.json
+          git add docs/whitepaper/whitepaper.pdf docs/whitepaper/whitepaper_investor.pdf docs/whitepaper/whitepaper_layperson.pdf README.md docs/whitepaper/whitepaper_rendered.md docs/whitepaper/whitepaper_investor_rendered.md docs/whitepaper/whitepaper_layperson_rendered.md docs/whitepaper/whitepaper_stats.json config.json
           git diff --cached --quiet || git commit -m "Auto-generate whitepaper PDFs and README stats [skip ci]"
           git push
