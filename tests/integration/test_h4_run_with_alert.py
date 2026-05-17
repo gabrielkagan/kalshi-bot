@@ -449,6 +449,7 @@ def test_sighup_handler_installed_by_main(monkeypatch):
     )
 
 
+@pytest.mark.serial
 def test_end_to_end_sigterm_during_subprocess(monkeypatch, tmp_path):
     """E2E regression: spawn wrapper as a subprocess running `sleep 30`,
     SIGTERM the wrapper after 1s, assert wrapper exits 143 AND the
@@ -456,6 +457,13 @@ def test_end_to_end_sigterm_during_subprocess(monkeypatch, tmp_path):
     third assertion is the orphan-prevention regression that the
     May 3 incident bypassed (pre-fix, wrapper exited 143 but child
     survived 2h42m).
+
+    Bit-5 (CI perf umbrella 86b9zjtzk): @serial because the test sleeps
+    1.0s before send_signal(SIGTERM) to let the spawned wrapper install
+    its handler. Under pytest-xdist CPU contention, the wrapper's Python
+    startup + signal.signal(SIGTERM, ...) install can exceed that 1s
+    window — the parent then SIGTERMs an unhandled child → default SIGTERM
+    behavior → no alert sentinel → assertion failure.
     """
     import os as _os
     import shutil

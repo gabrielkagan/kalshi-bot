@@ -50,6 +50,7 @@ PILLAR_5_TARGETS = (
     "test-contract-lint",
     "test-equivalence",
     "test-integration",
+    "test-integration-serial",
     "test-affected",
     "test-changed",
     "test-mutmut",
@@ -312,16 +313,41 @@ def test_test_integration_matches_ci_blocking_filter():
     in test-integration (the catch-all tier). CI's broad pytest step in
     .github/workflows/test.yml + deploy.yml mirrors this — drift breaks
     the local-CI symmetry the Bit 1.2 contract guarded.
+
+    Bit-5 (CI perf umbrella 86b9zjtzk): the parallel pass now uses
+    `-m "not fragile and not serial"` (excludes @serial-marked
+    timing-sensitive tests, which run in `test-integration-serial`).
+    Both marker filters must be present.
     """
     recipe = _recipe_for("test-integration")
     assert "pytest" in recipe, "`make test-integration` recipe must invoke pytest."
     assert "tests/" in recipe or "tests " in recipe, (
         "`make test-integration` recipe must target tests/ (CI does)."
     )
-    assert '-m "not fragile"' in recipe or "-m 'not fragile'" in recipe, (
-        f"`make test-integration` recipe missing `-m \"not fragile\"`. "
+    assert "not fragile" in recipe, (
+        f"`make test-integration` recipe missing `not fragile` marker. "
         f"CI's broad pytest step in .github/workflows/test.yml uses this "
         f"filter; drift breaks the local-CI symmetry. Recipe was: {recipe!r}"
+    )
+    assert "not serial" in recipe, (
+        f"`make test-integration` recipe missing `not serial` marker "
+        f"(Bit-5: @serial-marked timing-sensitive tests run in "
+        f"test-integration-serial under a single worker). Recipe was: {recipe!r}"
+    )
+
+
+def test_test_integration_serial_target_exists():
+    """Bit-5 (CI perf umbrella 86b9zjtzk): the @serial-marked timing-
+    sensitive tests run in a separate single-worker pass via
+    `test-integration-serial`. The recipe must select ONLY @serial
+    tests (positive marker selection) so it complements the parallel
+    pass's `-m "not fragile and not serial"` negative selection.
+    """
+    recipe = _recipe_for("test-integration-serial")
+    assert "pytest" in recipe, "`make test-integration-serial` recipe must invoke pytest."
+    assert '-m "serial"' in recipe or "-m 'serial'" in recipe, (
+        f"`make test-integration-serial` recipe missing `-m \"serial\"` "
+        f"positive marker selector. Recipe was: {recipe!r}"
     )
 
 

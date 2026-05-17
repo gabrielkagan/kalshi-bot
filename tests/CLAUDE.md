@@ -43,8 +43,9 @@ the same targets in `.github/workflows/test.yml` + `deploy.yml`.
 | `make test-unit` | <10s (sub-sec actual) | Pure-Python invariants: pyproject parsing, Makefile parsing, repo hygiene. No DB, no network. | Every save (or every edit, via `test-affected`). |
 | `make test-contract` | <5s budget / ~12s actual on Mac | Pillar 1 public_api snapshot + Pillar 2 import-linter + AST guards (extraction tests, call_sites, db_signatures, config_consistency, order_outcome_vocab). The Mac overshoot is fundamental — AST-walking the large canonical bot modules (`bot/scanner/__init__.py` ~9.4K LOC, `bot/executor.py` ~5.4K LOC, `bot/main_loop.py` ~2.2K LOC) is bounded by file size; CI Linux clears the budget. Pre-Bit-9.3-iii.c the dominant scan target was bot/_impl.py (now deleted). | After any change to `bot/`, `pyproject.toml`, or `.importlinter`. |
 | `make test-equivalence` | <30s (~3s actual) | Pillar 3 numeric snapshots + property tests for `bot/engines/{volatility,probability}.py`. Frozen calibration via `tests/equivalence/conftest.py`. | After any change to `bot/engines/`, `bot/constants.py`, or anything that flows into engine inputs. |
-| `make test-integration` | <2min (~50s actual) | Everything else under `tests/` (the broad behavioral suite). | Before opening a PR. |
-| `make test` | ~3min (sum of above) | All four tiers in order, fail-fast on the cheapest. | Before pushing to main. |
+| `make test-integration` | <30s (~15s actual, parallel via xdist; excludes @serial) | Most of `tests/` parallelized via `pytest-xdist --dist=loadfile -n auto`. | Before opening a PR. |
+| `make test-integration-serial` | <20s (~12s actual) | 5 @serial-marked timing-sensitive tests (subprocess/threading-Barrier/SIGALRM) run in a single worker. Bit-5 (CI perf umbrella 86b9zjtzk). | Auto-runs as part of `make test`. |
+| `make test` | ~2min (sum of above) | All tiers + serial-marked tests in order, fail-fast on the cheapest. | Before pushing to main. |
 
 ### Incremental (testmon)
 

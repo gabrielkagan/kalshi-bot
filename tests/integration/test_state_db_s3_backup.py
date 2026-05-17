@@ -597,6 +597,17 @@ class TestPreflight:
 
 
 class TestEndToEnd:
+    @pytest.fixture(autouse=True)
+    def _isolate_lock_path(self, backup_module, tmp_path, monkeypatch):
+        """Bit-5 (CI perf umbrella 86b9zjtzk): isolate the file-level
+        flock per-test so pytest-xdist parallel workers don't collide on
+        the production `/tmp/kalshi-state-db-backup.lock`. Mirrors the
+        per-test monkeypatch pattern already in TestSingleRunnerLock.
+        TestSingleRunnerLock's own tests deliberately test the lock
+        contract, so they patch `_LOCK_PATH` themselves and are unaffected.
+        """
+        monkeypatch.setattr(backup_module, "_LOCK_PATH", tmp_path / "backup.lock")
+
     def test_full_pipeline_round_trip(self, live_db, tmp_path, backup_module):
         """The headline test: snapshot → compress → put → get → decompress
         produces a byte-identical (and row-count-identical) database."""

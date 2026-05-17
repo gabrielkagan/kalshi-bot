@@ -46,11 +46,18 @@ def test_install_hard_timeout_registers_sigalrm_handler():
         signal.signal(signal.SIGALRM, prev)
 
 
+@pytest.mark.serial
 def test_install_hard_timeout_exits_124_when_alarm_fires():
     """When SIGALRM fires, the handler must `sys.exit(124)`. Code 124
     matches GNU `timeout` convention; the wrapper script (h4_run_with_-
     alert.py) translates non-zero exits to Telegram alerts so the
-    operator gets a clear 'hard timeout' indicator."""
+    operator gets a clear 'hard timeout' indicator.
+
+    Bit-5 (CI perf umbrella 86b9zjtzk): @serial because this test uses
+    a 1-second SIGALRM (`seconds=1`) + `time.sleep(2.0)` to verify
+    delivery — only 1s of headroom. Under pytest-xdist parallel workers,
+    CPU contention on a 2-vCPU CI runner could delay Python signal
+    delivery past the 1s window and produce a flaky failure."""
     if not hasattr(signal, "SIGALRM"):
         pytest.skip("SIGALRM not available on this platform")
     import _h4_runtime_safety

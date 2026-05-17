@@ -48,9 +48,18 @@ def _make_test_db(path: Path, n_rows: int = 50) -> None:
 
 
 @pytest.fixture
-def populated_store(tmp_path):
-    """A LocalDirStore with three days of snapshots already uploaded."""
+def populated_store(tmp_path, monkeypatch):
+    """A LocalDirStore with three days of snapshots already uploaded.
+
+    Bit-5 (CI perf umbrella 86b9zjtzk): monkeypatch the production
+    `_LOCK_PATH` to a per-fixture tmp_path so pytest-xdist parallel
+    workers don't collide on `/tmp/kalshi-state-db-backup.lock`.
+    Mirrors the per-test pattern in test_state_db_s3_backup.py
+    TestSingleRunnerLock + TestEndToEnd._isolate_lock_path.
+    """
     import state_db_s3_backup as backup
+
+    monkeypatch.setattr(backup, "_LOCK_PATH", tmp_path / "backup.lock")
 
     store_root = tmp_path / "store"
     store = backup.LocalDirStore(store_root)
