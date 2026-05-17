@@ -95,7 +95,9 @@ class TestWeekendDiscountLiveGates(unittest.TestCase):
         self.block_start = self.source.find("Weekend Edge Discount (Live + Shadow)")
         self.assertGreater(self.block_start, 0, "Weekend discount block not found")
         # Find the next major section
-        self.block_end = self.source.find("Overnight Edge Discount Shadow", self.block_start)
+        self.block_end = self.source.find("Overnight Edge Discount", self.block_start)
+        self.assertGreater(self.block_end, self.block_start,
+                           "Overnight Edge Discount block-end anchor not found")
         self.block = self.source[self.block_start:self.block_end]
 
     def test_day_gate(self):
@@ -138,7 +140,10 @@ class TestWeekendDiscountShadowContinuity(unittest.TestCase):
     def setUp(self):
         self.source = _read_bot()
         self.block_start = self.source.find("Weekend Edge Discount (Live + Shadow)")
-        self.block_end = self.source.find("Overnight Edge Discount Shadow", self.block_start)
+        self.assertGreater(self.block_start, 0, "Weekend discount block not found")
+        self.block_end = self.source.find("Overnight Edge Discount", self.block_start)
+        self.assertGreater(self.block_end, self.block_start,
+                           "Overnight Edge Discount block-end anchor not found")
         self.block = self.source[self.block_start:self.block_end]
 
     def test_shadow_stage_still_used(self):
@@ -235,6 +240,35 @@ class TestWeekendDiscountWeekdayUnchanged(unittest.TestCase):
         self.assertNotIn("weekday() !=", block)
 
 
+class TestWeekendDiscountSisterBlockBoundaries(unittest.TestCase):
+    """Regression: sister `setUp` methods must use a `block_end` anchor that
+    actually exists in the source. Pre-86b9zk0cn, the end-anchor substring
+    `"Overnight Edge Discount Shadow"` returned -1 because the canonical
+    comment is `"Overnight Edge Discount (Live + Shadow)"` — making both
+    TestWeekendDiscountLiveGates and TestWeekendDiscountShadowContinuity
+    silently slice `source[block_start:-1]` (most of the concatenated
+    source) instead of the narrower weekend-discount block. Their
+    `assertIn` checks then passed trivially against the bloated block.
+    Surfaced by 86b9zjx7r R3 adversarial review.
+    """
+
+    def test_live_gates_block_end_valid(self):
+        live = TestWeekendDiscountLiveGates()
+        live.setUp()
+        self.assertGreater(live.block_end, live.block_start,
+                           f"TestWeekendDiscountLiveGates: block_end={live.block_end} "
+                           f"block_start={live.block_start} — end anchor must locate a "
+                           f"valid position past start (find() returned -1?).")
+
+    def test_shadow_continuity_block_end_valid(self):
+        shadow = TestWeekendDiscountShadowContinuity()
+        shadow.setUp()
+        self.assertGreater(shadow.block_end, shadow.block_start,
+                           f"TestWeekendDiscountShadowContinuity: block_end={shadow.block_end} "
+                           f"block_start={shadow.block_start} — end anchor must locate a "
+                           f"valid position past start (find() returned -1?).")
+
+
 class TestWeekendDiscountFixedFallbackKellySign(unittest.TestCase):
     """Regression: weekend_discount fixed-size fallback must gate on Kelly sign.
 
@@ -252,7 +286,8 @@ class TestWeekendDiscountFixedFallbackKellySign(unittest.TestCase):
         self.block_start = self.source.find("Weekend Edge Discount (Live + Shadow)")
         self.assertGreater(self.block_start, 0, "Weekend discount block not found")
         self.block_end = self.source.find("Overnight Edge Discount", self.block_start)
-        self.assertGreater(self.block_end, self.block_start)
+        self.assertGreater(self.block_end, self.block_start,
+                           "Overnight Edge Discount block-end anchor not found")
         self.block = self.source[self.block_start:self.block_end]
 
     def test_fallback_predicate_references_kelly(self):
