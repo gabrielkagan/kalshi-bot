@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""state.db backup heartbeat alerter — Mac-side, no-upload-in-36h.
+"""state.db backup heartbeat alerter — Mac-side, no-upload-in-8h.
 
 Closes the deferred B-M3 silent-failure gap documented in
 `scripts/STATE_DB_BACKUP_SETUP.md` §10 #1. The Phase 0a backup chain
 (`state_db_s3_backup.py` + systemd timer + `h4_run_with_alert.py`)
-covers exit-code failures of the daily run, but NOT the case where the
-timer itself is hung, disabled, or its unit file rejected:
+covers exit-code failures of the sub-daily (every-4h post-86b9zkp89)
+run, but NOT the case where the timer itself is hung, disabled, or
+its unit file rejected:
 
   - `kalshi-state-db-backup.timer` disabled by an `apt upgrade` postinst
   - systemd hung after a kernel pid-namespace bug
@@ -16,9 +17,12 @@ timer itself is hung, disabled, or its unit file rejected:
 In all of these, the wrapper never runs, no exit code ever fires, no
 Telegram alert ever sends. The existing weekly verify
 (`state_db_restore.py --verify-only`) catches it eventually via the
-36h-stale check (B3-M5, see kb/decisions/auto-research-phase-0a-shipped-may09.md)
+stale-snapshot check (B3-M5, see kb/decisions/auto-research-phase-0a-shipped-may09.md)
 — but that's a 7-day worst-case detection window. This script closes
-that to 6h.
+that to ~14h worst case (8h staleness threshold + cron-every-6h
+granularity = up to 6h between heartbeat ticks). Tightening the
+heartbeat cron itself to match the every-4h backup cadence is filed
+as a followup (would tighten detection to ~12h worst case).
 
 Architectural decision: option (b) — Mac-side cron.
 
@@ -411,7 +415,11 @@ def run_heartbeat(
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        description="Mac-side heartbeat: alert if state.db backup hasn't uploaded in 36h.",
+        description=(
+            "Mac-side heartbeat: alert if state.db backup hasn't uploaded "
+            f"in {DEFAULT_MAX_SNAPSHOT_AGE_HOURS}h "
+            "(post-86b9zkp89 sub-daily 4h cadence; pre-86b9zkp89 was 36h)."
+        ),
     )
     p.add_argument(
         "--bucket", default=os.environ.get("S3_BACKUP_BUCKET", "").strip() or None,

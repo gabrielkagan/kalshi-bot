@@ -9,8 +9,13 @@ before the weekly verify catches it.
 Heartbeat design (Mac-side cron):
   - Run every 6h via launchd/cron.
   - List `daily/` prefix in S3 via boto3 (read-only creds in ~/.aws).
-  - Find the lexicographically last key, parse the embedded ISO date.
-  - If `now_utc - snapshot_taken_utc > 36h`, send Telegram alert.
+  - Find the lexicographically last key; prefer S3 `LastModified` for
+    exact-second age (post-86b9zkp89 sub-daily 4h cadence makes the
+    daily-DATE key parse lossy by up to ±14h).
+  - If `now_utc - snapshot_last_modified > 8h`, send Telegram alert.
+    (Pre-86b9zkp89 threshold was 36h tied to daily backup cadence; the
+    new every-4h cadence's whole point is to bound data loss at ~4h,
+    so threshold tightens to 2 missed ticks = 8h.)
   - Otherwise exit 0 silently (operator only hears about failure).
 
 Why Mac-side (not VPS): chosen architecture option (b) per ticket. The
