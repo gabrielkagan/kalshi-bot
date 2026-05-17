@@ -239,37 +239,37 @@
     },
     "EGARCH_SHADOW_MODE": {
       "value": false,
-      "line": 1962,
+      "line": 1968,
       "description": "EGARCH shadow mode"
     },
     "EGARCH_BLEND_SHADOW_MODE": {
       "value": false,
-      "line": 1992,
+      "line": 1998,
       "description": "EGARCH blend shadow mode"
     },
     "MZ_SIGMOID_SHADOW_MODE": {
       "value": true,
-      "line": 2003,
+      "line": 2009,
       "description": "Sigmoid QLIKE shadow mode"
     },
     "DRAWDOWN_HALF_THRESHOLD": {
       "value": 0.85,
-      "line": 2032,
+      "line": 2038,
       "description": "Halve sizing below this ratio"
     },
     "DRAWDOWN_QUARTER_THRESHOLD": {
       "value": 0.75,
-      "line": 2033,
+      "line": 2039,
       "description": "Quarter sizing below this ratio"
     },
     "DRAWDOWN_HALT_THRESHOLD": {
       "value": 0.65,
-      "line": 2034,
+      "line": 2040,
       "description": "Stop trading below this ratio"
     },
     "MAX_RISK_PER_TRADE": {
       "value": 0.25,
-      "line": 2036,
+      "line": 2042,
       "description": "Max bankroll fraction per trade"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -434,13 +434,13 @@
           0.02
         ]
       ],
-      "line": 2022,
+      "line": 2028,
       "description": "Edge-tiered sizing schedule"
     }
   },
-  "_combined_source_lines": 2036,
+  "_combined_source_lines": 2042,
   "_exchange_feeds": [],
-  "_extracted_at": "2026-05-16T22:21:03Z",
+  "_extracted_at": "2026-05-17T10:48:40Z",
   "_sources": [
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/constants.py",
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/config.py"
