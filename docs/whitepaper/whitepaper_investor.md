@@ -29,6 +29,8 @@ header-includes:
   - |
     ```{=latex}
     \usepackage{etoolbox}
+    \usepackage{xcolor}
+    \definecolor{investorlink}{HTML}{1B4F72}
     \AtBeginEnvironment{Highlighting}{\footnotesize}
     \AtBeginEnvironment{verbatim}{\footnotesize}
     \setcounter{tocdepth}{2}

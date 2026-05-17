@@ -30,6 +30,9 @@ header-includes:
   - |
     ```{=latex}
     \usepackage{etoolbox}
+    \usepackage{xcolor}
+    \definecolor{navylink}{HTML}{2C4270}
+    \definecolor{bluelink}{HTML}{2C5AA0}
     % Shrink fenced code blocks one size so wide ASCII diagrams + source trees
     % fit the page width without manual shrinkage.
     \AtBeginEnvironment{Highlighting}{\footnotesize}
