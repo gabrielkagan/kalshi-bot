@@ -178,7 +178,11 @@ class TestWeekendDiscountExecution(unittest.TestCase):
         # Find the decided contract taker override section
         dc_taker_start = self.source.find("Decided contract taker override")
         self.assertGreater(dc_taker_start, 0)
-        dc_taker_block = self.source[dc_taker_start:dc_taker_start + 800]
+        # Natural end-anchor: next section comment in bot/executor.py
+        dc_taker_end = self.source.find("Terminal momentum taker override", dc_taker_start)
+        self.assertGreater(dc_taker_end, dc_taker_start,
+                           "Terminal momentum taker override block-end anchor not found")
+        dc_taker_block = self.source[dc_taker_start:dc_taker_end]
         # The taker override only matches decided_t1, decided_t1b, decided_t2
         self.assertIn('"decided_t1"', dc_taker_block)
         self.assertNotIn('"weekend_discount"', dc_taker_block)
@@ -187,7 +191,11 @@ class TestWeekendDiscountExecution(unittest.TestCase):
         """Weekend discount candidates overlapping with DC are removed at separation."""
         sep_start = self.source.find("Separate overlay candidates")
         self.assertGreater(sep_start, 0)
-        sep_block = self.source[sep_start:sep_start + 1200]
+        # Natural end-anchor: next section comment in bot/scanner/__init__.py
+        sep_end = self.source.find("Single-asset-per-timeslot", sep_start)
+        self.assertGreater(sep_end, sep_start,
+                           "Single-asset-per-timeslot block-end anchor not found")
+        sep_block = self.source[sep_start:sep_end]
         self.assertIn("weekend_discount", sep_block)
         self.assertIn("_dc_tickers", sep_block)
 
@@ -216,7 +224,13 @@ class TestWeekendDiscountDashboard(unittest.TestCase):
     def test_weekend_discount_live_in_slow_cache(self):
         """weekend_discount_live is in the slow-changing cache."""
         slow_start = self.dash_source.find("_SLOW_SNAP_KEYS")
-        slow_block = self.dash_source[slow_start:slow_start + 400]
+        self.assertGreater(slow_start, 0, "_SLOW_SNAP_KEYS anchor not found")
+        # Natural end-anchor: the immediate consumer of the constant
+        # (`self._slow_cache = {k: v ...}`) — bounds the set-literal block.
+        slow_end = self.dash_source.find("self._slow_cache =", slow_start)
+        self.assertGreater(slow_end, slow_start,
+                           "self._slow_cache assignment block-end anchor not found")
+        slow_block = self.dash_source[slow_start:slow_end]
         self.assertIn("weekend_discount_live", slow_block)
 
     def test_weekend_discount_shadow_panel_preserved(self):
@@ -246,25 +260,50 @@ class TestWeekendDiscountWeekdayUnchanged(unittest.TestCase):
 
 
 class TestWeekendDiscountNoHardcodedBlockStartWindow(unittest.TestCase):
-    """Regression: no `block_start + <int>` hardcoded char-window pattern in
-    this file. Same brittleness class as 86b9zk0cn (test-anchor weakness) —
-    hardcoded windows silently truncate when canonical source layout shifts.
-    Canonical pattern: `find("Overnight Edge Discount", block_start)` +
+    """Regression: no hardcoded char-window patterns (`<name>_start + <int>`)
+    in this file for the four anchor identifiers that have CLEAN natural
+    end-anchors in their respective source modules. Same brittleness class
+    as 86b9zk0cn (test-anchor weakness) — hardcoded windows silently truncate
+    when canonical source layout shifts.
+
+    Canonical pattern: `find(<end-anchor>, block_start)` +
     `assertGreater(block_end, block_start)`.
 
-    Scope: guards the `block_start` identifier specifically — other hardcoded
-    windows in this file (`dc_taker_start + 800` at L181, `sep_start + 1200`
-    at L190, `slow_start + 400` at L219) are a separate brittleness-cleanup
-    surface tracked at ticket 86b9zk74n. The `fallback_anchor + 300` sites
-    (L340, L351) are intentional narrow-window grabs after a known comment
-    anchor and not in scope. Surfaced by 86b9zk0cn R1 N1. Ticket 86b9zk118.
+    Guarded identifiers + their natural end-anchors:
+    - `block_start` → "Overnight Edge Discount" (86b9zk118, 2026-05-17)
+    - `dc_taker_start` → "Terminal momentum taker override" (86b9zk74n)
+    - `sep_start` → "Single-asset-per-timeslot" (86b9zk74n)
+    - `slow_start` → "self._slow_cache =" (86b9zk74n)
+
+    Out of scope: `fallback_anchor + 300` sites inside
+    TestWeekendDiscountFixedFallbackKellySign — intentional narrow-window
+    grabs after a known comment anchor; that test-pair pins the `if`-line
+    structure not block-content. Excluded by the explicit anchor-name set
+    below (i.e., `fallback_anchor` is not in `_GUARDED_ANCHORS`).
     """
 
-    def test_no_hardcoded_block_start_window_in_test_file(self):
-        """AST guard: no `block_start + <int>` patterns in this file."""
+    # The four anchor identifiers we guard. New hardcoded windows for any
+    # other `<name>_start + <int>` are NOT auto-caught — they would need a
+    # follow-up ticket to add the anchor name + natural end-anchor here.
+    _GUARDED_ANCHORS = (
+        "block_start",
+        "dc_taker_start",
+        "sep_start",
+        "slow_start",
+    )
+
+    def test_no_hardcoded_anchor_window_in_test_file(self):
+        """AST guard: none of the four guarded anchors appear in a
+        `<anchor> + <int>` hardcoded-window expression in this file."""
         this_file = os.path.abspath(__file__)
         with open(this_file) as f:
             source = f.read()
+        # Build a regex that matches `(block_start|dc_taker_start|...) + <int>`.
+        # The explicit anchor list (not a wildcard `<word>_start`) keeps the
+        # intentional `fallback_anchor + 300` sites in TestWeekendDiscountFixedFallbackKellySign
+        # out of scope by name.
+        anchor_alt = "|".join(re.escape(a) for a in self._GUARDED_ANCHORS)
+        pattern = re.compile(rf'\b({anchor_alt})\s*\+\s*\d+')
         offending = []
         for lineno, line in enumerate(source.splitlines(), start=1):
             stripped = line.strip()
@@ -273,10 +312,15 @@ class TestWeekendDiscountNoHardcodedBlockStartWindow(unittest.TestCase):
                 continue
             if stripped.startswith('pattern') or stripped.startswith('r"') or stripped.startswith("r'"):
                 continue
-            if re.search(r'\bblock_start\s*\+\s*\d+', line):
+            # The `_GUARDED_ANCHORS` tuple lines in THIS class are
+            # naturally excluded — they contain only quoted-string anchor
+            # names + commas, never a `+ <int>` expression, so the regex
+            # cannot match them.
+            if re.search(pattern, line):
                 offending.append((lineno, line.rstrip()))
         self.assertEqual(offending, [],
-                         f"Hardcoded `block_start + <int>` patterns found: {offending}. "
+                         f"Hardcoded `<anchor> + <int>` patterns found for guarded "
+                         f"anchors {self._GUARDED_ANCHORS}: {offending}. "
                          f"Use the find()+assertGreater anchor pattern instead.")
 
 
