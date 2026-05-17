@@ -31,6 +31,17 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Mirrors test.yml. Caches the FULL installed Python location
+      # across runs so pip install becomes near no-op on cache hit.
+      # Same key across all 6 jobs (test.yml × 3 + deploy.yml × 3)
+      # for cross-workflow reuse. Contract pin:
+      # tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -61,6 +72,17 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Mirrors test.yml. Caches the FULL installed Python location
+      # across runs so pip install becomes near no-op on cache hit.
+      # Same key across all 6 jobs (test.yml × 3 + deploy.yml × 3)
+      # for cross-workflow reuse. Contract pin:
+      # tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -84,6 +106,17 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Mirrors test.yml. Caches the FULL installed Python location
+      # across runs so pip install becomes near no-op on cache hit.
+      # Same key across all 6 jobs (test.yml × 3 + deploy.yml × 3)
+      # for cross-workflow reuse. Contract pin:
+      # tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt

@@ -39,6 +39,22 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Caches the FULL installed Python location across runs, so
+      # subsequent `pip install -r requirements.txt && pip install -e .[dev]`
+      # become near no-op (~3-5s) on cache hit. Bit-2's `cache: 'pip'`
+      # above only caches the pip download/wheel-build dir; the wheel
+      # install step itself still ran ~29s per job. Combined wall-time
+      # saving: ~24s per job × 3 parallel jobs (paid concurrently so
+      # net wall = ~24s). Key hashes requirements.txt + pyproject.toml
+      # so any dep change busts the cache. Same key across all 6 jobs
+      # (test.yml × 3 + deploy.yml × 3) for cross-workflow reuse.
+      # Contract pin: tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -68,6 +84,22 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Caches the FULL installed Python location across runs, so
+      # subsequent `pip install -r requirements.txt && pip install -e .[dev]`
+      # become near no-op (~3-5s) on cache hit. Bit-2's `cache: 'pip'`
+      # above only caches the pip download/wheel-build dir; the wheel
+      # install step itself still ran ~29s per job. Combined wall-time
+      # saving: ~24s per job × 3 parallel jobs (paid concurrently so
+      # net wall = ~24s). Key hashes requirements.txt + pyproject.toml
+      # so any dep change busts the cache. Same key across all 6 jobs
+      # (test.yml × 3 + deploy.yml × 3) for cross-workflow reuse.
+      # Contract pin: tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
@@ -91,6 +123,22 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
+      # CI perf Bit-8 (umbrella 86b9zjtzk, ticket 86b9zkk1u, 2026-05-17).
+      # Caches the FULL installed Python location across runs, so
+      # subsequent `pip install -r requirements.txt && pip install -e .[dev]`
+      # become near no-op (~3-5s) on cache hit. Bit-2's `cache: 'pip'`
+      # above only caches the pip download/wheel-build dir; the wheel
+      # install step itself still ran ~29s per job. Combined wall-time
+      # saving: ~24s per job × 3 parallel jobs (paid concurrently so
+      # net wall = ~24s). Key hashes requirements.txt + pyproject.toml
+      # so any dep change busts the cache. Same key across all 6 jobs
+      # (test.yml × 3 + deploy.yml × 3) for cross-workflow reuse.
+      # Contract pin: tests/contracts/test_ci_workflows_venv_cache.py.
+      - name: Cache installed venv
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}
+          key: pylocation-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
