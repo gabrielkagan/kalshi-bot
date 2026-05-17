@@ -85,12 +85,12 @@ The third structural fact is that the entire platform is **operated by one perso
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
 \begin{metricbox}
-\textbf{Live trading snapshot (auto-updated, last refresh \{\{GENERATED\_AT\}\}):}
+\textbf{Live trading snapshot (auto-updated, last refresh 2026-05-17T18:41:09Z):}
 \begin{itemize}
-\item \textbf{\{\{LIVE\_SETTLED\}\}} settled trades since 2026-02-22 — \{\{LIVE\_WINS\}\}W / \{\{LIVE\_LOSSES\}\}L / \{\{LIVE\_BREAKEVENS\}\} BE; win rate \{\{LIVE\_WR\}\}
+\item \textbf{ 4,376 } settled trades since 2026-02-22 --- 4,047W / 327L / 2 BE; win rate 92.5\%
 \item Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
 \item Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
-\item \{\{WEATHER\_CITY\_COUNT\}\} weather cities, \{\{SPORTS\_LEAGUE\_COUNT\}\} sports leagues, and S\&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
+\item 19 weather cities, 28 sports leagues, and S\&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
 \item Hourly crypto disabled since Apr 18 after a correlated multi-strike loss event; re-enable path preserved behind two environment variables
 \end{itemize}
 \end{metricbox}
@@ -542,4 +542,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-17T18:30:13Z*
+*Last updated: 2026-05-17T18:41:09Z*
