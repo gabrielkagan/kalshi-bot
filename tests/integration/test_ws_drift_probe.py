@@ -28,6 +28,7 @@ Coverage:
 
 import os
 import sys
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -35,6 +36,44 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from bot.scanner import OpportunityScanner
+
+
+def _drift_probe_tick_synced(scanner, *, join_timeout=2.0):
+    """Run ``scanner._drift_probe_tick()`` and JOIN the background
+    daemon thread it spawns (``ws_drift_stability_<ticker>``) before
+    returning.
+
+    Why: ``_drift_probe_tick`` spawns a thread that emits the
+    ``WS_DRIFT_PROBE_REST_STABILITY`` warning asynchronously
+    (bot/scanner/__init__.py:9511). Tests that wrap the tick in
+    ``assertLogs(...)`` race the thread — under serial execution the
+    thread usually finishes within the with-block, but under xdist
+    parallel-tier load (PR #53, ticket 86b9zju1h) sister tests in
+    ``TestDriftProbeRestStability`` race each other's threads and
+    sometimes leak an extra log into a sibling's capture (observed
+    "3 != 2" flake on deploy.yml integration tier for D1.3-fu4
+    push; pre-fix only `dist=loadfile` kept the file on one worker
+    but tests within a file still run sequentially against shared
+    root-logger handlers).
+
+    Fix: snapshot pre-existing drift-stability threads, run the tick,
+    then join the *new* daemon threads with a bounded timeout. The
+    assertLogs context block stays load-bearing.
+    """
+    pre = {t for t in threading.enumerate()
+           if t.name.startswith("ws_drift_stability_")}
+    scanner._drift_probe_tick()
+    deadline = time.monotonic() + join_timeout
+    while time.monotonic() < deadline:
+        new_threads = [t for t in threading.enumerate()
+                       if t.name.startswith("ws_drift_stability_")
+                       and t not in pre and t.is_alive()]
+        if not new_threads:
+            return
+        # Pop one and join with the remaining budget so wedged thread
+        # cannot exceed the total bound.
+        budget = max(0.0, deadline - time.monotonic())
+        new_threads[0].join(timeout=budget)
 
 
 def _make_scanner_for_drift_probe(
@@ -494,7 +533,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
             rest_responses=[rest, rest],  # same response both calls
         )
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         stability_logs = [r.getMessage() for r in cm.records
                           if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
         self.assertEqual(len(stability_logs), 2,
@@ -512,7 +551,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
             rest_responses=[rest1, rest2],
         )
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         yes_log = next(
             r.getMessage() for r in cm.records
             if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage() and " yes:" in r.getMessage())
@@ -526,7 +565,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
             rest_responses=[rest, rest],
         )
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         yes_log = next(
             r.getMessage() for r in cm.records
             if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage() and " yes:" in r.getMessage())
@@ -542,7 +581,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
         )
         # Should not raise; no stability log
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         stability_logs = [r.getMessage() for r in cm.records
                           if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
         self.assertEqual(len(stability_logs), 0)
@@ -554,7 +593,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
             rest_responses=[rest1, None],
         )
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         stability_logs = [r.getMessage() for r in cm.records
                           if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
         self.assertEqual(len(stability_logs), 0)
@@ -568,7 +607,7 @@ class TestDriftProbeRestStability(unittest.TestCase):
             rest_responses=[rest, rest],
         )
         with self.assertLogs(level="WARNING") as cm:
-            s._drift_probe_tick()
+            _drift_probe_tick_synced(s)
         stability_logs = [r.getMessage() for r in cm.records
                           if "WS_DRIFT_PROBE_REST_STABILITY" in r.getMessage()]
         self.assertEqual(len(stability_logs), 2)
