@@ -4,7 +4,8 @@
 Fetches 7 days of 1-minute candles from Coinbase Exchange API,
 computes standardized log returns, fits Student-t (multiple df) and
 NIG distributions per asset, and writes the best-fit parameters to
-dist_config.json.
+ops/runtime/dist_config.json (relocated from repo root by Sprint 14-A
+Bit 3, 2026-05-17).
 
 Usage:
     python3 scripts/ops/calibrate_dist.py
@@ -24,7 +25,11 @@ from scipy.stats import t as student_t, norminvgauss, kstest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Bit 11.2 (2026-05-12): relocated to scripts/ops/; need 2 ".." levels.
 REPO_DIR = os.path.join(SCRIPT_DIR, "..", "..")
-OUTPUT_PATH = os.path.join(REPO_DIR, "dist_config.json")
+# Sprint 14-A Bit 3 (2026-05-17, ticket 86b9zfbt8): data artifact relocated
+# from repo root → ops/runtime/ as part of the root-cleanup track. Must stay
+# lock-step with bot/config.py:DIST_CONFIG_PATH + bot/snapshots/
+# dashboard_snapshot.py's dist_path.
+OUTPUT_PATH = os.path.join(REPO_DIR, "ops", "runtime", "dist_config.json")
 
 ASSETS = {
     "BTC": "BTC-USD",

@@ -1215,11 +1215,16 @@ class DashboardSnapshotBuilder:
         # ── NIG distribution parameters ────────────────────────────────
         try:
             import json as _json
-            # Sprint 10 Bit 10.4 (2026-05-12): anchor to REPO ROOT so the file
-            # resolves correctly post-relocation to bot/snapshots/. 3-level
-            # dirname chain mirrors bot/engines/weather_engine.py:806-807.
+            # Sprint 10 Bit 10.4 (2026-05-12): 3-level dirname chain anchors
+            # to repo root so the file resolves correctly post-relocation
+            # of this module to bot/snapshots/ (mirrors
+            # bot/engines/weather_engine.py:806-807). Sprint 14-A Bit 3
+            # (2026-05-17, ticket 86b9zfbt8) appended the ops/runtime/ tail
+            # when the data artifact moved out of repo root — must stay
+            # lock-step with bot/config.py:DIST_CONFIG_PATH +
+            # scripts/ops/calibrate_dist.py:OUTPUT_PATH.
             _dash_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            dist_path = os.path.join(_dash_repo_root, "dist_config.json")
+            dist_path = os.path.join(_dash_repo_root, "ops", "runtime", "dist_config.json")
             if os.path.exists(dist_path):
                 with open(dist_path) as f:
                     snap["nig_distribution"] = _json.load(f)
