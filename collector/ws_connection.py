@@ -1,5 +1,5 @@
-"""Kalshi WS consumer — D1.1.5 + D1.2 + D1.3 + D1.3-fu3 + D1.3-fu4
-(tickets 86b9zdhz2 + 86b9ypn66 + 86b9ypn72 + 86b9zjyr0 + 86b9zk4hz,
+"""Kalshi WS consumer — D1.1.5 + D1.2 + D1.3 + D1.3-fu3 + D1.3-fu4 + D1.3-fu5
+(tickets 86b9zdhz2 + 86b9ypn66 + 86b9ypn72 + 86b9zjyr0 + 86b9zk4hz + 86b9zky3u,
 2026-05-16 / 2026-05-17).
 
 Thin consumer of ``kalshi_wire.ws_client.WSClient`` that pipes raw Kalshi
