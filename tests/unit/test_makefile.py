@@ -334,19 +334,24 @@ def test_makefile_ci_symmetry_via_pyproject_addopts():
     pass `--ignore=venv` explicitly — they all rely on pyproject's
     `[tool.pytest.ini_options].addopts` to inject it.
 
-    CI runs `pytest tests/ -m "not fragile" -v --tb=short --ignore=venv`
-    in the broad integration step. The four tier recipes produce
-    equivalent exit codes only because `--ignore=venv` is injected
-    via addopts — if pyproject drops it, every tier (including
+    CI runs `pytest tests/ -m "not fragile" --tb=short --ignore=venv`
+    in the broad integration step (post-CI-perf-Bit-3 `86b9zju0v`,
+    2026-05-17, which dropped `-v` from addopts to save ~5-15s on the
+    verbose-reporter cost across ~4500 tests). The four tier recipes
+    produce equivalent exit codes only because `--ignore=venv` is
+    injected via addopts — if pyproject drops it, every tier (including
     test-affected's testmon run) may start collecting the venv (if
     any) and surface false failures while CI passes.
 
     Scope is deliberately narrow vs `tests/unit/test_pyproject.py::test_pyproject_pytest_config_ported_from_pytest_ini`
-    (which asserts ALL three CI-explicit flags are in addopts as a
-    Bit 1.1 invariant). This test is the Bit 1.2 + Pillar 5 contract:
-    ONLY `--ignore=venv` affects exit-code divergence; `-v` and
-    `--tb=short` are output-formatting flags that diverge legibly
-    without breaking the tier targets' green/red status.
+    (which asserts the remaining CI-explicit flags are in addopts as a
+    Bit 1.1 invariant; the `-v` row was removed in CI-perf Bit-3 and
+    the contract surface for that change lives in
+    `tests/contracts/test_pytest_addopts_no_v.py`). This test is the
+    Bit 1.2 + Pillar 5 contract: ONLY `--ignore=venv` affects exit-code
+    divergence; `--tb=short` is an output-formatting flag that diverges
+    legibly without breaking the tier targets' green/red status. (Pre-
+    Bit-3 the same was true of `-v`.)
 
     Sibling-pair note: `testpaths = ['.']` in pyproject means a future
     edit that drops the explicit `tests/` arg from any tier recipe
