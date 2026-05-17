@@ -106,6 +106,28 @@ jobs:
             diff <(echo "$ON_VPS_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') <(echo "$REPO_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') \
               || { echo "FAIL: on-VPS systemd unit differs from ops/kalshi-bot.service @ ${{ github.sha }}. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git fetch origin main && git reset --hard origin/main && bash ops/install.sh, then re-trigger this deploy. NOTE: bare 'bash ops/install.sh' without the fetch+reset would re-install the PRIOR commit's unit and the next deploy would loop on the same drift FAIL."; exit 1; }
             git reset --hard ${{ github.sha }}
+            # D1.5.1 (ticket 86b9zjtxn, 2026-05-17): install Python deps
+            # BEFORE syntax check + restart. Without this, any commit
+            # adding a new dep to requirements.txt silently crashloops
+            # the service on restart (ModuleNotFoundError). Bit us
+            # 2026-05-17 mid-D1.5 collector deploy on `zstandard`:
+            # collector entered Restart=on-failure crashloop until the
+            # operator manually `pip install`ed on the VPS.
+            #
+            # Uses venv-pip explicitly because appleboy/ssh-action runs
+            # the script directly via SSH without sourcing ~/.bashrc,
+            # so bare `pip` would resolve to system Python 3.11 (NOT
+            # the bot's venv at ~/kalshi-bot-repo/venv/). Pinned by
+            # tests/contracts/test_deploy_yml_pip_install_step.py.
+            #
+            # Shared venv per D0.3 §6 isolation contract (the
+            # "SAME venv as the bot" detail lives in collector-start.sh:12-13
+            # body comments): this install lands deps for BOTH
+            # kalshi-bot AND kalshi-collector. `[dev]` extras intentionally
+            # NOT installed here — runtime-only deps; deploy.yml never
+            # pushes pytest/ruff/etc. to the VPS. D1.5.2 will add
+            # path-aware collector restart on collector/** changes.
+            ~/kalshi-bot-repo/venv/bin/pip install -r requirements.txt
             # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. On-VPS syntax-check
             # targets the canonical runtime hotspots (matches Makefile `ast-check`).
             python3 -c "import ast; ast.parse(open('bot/constants.py').read()); ast.parse(open('bot/main_loop.py').read()); ast.parse(open('bot/scanner/__init__.py').read()); print('SYNTAX OK')"
