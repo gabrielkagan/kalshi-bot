@@ -34,10 +34,20 @@
 # forbidden contracts would silently no-op. Pinned by
 # tests/contracts/test_kalshi_wire_no_bot.py
 # ::test_importlinter_root_packages_includes_kalshi_wire.
+#
+# D2.1 (ticket 86b9zkpc6, 2026-05-17) — extended with `coinbase_wire` for
+# the Coinbase-side shared transport library (HMAC-SHA256 auth + WS
+# connect/reconnect + bronze envelope). Sub-Bit of the 86b9zkkv4 D2.x
+# umbrella. Same plural-list requirement as kalshi_wire: without listing
+# `coinbase_wire`, grimp wouldn't walk it and the two new
+# `coinbase_wire-no-*` forbidden contracts would silently no-op. Pinned by
+# tests/contracts/test_coinbase_wire_no_bot_imports.py
+# ::test_importlinter_root_packages_includes_coinbase_wire.
 root_packages =
     bot
     collector
     kalshi_wire
+    coinbase_wire
 # Bit 12.3 (Sprint 12, 2026-05-11): required for the bot-no-torch
 # and bot-no-pandas contracts, which name EXTERNAL packages (torch,
 # pandas) as forbidden_modules. Without this flag, import-linter
@@ -359,5 +369,65 @@ name = kalshi_wire.* must not import collector.* (pure-transport leaf)
 type = forbidden
 source_modules =
     kalshi_wire
+forbidden_modules =
+    collector
+
+# ---------------------------------------------------------------------------
+# Contract 11 — coinbase_wire must not import bot (pure-transport leaf)
+# ---------------------------------------------------------------------------
+# D2.1 (ticket 86b9zkpc6, 2026-05-17) — sub-Bit of the 86b9zkkv4 D2.x
+# Coinbase WS bronzing umbrella. Mirrors the D1.1.5 `kalshi_wire-no-bot`
+# pattern for the Coinbase wire surface. `coinbase_wire/` is the shared
+# transport library that will (post-D2.1.5 body) be consumed by BOTH
+# `bot/feeds/coinbase.py` AND `collector/coinbase_archiver.py` (the
+# future D2.2 archiver). The "two sides of the same coin" symmetry
+# requires that the wire layer is bot-state-free: reaching into bot/
+# would couple the collector's view of the Coinbase wire to bot-specific
+# machinery (cross-exchange feed cache, blacklist, schema probes).
+#
+# D2.1 ships SCAFFOLDING ONLY — empty stub `coinbase_wire/__init__.py`
+# + `auth.py` + `ws_client.py`. The contract is pinned NOW so the body
+# implementer at D2.1.5 cannot accidentally introduce a bot.* edge.
+#
+# Listing `bot` (not `bot.X` for each subpackage) covers every bot.X
+# subpackage via grimp's package-tree resolution — any `from bot[.X]
+# import …` or `import bot[.X]` edge from any coinbase_wire module fails.
+#
+# Sibling-package status (NOT a `bot/` subpackage) makes this contract
+# enforceable structurally — `coinbase_wire/` lives at repo-root next
+# to `bot/`, `collector/`, and `kalshi_wire/`.
+#
+# Peer-pinned by tests/contracts/test_coinbase_wire_no_bot_imports.py
+# (AST defense-in-depth + negative-injection mutation test that
+# verifies lint-imports actually catches a forbidden edge).
+[importlinter:contract:coinbase_wire-no-bot]
+name = coinbase_wire.* must not import bot.* (pure-transport leaf)
+type = forbidden
+source_modules =
+    coinbase_wire
+forbidden_modules =
+    bot
+
+# ---------------------------------------------------------------------------
+# Contract 12 — coinbase_wire must not import collector (pure-transport leaf)
+# ---------------------------------------------------------------------------
+# D2.1 (ticket 86b9zkpc6, 2026-05-17) — Sister contract to
+# `coinbase_wire-no-bot`. Mirrors the D1.1.5 `kalshi_wire-no-collector`
+# pattern. The dependency arrow is consumer → wire, never wire → consumer:
+#
+#     bot.feeds.coinbase           ─┐
+#                                   ├─→ coinbase_wire
+#     collector.coinbase_archiver   ┘
+#
+# A `coinbase_wire → collector` edge would invert the layering, couple
+# the wire library to the bronze-archival pipeline, and break the
+# symmetry that makes "two sides of the same coin" actually work.
+#
+# Peer-pinned by tests/contracts/test_coinbase_wire_no_collector.py.
+[importlinter:contract:coinbase_wire-no-collector]
+name = coinbase_wire.* must not import collector.* (pure-transport leaf)
+type = forbidden
+source_modules =
+    coinbase_wire
 forbidden_modules =
     collector

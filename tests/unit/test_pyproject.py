@@ -309,34 +309,39 @@ def test_pyproject_ruff_perfile_ignores_post_bit_1_5():
 
 def test_pyproject_packages_find_scoped_to_bot_and_collector_and_wire():
     """Bit 2.1b replacement for the retired Sprint-1 canary, extended at
-    D1.1 (ticket 86b9ypn49, 2026-05-16) for the new `collector/` sibling
-    and at D1.1.5 (ticket 86b9zdhz2, 2026-05-16) for the new `kalshi_wire/`
-    shared transport library.
+    D1.1 (ticket 86b9ypn49, 2026-05-16) for the new `collector/` sibling,
+    at D1.1.5 (ticket 86b9zdhz2, 2026-05-16) for the new `kalshi_wire/`
+    shared transport library, and at D2.1 (ticket 86b9zkpc6, 2026-05-17)
+    for the new `coinbase_wire/` Coinbase-side wire scaffolding (sub-Bit
+    of the 86b9zkkv4 D2.x Coinbase WS bronzing umbrella).
 
     Without scoping, setuptools >=64 flat-layout discovery sees the repo's
     9 sibling top-level Python-identifier dirs (agent_docs/, analysis/,
     data/, kb/, models/, ops/, reports/, research/, templates/) alongside
-    bot/ + collector/ + kalshi_wire/ and aborts `pip install -e .` with
-    PackageDiscoveryError("Multiple top-level packages discovered in a
-    flat-layout: ..."). The `make install` target (Makefile:57) — the
-    documented dev-onboarding path — would explode on a fresh dev box.
+    bot/ + collector/ + kalshi_wire/ + coinbase_wire/ and aborts
+    `pip install -e .` with PackageDiscoveryError("Multiple top-level
+    packages discovered in a flat-layout: ..."). The `make install`
+    target (Makefile:57) — the documented dev-onboarding path — would
+    explode on a fresh dev box.
 
     Pin the scoping so a future contributor doesn't drop the constraint and
     re-introduce the explosion.
     include=["bot", "bot.*", "collector", "collector.*", "kalshi_wire",
-    "kalshi_wire.*"] matches all three parent packages and their
-    subpackages. Both ``X`` + ``X.*`` patterns are needed for each parent
-    because ``X.*`` requires a literal dot and doesn't match the bare
-    parent name. namespaces=false provides defense-in-depth against future
-    include-pattern broadening that might sweep in a PEP 420 namespace dir
-    lacking __init__.py.
+    "kalshi_wire.*", "coinbase_wire", "coinbase_wire.*"] matches all four
+    parent packages and their subpackages. Both ``X`` + ``X.*`` patterns
+    are needed for each parent because ``X.*`` requires a literal dot and
+    doesn't match the bare parent name. namespaces=false provides
+    defense-in-depth against future include-pattern broadening that might
+    sweep in a PEP 420 namespace dir lacking __init__.py.
 
     Per kb/decisions/data-corpus-architecture.md §5 (2026-05-16
     AMENDMENT), kalshi_wire/ is a SIBLING to bot/ and collector/ — the
     pure-transport-leaf contracts (`kalshi_wire-no-bot` +
     `kalshi_wire-no-collector` in .importlinter) require structural
-    independence. Listing all three at the same depth in the setuptools
-    include matches that layout.
+    independence. coinbase_wire/ (D2.1, 2026-05-17) extends that same
+    sibling pattern for the Coinbase wire surface with its own pair of
+    pure-transport-leaf contracts. Listing all four at the same depth in
+    the setuptools include matches that layout.
     """
     data = _load()
     find_cfg = (
@@ -349,18 +354,22 @@ def test_pyproject_packages_find_scoped_to_bot_and_collector_and_wire():
         "[tool.setuptools.packages.find] missing — flat-layout discovery "
         "will explode with PackageDiscoveryError on this multi-top-level repo. "
         "Add: include=[\"bot\", \"bot.*\", \"collector\", \"collector.*\", "
-        "\"kalshi_wire\", \"kalshi_wire.*\"], namespaces=false."
+        "\"kalshi_wire\", \"kalshi_wire.*\", \"coinbase_wire\", "
+        "\"coinbase_wire.*\"], namespaces=false."
     )
     include = find_cfg.get("include") or []
     for entry in ("bot", "bot.*", "collector", "collector.*",
-                  "kalshi_wire", "kalshi_wire.*"):
+                  "kalshi_wire", "kalshi_wire.*",
+                  "coinbase_wire", "coinbase_wire.*"):
         assert entry in include, (
             f"include={include!r} must contain {entry!r}. "
             f"D1.1 (86b9ypn49) added `collector` entries; "
             f"D1.1.5 (86b9zdhz2, 2026-05-16) added `kalshi_wire` entries "
-            "for the shared transport library; bot entries were locked in "
-            "Bit 2.1b. Both ``X`` + ``X.*`` patterns are needed for each "
-            "parent (the dotted pattern doesn't match the bare name)."
+            "for the shared transport library; D2.1 (86b9zkpc6, "
+            "2026-05-17) added `coinbase_wire` entries for the Coinbase-"
+            "side wire scaffolding; bot entries were locked in Bit 2.1b. "
+            "Both ``X`` + ``X.*`` patterns are needed for each parent (the "
+            "dotted pattern doesn't match the bare name)."
         )
     assert find_cfg.get("namespaces") is False, (
         f"namespaces must be False so PEP 420 namespace dirs (e.g., kb/, "

@@ -259,6 +259,14 @@ def test_lint_imports_fails_when_kalshi_wire_imports_bot(tmp_path: Path):
     shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
     shutil.copytree(REPO_ROOT / "collector", fixture_root / "collector")
     shutil.copytree(WIRE_DIR, fixture_root / "kalshi_wire")
+    # D2.1 (ticket 86b9zkpc6, 2026-05-17): coinbase_wire/ joined the
+    # .importlinter `root_packages` plural list; without copying it
+    # into the fixture, lint-imports errors with "Could not find
+    # package 'coinbase_wire' in your Python path" before it can
+    # evaluate any contract — masking the actual kalshi_wire-no-bot
+    # enforcement. Same defect class the D1.1.5 add did for
+    # kalshi_wire in tests/contracts/test_collector_no_bot_imports.py.
+    shutil.copytree(REPO_ROOT / "coinbase_wire", fixture_root / "coinbase_wire")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     mutated_path = fixture_root / "kalshi_wire" / "ws_client.py"
