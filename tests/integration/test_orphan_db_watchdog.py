@@ -118,7 +118,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
 ):
     """C-1 (HIGH from adversarial review): the live VPS has several
     legitimate processes that hold state.db open at any moment —
-    `watchdog.py` (every 2 min cron), `bot/ai/auditor.py` (hourly),
+    `ops/watchdog.py` (every 2 min cron), `bot/ai/auditor.py` (hourly),
     `audit_cron.py` (every 30 min systemd timer), `dashboard_snapshot.py`
     (manual). Pre-fix watchdog would have alerted on every collision,
     habituating the operator to ignore the channel. Post-fix:
@@ -137,7 +137,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
     )
     monkeypatch.setattr(
         bot.orphan_db_watchdog, "_get_pid_cmdline",
-        lambda pid: "/home/botuser/kalshi-bot-repo/venv/bin/python3 watchdog.py",
+        lambda pid: "/home/botuser/kalshi-bot-repo/venv/bin/python3 ops/watchdog.py",
     )
     monkeypatch.setattr(os, "kill", lambda pid, sig: None)
 
@@ -155,7 +155,7 @@ def test_orphan_watchdog_skips_alert_for_legitimate_cron_processes(
         f"(for visibility), just without alerting; got {offenders}"
     )
     assert sent == [], (
-        f"must NOT alert for `watchdog.py` cron (false-positive class "
+        f"must NOT alert for `ops/watchdog.py` cron (false-positive class "
         f"per adversarial review C-1); got: {sent}"
     )
 

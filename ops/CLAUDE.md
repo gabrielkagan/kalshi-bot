@@ -149,10 +149,38 @@ On a fresh bucket: run §1-§5 verbatim from the runbook (templates are now at t
 
 The one residual shared failure surface is root filesystem disk-full — D1.6 (`86b9zk4we`) ships a passive `shutil.disk_usage` ≥ 80% used Telegram alert (via `scripts/ops/collector_health_monitor.py`, operator-installed cron every 5 min) that closes this gap.
 
+## watchdog.py (2-min health monitor, Sprint 14-A Bit X.5 relocation)
+
+`ops/watchdog.py` is the standalone cron-driven bot health monitor (relocated from repo root to `ops/` by Sprint 14-A Bit X.5, 2026-05-17; umbrella ticket `86b9zfbt8`). Operator-installed via VPS crontab; runs every 2 minutes; sends Telegram alerts on bot-down, log-stall, loss streaks, low balance, high memory, and Layer 3.5 orphan-DB holders (`scripts/backfill/*` PIDs mid-session). Not a systemd unit — `bot/orphan_db_watchdog.py` and `ops/kalshi-bot.service` are separate concerns.
+
+Key file invariants:
+- `STATE_FILE = Path(__file__).parent.parent / ".watchdog_state.json"` and `DB_PATH = Path(__file__).parent.parent / "state.db"` — the `.parent.parent` traversal anchors both lookups at the repo root, NOT under `ops/`. A future move that breaks this anchoring would silently point STATE_FILE / DB_PATH at the wrong files; the contract is pinned by `tests/contracts/test_sprint_14_a_x5_watchdog_move.py::test_watchdog_paths_resolve_to_repo_root`.
+- `ops/__init__.py` (empty) exists so `import ops.watchdog` resolves from the test suite. Removing it would break `tests/integration/test_watchdog_orphan_detection.py` collection.
+- Usage docstring (line 7 of the file) carries the canonical cron line — operators copy it into the crontab verbatim.
+
+### Crontab line
+
+```
+*/2 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 ops/watchdog.py
+```
+
+### Post-Bit-X.5 operator action (one-time, post-merge)
+
+The crontab lives in `~/` (NOT in-repo) and is operator-edited:
+
+```bash
+ssh -t botuser@$VPS_HOST 'crontab -e'
+# Edit the existing watchdog cron line: `python3 watchdog.py` → `python3 ops/watchdog.py`
+```
+
+The `git reset --hard origin/main` deploy step moves the file but does NOT touch the crontab. Until the operator edits it, the cron line invokes the (now-missing) repo-root `watchdog.py` and the 2-min monitor silently no-ops — the bot itself continues running but Layer-3.5-orphan + service-down + log-stall + loss-streak alerts go dark. Verify post-edit with `crontab -l | grep watchdog` and watch for the next scheduled Telegram heartbeat / silence pattern.
+
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
 - `kalshi-collector.service` — D1.5 collector systemd unit, source of truth
 - `install.sh` — multi-unit install + reload (validates + enables BOTH)
+- `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
+- `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 
 ## Revert / rollback
 

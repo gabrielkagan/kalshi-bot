@@ -238,7 +238,7 @@ bot/snapshots/dashboard_snapshot.py            -- builds dashboard state snapsho
 bot/snapshots/bot_state_snapshot.py            -- bot microstate forward-capture helper  (Sprint 10.4 relocation, 2026-05-12)
 bot/snapshots/market_observations_snapshotter.py -- NBBO continuous snapshotter  (Sprint 10.4 relocation, 2026-05-12)
 bot/snapshots/supabase_sync.py                 -- pushes snapshots to Supabase Realtime every 10s  (Sprint 10.4 relocation, 2026-05-12)
-watchdog.py                    -- process health monitoring
+ops/watchdog.py                -- process health monitoring (Sprint 14-A Bit X.5 relocation, 2026-05-17)
 ops/kalshi-bot.service         -- systemd unit, source of truth (installed via ops/install.sh)
 start.sh                       -- wrapper invoked by ops/kalshi-bot.service (venv + .env + `python -m bot`)
 collector/                     -- Data Corpus collector (top-level SIBLING to bot/, D1.1 SHIPPED 2026-05-16, ticket 86b9ypn49)

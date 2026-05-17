@@ -905,7 +905,7 @@ Append-only journal files provide a complete audit trail:
 |---|---|---|
 | `bot/ai/auditor.py` | Hourly (cron) | Deterministic health checks — data freshness, schema integrity, settlement gaps. Telegram alerts on anomalies. |
 | `bot/ai/researcher.py` | 3× daily (7:30am, 12:30pm, 7:30pm ET) | Performance reports to Telegram — regime-filtered stats, per-asset breakdown, shadow summaries. |
-| `watchdog.py` | Continuous | Process health monitoring |
+| `ops/watchdog.py` | Continuous | Process health monitoring |
 
 ## Test Suite
 

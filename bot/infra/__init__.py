@@ -16,11 +16,15 @@ circuit_breaker, watchdog, models". Sprint 10.5 split into:
     bot/helpers/tm_sweep.py mirrors the Sprint 10.5a
     bot.helpers.breakers -> bot.infra.circuit_breaker pattern).
 
-  - 10.5c (DEFERRED): watchdog.py
-    Same risk class as Sprint 10.3 ai/ bot/ai/auditor.py + bot/ai/researcher.py — has
-    `__file__`-derived load-bearing paths (STATE_FILE + DB_PATH at lines
-    23-24) AND is a standalone CLI (likely invoked via VPS crontab).
-    Requires coordinated VPS crontab update post-deploy.
+  - 10.5c (CLOSED via Sprint 14-A Bit X.5, 2026-05-17): watchdog.py
+    Relocated to `ops/watchdog.py`, NOT under bot/infra/ — root-cleanup
+    track umbrella `86b9zfbt8` placed it alongside the systemd units
+    + install.sh. STATE_FILE + DB_PATH bumped to
+    `Path(__file__).parent.parent` so `.watchdog_state.json` + `state.db`
+    still resolve at repo root. `ops/__init__.py` added so
+    `import ops.watchdog` resolves from the test suite. VPS crontab
+    line updated to `python3 ops/watchdog.py` (post-merge operator
+    action; covered by the Bit X.5 ship summary).
 
 No package-level re-exports — callers reach each module directly via
 submodule path (mirrors bot/engines/ + bot/shadows/ minimal-__init__
