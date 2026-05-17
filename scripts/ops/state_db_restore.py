@@ -76,12 +76,15 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 _DAILY_KEY_DATE_RE = re.compile(r"daily/state-db-(\d{4}-\d{2}-\d{2})\.db\.(zst|gz)$")
 # Maximum age of the latest snapshot before we treat it as a stale signal.
-# Round-3 finding B3-M5: weekly verify must catch the case where the
-# daily backup hasn't fired in days (timer disabled, systemd hung, etc.).
-# 36h is the same threshold the deferred heartbeat alerter targets and
-# allows for a single missed daily without false-positive (24h cadence
-# + 12h slack covers the Persistent=false catch-up edge cases).
-DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 36
+# Post-86b9zkp89 (2026-05-17): backup cadence is every 4h (00/04/08/12/16/20:00
+# UTC). 8h = 2 missed ticks of slack. A single missed run (transient S3
+# outage, systemd's Persistent=false catch-up edge, etc.) does NOT alert;
+# two consecutive misses WILL. Pre-86b9zkp89 this was 36h (= daily cadence
+# + 12h slack); tightened because the new cadence's whole point is to
+# bound data loss at ~4h, which would be defeated by waiting 9 missed
+# ticks before alerting. Sister constant in
+# `state_db_backup_heartbeat.py` MUST stay in lock-step.
+DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 8
 
 
 def fetch_latest(store: backup.BackupStore, prefix: str = "daily/") -> str:
@@ -93,25 +96,46 @@ def fetch_latest(store: backup.BackupStore, prefix: str = "daily/") -> str:
     return keys[-1]  # ISO-8601 sorts lexicographically
 
 
-def snapshot_age_hours(key: str, now: Optional[datetime] = None) -> Optional[float]:
-    """Parse `daily/state-db-YYYY-MM-DD.db.{zst,gz}` -> hours since UTC date.
+def snapshot_age_hours(
+    key: str,
+    now: Optional[datetime] = None,
+    last_modified: Optional[datetime] = None,
+) -> Optional[float]:
+    """Compute snapshot age in hours.
 
-    Returns None if the key doesn't match the daily pattern (custom
-    install-probe keys, manual uploads, etc.) so the caller can decide
-    whether to fail or skip. Comparison is end-of-snapshot-day vs `now`
-    so a snapshot uploaded at 06:00 UTC on day D returns ~0 hours when
-    queried at 18:00 UTC on day D — we treat the date as the snapshot
-    period, not a single timestamp.
+    Post-86b9zkp89 (sub-daily 4h cadence): ``last_modified`` (the S3
+    object's ``LastModified`` field from ``list_objects_v2``) is the
+    PREFERRED input — it's the actual upload wall-clock time. The
+    pre-86b9zkp89 logic of mapping ``daily/state-db-DATE`` → "6:00 UTC
+    of DATE" is no longer correct because each UTC day's key is now
+    overwritten up to 6 times.
+
+    Legacy fallback (when ``last_modified`` is None — test mocks that
+    pre-date the LastModified-aware API): treat snapshot as taken at
+    start of NEXT UTC day (date + 24h, conservative overestimate).
+    Negative ages clamp to 0.
+
+    Returns None if the key doesn't match the expected pattern AND no
+    ``last_modified`` is provided.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if last_modified is not None:
+        lm = last_modified
+        if lm.tzinfo is None:
+            lm = lm.replace(tzinfo=timezone.utc)
+        else:
+            lm = lm.astimezone(timezone.utc)
+        return max(0.0, (now - lm).total_seconds() / 3600.0)
+
     m = _DAILY_KEY_DATE_RE.search(key)
     if not m:
         return None
     snap_date = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    if now is None:
-        now = datetime.now(timezone.utc)
-    # Treat the snapshot as taken at 06:00 UTC of its date (the schedule).
-    snap_taken = snap_date + timedelta(hours=6)
-    return (now - snap_taken).total_seconds() / 3600.0
+    # Conservative overestimate: start of NEXT UTC day. Negative clamps to 0.
+    snap_taken = snap_date + timedelta(hours=24)
+    return max(0.0, (now - snap_taken).total_seconds() / 3600.0)
 
 
 def integrity_check(db_path: Path) -> List[str]:
@@ -287,19 +311,34 @@ def verify_only(
     key = key_override or fetch_latest(store)
     print(f"state_db_restore: latest key = {key}")
 
-    # Round-3 B3-M5: stale-snapshot detection. If the latest daily key
-    # is more than DEFAULT_MAX_SNAPSHOT_AGE_HOURS old, the nightly
-    # backup hasn't been firing — partially closes the deferred
-    # heartbeat-alerter (B-M3). Skip if --key was passed explicitly
-    # (operator restoring an old version on purpose).
+    # Round-3 B3-M5: stale-snapshot detection. If the latest scheduled
+    # key is more than DEFAULT_MAX_SNAPSHOT_AGE_HOURS old, the backup
+    # cadence has been broken — partially closes the deferred heartbeat-
+    # alerter (B-M3). Skip if --key was passed explicitly (operator
+    # restoring an old version on purpose).
+    #
+    # Post-86b9zkp89 the cadence is every 4h; this falls back to the
+    # legacy date-parse because BackupStore.list() doesn't expose
+    # LastModified. The end-of-NEXT-day anchor (snap_taken = date + 24h)
+    # is chosen to AVOID the negative-age silent-pass bug: a fresh
+    # same-day late-tick key dated today queried at 21:00 would compute
+    # as +21h under start-of-day anchoring OR -3h under naive end-of-day
+    # anchoring → clamped to 0 = correct. The TRADE-OFF is a narrow
+    # false-NEGATIVE window: legacy age UNDERESTIMATES true age by up
+    # to 4h for keys >1 day old (last tick of any UTC day is 20:00 UTC,
+    # anchor is 24:00 UTC), so a true-age-10h snapshot may compute as
+    # 6h and stay under the 8h threshold. The heartbeat (Mac-side,
+    # every 6h, uses LastModified EXACTLY) is the load-bearing alert
+    # path; this stale check is a defense-in-depth second layer.
     if key_override is None:
         age = snapshot_age_hours(key, now=now)
         if age is not None and age > DEFAULT_MAX_SNAPSHOT_AGE_HOURS:
             print(
                 f"state_db_restore: FAIL latest snapshot {key!r} is "
                 f"{age:.1f}h old (>{DEFAULT_MAX_SNAPSHOT_AGE_HOURS}h threshold). "
-                "The daily backup timer may be broken — "
-                "check `systemctl status kalshi-state-db-backup.timer` "
+                "The scheduled backup timer may be broken (cadence is "
+                "every 4h post-86b9zkp89) — check "
+                "`systemctl status kalshi-state-db-backup.timer` "
                 "and recent journalctl logs.",
                 file=sys.stderr,
             )

@@ -14,7 +14,8 @@
       cycle" against "don't spam S3/Telegram for a working system".
     - RunAtLoad = true so the first heartbeat fires on Mac boot, not
       just on the next 6h boundary. Catches the case where the Mac was
-      asleep for >36h and we want to know about staleness immediately.
+      asleep for >8h (post-86b9zkp89 staleness threshold; pre was 36h)
+      and we want to know about staleness immediately.
     - StandardOut/ErrorPath logged to ~/Library/Logs/ — operator can
       tail when triaging.
     - EnvironmentVariables: AWS_PROFILE points at the read-only

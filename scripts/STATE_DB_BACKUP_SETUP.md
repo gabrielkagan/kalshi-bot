@@ -453,7 +453,7 @@ to fix.
 
 ## 8. Verified-restore acceptance test (AC #3)
 
-After the first nightly backup runs (next 06:00 UTC), on the Mac:
+After the first sub-daily backup runs (next 4h tick: 00/04/08/12/16/20:00 UTC), on the Mac:
 
 ```bash
 python3 scripts/ops/state_db_restore.py \
@@ -542,10 +542,12 @@ The following are intentionally NOT shipped in Phase 0a:
 
 ## 11. Install the backup heartbeat alerter (Mac-side launchd)
 
-Operator-only one-time install. Closes the B-M3 gap: the daily backup
-timer on the VPS could be disabled / hung / unit-file-rejected and
-nobody would notice until the weekly verify runs ~6 days later. This
-heartbeat catches it within 6h.
+Operator-only one-time install. Closes the B-M3 gap: the sub-daily
+(every-4h post-86b9zkp89) backup timer on the VPS could be disabled /
+hung / unit-file-rejected and nobody would notice until the weekly
+verify runs ~6 days later. This heartbeat catches it within ~14h
+worst case (8h staleness threshold + cron-every-6h granularity = up
+to 6h between heartbeat ticks).
 
 Architectural choice (option (b)) per ticket 86b9vgjxw: heartbeat
 lives on the dev Mac, not on the VPS, so it survives VPS-down events
@@ -658,8 +660,10 @@ crontab-process timezone. The two are approximately equivalent (both
 fire 4×/day) but NOT identical — if the operator switches between
 them, the first invocation under the new scheduler may be up to 6h
 later than the last invocation under the old one. Not load-bearing
-(36h staleness threshold has 12h slack), but worth knowing during
-the cutover.
+(8h staleness threshold post-86b9zkp89; pre-86b9zkp89 was 36h with
+12h slack — under the tighter 8h threshold the cutover-gap matters
+more, so coordinate the swap with operator awareness), but worth
+knowing during the cutover.
 
 launchd is the more idiomatic choice on macOS (survives reboot,
 respects sleep/wake), but cron works equivalently if you already
@@ -744,7 +748,7 @@ ssh -t botuser@$VPS_HOST 'bash /home/botuser/kalshi-bot-repo/scripts/ops/setup_j
 The installer:
 - Pre-flights: rclone present, `s3prod` remote configured, `S3_BACKUP_BUCKET` in `.env`, `/var/lock` writable, Telegram creds present (warn-only).
 - Installs `kalshi-journal-archives-sync.{service,timer}` at `/etc/systemd/system/`.
-- Enables + starts the timer (next fire: 04:30 UTC).
+- Enables + starts the timer (next fire: next 4h tick at HH:30 UTC ∈ {00,04,08,12,16,20}; cadence revised by ticket `86b9zkp89` 2026-05-17).
 
 The service wraps via `h4_run_with_alert.py` so non-zero exits Telegram-alert.
 

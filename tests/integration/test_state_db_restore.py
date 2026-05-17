@@ -480,17 +480,31 @@ class TestStaleSnapshotDetection:
     backup hasn't fired in days (timer disabled, systemd hung, etc.).
     Partially closes the deferred B-M3 heartbeat alerter."""
 
-    def test_snapshot_age_hours_parses_iso_date(self, restore_module):
+    def test_snapshot_age_hours_legacy_path_uses_end_of_next_day(self, restore_module):
+        """Post-86b9zkp89: legacy date-parse fallback (no LastModified)
+        treats snap_date as start of NEXT UTC day (conservative
+        overestimate). Snapshot 2026-05-09 + query 2026-05-10 18:00 UTC
+        → age = 18h. (Pre-86b9zkp89 anchored at 06:00 UTC → age = 36h;
+        that anchoring is wrong post-sub-daily cadence.)"""
         from datetime import datetime, timezone
-        # Snapshot date 2026-05-09; query 2026-05-10 18:00 UTC
-        # Snapshot taken at 2026-05-09 06:00, so age = 36h
         now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
         age = restore_module.snapshot_age_hours(
-            "daily/state-db-2026-05-09.db.zst", now=now
+            "daily/state-db-2026-05-09.db.zst", now=now,
         )
-        assert age == pytest.approx(36.0)
+        assert age == pytest.approx(18.0)
+
+    def test_snapshot_age_hours_uses_last_modified_when_provided(self, restore_module):
+        """Production path: exact-second age from S3 LastModified."""
+        from datetime import datetime, timezone
+        lm = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 5, 10, 18, 0, tzinfo=timezone.utc)
+        age = restore_module.snapshot_age_hours(
+            "daily/state-db-2026-05-10.db.zst", now=now, last_modified=lm,
+        )
+        assert age == pytest.approx(6.0)
 
     def test_snapshot_age_returns_none_for_unrecognized_key(self, restore_module):
+        """Unrecognized key + no LastModified → None."""
         assert restore_module.snapshot_age_hours("daily/random-name.zst") is None
         assert restore_module.snapshot_age_hours("_install_check/probe.txt") is None
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""state.db backup heartbeat alerter — Mac-side, no-upload-in-36h.
+"""state.db backup heartbeat alerter — Mac-side, no-upload-in-8h.
 
 Closes the deferred B-M3 silent-failure gap documented in
 `scripts/STATE_DB_BACKUP_SETUP.md` §10 #1. The Phase 0a backup chain
 (`state_db_s3_backup.py` + systemd timer + `h4_run_with_alert.py`)
-covers exit-code failures of the daily run, but NOT the case where the
-timer itself is hung, disabled, or its unit file rejected:
+covers exit-code failures of the sub-daily (every-4h post-86b9zkp89)
+run, but NOT the case where the timer itself is hung, disabled, or
+its unit file rejected:
 
   - `kalshi-state-db-backup.timer` disabled by an `apt upgrade` postinst
   - systemd hung after a kernel pid-namespace bug
@@ -16,9 +17,12 @@ timer itself is hung, disabled, or its unit file rejected:
 In all of these, the wrapper never runs, no exit code ever fires, no
 Telegram alert ever sends. The existing weekly verify
 (`state_db_restore.py --verify-only`) catches it eventually via the
-36h-stale check (B3-M5, see kb/decisions/auto-research-phase-0a-shipped-may09.md)
+stale-snapshot check (B3-M5, see kb/decisions/auto-research-phase-0a-shipped-may09.md)
 — but that's a 7-day worst-case detection window. This script closes
-that to 6h.
+that to ~14h worst case (8h staleness threshold + cron-every-6h
+granularity = up to 6h between heartbeat ticks). Tightening the
+heartbeat cron itself to match the every-4h backup cadence is filed
+as a followup (would tighten detection to ~12h worst case).
 
 Architectural decision: option (b) — Mac-side cron.
 
@@ -69,11 +73,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 
-# 36h matches the weekly-verify B3-M5 stale-key threshold. Reasoning:
-# the daily backup runs at 06:00 UTC. A 24h cadence + 12h slack covers
-# a single missed run (e.g., systemd's Persistent=false catch-up edge,
-# or one transient S3 outage). Two misses in a row WILL trip the alert.
-DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 36
+# Post-86b9zkp89: backup cadence is every 4h (00/04/08/12/16/20:00 UTC).
+# 8h = 2 missed ticks of slack. A single missed run (transient S3 outage,
+# systemd's Persistent=false catch-up edge, etc.) does NOT alert; two
+# consecutive misses WILL. Pre-86b9zkp89 this was 36h (= daily cadence +
+# 12h slack for a single miss); the new value is tighter because the
+# tighter cadence demands tighter staleness detection (the whole point
+# of moving to 4h is to bound data loss at ~4h, which would be defeated
+# by waiting 9 missed ticks before alerting).
+DEFAULT_MAX_SNAPSHOT_AGE_HOURS = 8
 
 DEFAULT_PREFIX = "daily/"
 
@@ -88,28 +96,66 @@ _DAILY_KEY_DATE_RE = re.compile(
 # ── snapshot key parsing (vendored from state_db_restore) ──────────────
 
 
-def snapshot_age_hours(key: str, now: Optional[datetime] = None) -> Optional[float]:
-    """Parse `daily/state-db-YYYY-MM-DD.db.{zst,gz}` -> hours since
-    06:00 UTC of that date (the schedule).
+def snapshot_age_hours(
+    key: str,
+    now: Optional[datetime] = None,
+    last_modified: Optional[datetime] = None,
+) -> Optional[float]:
+    """Compute snapshot age in hours.
 
-    Returns None if the key doesn't match the daily pattern — caller
-    decides whether to fail or skip.
+    Post-86b9zkp89 (sub-daily 4h cadence): ``last_modified`` (the S3
+    object's ``LastModified`` field from ``list_objects_v2``) is the
+    PREFERRED input — it's the actual upload wall-clock time, exact to
+    the second. The pre-86b9zkp89 logic of mapping ``daily/state-db-DATE``
+    → "6:00 UTC of DATE" is no longer correct because each UTC day's key
+    is now overwritten up to 6 times (00/04/08/12/16/20:00 UTC); the
+    LAST overwrite's time is the real age.
+
+    Falls back to the legacy date-parse path when ``last_modified`` is
+    None (test mocks that pre-date the LastModified-aware API). In the
+    legacy path the snapshot is treated as taken at END-of-UTC-day
+    (date + 24h) — a CONSERVATIVE overestimate to avoid the negative-
+    age class the reviewer flagged: a key dated today + last tick today
+    20:00 UTC + query at today 21:00 would compute as `now - (today_06)`
+    = +15h under the old logic, OR `now - (today_24)` = -3h under
+    naive end-of-day, OR `now - (today_00)` = +21h under start-of-day.
+    The end-of-day-MINUS-cadence conservative form is `now - (today_24h)`
+    capped at >=0; we use start-of-NEXT-day (= today + 24h) which gives
+    -3h in the example above. Negative ages are clamped to 0 (means
+    "very fresh"; safe).
+
+    Returns None if the key doesn't match the expected pattern AND no
+    last_modified is provided — caller decides whether to fail or skip.
 
     Vendored (not imported) from `state_db_restore.snapshot_age_hours`
     to preserve heartbeat decoupling per the architectural decision above.
-    The 1-line regex doesn't justify the import coupling.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if last_modified is not None:
+        # Preferred path post-86b9zkp89: exact age from S3 LastModified.
+        # boto3 returns LastModified as a tz-aware datetime; normalize to
+        # UTC defensively in case a caller passes a naive datetime.
+        lm = last_modified
+        if lm.tzinfo is None:
+            lm = lm.replace(tzinfo=timezone.utc)
+        else:
+            lm = lm.astimezone(timezone.utc)
+        return max(0.0, (now - lm).total_seconds() / 3600.0)
+
+    # Legacy date-parse fallback (test mocks pre-dating LastModified API).
     if not key:
         return None
     m = _DAILY_KEY_DATE_RE.search(key)
     if not m:
         return None
     snap_date = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    if now is None:
-        now = datetime.now(timezone.utc)
-    # Treat the snapshot as taken at 06:00 UTC of its date (the cron).
-    snap_taken = snap_date + timedelta(hours=6)
-    return (now - snap_taken).total_seconds() / 3600.0
+    # Conservative overestimate: treat snapshot as taken at start of
+    # NEXT UTC day. Negative ages (sub-daily ticks later in same day)
+    # clamp to 0. False positives prefer over false negatives.
+    snap_taken = snap_date + timedelta(hours=24)
+    return max(0.0, (now - snap_taken).total_seconds() / 3600.0)
 
 
 # ── core check ─────────────────────────────────────────────────────────
@@ -159,7 +205,10 @@ def check_latest_snapshot(
         now = datetime.now(timezone.utc)
 
     # Walk all pages — defensive even though we currently fit in one.
-    all_keys = []
+    # Capture LastModified alongside Key (post-86b9zkp89: required for
+    # accurate sub-daily-cadence age computation; pre-fix the daily-DATE
+    # key parse was lossy by up to ±14h under sub-daily overwrites).
+    all_objects: list[tuple[str, Optional[datetime]]] = []
     continuation_token = None
     while True:
         kwargs = {"Bucket": bucket, "Prefix": prefix}
@@ -167,29 +216,33 @@ def check_latest_snapshot(
             kwargs["ContinuationToken"] = continuation_token
         response = s3_client.list_objects_v2(**kwargs)
         contents = response.get("Contents") or []
-        all_keys.extend(obj["Key"] for obj in contents)
+        for obj in contents:
+            # boto3 always returns LastModified; mocks may omit it →
+            # falls through to legacy key-date path in snapshot_age_hours.
+            all_objects.append((obj["Key"], obj.get("LastModified")))
         if not response.get("IsTruncated"):
             break
         continuation_token = response.get("NextContinuationToken")
         if not continuation_token:
             break  # defensive: malformed response
 
-    if not all_keys:
+    if not all_objects:
         return HeartbeatResult(
             status="empty",
             key=None,
             age_hours=None,
             message=(
                 f"S3 bucket {bucket!r} has NO snapshots under prefix "
-                f"{prefix!r}. Either the bucket is brand-new (first daily "
-                "backup hasn't fired yet) OR every snapshot has been "
-                "deleted. Check: `aws s3 ls s3://" + bucket + "/" + prefix + "`."
+                f"{prefix!r}. Either the bucket is brand-new (first "
+                "scheduled backup hasn't fired yet) OR every snapshot has "
+                "been deleted. Check: `aws s3 ls s3://" + bucket + "/" + prefix + "`."
             ),
         )
 
     # S3 returns keys sorted, but mocks in tests may not — sort defensively.
-    latest_key = sorted(all_keys)[-1]
-    age = snapshot_age_hours(latest_key, now=now)
+    all_objects.sort(key=lambda kv: kv[0])
+    latest_key, latest_last_modified = all_objects[-1]
+    age = snapshot_age_hours(latest_key, now=now, last_modified=latest_last_modified)
 
     if age is None:
         return HeartbeatResult(
@@ -214,8 +267,9 @@ def check_latest_snapshot(
             message=(
                 f"state.db backup is STALE: latest snapshot {latest_key!r} "
                 f"is {age:.1f}h old ({days:.1f} days) — threshold is "
-                f"{max_age_hours}h. The daily backup timer on the VPS may "
-                "be broken. Check on the VPS:\n"
+                f"{max_age_hours}h. The scheduled backup timer on the VPS "
+                "may be broken (cadence is every 4h post-86b9zkp89). "
+                "Check on the VPS:\n"
                 "  systemctl status kalshi-state-db-backup.timer\n"
                 "  systemctl status kalshi-state-db-backup.service\n"
                 "  journalctl -u kalshi-state-db-backup.service -n 200\n"
@@ -361,7 +415,11 @@ def run_heartbeat(
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
-        description="Mac-side heartbeat: alert if state.db backup hasn't uploaded in 36h.",
+        description=(
+            "Mac-side heartbeat: alert if state.db backup hasn't uploaded "
+            f"in {DEFAULT_MAX_SNAPSHOT_AGE_HOURS}h "
+            "(post-86b9zkp89 sub-daily 4h cadence; pre-86b9zkp89 was 36h)."
+        ),
     )
     p.add_argument(
         "--bucket", default=os.environ.get("S3_BACKUP_BUCKET", "").strip() or None,
