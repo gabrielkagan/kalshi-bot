@@ -409,19 +409,11 @@ def test_frames_written_in_monotonic_seq_order(monkeypatch):
             for call in writers["orderbook_delta"].write.call_args_list
         ]
         seqs = [env["_collector_seq"] for env in envelopes]
-        # The subscribe-ack that bound sid=42 also went through the queue
-        # (subscribe-acks ARE written to bronze — they're part of the wire
-        # trace per the existing _on_frame docstring). Skip ack seq when
-        # checking ordering of the data frames.
-        data_seqs = [
-            envelopes[i]["_collector_seq"]
-            for i in range(len(envelopes))
-            if envelopes[i].get("_channel") == "orderbook_delta"
-            and envelopes[i].get("collector_seq") != envelopes[0].get(
-                "collector_seq")
-        ] or seqs
-        assert data_seqs == sorted(data_seqs), (
-            f"writer received envelopes out of seq order: {data_seqs}. "
+        # Post-D1.3-fu5: acks don't enqueue, so every entry in
+        # writers["orderbook_delta"].write.call_args_list is a data
+        # frame. No ack-skip filter needed.
+        assert seqs == sorted(seqs), (
+            f"writer received envelopes out of seq order: {seqs}. "
             f"FIFO queue + single worker + lock-held seq allocation should "
             f"preserve monotonic ordering."
         )
@@ -442,14 +434,12 @@ def test_full_queue_drops_frame_and_increments_counter(monkeypatch):
     archiver.start()
     try:
         _bind_sid(archiver, cmd_id=10, sid=42)
-        # The bind ack itself enqueues + drains to writers[None] (its
-        # envelope channel is None because Frame.sid is None for the
-        # subscribed-shape ack, where sid is nested in msg). Wait for
-        # that drain so the queue starts empty for the burst.
-        assert _wait_for(
-            lambda: writers[None].write.call_count >= 1,
-            timeout=2.0,
-        )
+        # D1.3-fu5: ack frames bind sid synchronously but DO NOT enqueue
+        # (skips the queue-OOM-via-multi-MB-ack class). So the queue is
+        # already empty post-bind; no wait needed for a "drain".
+        # Pre-fu5: this used to assert writers[None].write.call_count >= 1.
+        # Verify queue is in the expected pre-burst state.
+        assert archiver._write_queue.qsize() == 0
         # Now stall the writer; queue will fill at maxsize=2 then drop.
         block_event = threading.Event()
         writers["orderbook_delta"].write.side_effect = (
@@ -548,14 +538,10 @@ def test_shutdown_drains_pending_queue(monkeypatch):
     archiver.start()
     try:
         _bind_sid(archiver, cmd_id=10, sid=42)
-        # Wait for the bind ack to drain (to writers[None] — the
-        # subscribed-shape ack has Frame.sid=None so its envelope's
-        # _channel is None) so the buffer test below measures only
-        # the data-frame burst.
-        assert _wait_for(
-            lambda: writers[None].write.call_count >= 1,
-            timeout=2.0,
-        )
+        # D1.3-fu5: ack frames no longer enqueue/write. The bind happens
+        # synchronously inside _bind_sid (via _handle_subscribe_ack); no
+        # drain to wait for. Queue starts empty for the data-frame burst.
+        assert archiver._write_queue.qsize() == 0
         # Now stall the writer so the queue accumulates, then unstall +
         # stop. The stop() drain semantics must NOT drop the buffered
         # frames.
@@ -577,8 +563,11 @@ def test_shutdown_drains_pending_queue(monkeypatch):
         gate.set()
     finally:
         archiver.stop()
-    # Post-stop: every queued frame must have been written. Allow for
-    # the one drop-on-full edge: assert >= N (the bind ack adds 1).
+    # Post-stop: every queued frame must have been written.
+    # Post-D1.3-fu5: only data frames write (acks skip-enqueue), so
+    # expect exactly N (no ack-added +1). assert >= N preserves the
+    # original lower-bound shape (a drop-on-full edge would only
+    # decrease the count; never increase past N here).
     final_count = writers["orderbook_delta"].write.call_count
     assert final_count >= N, (
         f"shutdown drain incomplete: wrote {final_count} frames, expected "
@@ -652,24 +641,26 @@ def test_subscribe_ack_binding_visible_immediately_in_same_tick(monkeypatch):
         archiver._on_frame(ack)
         archiver._on_frame(data)
         # Verify the data frame ROUTED to orderbook_delta (binding was
-        # visible synchronously). The subscribe-ack itself routes to
-        # writers[None] because Frame.sid is None for the nested-sid
-        # ``subscribed`` shape — that's expected D1.3 behavior and
-        # distinct from the binding-race regression this test guards.
+        # visible synchronously). Post-D1.3-fu5 the ack itself does NOT
+        # write — sid binding happens then return — so writers[None]
+        # call_count stays at 0 (asserted below).
         assert _wait_for(
             lambda: writers["orderbook_delta"].write.call_count >= 1,
             timeout=2.0,
         )
-        # The _unrouted writer should have been hit EXACTLY ONCE (the
-        # ack itself), not also by the data frame post-bind. A second
-        # _unrouted write would mean the data frame's sid lookup raced
-        # the binding update.
-        assert writers[None].write.call_count == 1, (
-            f"data frame routed to _unrouted despite prior subscribe-ack "
-            f"(expected exactly 1 _unrouted write — the ack itself — got "
-            f"{writers[None].write.call_count}). Binding lookup may have "
-            f"been deferred to the worker (race) instead of resolved "
-            f"synchronously in _on_frame."
+        # D1.3-fu5: ack frames bind sid synchronously but DO NOT enqueue
+        # → _unrouted writer never sees them. So writers[None] should be
+        # called 0 times (NOT once for the ack itself). The binding-race
+        # invariant (data frame routes to orderbook_delta, NOT _unrouted)
+        # is still load-bearing — verified by writers[None].write.call_count
+        # == 0 below (any > 0 would mean data frame mis-routed).
+        assert writers[None].write.call_count == 0, (
+            f"_unrouted writer was called {writers[None].write.call_count} "
+            f"times — expected 0. Post-D1.3-fu5 ack frames do NOT enqueue "
+            f"(skip-OOM-via-large-ack class), so the only path to "
+            f"writers[None] is a data frame routing to _unrouted, which "
+            f"would indicate the sid binding raced + the data frame's "
+            f"channel lookup returned None."
         )
     finally:
         archiver.stop()

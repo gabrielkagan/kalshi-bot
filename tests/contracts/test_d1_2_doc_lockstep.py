@@ -807,3 +807,89 @@ def test_d1_3_fu4_shipped_status_in_at_least_one_tracked_doc():
         "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )
+
+
+# ─── D1.3-fu5 (skip ack enqueue, 2026-05-17, ticket 86b9zky3u) ──────────────
+#
+# fu5 closes the OOM-via-large-ack class that fu4 accidentally opened. Ack
+# frames bind sid synchronously then RETURN — they no longer flow through
+# the bronze write path. RCA + reasoning:
+# `kb/failures/collector-oom-via-ack-queue-may17.md`.
+#
+# Retracted claims to encode per L99 ratchet:
+
+STALE_PATTERNS_POST_D1_3_FU5: list[str] = [
+    # The retracted pre-fu5 claim: ack frames flow through the write
+    # path / land in _unrouted partition.
+    "ack frames go to _unrouted",
+    "acks go to _unrouted",
+    "ack flows through the data path",
+    "ack ALSO routes through the data path",
+    "ack itself is part of the wire trace",
+    "_unrouted partition receives ack",
+    # Pre-fu5 _on_frame docstring claim that all frames share the same
+    # 3-step path (sid lookup + seq alloc + enqueue). Post-fu5 acks short-
+    # circuit after the bind.
+    "Three steps execute synchronously here (must, for correctness)",
+    # Pre-fu5 narrative: "bronze captures every frame".
+    "bronze captures every frame",
+    "Bronze captures every frame",
+    # Pre-fu5 _unrouted purpose claim.
+    "unrouted bytes go to a separate path for silver QA",
+    # Pre-fu5 claim that the ack-write path was load-bearing.
+    "the ack ALSO routes through the data path (we still write it to bronze",
+    # The OOM regression itself (forward-tense narrative if anything
+    # paraphrases the pre-fix state).
+    "OOM-via-large-ack class will be addressed",
+    "cgroup OOM kill from large-ack queue is unresolved",
+    "subscribe-ack queue OOM unresolved",
+    # R1-M1 retracts: sister-test comment phrasings that pinned the
+    # pre-fu5 ack-writes-to-bronze behavior. Encode the retracted
+    # strings so a future paraphrase cannot drift them back via copy-
+    # paste from a git blame.
+    "subscribe-acks ARE written to bronze",
+    "subscribe-ack itself routes to writers[None]",
+    "subscribe-ack itself went to writers[None]",
+    "subscribe-ack that bound sid=42 also went through the queue",
+    "the bind ack adds 1",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D1_3_FU5)
+def test_no_post_d1_3_fu5_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D1.3-fu5-pending phrase after
+    D1.3-fu5 shipped. L99 PARANOID-at-day-1 ratchet for the fu5
+    semantic flip (ack frames removed from bronze write path).
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.3-fu5-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nPer L99 + L106 (new with this Bit): when a Bit changes a "
+        "data-flow contract, sister-doc retracts of the OLD contract MUST "
+        "ship same-Bit to prevent paraphrase drift."
+    )
+
+
+def test_d1_3_fu5_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D1.3-fu5 as SHIPPED. Same pattern as fu4 sister check.
+    """
+    shipped_re = re.compile(
+        r"D1\.3-fu5\s+SHIPPED|D1\.3-fu5.*shipped|shipped.*D1\.3-fu5",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.3-fu5 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )

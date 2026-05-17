@@ -212,8 +212,8 @@ def write_bronze_health_sidecar(
     ``tests/contracts/test_bronze_health_sidecar.py`` module docstring.
 
     Called from the drain thread on every tick (~1s cadence). Cheap:
-    each ``BronzeArchiver.get_health_snapshot`` does 5 attribute reads
-    + a ``queue.qsize()`` call.
+    each ``BronzeArchiver.get_health_snapshot`` does a handful of
+    attribute reads + a ``queue.qsize()`` call + ``Thread.is_alive()``.
     """
     import datetime as _dt
     snapshots = [a.get_health_snapshot() for a in archivers]

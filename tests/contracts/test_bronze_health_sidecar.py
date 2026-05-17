@@ -52,8 +52,9 @@ import pytest
 
 
 def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
-    """Per-archiver snapshot must expose the 6 keys the sidecar aggregator
-    + the monitor's check_dropped_frames depend on.
+    """Per-archiver snapshot must expose the 7 keys the sidecar aggregator
+    + the monitor's check_dropped_frames depend on (6 D1.6-fu base keys +
+    `ack_frames_processed` added in D1.3-fu5 as additive backward-compat).
     """
     from collector import ws_connection as wc
 
@@ -76,6 +77,7 @@ def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
     required = {
         "conn_id", "dropped_frames", "write_queue_size",
         "write_queue_maxsize", "write_worker_alive", "collector_seq",
+        "ack_frames_processed",  # D1.3-fu5 observability addition
     }
     missing = required - set(snap.keys())
     assert not missing, (
@@ -150,6 +152,16 @@ def test_write_bronze_health_sidecar_creates_valid_json(monkeypatch, tmp_path):
     assert {a["conn_id"] for a in data["archivers"]} == {"A", "B", "C"}
     assert data["total_dropped_frames"] == 0
     assert data["total_queue_size"] == 0
+    # D1.3-fu5: ack_frames_processed flows end-to-end through the JSON
+    # file (not just present in the in-memory snapshot dict).
+    # Regression-guard against an aggregator strip in
+    # write_bronze_health_sidecar.
+    for a in data["archivers"]:
+        assert "ack_frames_processed" in a, (
+            f"archiver {a.get('conn_id')!r} missing ack_frames_processed "
+            f"in serialized JSON; D1.3-fu5 observability surface broken."
+        )
+        assert a["ack_frames_processed"] == 0  # fresh archivers
 
 
 def test_write_bronze_health_sidecar_atomic_replace(monkeypatch, tmp_path):
