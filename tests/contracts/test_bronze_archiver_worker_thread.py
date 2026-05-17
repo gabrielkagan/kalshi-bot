@@ -186,7 +186,7 @@ def test_bronze_archiver_allocates_bounded_write_queue(monkeypatch):
 
 
 def test_bronze_archiver_initial_dropped_frames_zero(monkeypatch):
-    """Drop counter starts at 0 so callers can monitor the deltabetween
+    """Drop counter starts at 0 so callers can monitor the delta between
     health-check ticks rather than booting from an unknown floor."""
     archiver, _, _ = _make_archiver(monkeypatch)
     assert hasattr(archiver, "_dropped_frames"), (
@@ -445,21 +445,31 @@ def test_full_queue_drops_frame_and_increments_counter(monkeypatch):
         writers["orderbook_delta"].write.side_effect = (
             lambda _env: block_event.wait(timeout=10)
         )
-        # Send many more frames than queue capacity. The first frame may
-        # go inflight (worker picked it up), then 2 fill the queue, then
-        # remaining drop.
+        # Send many more frames than queue capacity. The worker is
+        # blocked on writer.write, so at most: 1 frame inflight (already
+        # popped by the worker but stuck in write) + maxsize=2 frames in
+        # the queue → at most 3 frames absorbed without drop. The
+        # remaining N-3 must drop.
         N = 20
+        EXPECTED_MIN_DROPS = N - 3
         for i in range(N):
             archiver._on_frame(_fake_frame(
                 {"sid": 42, "seq": i + 100, "type": "orderbook_delta",
                  "msg": {"market_ticker": "T1"}},
             ))
-        # Verify some frames were dropped (counter incremented).
-        assert archiver._dropped_frames > 0, (
+        # R1-M5: tighten from ``>0`` to ``>= N-3`` so a regression
+        # where only 1 frame drops (e.g., put_nowait silently retrying)
+        # is also caught — not just "no drops at all". The 3-frame
+        # absorption ceiling (1 inflight + 2 queue) is the load-bearing
+        # invariant tied to maxsize=2.
+        assert archiver._dropped_frames >= EXPECTED_MIN_DROPS, (
             f"queue maxsize=2 + blocked worker + {N} frame burst should "
-            f"have dropped frames, but _dropped_frames={archiver._dropped_frames}. "
-            f"Suggests _on_frame is using a blocking put (re-stall) OR "
-            f"silently swallowing queue.Full without bumping the counter."
+            f"have dropped at least {EXPECTED_MIN_DROPS} frames (= "
+            f"N - 3 absorbed = N - inflight(1) - queue(2)); got "
+            f"_dropped_frames={archiver._dropped_frames}. Suggests "
+            f"_on_frame is using a blocking put (re-stall), silently "
+            f"swallowing queue.Full without bumping the counter, OR the "
+            f"worker is not actually blocked (writer.side_effect missed)."
         )
         block_event.set()
     finally:

@@ -662,3 +662,105 @@ def test_d1_3_shipped_status_in_at_least_one_tracked_doc():
         "but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )
+
+
+# ─── D1.3-fu4 (worker-thread decouple, 2026-05-17, ticket 86b9zk4hz) ────────
+#
+# L99 PARANOID-at-day-1: when fu4 pivots BronzeArchiver._on_frame from
+# inline writer.write to worker-thread dispatch, retract the prior
+# phrasings so sister docs cannot re-introduce them via copy-paste from
+# a git blame. Same R1-M4 lesson as the D1.4 + D1.5 patterns above.
+
+STALE_PATTERNS_POST_D1_3_FU4: list[str] = [
+    # The retracted bot_layout.md:251 phrasing (pre-fu4 narrative had
+    # _on_frame routing the envelope DIRECTLY to writers_by_channel; post-
+    # fu4 it enqueues + a worker dispatches). Match a narrow substring so
+    # legitimate worker-side prose (e.g., "_drain_loop routes the envelope")
+    # is NOT mis-flagged.
+    "on_frame .* then routes the envelope",
+    "on_frame .* routes the envelope to writers_by_channel",
+    # The fu4-PROVED-INSUFFICIENT D1.3-fu3 forward-tense "proper fix" prose.
+    "proper fix is to decouple the bronze write from the asyncio loop",
+    # Pre-fu4 KB / plan-doc framing — "Steps 4 are heavy" or "the asyncio
+    # thread does ALL of: ... writer.write" framed as a future-to-fix
+    # rather than a past-pivot. Narrow enough that a fresh post-mortem
+    # quoting the steps-4-are-heavy RCA verbatim won't trip (use
+    # past-tense + a citation marker per the legacy-cite carve-out).
+    "Loop blocks > 30s",  # the future-tense framing of the bug
+    "loop blocks > 30s",
+    # Pre-fu4 stopgap-still-stands phrasing.
+    "ping_timeout stopgap PROVED INSUFFICIENT",  # past, but framed open-loop
+    "82 × 1011 errors in 32 min, collector self-restart",
+    "the collector is in a 1011 reconnect cycle every ~30 min until D1.3-fu4 lands",
+    "until D1.3-fu4 lands",
+    "until D1.3-fu4 ships",
+    "D1.3-fu4 target",
+    "D1.3-fu4 will",
+    "after D1.3-fu4 lands",
+    "future D1.3-fu4",
+    # Pre-fu4 D1.6 health-monitor commentary about cadence.
+    "Expected initial WS-reconnect alert cadence ~288/day",
+    "~288 WS-reconnect alerts/day",
+    # Pre-fu4 architectural framing — synchronous writer dispatch claim.
+    "_on_frame .* synchronous .* writer.write",
+    "BronzeArchiver writes synchronously on the asyncio thread",
+    # Pre-fu4 WSClient.stop() fire-and-forget claim (the bug C1 retracted).
+    "WSClient.stop is fire-and-forget",
+    "wire.stop is fire-and-forget",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D1_3_FU4)
+def test_no_post_d1_3_fu4_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D1.3-fu4-pending phrase after
+    D1.3-fu4 shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.3-fu4 (worker-thread
+    decouple of BronzeArchiver._on_frame + WSClient.stop join_timeout
+    kwarg). Same lesson as D1.4 / D1.5 R1-M4: encode retracted prose at
+    ship time so sister-doc drift cannot re-introduce it.
+
+    NOTE: pattern matching is plain substring (not regex). Patterns that
+    use regex metachars like ``.*`` would not actually match those
+    metachars literally — they'd require the literal ``.*`` string in
+    the line, which is unlikely. The intent is for those entries to
+    serve as DOCUMENTED-but-NEVER-MATCHING anti-patterns (style guide)
+    until the scan helper is regex-aware. If you want a true wildcard
+    match, add the exact literal strings.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.3-fu4-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed D1.3/D1.4/D1.5): lockstep "
+        "ratchets must have PARANOID pattern coverage from day-1. If "
+        "THIS pattern is a legitimate forward-looking phrase for a "
+        "subsequent Bit, narrow it (add a qualifier that won't match "
+        "historical D1.3-fu4 prose)."
+    )
+
+
+def test_d1_3_fu4_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D1.3-fu4 as SHIPPED. Catches the inverse failure mode where
+    staleness patterns pass (no D1.3-fu4 mention at all) but the docs
+    haven't been updated to claim D1.3-fu4 SHIPPED.
+    """
+    shipped_re = re.compile(
+        r"D1\.3-fu4\s+SHIPPED|D1\.3-fu4.*shipped|shipped.*D1\.3-fu4",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.3-fu4 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )

@@ -72,8 +72,12 @@ _DEFAULT_WRITE_QUEUE_MAXSIZE = 10_000
 _SHUTDOWN_SENTINEL = object()
 
 # Throttle WARNING-level log lines for queue-full drops so a sustained
-# overload cannot itself become a logging-IO source of stall. First drop
-# (counter==1) logs, then every Nth thereafter.
+# overload cannot itself become a logging-IO source of stall. Logs fire
+# at counter == 1, 1000, 2000, 3000, ... (the first drop, then every
+# _DROP_LOG_THROTTLE-th drop on a multiple-of-N cadence — NOT "every Nth
+# after the first" which would be 1, 1001, 2001, ...). Between log lines
+# there are _DROP_LOG_THROTTLE-1 silent drops; readers should rely on
+# the ``_dropped_frames`` counter for the true total.
 _DROP_LOG_THROTTLE = 1000
 
 # Bound on stop()'s join wait for the worker. Long enough to drain a
@@ -210,9 +214,11 @@ class BronzeArchiver:
         # ping-timeout window → WS lib raises 1011 (keepalive ping timeout)
         # → reconnect storm. Per-collector override (bot's default 10s
         # stays unchanged — bot subscribes to ~50-100 tickers, no buffer
-        # backup). Stopgap; the proper fix is to decouple the bronze
-        # write from the asyncio loop (separate worker thread). Pinned
-        # by tests/contracts/test_collector_ws_client_ping_timeout.py.
+        # backup). Pin retained as defense-in-depth post-D1.3-fu4 (the
+        # worker-thread decouple closed the 1011 storm class; this 30s
+        # timeout now hedges against any unforeseen residual asyncio-
+        # thread block). Pinned by
+        # tests/contracts/test_collector_ws_client_ping_timeout.py.
         if url is None:
             self._wire = WSClient(
                 api_key=api_key,
@@ -585,14 +591,29 @@ class BronzeArchiver:
         either drop (if maxsize is small) or accumulate against a
         non-existent consumer.
 
-        Sync (matches WSClient.start). Idempotent: a second call with a
-        live worker is a no-op for the worker setup but still forwards
-        to WSClient.start (which is itself idempotent at the wire level).
+        Sync (matches WSClient.start). Idempotent at the WIRE level
+        (WSClient.start no-ops on a live thread). Re-entrancy semantics
+        for the WORKER: if start() is called after a prior stop(), a
+        FRESH worker is spawned + ``_dropped_frames`` / ``_drop_log_counter``
+        are reset to zero so health monitors see per-session deltas
+        from a known floor. Test fixtures that auto-start the worker
+        (``_make_archiver``) rely on this reset so cross-test state
+        doesn't leak via the counter.
         """
         if self._write_worker is None or not self._write_worker.is_alive():
+            with self._lock:
+                # R1-M2: reset counters on worker (re)spawn so per-session
+                # observability has a known floor.
+                self._dropped_frames = 0
+                self._drop_log_counter = 0
             self._write_worker = threading.Thread(
                 target=self._drain_loop,
-                name=f"BronzeArchiver-writer-{self._conn_id}",
+                # R1-M6: include id(self) so multiple archivers with the
+                # same conn_id (test fixture re-runs) have distinguishable
+                # thread names for debugging.
+                name=(
+                    f"BronzeArchiver-writer-{self._conn_id}-{id(self):x}"
+                ),
                 daemon=True,
             )
             self._write_worker.start()
@@ -601,14 +622,28 @@ class BronzeArchiver:
     def stop(self) -> None:
         """Stop the underlying WSClient, then drain + join the worker.
 
-        Order matters: stop the wire FIRST so no new frames enqueue
-        during shutdown. Then post the shutdown sentinel — the worker
-        drains any frames buffered ahead of the sentinel before exiting
-        (FIFO queue guarantees this without an explicit drain loop).
-        Finally join with a bounded timeout: a wedged writer must not
+        Order matters: stop the wire FIRST + JOIN its asyncio thread so
+        no new frames enqueue after the sentinel is posted. Without the
+        join (R1-C1), ``WSClient.stop()`` is fire-and-forget — the
+        asyncio thread keeps running and could call ``_on_frame``
+        (→ enqueue) AFTER our sentinel landed, leaving tail frames
+        behind the sentinel that the FIFO worker would never drain.
+
+        Then post the shutdown sentinel — the worker drains any frames
+        buffered ahead of the sentinel before exiting (FIFO queue
+        guarantees this once the producer is quiesced). Finally join
+        the worker with a bounded timeout: a wedged writer must not
         block process exit indefinitely.
+
+        Both joins use ``_WORKER_JOIN_TIMEOUT_S``. Total worst-case
+        ``stop()`` latency = 2 × timeout (wire-thread join + worker join);
+        in practice the wire-thread exits in milliseconds after the
+        ``_stop_event.set`` lands.
         """
-        self._wire.stop()
+        # R1-C1 fix: join the asyncio thread so no _on_frame can fire
+        # after this returns. join_timeout > 0 triggers the join (default
+        # 0 preserves the bot-side fire-and-forget caller).
+        self._wire.stop(join_timeout=_WORKER_JOIN_TIMEOUT_S)
         worker = self._write_worker
         if worker is not None and worker.is_alive():
             # ``put`` (blocking) rather than ``put_nowait`` because we
