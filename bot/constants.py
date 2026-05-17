@@ -30,6 +30,7 @@ SERIES_TICKERS = {
     "XRP": "KXXRP15M",
     "HYPE": "KXHYPE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
     "DOGE": "KXDOGE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
+    "BNB": "KXBNB15M",        # T1 onboarding 2026-05-17 (86b9zmj0c) — shadow observation
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -78,6 +79,18 @@ XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/
 # evaluated_opportunities deferred 2-4 weeks post-promote (separate Bit).
 HYPE_15M_SHADOW = False           # HYPE 15M live (T4 promoted 2026-05-14, floor 90c, max_risk 0.10)
 DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor 85c, max_risk 0.10)
+# T1 onboarding (2026-05-17, ticket 86b9zmj0c — umbrella 86b9zmhyk): BNB 15M shadow
+# observation. Bot subscribes to Coinbase BNB-USD + Kalshi KXBNB15M/KXBNBD feeds,
+# runs the full scan→evaluate pipeline writing diagnostic rows, but submits ZERO
+# live orders for BNB. Kill-switch clauses preserved at TM/WKND/OVN/DC strategy
+# eligibility sites in bot/scanner/__init__.py — flipping BNB_15M_SHADOW=False
+# at T4 promotion will unblock BNB across all 4 strategies in lock-step. T4
+# prerequisites (BNB_MIN_ENTRY_PRICE, BNB_MAX_RISK_PER_TRADE, TM_ASSET_RISK_CAPS["BNB"],
+# NBBO_FALLBACK_GATES, MARKET_BLEND_W_BY_ASSET["BNB"]) deliberately NOT wired
+# in T1 — graceful .get(...) fallbacks operate while the asset is shadow-only.
+# Plan: agent_docs/bnb-t1-plan-may17.md. Regression lock:
+# tests/integration/test_bnb_onboarding_t1.py.
+BNB_15M_SHADOW = True             # BNB 15M T1 shadow observation (T4 promotion ticket: 86b9zmj37)
 
 # T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend
 # edge-gated subset since 2026-05-10. HYPE conservative pick (borderline EV
@@ -270,6 +283,7 @@ HOURLY_SERIES_TICKERS = {
     "XRP": "KXXRPD",
     "HYPE": "KXHYPED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
     "DOGE": "KXDOGED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
+    "BNB": "KXBNBD",          # T1 (2026-05-17, 86b9zmj0c): shadow via HOURLY_EXCLUDED_ASSETS
 }
 
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
@@ -355,7 +369,7 @@ HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR 
 
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
 
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE T1 shadow until T4 promotion
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB T1 shadow until T4 promotion (BNB T1 ticket 86b9zmj0c, 2026-05-17)
 
 # NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
 #   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
@@ -366,7 +380,7 @@ HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE"}  # YES-side: BTC+ETH onl
 # (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
 # thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
 # downside. Revisit per-asset if fills produce divergent live PnL.
-HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE"}  # NO-side safety belt: HYPE/DOGE excluded until T4. Existing BTC/ETH/SOL/XRP unblocked per data above.
+HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB"}  # NO-side safety belt: HYPE/DOGE/BNB excluded until T4. Existing BTC/ETH/SOL/XRP unblocked per data above. (BNB T1 ticket 86b9zmj0c, 2026-05-17)
 
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
@@ -716,6 +730,7 @@ COINBASE_PRODUCTS = {
     "XRP": "XRP-USD",
     "HYPE": "HYPE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
     "DOGE": "DOGE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
+    "BNB": "BNB-USD",         # T1 (2026-05-17, 86b9zmj0c): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
 }
 
 PRICE_BUFFER_SIZE = 1800          # 30 minutes of 1-second snapshots (extended Apr 19 for Phase 2 features)

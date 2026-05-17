@@ -43,7 +43,7 @@ from typing import Dict
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ─── Assets ──────────────────────────────────────────────────────────────────
-ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"]
 
 # Module-scoped logger. Using `logging.info(...)` directly at module-load time
 # auto-triggers `logging.basicConfig()` when no handler is configured yet,

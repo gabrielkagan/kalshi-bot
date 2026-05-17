@@ -62,7 +62,7 @@ CURRENT_CONFIG = {
     "MAX_ENTRY_PRICE": 99,
     "MIN_EDGE_BY_PRICE": "97c→1.0%, 95c→0.75%, 93c→0.5%, 91c→0.2%, 89c→0.25%, default→0.25%",
     "MARKET_BLEND_W": 0.40,
-    "MARKET_BLEND_W_BY_ASSET": "{BTC:0.10, ETH:0.20, SOL:0.80, XRP:0.90, HYPE:0.80, DOGE:0.60}  # P2.3 live promotion 2026-05-14 (86b9xv66a)",
+    "MARKET_BLEND_W_BY_ASSET": "{BTC:0.10, ETH:0.20, SOL:0.80, XRP:0.90, HYPE:0.80, DOGE:0.60}  # P2.3 live promotion 2026-05-14 (86b9xv66a). BNB T1 shadow 2026-05-17 (86b9zmj0c) — no blend weight yet, T3 sweep pending.",
     "MAX_RISK_PER_TRADE": 0.25,
     "MAX_SECONDS_BEFORE_CLOSE": 900,
     "STC_SHADOW_THRESHOLD": 600,
@@ -665,7 +665,7 @@ def _loss_context_to_markdown(ctx: dict) -> str:
 
 LOSS_POSTMORTEM_SYSTEM = """You are an expert quantitative analyst reviewing a loss from a cryptocurrency prediction market trading bot on Kalshi.
 
-The bot trades above/below markets on BTC, ETH, SOL, XRP, HYPE, and DOGE (all six 15M-live post P2.3 promotion 2026-05-14). It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
+The bot trades above/below markets on BTC, ETH, SOL, XRP, HYPE, and DOGE (all six 15M-live post P2.3 promotion 2026-05-14). BNB is in T1 shadow observation as of 2026-05-17 (86b9zmj0c) — the bot evaluates BNB but submits zero live orders. It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
 
 Your job is to analyze the loss and identify the root cause. All statistics have been pre-computed for you — do NOT perform any calculations yourself. Use the data as presented.
 

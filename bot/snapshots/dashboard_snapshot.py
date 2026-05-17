@@ -8,7 +8,7 @@ import datetime
 import collections
 from typing import Dict, Any, List, Optional
 
-ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"]
 
 # Configs C–G filter metadata for dashboard rendering
 _HOURLY_VARIANT_DEFS = [
@@ -1495,7 +1495,7 @@ class DashboardSnapshotBuilder:
                     "tracked_tickers": koft.get_tracked_count(),
                 }
                 # Per-ticker signals (skip hourly — too many strikes)
-                _hourly_pfx = ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXHYPED", "KXDOGED")
+                _hourly_pfx = ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXHYPED", "KXDOGED", "KXBNBD")
                 per_ticker = {}
                 for ticker in list(koft._snapshots.keys()):
                     if ticker.startswith(_hourly_pfx):
@@ -3059,7 +3059,7 @@ class DashboardSnapshotBuilder:
                         total_bid_depth = sum(l["q"] for l in yes_bid_levels)
 
                         asset = "UNK"
-                        for a in ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"]:
+                        for a in ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"]:
                             if a in ticker.upper():
                                 asset = a
                                 break

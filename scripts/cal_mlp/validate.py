@@ -453,7 +453,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         '--asset', required=True,
-        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE', 'BNB'],
     )
     ap.add_argument('--bundle-sha', required=True)
     ap.add_argument('--challenger-bundle-sha', default=None)

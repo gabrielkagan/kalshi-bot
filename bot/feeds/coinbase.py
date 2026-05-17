@@ -2,9 +2,10 @@
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.5a (2026-05-08). Daemon
 thread that subscribes to Coinbase ticker channel for every symbol in
-`bot.config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10 —
+`bot.config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10;
+BNB post-T1 2026-05-17 ticket 86b9zmj0c —
 ASSETS is the canonical source; see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md
-+ bit-1-5-shipped-may10.md). Maintains a 1-second-resolution rolling
++ bit-1-5-shipped-may10.md + agent_docs/bnb-t1-plan-may17.md). Maintains a 1-second-resolution rolling
 buffer (PRICE_BUFFER_SIZE), and persists the buffer to disk every
 SPOT_BUFFER_PERSIST_INTERVAL_S so 30-min momentum features (5m/30m
 used by cal_mlp) don't go NULL on restart.

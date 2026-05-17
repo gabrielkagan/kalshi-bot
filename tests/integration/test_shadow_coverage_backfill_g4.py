@@ -235,7 +235,7 @@ class TestG4BackfillPathMetricsIntegration:
             # abort trips. BTC values matter for the assertion; other
             # assets just need >0 entries.
             base = {"BTC": 67500.0, "ETH": 3200.0, "SOL": 140.0, "XRP": 2.5,
-                    "DOGE": 0.18, "HYPE": 24.5}[asset]
+                    "DOGE": 0.18, "HYPE": 24.5, "BNB": 655.4}[asset]
             # Phase G-4 round 2: candle range walks [eval-15..eval-1]
             # (exclusive of eval). Provide candles at i=1..15.
             return [_candle(eval_ts - i * 60, base) for i in range(1, 16)]

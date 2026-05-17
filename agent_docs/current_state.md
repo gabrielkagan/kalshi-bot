@@ -8,9 +8,10 @@
 
 - **OBSERVATION_MODE = False** — LIVE TRADING with real money
 - **15M live assets:** BTC (88c+), ETH (75c+, 50-contract cap sub-80c), SOL (86c+, taker-first), XRP (92c+), HYPE (90c+, P2.3 2026-05-14), DOGE (85c+, P2.3 2026-05-14)
-- **15M shadow assets:** (none — HYPE/DOGE T4 promoted 2026-05-14 via P2.3 raw_prob + per-asset MARKET_BLEND_W blend, ClickUp 86b9xv66a). Hourly HYPE/DOGE remain in `HOURLY_EXCLUDED_ASSETS` + `HOURLY_NO_EXCLUDED_ASSETS` (hourly path not yet promoted). Original T1-T4 onboarding history: T1 shadow 2026-05-10 → T4 live 2026-05-14 via Brier-sweep raw_prob direct-promote (cal_mlp training arc retired).
+- **15M shadow assets:** BNB (T1 onboarding 2026-05-17, umbrella 86b9zmhyk / T1 ticket 86b9zmj0c — bot scans + evaluates BNB 15M via Coinbase BNB-USD + Kalshi KXBNB15M, writes diagnostic rows to `evaluated_opportunities` with `filter_stage='bnb_shadow'`, submits ZERO live orders. T4 promotion pending T3 data accumulation ~3-4wk). HYPE/DOGE T4 promoted 2026-05-14 via P2.3 raw_prob + per-asset MARKET_BLEND_W blend, ClickUp 86b9xv66a. Hourly HYPE/DOGE/BNB remain in `HOURLY_EXCLUDED_ASSETS` + `HOURLY_NO_EXCLUDED_ASSETS` (hourly path not yet promoted for any of the three). Original T1-T4 onboarding history: HYPE/DOGE T1 shadow 2026-05-10 → T4 live 2026-05-14 via Brier-sweep raw_prob direct-promote (cal_mlp training arc retired); BNB follows the same 4-stage path (T1→T1.5→T2→T3→T4) per `agent_docs/bnb-t1-plan-may17.md`.
 - **XRP_15M_SHADOW = False** — XRP promoted to live at 92c+ (data: 41W/2L, 95.3% WR)
 - **HYPE_15M_SHADOW = False / DOGE_15M_SHADOW = False** — P2.3 live promotion 2026-05-14. Per-asset constants wired (HYPE_MIN_ENTRY_PRICE=90, DOGE_MIN_ENTRY_PRICE=85, both MAX_RISK_PER_TRADE=0.10). MARKET_BLEND_W_BY_ASSET extended: HYPE 0.80, DOGE 0.60. NBBO_FALLBACK_GATES INTENTIONALLY omits HYPE/DOGE (orderbook-only first step). 14d Brier-monitored soak runs through 2026-05-28.
+- **BNB_15M_SHADOW = True** — T1 shadow observation (2026-05-17, ticket 86b9zmj0c, umbrella 86b9zmhyk). Kill-switch clauses wired at TM/WKND/OVN/DC strategy eligibility sites + dedicated `bnb_shadow` filter_stage. BNB hourly shadowed via `HOURLY_EXCLUDED_ASSETS` (YES-side) + `HOURLY_NO_EXCLUDED_ASSETS` (NO-side safety belt). Per-asset constants (BNB_MIN_ENTRY_PRICE / BNB_MAX_RISK_PER_TRADE / TM_ASSET_RISK_CAPS["BNB"] / NBBO_FALLBACK_GATES / MARKET_BLEND_W_BY_ASSET["BNB"]) deliberately NOT wired — graceful `.get()` fallbacks operate while shadow. T1.5 external-feed bundle (Binance/Kraken/Bybit/OKX/CoinGlass) ticket 86b9zmj15 targets ship within 7 days. T3 calibration sweep + T4 promotion pending ~3-4wk data accumulation.
 - **SOL_TAKER_FIRST = True** — bypasses maker, direct IOC at all STC
 - **Decided contracts LIVE:** T1 (z≤-5), T1B (z≤-4, 95c+), T2 (z≤-3, 93-96c), T2-Z25 (z≤-2.5, 93-96c). All @ 20% fixed sizing. **T2-Z2 SHADOWED** (97a365f Apr 1, -$313 on 47 trades). Canonical: `kb/concepts/dc-strategy.md`
 - **Overnight discount LIVE:** weekday 04-11 UTC, 89c+, STC≤600s, no DC overlap; sub-89c/STC>600s remain shadow
@@ -56,8 +57,8 @@
 - **Orderbook:** YES and NO are SEPARATE; YES + NO prices do NOT always sum to 100
 - **All orders are limit orders** (no market orders)
 - **Tier:** Advanced (30 reads/sec, 30 writes/sec)
-- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M (live, P2.3 2026-05-14), KXDOGE15M (live, P2.3 2026-05-14)
-- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD, KXHYPED (excluded), KXDOGED (excluded)
+- **Series (15M):** KXBTC15M, KXETH15M, KXSOL15M, KXXRP15M, KXHYPE15M (live, P2.3 2026-05-14), KXDOGE15M (live, P2.3 2026-05-14), KXBNB15M (T1 shadow, 86b9zmj0c, 2026-05-17)
+- **Series (hourly):** KXBTCD, KXETHD, KXSOLD, KXXRPD, KXHYPED (excluded), KXDOGED (excluded), KXBNBD (excluded — T1 shadow)
 - **Series (weather, 19 cities):** KXHIGHNY, KXHIGHCHI, KXHIGHMIA, KXHIGHDEN, KXHIGHLAX, KXHIGHAUS, KXHIGHTATL, KXHIGHTSFO, KXHIGHTDAL, KXHIGHTPHX, KXHIGHPHIL, KXHIGHTMIN, KXHIGHTSEA, KXHIGHTHOU, KXHIGHTBOS, KXHIGHTLV, KXHIGHTOKC, KXHIGHTDC, KXHIGHTNOLA
 
 ## Fees
