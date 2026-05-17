@@ -208,16 +208,22 @@ def _read(p: Path) -> str:
     return p.read_text()
 
 
-def test_dashboard_snapshot_dist_config_anchored_to_repo_root():
-    """R1.a CRITICAL — dashboard_snapshot.py reads dist_config.json from
-    REPO ROOT, but pre-move `os.path.dirname(__file__)` happened to be
-    repo root. Post-move the file lives at bot/snapshots/ so the same
-    expression resolves to `bot/snapshots/dist_config.json` (missing) and
-    `nig_distribution` silently becomes None on every dashboard tick.
+def test_dashboard_snapshot_dist_config_anchored_to_ops_runtime():
+    """R1.a CRITICAL (post Sprint 14-A Bit 3 update, 2026-05-17, ticket
+    86b9zfbt8) — dashboard_snapshot.py reads dist_config.json from
+    `<repo>/ops/runtime/dist_config.json`. Pre-Bit-10.4 `os.path.dirname(__file__)`
+    happened to be repo root; post-Bit-10.4 (when the module relocated to
+    bot/snapshots/) the 3-level dirname chain restored that anchor. Post-Bit-3
+    (when the DATA artifact relocated to ops/runtime/) the chain still resolves
+    to repo root but the join must include the ops/runtime/ tail — otherwise
+    the same `nig_distribution silently becomes None on every dashboard tick`
+    failure mode reappears.
 
-    Pin: the source must contain the 3-level dirname anchor pattern
-    (matching bot/engines/weather_engine.py:806-807 precedent) AND a
-    join referencing `dist_config.json` against that anchor.
+    Pin: the source must contain (1) the 3-level dirname anchor pattern
+    matching bot/engines/weather_engine.py:806-807 AND (2) the
+    "ops", "runtime", "dist_config.json" 3-tuple join (must stay lock-step
+    with bot/config.py:DIST_CONFIG_PATH +
+    scripts/ops/calibrate_dist.py:OUTPUT_PATH).
     """
     src = _read(NEW_DIR / "dashboard_snapshot.py")
     assert (
@@ -228,13 +234,19 @@ def test_dashboard_snapshot_dist_config_anchored_to_repo_root():
         "bot/snapshots/dashboard_snapshot.py is missing the 3-level "
         "repo-root anchor (`os.path.dirname(os.path.dirname(os.path.dirname"
         "(os.path.abspath(__file__))))` or `Path(__file__).resolve().parents[2]`). "
-        "Required to resolve dist_config.json correctly post-move. "
+        "Required to resolve dist_config.json correctly. "
         "Fix pattern: see bot/engines/weather_engine.py:806-807."
     )
-    # And the anchor must be used to find dist_config.json (string anywhere
-    # in src referencing the file is enough — the AST exhaustively grepping
-    # for a specific shape would be too brittle).
-    assert "dist_config.json" in src
+    # The anchor must be used to find dist_config.json under ops/runtime/
+    # — pin the path-segment 3-tuple literally so a future renamer cannot
+    # silently regress to the pre-Bit-3 root-level join.
+    assert '"ops", "runtime", "dist_config.json"' in src, (
+        "bot/snapshots/dashboard_snapshot.py must join the 3-level repo-root "
+        "anchor with `\"ops\", \"runtime\", \"dist_config.json\"` post Sprint "
+        "14-A Bit 3 (2026-05-17, ticket 86b9zfbt8) data-artifact relocation. "
+        "Lock-step with bot/config.py:DIST_CONFIG_PATH + "
+        "scripts/ops/calibrate_dist.py:OUTPUT_PATH."
+    )
 
 
 def test_supabase_sync_kill_switch_resolves_to_repo_root():

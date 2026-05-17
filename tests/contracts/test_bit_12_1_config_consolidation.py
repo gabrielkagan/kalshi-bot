@@ -267,18 +267,25 @@ def test_no_stale_import_config_in_executable_code():
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def test_dist_config_path_anchored_to_repo_root():
-    """C2: DIST_CONFIG_PATH resolves to <repo>/dist_config.json,
-    NOT <repo>/bot/dist_config.json. Post-move silent-drift guard."""
+def test_dist_config_path_anchored_to_ops_runtime():
+    """C2 (post Sprint 14-A Bit 3, 2026-05-17, ticket 86b9zfbt8): DIST_CONFIG_PATH
+    resolves to <repo>/ops/runtime/dist_config.json, NOT <repo>/dist_config.json
+    (pre-Bit-3 location) or <repo>/bot/dist_config.json. Post-move silent-drift
+    guard — pins the 3-segment tail so a future renamer cannot silently regress
+    to a CWD-relative or wrong-anchor path."""
     import bot.config as cfg
     p = Path(cfg.DIST_CONFIG_PATH)
     assert p.is_absolute(), (
         f"DIST_CONFIG_PATH must be absolute (anchored via __file__); got {p!r}"
     )
-    assert p.parent == REPO_ROOT, (
-        f"DIST_CONFIG_PATH must resolve to repo root, got parent={p.parent!r}"
+    assert p.parts[-3:] == ("ops", "runtime", "dist_config.json"), (
+        f"DIST_CONFIG_PATH must resolve to <repo>/ops/runtime/dist_config.json "
+        f"post Sprint 14-A Bit 3 root-cleanup move; got {p!r}"
     )
-    assert p.name == "dist_config.json"
+    assert p.parent.parent.parent == REPO_ROOT, (
+        f"DIST_CONFIG_PATH must be anchored to repo root via __file__; "
+        f"got grandparent.parent={p.parent.parent.parent!r}, REPO_ROOT={REPO_ROOT!r}"
+    )
 
 
 def test_egarch_state_path_anchored_to_repo_root():

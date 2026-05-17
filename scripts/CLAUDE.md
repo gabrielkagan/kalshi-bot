@@ -61,7 +61,7 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 
 ### Whitepaper + config artifacts
 - `extract_config.py` → `config.json` (data artifact, repo root)
-- `calibrate_dist.py` → `dist_config.json` (data artifact, repo root)
+- `calibrate_dist.py` → `ops/runtime/dist_config.json` (data artifact; relocated from repo root in Sprint 14-A Bit 3, 2026-05-17, ticket 86b9zfbt8 — lock-step with `bot/config.py:DIST_CONFIG_PATH` + `bot/snapshots/dashboard_snapshot.py` reader)
 - `build_whitepaper.py`, `generate_whitepaper_stats.py` — invoked by `.github/workflows/whitepaper.yml`
 - `build_lr_tables.py`, `sample_engine_inputs.py` — model + harness inputs
 

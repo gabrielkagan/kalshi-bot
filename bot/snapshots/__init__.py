@@ -14,10 +14,13 @@ Modules:
     + extract_active_15m_tickers helper (575 LOC)
   - supabase_sync.py — SupabaseSyncer background thread (1049 LOC)
 
-Each module anchors `__file__`-derived paths (dist_config.json, state.db,
+Each module anchors `__file__`-derived paths (state.db,
 .supabase_kill_switch) to the repo root via a 3-level dirname chain
 matching the bot/engines/weather_engine.py:806-807 precedent. The kill
 switch file location is preserved at <repo>/.supabase_kill_switch.
+`dist_config.json` lives at <repo>/ops/runtime/dist_config.json post
+Sprint 14-A Bit 3 (2026-05-17, ticket 86b9zfbt8) — same 3-level anchor,
+extra path segments in the join.
 
 Lock-step: dashboard_snapshot.py output is consumed by dashboard/index.html
 on the gh-pages branch. JSON schema changes (key names) ship in the same
