@@ -67,25 +67,18 @@ def test_new_spx_engine_path_exists():
     assert NEW_PATH.exists(), f"{NEW_PATH} missing — Sprint 10.1b move not performed."
 
 
-def test_no_stale_from_spx_engine_imports():
-    """No `from spx_engine import ...` AST nodes outside worktrees."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+def test_no_stale_from_spx_engine_imports(repo_ast_cache):
+    """No `from spx_engine import ...` AST nodes outside worktrees.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if path == NEW_PATH:
             continue
         if " " in path.stem:  # L93 iCloud filter
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "spx_engine":
@@ -96,23 +89,16 @@ def test_no_stale_from_spx_engine_imports():
     )
 
 
-def test_no_stale_import_spx_engine():
-    """No bare `import spx_engine` AST nodes outside worktrees."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+def test_no_stale_import_spx_engine(repo_ast_cache):
+    """No bare `import spx_engine` AST nodes outside worktrees.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

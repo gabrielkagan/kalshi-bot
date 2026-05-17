@@ -201,33 +201,40 @@ def test_old_config_module_not_importable():
 
 
 _AST_SWEEP_DIRS = ("bot", "scripts", "tests")
+_AST_SWEEP_DIR_ROOTS = tuple(REPO_ROOT / d for d in _AST_SWEEP_DIRS)
 _AST_SWEEP_ALLOWLIST = {
     # This file references "config" in literals for assertion targets.
     "tests/contracts/test_bit_12_1_config_consolidation.py",
 }
 
 
-def _collect_python_files():
-    files = []
-    for d in _AST_SWEEP_DIRS:
-        root = REPO_ROOT / d
-        if not root.exists():
-            continue
-        for p in root.rglob("*.py"):
-            rel = p.relative_to(REPO_ROOT).as_posix()
-            if rel in _AST_SWEEP_ALLOWLIST:
-                continue
-            files.append(p)
-    return files
+def _path_in_sweep_scope(path):
+    """True if path is under bot/, scripts/, or tests/ and not allowlisted.
+
+    Bit-4.5 (2026-05-17): replaces ``_collect_python_files`` which
+    rglob'd the 3 dirs directly. The audit now filters from the
+    canonical 4-glob ``repo_ast_cache`` to its narrower scope (3 dirs,
+    excludes repo-root *.py).
+    """
+    if not any(root in path.parents for root in _AST_SWEEP_DIR_ROOTS):
+        return False
+    rel = path.relative_to(REPO_ROOT).as_posix()
+    if rel in _AST_SWEEP_ALLOWLIST:
+        return False
+    return True
 
 
-def test_no_stale_from_config_imports_in_executable_code():
-    """No file under bot/, scripts/, tests/ has `from config import ...`."""
+def test_no_stale_from_config_imports_in_executable_code(repo_ast_cache):
+    """No file under bot/, scripts/, tests/ has `from config import ...`.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``
+    filtered to bot/+scripts/+tests/ (subset of 4-glob).
+    """
     violations = []
-    for path in _collect_python_files():
-        try:
-            tree = ast.parse(path.read_text())
-        except SyntaxError:
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
+            continue
+        if not _path_in_sweep_scope(path):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "config":
@@ -239,13 +246,17 @@ def test_no_stale_from_config_imports_in_executable_code():
     )
 
 
-def test_no_stale_import_config_in_executable_code():
-    """No file under bot/, scripts/, tests/ has `import config` (top-level alias)."""
+def test_no_stale_import_config_in_executable_code(repo_ast_cache):
+    """No file under bot/, scripts/, tests/ has `import config` (top-level alias).
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``
+    filtered to bot/+scripts/+tests/ (subset of 4-glob).
+    """
     violations = []
-    for path in _collect_python_files():
-        try:
-            tree = ast.parse(path.read_text())
-        except SyntaxError:
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
+            continue
+        if not _path_in_sweep_scope(path):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

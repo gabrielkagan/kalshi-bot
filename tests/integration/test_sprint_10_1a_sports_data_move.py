@@ -65,32 +65,20 @@ def test_new_sports_data_path_exists():
     )
 
 
-def test_no_stale_from_sports_data_imports():
+def test_no_stale_from_sports_data_imports(repo_ast_cache):
     """No `from sports_data import ...` outside worktrees post-move.
 
     All 5 real caller sites must be retargeted to
-    `from bot.engines.sports_data import ...` atomically."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+    `from bot.engines.sports_data import ...` atomically.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale_sites: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if path == NEW_PATH:
             # The new file itself is fine; it doesn't import from itself
-            continue
-        try:
-            src = path.read_text()
-        except (UnicodeDecodeError, OSError):
-            continue
-        # Walk AST so docstrings/comments don't false-positive.
-        try:
-            tree = ast.parse(src)
-        except SyntaxError:
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "sports_data":
@@ -101,23 +89,16 @@ def test_no_stale_from_sports_data_imports():
     )
 
 
-def test_no_stale_import_sports_data():
-    """No bare `import sports_data` outside worktrees."""
-    repo_files = (
-        list(REPO_ROOT.glob("*.py"))
-        + list((REPO_ROOT / "bot").rglob("*.py"))
-        + list((REPO_ROOT / "tests").rglob("*.py"))
-        + list((REPO_ROOT / "scripts").rglob("*.py"))
-    )
+def test_no_stale_import_sports_data(repo_ast_cache):
+    """No bare `import sports_data` outside worktrees.
+
+    Bit-4.5 (2026-05-17): consumes session-scoped ``repo_ast_cache``.
+    """
     stale_sites: list[str] = []
-    for path in repo_files:
-        if ".claude/worktrees/" in str(path):
+    for path, tree in repo_ast_cache.items():
+        if tree is None:
             continue
         if " " in path.stem:  # L93 iCloud filter
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (UnicodeDecodeError, OSError, SyntaxError):
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
