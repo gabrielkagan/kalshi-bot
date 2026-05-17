@@ -311,6 +311,7 @@ from bot.helpers import (
     should_exclude_weather_no_ticker,
     tm_compute_contracts,
 )
+from bot.helpers.band_calibration import calibrated_prob_for_sizing  # P4.1 (86b9zjrp7) — band-calibrated probability for 15M Kelly sizing only
 from bot.kalshi_client import KalshiClient
 from bot.state import StateManager
 from bot.feeds import CoinbaseFeed
@@ -3649,7 +3650,9 @@ class OpportunityScanner:
                             _ie_drawdown = None
                             _ie_balance = self._get_balance_cached()
                             if _ie_balance and _ie_balance > 0:
-                                _ie_sizing = self._sizer.compute(final_prob, best_ask, _ie_balance)
+                                _ie_sizing = self._sizer.compute(
+                                    calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=window.get("product_type")),
+                                    best_ask, _ie_balance)
                                 _ie_kelly_f = _ie_sizing["kelly_f"]
                                 _ie_position = _ie_sizing["contracts"]
                                 _ie_drawdown = _ie_sizing["drawdown_scaler"]
@@ -3797,7 +3800,9 @@ class OpportunityScanner:
                             _wknd_ev = None
                             _wknd_drawdown = None
                             if _wknd_balance and _wknd_balance > 0:
-                                _wknd_sizing = self._sizer.compute(final_prob, best_ask, _wknd_balance)
+                                _wknd_sizing = self._sizer.compute(
+                                    calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=window.get("product_type")),
+                                    best_ask, _wknd_balance)
                                 _wknd_kelly_f = _wknd_sizing["kelly_f"]
                                 _wknd_position = _wknd_sizing["contracts"]
                                 _wknd_drawdown = _wknd_sizing["drawdown_scaler"]
@@ -3975,7 +3980,9 @@ class OpportunityScanner:
                             _ovn_ev = None
                             _ovn_drawdown = None
                             if _ovn_balance and _ovn_balance > 0:
-                                _ovn_sizing = self._sizer.compute(final_prob, best_ask, _ovn_balance)
+                                _ovn_sizing = self._sizer.compute(
+                                    calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=window.get("product_type")),
+                                    best_ask, _ovn_balance)
                                 _ovn_kelly_f = _ovn_sizing["kelly_f"]
                                 _ovn_position = _ovn_sizing["contracts"]
                                 _ovn_drawdown = _ovn_sizing["drawdown_scaler"]
@@ -4620,7 +4627,9 @@ class OpportunityScanner:
                             _rel_kelly_f = None
                             _rel_ev = None
                             if _rel_balance and _rel_balance > 0:
-                                _rel_sizing = self._sizer.compute(final_prob, best_ask, _rel_balance)
+                                _rel_sizing = self._sizer.compute(
+                                    calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=window.get("product_type")),
+                                    best_ask, _rel_balance)
                                 _rel_kelly_f = _rel_sizing["kelly_f"]
                                 _rel_position = _rel_sizing["contracts"]
                                 _rel_scfg = get_market_config(window.get("product_type"))
@@ -4694,7 +4703,9 @@ class OpportunityScanner:
                     except Exception:
                         _sizing_balance = balance
                 _sizing_start = time.perf_counter()
-                sizing = self._sizer.compute(final_prob, best_ask, _sizing_balance)
+                sizing = self._sizer.compute(
+                    calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=window.get("product_type")),
+                    best_ask, _sizing_balance)
                 _sizing_dt = time.perf_counter() - _sizing_start
                 if _sizing_dt > 0.2:
                     logging.warning(
@@ -6877,7 +6888,9 @@ class OpportunityScanner:
                         (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
                     _ps_balance = self._get_balance_cached()
                     if _ps_balance and _ps_balance > 0:
-                        _ps_sizing = self._sizer.compute(final_prob, best_ask, _ps_balance)
+                        _ps_sizing = self._sizer.compute(
+                            calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=_pt),
+                            best_ask, _ps_balance)
                         _ps_kelly_f = _ps_sizing["kelly_f"]
                         _ps_position = _ps_sizing["contracts"]
                         _ps_drawdown = _ps_sizing["drawdown_scaler"]
@@ -7077,7 +7090,9 @@ class OpportunityScanner:
                 _olp_drawdown = None
                 _olp_balance = self._get_balance_cached()
                 if _olp_balance and _olp_balance > 0:
-                    _olp_sizing = self._sizer.compute(final_prob, best_ask, _olp_balance)
+                    _olp_sizing = self._sizer.compute(
+                        calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=_pt),
+                        best_ask, _olp_balance)
                     _olp_kelly_f = _olp_sizing["kelly_f"]
                     _olp_position_taker = _olp_sizing["contracts"]
                     _olp_drawdown = _olp_sizing["drawdown_scaler"]
@@ -7105,7 +7120,9 @@ class OpportunityScanner:
                                                       fee_mult_maker=_mcfg.fee_multiplier_maker)
                         _olp_maker_fee_adj_edge = _maker_edge - _maker_fee_1c / 100.0
                         if _olp_balance and _olp_balance > 0:
-                            _m_sizing = self._sizer.compute(final_prob, _olp_maker_price, _olp_balance)
+                            _m_sizing = self._sizer.compute(
+                                calibrated_prob_for_sizing(asset, _olp_maker_price, final_prob, product_type=_pt),
+                                _olp_maker_price, _olp_balance)
                             _olp_position_maker = _m_sizing["contracts"]
                             if OVERNIGHT_LP_KELLY_FRACTION < 1.0:
                                 _olp_position_maker = max(1, int(_olp_position_maker * OVERNIGHT_LP_KELLY_FRACTION))
@@ -7292,7 +7309,9 @@ class OpportunityScanner:
                 _full_drawdown = None
                 _lp_balance = self._get_balance_cached()
                 if _lp_balance and _lp_balance > 0:
-                    _full_sizing = self._sizer.compute(final_prob, best_ask, _lp_balance)
+                    _full_sizing = self._sizer.compute(
+                        calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=_pt),
+                        best_ask, _lp_balance)
                     _full_kelly_f = _full_sizing["kelly_f"]
                     _full_position = _full_sizing["contracts"]
                     _full_drawdown = _full_sizing["drawdown_scaler"]
@@ -7308,7 +7327,9 @@ class OpportunityScanner:
                 _capped_kelly_f = None
                 _capped_position = None
                 if _lp_balance and _lp_balance > 0:
-                    _cap_sizing = self._sizer.compute(final_prob, best_ask, _lp_balance)
+                    _cap_sizing = self._sizer.compute(
+                        calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type=_pt),
+                        best_ask, _lp_balance)
                     _capped_kelly_f = _cap_sizing["kelly_f"]
                     _capped_position = _cap_sizing["contracts"]
                     # Apply LP-specific caps

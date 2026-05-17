@@ -2,7 +2,7 @@
 
 > Update like a dashboard, not a doc. Re-state the date on every change.
 
-**Last updated:** 2026-05-16
+**Last updated:** 2026-05-17
 
 ## Live trading
 
@@ -21,6 +21,7 @@
 - **STC sizing scaler:** contracts *= 300/STC for 15M at STC>300s
 - **SOL sub-86c gate:** blocks SOL ≤85c at STC≥300s
 - **LPNE LIVE:** BTC 80-87c near-expiry (STC 10-120s), 50ct fixed, prob ≥ price/100
+- **P4.1 band-calibrated sizing LIVE (2026-05-17, ClickUp 86b9zjrp7):** 15M `_sizer.compute()` now receives `calibrated_prob_for_sizing(asset, best_ask, final_prob, product_type)` instead of bare `final_prob`. Helper home: `bot/helpers/band_calibration.py`. 42-cell empirical lookup (6 assets × 7 bands: 70-79 / 80-85 / 86-89 / 90-93 / 94-96 / 97-98 / 99) with hierarchical shrinkage k=30 toward band-aggregate prior. Hybrid lookback: 30d for bands 70-93c (regime-sensitive), 60d for bands 94-100c (thin-cell stability). Baseline frozen 2026-05-17 09:35 UTC against VPS HEAD `e3aecd4`. **Trade-selection gates unchanged** — only Kelly magnitude changes. **V2 sizing (`_v2_prob`) and NO-side (`no_prob`) explicitly out of scope.** Hourly/SPX/weather pass-through. 14d band-stratified Brier soak runs through 2026-05-31; rollback rule = per-(asset×band) realized rate ±5pp of baseline. Baseline sidecar: `agent_docs/p4_1_calibration_baseline.md`.
 
 ## Disabled / observation
 

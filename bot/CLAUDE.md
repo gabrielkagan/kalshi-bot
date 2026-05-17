@@ -145,6 +145,19 @@ Multi-thread access shares `state.db`. Single-writer is the design.
   long enough to deadlock readers + checkpoints.
 - Don't commit inside loops — accumulate writes, commit once at the end.
 
+## Band-calibrated sizing (P4.1)
+
+**15M `_sizer.compute()` receives `calibrated_prob_for_sizing(...)`,
+NOT bare `final_prob`.** Helper home: `bot/helpers/band_calibration.py`
+(42-cell empirical lookup with hierarchical shrinkage k=30 toward
+band-aggregate prior; 30d/60d hybrid window per band; baseline frozen
+2026-05-17 — `agent_docs/p4_1_calibration_baseline.md`). Trade-selection
+gates upstream still use `final_prob` unchanged — **only Kelly magnitude
+changes**. Out of scope: V2 path (`_v2_prob`), NO-side (`no_prob`),
+hourly / SPX / weather (helper short-circuits to `raw_prob`). Pinned
+by `tests/contracts/test_p4_1_band_calibrated_sizing.py` (AST guard +
+42-cell value pin + V2/NO-still-unwrapped negative tests).
+
 ## `_shadow_diag` schema chain
 
 Adding keys to `_shadow_diag`: also update
