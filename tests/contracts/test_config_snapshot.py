@@ -386,35 +386,58 @@ def _read_module_ast(relpath):
     return ast.parse(source, filename=full)
 
 
-def test_scanner_passes_config_snapshot_id_to_inserts():
-    """Every scanner call to insert_evaluated_opportunity / insert_rejection
+def test_callers_pass_config_snapshot_id_to_inserts():
+    """EVERY caller of insert_evaluated_opportunity / insert_rejection
     must pass `config_snapshot_id=...` so the FK is populated.
 
     Per CLAUDE.md schema-chain discipline: a new column that isn't passed at
     the call site gets silently dropped at write time.
+
+    R1-C1 (2026-05-17): expanded from scanner-only to walk ALL callers.
+    The initial Bit landed with `bot/executor.py` 3 sites NULL-leaking
+    (most critically line 817 `filter_stage="candidate"` — the LIVE
+    trade-decision path → every actual trade had config_snapshot_id=NULL,
+    defeating the headline Bit goal). AST guard now covers scanner +
+    executor; extend the list as new callers appear.
     """
-    tree = _read_module_ast("bot/scanner/__init__.py")
+    CALLER_FILES = [
+        "bot/scanner/__init__.py",
+        "bot/executor.py",
+    ]
     INSERT_NAMES = {"insert_evaluated_opportunity", "insert_rejection"}
-    missing = []  # list of (lineno, call_name)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        # We only care about `something.insert_X(...)` method calls
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in INSERT_NAMES:
-            continue
-        kwarg_names = {kw.arg for kw in node.keywords if kw.arg is not None}
-        # `**_shadow_diag` and similar leave kw.arg = None — we treat the
-        # explicit-name kwargs as the surface. config_snapshot_id is NOT in
-        # _shadow_diag, so it MUST appear by name.
-        if "config_snapshot_id" not in kwarg_names:
-            missing.append((node.lineno, node.func.attr))
-    assert not missing, (
-        f"Scanner call sites missing config_snapshot_id kwarg ({len(missing)}):\n"
-        + "\n".join(f"  line {ln}: {nm}(...)" for ln, nm in missing[:20])
-        + (f"\n  ...and {len(missing)-20} more" if len(missing) > 20 else "")
+    all_missing = []  # list of (file, lineno, call_name)
+    for caller in CALLER_FILES:
+        tree = _read_module_ast(caller)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            # `something.insert_X(...)` method calls only.
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in INSERT_NAMES:
+                continue
+            kwarg_names = {kw.arg for kw in node.keywords if kw.arg is not None}
+            # `**_shadow_diag` etc leave kw.arg = None — we treat the
+            # explicit-name kwargs as the surface. config_snapshot_id is
+            # NOT in _shadow_diag, so it MUST appear by name.
+            if "config_snapshot_id" not in kwarg_names:
+                all_missing.append((caller, node.lineno, node.func.attr))
+    assert not all_missing, (
+        f"Caller sites missing config_snapshot_id kwarg ({len(all_missing)}):\n"
+        + "\n".join(
+            f"  {f}:{ln}: {nm}(...)" for f, ln, nm in all_missing[:25]
+        )
+        + (f"\n  ...and {len(all_missing)-25} more"
+           if len(all_missing) > 25 else "")
     )
+
+
+def test_scanner_passes_config_snapshot_id_to_inserts():
+    """Backward-compat alias for the per-caller test above. Kept so the
+    old test name surfaces in CI logs if R1-C1 sister-test names are
+    grepped. Just delegates to the union walk.
+    """
+    test_callers_pass_config_snapshot_id_to_inserts()
 
 
 def test_helpers_leaf_contract_for_config_snapshot():

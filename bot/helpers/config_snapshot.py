@@ -24,7 +24,8 @@ This both keeps the leaf rule satisfied AND captures the on-disk text exactly
 on a snapshot row will want to compare against.
 
 Schema-chain pairing (see bot/CLAUDE.md "config_snapshot_id schema chain"):
-  - bot/state.py -- CREATE TABLE config_snapshots, ALTER TABLE for the FK col,
+  - bot/state.py -- CREATE TABLE config_snapshots, ALTER TABLE for the
+    advisory-pointer col (no SQL FK constraint; sqlite ALTER TABLE limitation),
     insert_evaluated_opportunity + insert_rejection signature + SQL
   - bot/main_loop.py -- MainLoop.__init__ calls persist_config_snapshot
   - bot/scanner/__init__.py -- every insert call passes config_snapshot_id
@@ -119,7 +120,7 @@ def _git_head_sha() -> str:
 
 
 def compute_config_snapshot() -> Dict[str, str]:
-    """Compute the canonical 6-field snapshot bundle + composite hash.
+    """Compute the canonical snapshot bundle (1 composite hash + 6 source fields = 7 keys total).
 
     Returns a dict with keys:
       - config_hash: sha256 over "constants_sha|config_sha|market_sha|env_json|git_sha"

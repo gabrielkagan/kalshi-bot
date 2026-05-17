@@ -1152,6 +1152,12 @@ class SportsEngine:
         self._startup_loaded: bool = False
         # DB connection (separate for thread safety)
         self._db_conn: Optional[sqlite3.Connection] = None
+        # config_snapshot_id (ticket 86b9zkp8p): lazily resolved on first
+        # _get_db_conn() because SportsEngine has its own thread-local
+        # conn (no `self._ml` like scanner/executor). Cached for the
+        # process lifetime — first-stamp semantic matches the COALESCE
+        # behavior in StateManager.insert_evaluated_opportunity.
+        self._config_snapshot_id: Optional[int] = None
 
     def start(self) -> None:
         """Start the sports engine daemon thread."""
@@ -1168,6 +1174,23 @@ class SportsEngine:
             self._db_conn.row_factory = sqlite3.Row
             self._db_conn.execute("PRAGMA journal_mode=WAL")
             self._db_conn.execute("PRAGMA busy_timeout=30000")
+            # Ticket 86b9zkp8p R1-M1: stamp config_snapshot_id for raw
+            # INSERTs below (this engine bypasses StateManager.insert_*).
+            # persist_config_snapshot is idempotent — if the row already
+            # exists for this hash, returns the existing id; otherwise
+            # creates it. Lazy import to keep _get_db_conn fast on the
+            # warm path + avoid cycles at module-load time.
+            try:
+                from bot.helpers.config_snapshot import persist_config_snapshot
+                self._config_snapshot_id = persist_config_snapshot(
+                    self._db_conn)
+            except Exception:
+                # Best-effort: if persist fails (e.g., config files
+                # unreadable in test env), leave snapshot_id NULL.
+                # Downstream rows just won't have the FK populated.
+                logging.debug("SportsEngine config_snapshot stamp failed",
+                              exc_info=True)
+                self._config_snapshot_id = None
         return self._db_conn
 
     def _run_loop(self) -> None:
@@ -2176,9 +2199,9 @@ class SportsEngine:
                      minutes_since_us_open, is_fomc_day, is_cpi_day,
                      spot_distance_to_strike_sigma, prob_breakeven_gap,
                      kelly_vs_cap_ratio, calibration_confidence,
-                     data_provenance)
+                     data_provenance, config_snapshot_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                        ?,?,?,?,?,?,?,?,?,?,?)
+                        ?,?,?,?,?,?,?,?,?,?,?,?)
             """, (ticker, event_ticker, league_cfg.display_name,
                   signal.filter_stage, signal.rejection_reason, now,
                   _db_price,
@@ -2198,7 +2221,7 @@ class SportsEngine:
                   _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
                   _t5["spot_distance_to_strike_sigma"], _t5["prob_breakeven_gap"],
                   _t5["kelly_vs_cap_ratio"], _t5["calibration_confidence"],
-                  'live_ws'))
+                  'live_ws', self._config_snapshot_id))
             conn.commit()
         except Exception:
             try:
@@ -2241,9 +2264,9 @@ class SportsEngine:
                              minutes_since_us_open, is_fomc_day, is_cpi_day,
                              spot_distance_to_strike_sigma, prob_breakeven_gap,
                              kelly_vs_cap_ratio, calibration_confidence,
-                             data_provenance)
+                             data_provenance, config_snapshot_id)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                                ?,?,?,?,?,?,?,?,?,?,?)
+                                ?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (ticker, event_ticker, league_cfg.display_name,
                           _no_stage, None, now,
                           _no_price,
@@ -2262,7 +2285,7 @@ class SportsEngine:
                           _t4["minutes_since_us_open"], _t4["is_fomc_day"], _t4["is_cpi_day"],
                           _t5_no["spot_distance_to_strike_sigma"], _t5_no["prob_breakeven_gap"],
                           _t5_no["kelly_vs_cap_ratio"], _t5_no["calibration_confidence"],
-                          'live_ws'))
+                          'live_ws', self._config_snapshot_id))
                     conn.commit()
         except Exception:
             try:
