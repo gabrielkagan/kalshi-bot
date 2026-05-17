@@ -648,13 +648,15 @@ class BronzeArchiver:
         in practice the wire-thread exits in milliseconds after the
         ``_stop_event.set`` + ``ws.close()`` schedule lands (R2-M1).
 
-        R2-M5 idempotency: a second ``stop()`` call early-returns. This
-        protects against the signal-handler-then-finally chain (e.g.,
-        SIGTERM fires the handler which calls stop(), then ``run()``'s
-        finally also calls stop()) — without the guard, the second
-        call's blocking ``put(_SHUTDOWN_SENTINEL)`` would deadlock
-        against a wedged worker since the asyncio thread (the only
-        other producer) is already joined.
+        R2-M5 idempotency: a second ``stop()`` call early-returns. The
+        ``run()`` signal handler at present only sets the shutdown
+        event (not calling stop() directly), so the current code paths
+        don't exercise this — the guard is defensive against future
+        callers that might explicitly double-call ``stop()`` (e.g., an
+        operator-facing graceful-shutdown coordinator). Without the
+        guard, the second call's blocking ``put(_SHUTDOWN_SENTINEL)``
+        would deadlock against a wedged worker, since the asyncio
+        thread (the only other producer) is already joined.
         """
         with self._lock:
             if self._stop_called:
