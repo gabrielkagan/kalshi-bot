@@ -542,4 +542,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-17T18:15:37Z*
+*Last updated: 2026-05-17T18:30:13Z*
