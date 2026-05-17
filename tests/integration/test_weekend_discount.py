@@ -11,10 +11,11 @@ Guards against:
 - Dashboard: weekend_discount_live panel exists in snapshot
 """
 
-import re
-import unittest
 import os
+import re
 import sys
+import unittest
+
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -233,11 +234,50 @@ class TestWeekendDiscountWeekdayUnchanged(unittest.TestCase):
         """The weekend discount block is gated by weekday() >= 5.
         This means weekdays (0-4) never enter the block."""
         block_start = self.source.find("Weekend Edge Discount (Live + Shadow)")
-        block = self.source[block_start:block_start + 600]
+        self.assertGreater(block_start, 0, "Weekend discount block not found")
+        block_end = self.source.find("Overnight Edge Discount", block_start)
+        self.assertGreater(block_end, block_start,
+                           "Overnight Edge Discount block-end anchor not found")
+        block = self.source[block_start:block_end]
         self.assertIn("weekday() >= 5", block)
         # No fallback that could fire on weekdays
         self.assertNotIn("weekday() <", block)
         self.assertNotIn("weekday() !=", block)
+
+
+class TestWeekendDiscountNoHardcodedBlockStartWindow(unittest.TestCase):
+    """Regression: no `block_start + <int>` hardcoded char-window pattern in
+    this file. Same brittleness class as 86b9zk0cn (test-anchor weakness) —
+    hardcoded windows silently truncate when canonical source layout shifts.
+    Canonical pattern: `find("Overnight Edge Discount", block_start)` +
+    `assertGreater(block_end, block_start)`.
+
+    Scope: guards the `block_start` identifier specifically — other hardcoded
+    windows in this file (`dc_taker_start + 800` at L181, `sep_start + 1200`
+    at L190, `slow_start + 400` at L219) are a separate brittleness-cleanup
+    surface tracked at ticket 86b9zk74n. The `fallback_anchor + 300` sites
+    (L340, L351) are intentional narrow-window grabs after a known comment
+    anchor and not in scope. Surfaced by 86b9zk0cn R1 N1. Ticket 86b9zk118.
+    """
+
+    def test_no_hardcoded_block_start_window_in_test_file(self):
+        """AST guard: no `block_start + <int>` patterns in this file."""
+        this_file = os.path.abspath(__file__)
+        with open(this_file) as f:
+            source = f.read()
+        offending = []
+        for lineno, line in enumerate(source.splitlines(), start=1):
+            stripped = line.strip()
+            # Skip docstring/comment lines + the pattern-string-literal itself
+            if stripped.startswith('"""') or stripped.startswith('#'):
+                continue
+            if stripped.startswith('pattern') or stripped.startswith('r"') or stripped.startswith("r'"):
+                continue
+            if re.search(r'\bblock_start\s*\+\s*\d+', line):
+                offending.append((lineno, line.rstrip()))
+        self.assertEqual(offending, [],
+                         f"Hardcoded `block_start + <int>` patterns found: {offending}. "
+                         f"Use the find()+assertGreater anchor pattern instead.")
 
 
 class TestWeekendDiscountSisterBlockBoundaries(unittest.TestCase):
