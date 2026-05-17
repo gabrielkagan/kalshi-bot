@@ -138,6 +138,19 @@ TRACKED_DOCS: list[Path] = [
     # initial Path C sweep missed. Add to TRACKED_DOCS so the ratchet
     # catches future drift on this surface.
     REPO_ROOT / "scripts" / "ops" / "setup_state_db_backup_timer.sh",
+    # D2.1.5 (ticket 86b9zkpny, 2026-05-17): the coinbase_wire body
+    # surfaces + their pinning contract tests. coinbase_wire/ mirrors
+    # the kalshi_wire/ TRACKED_DOCS coverage pattern so any future Bit
+    # that narrows / extends the Coinbase wire library is caught by the
+    # L99 ratchet at ship time.
+    REPO_ROOT / "coinbase_wire" / "__init__.py",
+    REPO_ROOT / "coinbase_wire" / "auth.py",
+    REPO_ROOT / "coinbase_wire" / "ws_client.py",
+    REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_no_bot_imports.py",
+    REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_no_collector.py",
+    REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_ws_client.py",
+    REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_auth.py",
+    REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_envelope.py",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -890,6 +903,235 @@ def test_d1_3_fu5_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D1.3-fu5 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D2.1.5 (coinbase_wire body, 2026-05-17, ticket 86b9zkpny) ──────────────
+#
+# D2.1.5 lands the bodies of coinbase_wire/auth.py + coinbase_wire/ws_client.py
+# that D2.1 (PR #66) shipped as empty stubs. Two semantic flips this ratchet
+# encodes per L99:
+#
+#   1. D2.1 forecast was "HMAC-SHA256 auth body lands at D2.1.5"; D2.1.5
+#      NARROWED to public-channels-only per operator scope decision. Sister
+#      docs that paraphrase the original forecast (HMAC sign() / make_ws_headers()
+#      as the D2.1.5 deliverable) are stale post-ship — those functions exist
+#      as NotImplementedError stubs reserved for a future private-channel Bit.
+#   2. D2.1 scaffolding framed __init__.py with empty `__all__` and the
+#      stub modules as "instantiating WSClient will fail with
+#      NotImplementedError". Post-D2.1.5 WSClient is instantiable; Frame +
+#      build_envelope + WSClient are re-exported at the package top-level.
+#
+# Additional retracts: HYPE-included claims (D2.1 generic "5 product set"
+# silently assumed all 6 live assets are Coinbase-listed; D2.1.5 docstring
+# explicitly scopes HYPE out and files the follow-up).
+
+STALE_PATTERNS_POST_D2_1_5: list[str] = [
+    # Pre-ship "stub / deferred" framing — false post-D2.1.5.
+    "D2.1 ships SCAFFOLDING ONLY",
+    "Body deferred to D2.1.5",
+    "body deferred to D2.1.5",
+    "instantiating WSClient will fail with NotImplementedError",
+    "calling any function here will fail with NotImplementedError",
+    "Removed at D2.1.5 when",
+    "D2.1 stub: re-exports intentionally empty",
+    "__all__: list[str] = []",
+    # D2.1 forecast that D2.1.5 would ship HMAC — narrowed at kickoff.
+    "D2.1.5: ``auth.py`` body (Coinbase HMAC-SHA256",
+    "D2.1.5 will populate this with",
+    "D2.1.5 will land the body",
+    "D2.1.5 (auth + ws_client implementation)",
+    "lands the body (HMAC auth",
+    "(HMAC auth + WSClient body)",
+    "HMAC auth + WSClient body",
+    # Pre-ship forward-looking framing.
+    "until D2.1.5 lands",
+    "until D2.1.5 ships",
+    "after D2.1.5 lands",
+    "future D2.1.5",
+    "D2.1.5 target",
+    "D2.1.5 will",
+    # R1 Mn4: bare "D2.1.5 lands" (without preceding "until" / "after")
+    # was a coverage gap — add it. Catches "Bodies are stubs at D2.1;
+    # D2.1.5 lands the implementations" and "D2.1.5 lands the body".
+    "D2.1.5 lands the body",
+    "D2.1.5 lands the implementations",
+    # Pre-ship claim that scaffolding modules are "empty stub".
+    "empty stub `coinbase_wire/__init__.py`",
+    "empty stub modules (docstrings + the test guards)",
+    # R1 C2: HYPE-on-Coinbase contradiction. The R1 prose claimed HYPE
+    # is not a Coinbase-listed product / is a Hyperliquid token / D2.1.5
+    # covers only 5/6 assets. bot/constants.py:717 explicitly verified
+    # HYPE-USD live on Coinbase Exchange 2026-05-10; the R1 fix switched
+    # the wire library to Coinbase Exchange WS so HYPE-USD is in scope.
+    # Encode the retracted phrasings so sister docs cannot carry them
+    # forward via paraphrase.
+    "HYPE is NOT a Coinbase-listed product",
+    "HYPE is not a Coinbase-listed product",
+    "HYPE (Hyperliquid token)",
+    "Coinbase doesn't list HYPE-USD",
+    "Coinbase does not list HYPE-USD",
+    "5/6 of the bot's live assets",
+    "5/6 assets",
+    "covers 5/6 of the bot",
+    "BTC / ETH / SOL / XRP / DOGE",   # 5-asset list missing HYPE
+    "BTC-USD, ETH-USD, SOL-USD, XRP-USD, DOGE-USD",
+    # R1 C1: Advanced Trade endpoint claim. The R1 fix switched the
+    # wire library to Coinbase Exchange WS — Advanced Trade is a
+    # different API surface not targeted by D2.1.5. Patterns intentionally
+    # narrow (NOT bare "Coinbase Advanced Trade" / "advanced-trade-ws...")
+    # because the rewritten coinbase_wire docstrings legitimately mention
+    # Advanced Trade as a disambiguation contrast ("this is NOT Advanced
+    # Trade"); the ratchet must catch RETRACTED CLAIMS specifically, not
+    # the contrasting-prose that prevents future drift back.
+    'DEFAULT_WS_URL = "wss://advanced-trade-ws',
+    "targets ``wss://advanced-trade-ws",
+    "targets wss://advanced-trade-ws",
+    "D2.1.5 targets Coinbase Advanced Trade",
+    "D2.1.5 uses Coinbase Advanced Trade",
+    "endpoint per their public docs. Sourcing here",  # old ws_client.py code-comment
+    "Coinbase requires per-channel subscribe frames",
+    "Coinbase requires a separate subscribe message per channel",
+    "you cannot batch multiple channels in one frame",
+    "you cannot batch multiple channels in one subscribe",
+    # Per-connection sequence_num claim — Exchange WS uses per-product
+    # `sequence` not per-connection `sequence_num`. The R4 reviewer
+    # caught two new paraphrases that escape the previous patterns —
+    # encoded below for L99 PARANOID coverage.
+    "per-connection monotonic across all subscribed channels",
+    "per-connection monotonic across all channels",
+    "per-connection ``sequence_num``",
+    "Coinbase's sequence_num is per-connection monotonic",
+    "single global counter",
+    # R4 M1: short-form paraphrase missing "monotonic" prefix; appeared
+    # in test_coinbase_wire_ws_client.py docstring line 32.
+    "per-connection across all channels",
+    "per-connection across all channels rather than per-sid",
+    # R4 M1: split-line paraphrase that line-by-line scanner CAN catch
+    # in the line that holds the prefix.
+    "per-connection monotonic across all",
+    # R4 M2: Frame.channel-is-dispatch-key overclaim. Production
+    # ws_client.py sets Frame.channel=None and uses msg_type as the
+    # dispatch key.
+    "``channel`` is the dispatch key",
+    "channel is the dispatch key",
+    "Frame.channel is the dispatch key",
+    # `channels` singular signature (R1 fix flipped to plural).
+    "build_public_subscribe_message(channel:",
+    "build_public_subscribe_message(channel,",
+    "build_public_subscribe_message(channel=",
+    # Old default channel set (Advanced Trade names). The narrower
+    # entries below catch flips back to the wrong channel-name flavor
+    # even when the exact 6-element tuple changes.
+    "DEFAULT_CHANNELS = (level2, market_trades, ticker, heartbeats, status, candles)",
+    "DEFAULT_CHANNELS = (level2, market_trades, ticker, heartbeats, status,",
+    "level2 / market_trades / ticker / heartbeats / status / candles",
+    "(level2, market_trades, ticker, heartbeats, status, candles)",
+    # Narrower patterns covering the post-R2 `level2_batch`-trim retract
+    # of the 5-channel set (R2 M4 fix). If a sister doc reintroduces
+    # `level2_batch` to the DEFAULT_CHANNELS tuple BEFORE D2.2 verifies
+    # reachability, catch the regression at lockstep.
+    "(level2_batch, matches, ticker, heartbeat, status)",
+    "level2_batch | level2,",       # batch-vs-bare flip catch
+    "Captures every load-bearing alpha signal — level2_batch",
+    # R3 M1: SLASH-FORM coverage of the 5-channel paraphrase. R2 fix
+    # only encoded the parens-comma form; R3 reviewer caught 4 surfaces
+    # still describing the pre-R2 scope as "level2_batch / matches /
+    # ticker / heartbeat / status". The slash-form is a different
+    # paraphrase that must be caught independently.
+    "level2_batch / matches / ticker / heartbeat / status",
+    "(level2_batch / matches / ticker / heartbeat / status)",
+    # R3 M2: WIRE-SHAPE 5-element JSON-literal retract. The pre-R3
+    # auth.py example showed `"channels": ["level2_batch", "matches",
+    # "ticker", "heartbeat", "status"]` as the implied default. R3
+    # rewrites it to "any subset" + explicit 4-channel default.
+    '["level2_batch", "matches", "ticker", "heartbeat", "status"]',
+    '"channels": ["level2_batch", "matches", "ticker", "heartbeat"',  # multi-line
+    # R3 reaffirms the L99 meta-ratchet: every paraphrase encoded above
+    # was a R-N reviewer find — slash, parens-comma, JSON-literal,
+    # dispatch-table snapshot/l2update→level2_batch. Future paraphrases
+    # (XML-attr style, comma-separated bare list, etc.) join here.
+    "snapshot / l2update → level2_batch",
+    "snapshot/l2update → level2_batch",
+    # R1 C1: candles channel claims. Coinbase Exchange WS has no
+    # candles channel (Advanced Trade does, with a default 5-minute
+    # granularity that's not consumer-configurable per the R1 RCA).
+    # Drop all candles claims from sister docs.
+    "candles 1m",
+    "candles (1m",
+    "candles 5m",
+    "candles + market_trades",
+    "smallest granularity Coinbase supports",
+    "Coinbase WS candles subscribe takes one granularity",
+    # M2: integration-test-file claim. The test docstring claimed
+    # "behavior is pinned by tests/integration/test_coinbase_wire_ws_loop.py
+    # added in this Bit alongside the body" — file does not exist. R1
+    # fix retracts the claim and defers behavioral coverage to D2.2
+    # (mirrors kalshi_wire pattern). Encode the false claim.
+    "tests/integration/test_coinbase_wire_ws_loop.py",
+    "added in this Bit alongside the body",
+    # M3: WSClient-as-bronze-surface overclaim retracted in coinbase_wire
+    # only. Kalshi side shares the phrasing (kalshi_wire/__init__.py:61);
+    # that's out-of-scope for D2.1.5 and tracked separately. The narrower
+    # pattern below catches the specific coinbase_wire docstring text that
+    # was rewritten ("the envelope helpers + Frame dataclass + WSClient
+    # are the canonical bronze surface" → "Frame + build_envelope are the
+    # canonical bronze data surface; WSClient is the transport class").
+    # Kept out of patterns because no precise substring distinguishes
+    # the coinbase_wire phrasing from the kalshi_wire one.
+    # R1 Frame.channel claim retract — Coinbase Exchange WS frames
+    # don't carry a top-level `channel` field; Frame.channel is None
+    # at the wire layer for D2.1.5.
+    "``parsed[\"channel\"]`` if present",
+    "channel: ``parsed[\"channel\"]``",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D2_1_5)
+def test_no_post_d2_1_5_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D2.1.5-pending phrase after
+    D2.1.5 shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D2.1.5 (coinbase_wire
+    body landing + HMAC→public-only scope narrowing + HYPE-out
+    decision). Same lesson as D1.4 / D1.5 / D1.3-fu4 / D1.3-fu5
+    R1-M4 — encode retracted prose at ship time so sister-doc drift
+    cannot re-introduce it via paraphrase from a git blame.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D2.1.5-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed through D1.3-fu5): when a "
+        "Bit narrows or changes a forecast, sister-doc retracts of the "
+        "original forecast MUST ship same-Bit to prevent paraphrase drift."
+    )
+
+
+def test_d2_1_5_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D2.1.5 as SHIPPED. Catches the inverse failure mode where staleness
+    patterns pass (no D2.1.5 mention at all) but the docs haven't been
+    updated to claim D2.1.5 SHIPPED.
+    """
+    shipped_re = re.compile(
+        r"D2\.1\.5\s+SHIPPED|D2\.1\.5.*shipped|shipped.*D2\.1\.5|"
+        r"D2\.1\.5\s+BODY\s+SHIPPED",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D2.1.5 SHIPPED — staleness ratchets "
         "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )

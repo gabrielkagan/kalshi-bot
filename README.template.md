@@ -256,7 +256,7 @@ requirements.txt               -- Python dependencies
 .github/workflows/whitepaper.yml -- auto-generate README stats + whitepaper PDFs
 ```
 
-The `collector/` and `kalshi_wire/` packages have ZERO `bot.*` imports — structural bot-isolation contract enforced by the `collector-no-bot` + `kalshi_wire-no-bot` + `kalshi_wire-no-collector` `.importlinter` forbidden contracts (8 total). Off-switch in either direction (`systemctl stop kalshi-{bot,collector}`) leaves the other unaffected. The 2026-05-16 §5 AMENDMENT to `kb/decisions/data-corpus-architecture.md` adopted the "two sides of the same coin" shared-transport shape (`kalshi_wire/`) after external-advisor feedback that capture + replay must use the same wire parser for bronze to be reusable.
+The `collector/`, `kalshi_wire/`, and `coinbase_wire/` packages have ZERO `bot.*` imports — structural bot-isolation contract enforced by the `collector-no-bot` + `kalshi_wire-no-bot` + `kalshi_wire-no-collector` + `coinbase_wire-no-bot` + `coinbase_wire-no-collector` `.importlinter` forbidden contracts (10 total). Off-switch in either direction (`systemctl stop kalshi-{bot,collector}`) leaves the other unaffected. The 2026-05-16 §5 AMENDMENT to `kb/decisions/data-corpus-architecture.md` adopted the "two sides of the same coin" shared-transport shape (`kalshi_wire/`, mirrored by `coinbase_wire/` at D2.1.5) after external-advisor feedback that capture + replay must use the same wire parser for bronze to be reusable.
 
 ### Journals (gitignored)
 

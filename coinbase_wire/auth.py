@@ -1,41 +1,161 @@
-"""HMAC-SHA256 auth for Coinbase WS — D2.1 scaffolding stub
-(ticket 86b9zkpc6, 2026-05-17). Body deferred to D2.1.5.
+"""Coinbase Exchange WS subscribe-payload helper — D2.1.5.
 
-This module will house the Coinbase-side equivalents of the
-``kalshi_wire.auth`` primitives — but using HMAC-SHA256 (Coinbase's
-WS auth scheme) instead of RSA-PSS-SHA256 (Kalshi's). The two wire
-libraries are intentionally NOT unified: the auth shapes differ
-fundamentally (symmetric vs. asymmetric, message-format conventions,
-header names), and forcing a common abstraction at D2.1 would optimize
-prematurely.
+Ticket 86b9zkpny (2026-05-17), sub-Bit of the 86b9zkkv4 D2.x Coinbase
+WS bronzing umbrella.
 
-Planned surface (D2.1.5):
+D2.1 (PR #66, ticket 86b9zkpc6) shipped this file as an empty stub.
 
-  - ``sign(secret, timestamp, method, path, body) -> str``  — HMAC-SHA256
-    of ``f"{timestamp}{method}{path}{body}"`` against the base64-decoded
-    secret; base64-encode the digest. Spec follows Coinbase's
-    advanced-trade WS auth document.
-  - ``make_ws_headers(api_key, api_secret) -> Dict[str, str]`` — produces
-    the ``CB-ACCESS-*`` header set + optional ``CB-VERSION``.
+**Protocol surface — Coinbase Exchange WS, NOT Coinbase Advanced Trade
+WS.** The bot already consumes ``wss://ws-feed.exchange.coinbase.com``
+via ``bot/feeds/coinbase.py`` (see ``bot.constants.COINBASE_WS_URL``);
+mirroring the same endpoint here keeps the future D2.3 refactor (point
+``bot/feeds/coinbase.py`` at ``coinbase_wire.ws_client.WSClient``) a
+*structural* refactor rather than a protocol-flip. The Coinbase
+Advanced Trade WS surface (``wss://advanced-trade-ws.coinbase.com``)
+is a DIFFERENT API with a DIFFERENT subscribe shape and DIFFERENT
+product coverage — out of scope for D2.1.5.
+
+D2.1.5 NARROWED the D2.1 forecast to PUBLIC channels only. The default
+subscribe set ships 4 verified-public channels (``ticker`` + ``matches``
++ ``heartbeat`` + ``status``); ``level2_batch`` is reserved for the
+D2.2 archiver to verify-then-extend (it can observe ``type=error``
+subscribe-rejection before bronze goes silent). Public-only Exchange WS
+connects need no signature, api_key, timestamp, or passphrase. The HMAC
+stubs at ``sign`` + ``make_ws_headers`` below preserve the D2.1 forecast
+surface for a future Bit that adds private channels (full ``user``
+channel, authenticated ``level2`` for high-rate-limit access, etc.).
 
 NO imports from ``bot.*`` or ``collector.*`` (pinned by import-linter
 contracts ``coinbase_wire-no-bot`` + ``coinbase_wire-no-collector`` and
-the AST-walk guards in ``tests/contracts/test_coinbase_wire_no_bot_imports.py``
-+ ``tests/contracts/test_coinbase_wire_no_collector.py``).
-
-D2.1 ships this file as an EMPTY STUB — calling any function here will
-fail with ``NotImplementedError`` until D2.1.5 populates the body.
+the AST-walk guards in
+``tests/contracts/test_coinbase_wire_no_bot_imports.py``).
 """
 from __future__ import annotations
 
+from typing import Any, Dict, List
 
-def _d2_1_stub() -> None:
-    """Sentinel placeholder so importers can verify the module is
-    importable but the body isn't wired yet.
 
-    Removed at D2.1.5 when ``sign`` / ``make_ws_headers`` land.
+# Subscribe-payload type constant — Coinbase Exchange WS protocol.
+_SUBSCRIBE_TYPE = "subscribe"
+
+
+def build_public_subscribe_message(
+    channels: List[str], product_ids: List[str],
+) -> Dict[str, Any]:
+    """Build a Coinbase Exchange WS subscribe payload for public channels.
+
+    Wire shape (per Coinbase Exchange WS docs + the existing
+    ``bot/feeds/coinbase.py`` subscribe site)::
+
+        {
+          "type": "subscribe",
+          "product_ids": ["BTC-USD", "ETH-USD", ...],
+          "channels": [<any subset of supported public channels>]
+        }
+
+    The default ``WSClient`` constructor dispatches one subscribe with
+    ``channels=("ticker", "matches", "heartbeat", "status")`` — the
+    verified-public subset at D2.1.5. ``level2_batch`` lands at D2.2
+    once subscribe-success is verified there.
+
+    Coinbase Exchange WS lets a SINGLE subscribe message cover multiple
+    channels (the field name is ``channels`` plural, accepting an array
+    of channel-name strings). This is structurally distinct from
+    Coinbase Advanced Trade WS (the newer API), which requires a
+    separate subscribe frame per channel — D2.1.5 follows the Exchange
+    WS pattern because the bot already lives there.
+
+    Public channels need no signature, api_key, timestamp, or
+    passphrase. A future Bit that wires private channels will go
+    through ``sign`` + ``make_ws_headers`` below — those are sentinel-
+    stubbed at D2.1.5.
+
+    Args:
+        channels: Non-empty list of Coinbase Exchange WS channel names.
+            Common values: ``level2_batch`` (batched orderbook updates,
+            preferred over deprecated full ``level2``), ``matches``
+            (trade ticks), ``ticker`` (real-time best-bid/best-ask +
+            last price), ``heartbeat`` (server liveness frames),
+            ``status`` (product online/offline transitions).
+        product_ids: Non-empty list of Coinbase product IDs (``"BTC-USD"``,
+            etc.). Empty list is rejected so a typo doesn't silently
+            produce an idle subscription.
+
+    Returns:
+        A dict suitable for ``json.dumps(...)`` and ``ws.send(...)``.
+
+    Raises:
+        TypeError: ``channels`` or ``product_ids`` not a list. Bare
+            strings for either are rejected (they're iterable but
+            ``list("BTC-USD")`` would silently produce
+            ``["B","T","C","-","U","S","D"]``).
+        ValueError: ``channels`` or ``product_ids`` empty.
+    """
+    if not isinstance(channels, list):
+        raise TypeError(
+            f"channels must be a list, got {type(channels).__name__}. "
+            "Bare strings are rejected to avoid the list(str)-expands-"
+            "to-chars footgun."
+        )
+    if not channels:
+        raise ValueError(
+            "channels must be non-empty — subscribing to zero channels "
+            "would silently establish an idle WS session."
+        )
+    if not isinstance(product_ids, list):
+        raise TypeError(
+            f"product_ids must be a list, got "
+            f"{type(product_ids).__name__}. Bare strings are rejected "
+            "to avoid the list(str)-expands-to-chars footgun."
+        )
+    if not product_ids:
+        raise ValueError(
+            "product_ids must be non-empty — subscribing to zero "
+            "products would silently establish an idle channel."
+        )
+    return {
+        "type": _SUBSCRIBE_TYPE,
+        "product_ids": list(product_ids),
+        "channels": list(channels),
+    }
+
+
+def sign(secret: str, timestamp: str, method: str, path: str,
+         body: str = "") -> str:
+    """Reserved for a future Bit that adds private Coinbase channels.
+
+    At D2.1.5 the operator scoped this Bit to public channels only;
+    bronzing public WS data is sufficient to close the
+    "non-reproducible Coinbase orderbook" training-data gap and avoids
+    provisioning + rotating Coinbase API credentials.
+
+    The Coinbase Exchange WS private-channel auth scheme uses HMAC-
+    SHA256 of ``f"{timestamp}{method}{path}{body}"`` against the
+    base64-decoded secret, then base64-encodes the digest. When this
+    Bit lands, the implementation will mirror that spec (NOT the Kalshi
+    RSA-PSS shape — different curve, different message format).
     """
     raise NotImplementedError(
-        "coinbase_wire.auth body is deferred to D2.1.5 — see the D2.x "
-        "umbrella ticket 86b9zkkv4. D2.1 (86b9zkpc6) ships scaffolding only."
+        "coinbase_wire.auth.sign is reserved for a future Bit that adds "
+        "private Coinbase channels. D2.1.5 is public-only (default subscribe "
+        "set: ticker / matches / heartbeat / status); no HMAC handshake is "
+        "required for those. See ticket 86b9zkpny."
+    )
+
+
+def make_ws_headers(api_key: str, api_secret: str,
+                    passphrase: str = "") -> Dict[str, str]:
+    """Reserved for a future Bit that adds private Coinbase channels.
+
+    Analogous to ``kalshi_wire.auth.make_ws_headers`` (which IS
+    implemented — Kalshi WS auth is always required). Coinbase WS auth
+    is conditional on the subscribed channel set; D2.1.5 sticks to
+    public channels so this helper is a sentinel until a private-channel
+    Bit needs it.
+    """
+    raise NotImplementedError(
+        "coinbase_wire.auth.make_ws_headers is reserved for a future "
+        "Bit that adds private Coinbase channels. D2.1.5 is public-only; "
+        "no headers required for the public WS connect. See ticket "
+        "86b9zkpny."
     )
