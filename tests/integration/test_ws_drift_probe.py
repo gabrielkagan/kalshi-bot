@@ -33,6 +33,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from bot.scanner import OpportunityScanner
@@ -506,6 +508,7 @@ class TestDriftProbeNoMutation(unittest.TestCase):
         self.assertEqual(ws_ob["no"], ws_ob_snapshot_copy["no"])
 
 
+@pytest.mark.serial
 class TestDriftProbeRestStability(unittest.TestCase):
     """REST-vs-REST stability probe fires a second REST fetch ~2s after
     the first and logs the delta. Purpose: distinguish "WS drifts from
@@ -513,6 +516,19 @@ class TestDriftProbeRestStability(unittest.TestCase):
     unstable" (cannot use REST as source of truth).
 
     Paired with TestDriftProbeDiffLogging (which exercises WS-vs-REST_1).
+
+    Bit-7 fix-forward (2026-05-17 ticket 86b9zkk3n): @pytest.mark.serial
+    because every test in this class spawns a daemon thread that emits
+    the WS_DRIFT_PROBE_REST_STABILITY warning asynchronously, then asserts
+    on the captured log count inside an assertLogs block. Under pytest-
+    xdist parallel-job structure (Bit-7), sister tests in OTHER files on
+    the SAME worker can leak daemon threads whose stability log emits
+    AFTER this test's join-timeout but BEFORE its assertLogs context
+    exits — bleeding an extra log into cm.records → "3 != 2" flake.
+    Fix #58 added _drift_probe_tick_synced with a 2s thread-join bound,
+    but under heavy xdist CPU load the bound isn't enough to drain ALL
+    sister-test daemon threads. @serial moves the whole class to the
+    test-integration-serial single-worker pass where leaks can't happen.
     """
 
     def _rest_shape(self, yes_levels=None, no_levels=None):
