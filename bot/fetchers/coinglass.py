@@ -4,8 +4,8 @@ Extracted from bot/_impl.py in Sprint 4 Bit 4.4 (2026-05-08). Daemon
 thread that fetches the average funding rate across exchanges from
 the CoinGlass v3 API for every symbol in ``bot.config.ASSETS``
 (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10; BNB post-T1 2026-05-17
-ticket 86b9zmj0c — COINGLASS_SYMBOLS["BNB"] entry pending T1.5
-ticket 86b9zmj15) every ``COINGLASS_FETCH_INTERVAL`` seconds (10 min
+ticket 86b9zmj0c; ``COINGLASS_SYMBOLS["BNB"]="BNB"`` entry added in
+T1.5 ticket 86b9zmj15) every ``COINGLASS_FETCH_INTERVAL`` seconds (10 min
 by default — 100 calls/day budget). Cache stales after
 ``COINGLASS_CACHE_TTL``.
 

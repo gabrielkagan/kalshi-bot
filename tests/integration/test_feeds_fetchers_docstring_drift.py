@@ -9,9 +9,11 @@ module-level docstrings in `bot/feeds/coinbase.py`,
 `bot/fetchers/coinglass.py` were not updated and still claimed the
 feeds cover only the original 4 assets (BTC/ETH/SOL/XRP).
 
-This pin asserts the docstrings list all 6 assets so future
-asset-onboarding work can grep + verify without re-reading every
-module. ClickUp 86b9vrr9c.
+This pin asserts the docstrings list all 7 assets (BTC/ETH/SOL/XRP/
+HYPE/DOGE/BNB — BNB added in T1.5 2026-05-17, ticket 86b9zmj15) so
+future asset-onboarding work can grep + verify without re-reading
+every module. ClickUp 86b9vrr9c (original HYPE/DOGE Bit B);
+86b9zmj15 (BNB T1.5 extension).
 
 Pattern: assert each asset symbol appears literally in the
 module-level `__doc__` for each affected module.

@@ -846,6 +846,20 @@ CROSS_EXCHANGE_SYMBOLS = {
     # so the entry resolves to "Kraken + Bybit only" cleanly. Documented
     # gap per the T1.5 verify-first contract; not a silent NULL.
     "HYPE": {"kraken": "HYPE/USD", "bybit": "HYPEUSDT"},
+    # BNB: present on Binance.com (BNB is Binance's native token),
+    # Kraken, Bybit. T1.5 (2026-05-17, ticket 86b9zmj15). The "binance"
+    # key IS included matching the BTC/ETH/SOL/XRP/DOGE pattern — BNB
+    # is listed on Binance.com. The US-VPS geo-block (HTTP 451 from
+    # api.binance.com + stream.binance.com) is gated at module level
+    # via BINANCE_FEED_ENABLED=0, NOT by per-asset key absence.
+    # Separate EU-proxy spike: ticket 86b9zn45p.
+    # Verifications:
+    #   Binance: bnbusdt (listed; bot can't reach from US-IP, gated)
+    #   Kraken : BNB/USD (api.kraken.com/0/public/AssetPairs?pair=BNBUSD,
+    #             status=online, wsname=BNB/USD)
+    #   Bybit  : BNBUSDT (Mac CloudFront-blocked artifact; VPS log
+    #             '[INFO] Bybit feed connected' 21:27:48 confirms prod reach)
+    "BNB": {"binance": "bnbusdt", "kraken": "BNB/USD", "bybit": "BNBUSDT"},
 }
 
 BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
@@ -877,8 +891,9 @@ CROSS_EXCHANGE_CONSENSUS_THRESHOLD = 0.003  # 0.3% for consensus
 # vs the prior "never fires". Revisit calibration after 30d of N=2 logs.
 #
 # Bit B (2026-05-11, ClickUp 86b9vrr9h): HYPE dev-env asymmetry.
-# Per CROSS_EXCHANGE_SYMBOLS + T1.5 verification (bf8b9a3, 2026-05-10):
-# - BTC/ETH/SOL/XRP/DOGE: present on Binance + Kraken + Bybit (max 3)
+# Per CROSS_EXCHANGE_SYMBOLS + T1.5 verification (bf8b9a3, 2026-05-10
+# for DOGE/HYPE; T1.5 for BNB 2026-05-17, ticket 86b9zmj15):
+# - BTC/ETH/SOL/XRP/DOGE/BNB: present on Binance + Kraken + Bybit (max 3)
 # - HYPE: present on Kraken + Bybit only — Binance.com does NOT list
 #   HYPE (Binance.US only; the bot connects to stream.binance.com)
 # Prod (BINANCE_FEED_ENABLED=0): MIN=2, HYPE reaches consensus normally.
@@ -886,7 +901,8 @@ CROSS_EXCHANGE_CONSENSUS_THRESHOLD = 0.003  # 0.3% for consensus
 # consensus branches unreachable for HYPE only; signal silently never
 # fires. Engineers flipping BINANCE_FEED_ENABLED=1 locally for testing
 # should remember this asymmetry. DOGE (Kraken symbol XDG/USD) is on all
-# 3 exchanges so reaches MIN=3. See
+# 3 exchanges so reaches MIN=3; BNB (Kraken symbol BNB/USD, Binance.com
+# native token) is on all 3 as well. See
 # kb/decisions/asset-onboarding-doge-hype-bit-1-5-shipped-may10.md
 # "Per-exchange optionality" section for the canonical narrative.
 _CROSS_EXCHANGE_FEEDS_ACTIVE = 3 if BINANCE_FEED_ENABLED else 2
@@ -904,7 +920,7 @@ COINGLASS_CACHE_TTL = 900.0               # stale after 15 min
 
 COINGLASS_REQUEST_TIMEOUT = 10.0
 
-COINGLASS_SYMBOLS = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP", "DOGE": "DOGE", "HYPE": "HYPE"}
+COINGLASS_SYMBOLS = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL", "XRP": "XRP", "DOGE": "DOGE", "HYPE": "HYPE", "BNB": "BNB"}
 
 FUNDING_RATE_EXTREME = 0.0005             # 0.05%/8h
 
