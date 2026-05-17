@@ -200,11 +200,48 @@ def _s3_key_from_outbox(outbox_path: Path, bronze_root: Path) -> str:
     return "bronze/" + rel.replace("/outbox/", "/")
 
 
+def write_bronze_health_sidecar(
+    archivers: Sequence[BronzeArchiver],
+    path: Path,
+) -> None:
+    """Write an aggregated bronze health snapshot JSON file (D1.6 fu).
+
+    Atomic-replace via tmp file + os.replace so a reader (the cron-driven
+    ``scripts/ops/collector_health_monitor.py``) never observes a torn
+    JSON write. Schema documented in
+    ``tests/contracts/test_bronze_health_sidecar.py`` module docstring.
+
+    Called from the drain thread on every tick (~1s cadence). Cheap:
+    each ``BronzeArchiver.get_health_snapshot`` does 5 attribute reads
+    + a ``queue.qsize()`` call.
+    """
+    import datetime as _dt
+    snapshots = [a.get_health_snapshot() for a in archivers]
+    total_dropped = sum(int(s.get("dropped_frames", 0)) for s in snapshots)
+    total_queue = sum(int(s.get("write_queue_size", 0)) for s in snapshots)
+    written_at = _dt.datetime.now(_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+    )
+    payload = {
+        "schema_version": 1,
+        "written_at": written_at,
+        "archivers": snapshots,
+        "total_dropped_frames": total_dropped,
+        "total_queue_size": total_queue,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload))
+    os.replace(tmp_path, path)
+
+
 def _drain_rotated(
     writers: Sequence[BronzeWriter],
     uploader: RcloneUploader,
     bronze_root: Path,
     shutdown_event: threading.Event,
+    archivers: Sequence[BronzeArchiver] = (),
+    health_sidecar_path: Optional[Path] = None,
 ) -> None:
     """Drain ``rotated_outbox_paths`` across ALL writers → uploader until shutdown.
 
@@ -250,11 +287,27 @@ def _drain_rotated(
                 outbox_path, in_flight_path = writer.rotated_outbox_paths.pop(0)
                 _drain_one(outbox_path, in_flight_path)
 
+    def _write_health_sidecar_safe() -> None:
+        if health_sidecar_path is None or not archivers:
+            return
+        try:
+            write_bronze_health_sidecar(archivers, health_sidecar_path)
+        except Exception:
+            # Sidecar writes are best-effort observability. A disk-full
+            # or permission error here MUST NOT stall the drain loop
+            # (the drain loop is the upload path that frees disk).
+            logger.warning(
+                "write_bronze_health_sidecar failed (path=%s); continuing.",
+                health_sidecar_path, exc_info=True,
+            )
+
     while not shutdown_event.is_set():
         _drain_writers_once()
+        _write_health_sidecar_safe()
         shutdown_event.wait(timeout=_DRAIN_POLL_SECONDS)
     # Final drain post-shutdown.
     _drain_writers_once()
+    _write_health_sidecar_safe()
 
 
 def _replan_for_archivers(
@@ -427,6 +480,15 @@ def run(
         "COLLECTOR_REST_REFRESH_SECONDS",
         str(DEFAULT_REFRESH_INTERVAL_SECONDS),
     ))
+    health_sidecar_env = os.environ.get(
+        "COLLECTOR_HEALTH_SIDECAR_PATH",
+        # Default: alongside bronze data dir so a single mount holds
+        # both data + observability state.
+        str(bronze_root.parent / "bronze_health.json"),
+    ).strip()
+    health_sidecar_path: Optional[Path] = (
+        Path(health_sidecar_env) if health_sidecar_env else None
+    )
 
     uploader = _build_uploader()
 
@@ -534,7 +596,9 @@ def run(
                 "thread). External shutdown source must set the event."
             )
 
-    # Step 5 — single drain thread fans out across ALL writers.
+    # Step 5 — single drain thread fans out across ALL writers + writes
+    # the D1.6 fu bronze_health.json sidecar each tick for the cron-
+    # driven scripts/ops/collector_health_monitor.py to poll.
     drain_thread = threading.Thread(
         target=_drain_rotated,
         kwargs={
@@ -542,6 +606,8 @@ def run(
             "uploader": uploader,
             "bronze_root": bronze_root,
             "shutdown_event": shutdown_event,
+            "archivers": archivers,
+            "health_sidecar_path": health_sidecar_path,
         },
         daemon=True,
         name="bronze-drain",
