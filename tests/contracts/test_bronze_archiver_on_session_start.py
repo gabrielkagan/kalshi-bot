@@ -122,6 +122,31 @@ def test_collector_ws_connection_passes_on_session_start_to_wsclient():
 # ─── 3. on_session_start dispatches all subscribe frames ─────────────────────
 
 
+# R2-M2: module-level list of archivers spawned by ``_make_archiver``.
+# Drained by the ``_stop_archivers`` autouse fixture in teardown so each
+# test's daemon worker thread is joined deterministically (rather than
+# leaking + reaping at process exit). Prevents daemon-thread accumulation
+# under pytest-xdist and mock-held-reference issues during monkeypatch
+# teardown.
+_ARCHIVERS_TO_CLEANUP: list = []
+
+
+@pytest.fixture(autouse=True)
+def _stop_archivers():
+    """Autouse teardown: stop every archiver ``_make_archiver`` spawned
+    in this test. Pairs with the R2-M2 fix for fixture-leak hazard."""
+    yield
+    while _ARCHIVERS_TO_CLEANUP:
+        archiver = _ARCHIVERS_TO_CLEANUP.pop()
+        try:
+            archiver.stop()
+        except Exception:
+            # Best-effort cleanup — a wedged stop() shouldn't fail the
+            # test (the original test's assertions are the source of
+            # truth).
+            pass
+
+
 def _make_archiver(monkeypatch, **overrides):
     """Helper: build a BronzeArchiver with a mocked WSClient and dummy writers.
 
@@ -134,7 +159,12 @@ def _make_archiver(monkeypatch, **overrides):
     "call _on_frame, then assert on writers[X].write.call_args" pattern
     that these tests use, the helper starts the worker so dispatch
     actually happens, and tests use ``_wait_for_write`` below to bound
-    the polling wait. Daemon thread cleanup is implicit at process exit.
+    the polling wait.
+
+    R2-M2: each constructed archiver is appended to
+    ``_ARCHIVERS_TO_CLEANUP``; the ``_stop_archivers`` autouse fixture
+    above stops them in teardown so the daemon worker doesn't leak
+    across tests.
     """
     import time
 
@@ -182,6 +212,8 @@ def _make_archiver(monkeypatch, **overrides):
     # dispatches to writers within the test. (We don't start fake_wire;
     # frames are injected directly via archiver._on_frame.)
     archiver.start()
+    # R2-M2: register for autouse teardown stop().
+    _ARCHIVERS_TO_CLEANUP.append(archiver)
     return archiver, fake_wire, writers_by_channel
 
 

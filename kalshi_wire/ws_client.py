@@ -282,8 +282,9 @@ class WSClient:
         self._thread.start()
 
     def stop(self, *, join_timeout: float = 0.0) -> None:
-        """Stop the WS client — signal the event loop and (optionally) join
-        the asyncio thread before returning.
+        """Stop the WS client — signal the event loop, schedule a close
+        of the active websocket, and (optionally) join the asyncio
+        thread before returning.
 
         Args:
             join_timeout: when > 0, block up to this many seconds waiting
@@ -306,6 +307,15 @@ class WSClient:
                 process exit will reap it). Returns silently — the caller
                 can inspect ``is_connected`` or thread state if it needs
                 to differentiate clean-shutdown from timeout-abandon.
+
+        D1.3-fu4 R2-M1: stop_event by itself does NOT break the
+        ``async for raw in ws`` read loop — the iterator yields only on
+        frame arrival, so under WS quiescence the asyncio thread can
+        sit blocked past join_timeout. To close the race in that edge
+        we ALSO schedule a ``ws.close()`` task on the event loop, which
+        causes the iterator to terminate cleanly. With both signals,
+        join_timeout reliably closes the chatty-steady-state race AND
+        the quiescent edge.
         """
         if self._loop is not None and self._stop_event is not None:
             try:
@@ -313,6 +323,26 @@ class WSClient:
             except RuntimeError:
                 # Loop already closed; nothing to signal.
                 pass
+            # R2-M1 wake-the-read-loop: also schedule ws.close() so
+            # ``async for raw in ws`` exits promptly under WS quiescence.
+            # Capture loop + ws locally so the lambda doesn't race a
+            # concurrent reassignment in _ws_loop().
+            ws = self._ws
+            loop = self._loop
+            if ws is not None:
+                def _schedule_close():
+                    # Runs inside the asyncio thread. Spawning the
+                    # close as a task lets the read loop's `async for`
+                    # complete + finally-block cleanup proceed normally.
+                    try:
+                        loop.create_task(ws.close())
+                    except Exception:
+                        # ws may already be closed/reassigned; best-effort.
+                        pass
+                try:
+                    loop.call_soon_threadsafe(_schedule_close)
+                except RuntimeError:
+                    pass
         if join_timeout > 0 and self._thread is not None:
             # Wait for the asyncio thread to drain pending callbacks +
             # exit. Daemon thread so timeout-without-exit is non-fatal.

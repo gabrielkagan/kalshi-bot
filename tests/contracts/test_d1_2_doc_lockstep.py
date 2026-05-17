@@ -98,6 +98,11 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_collector_ws_consumes_wire.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_subscription_manager.py",
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_on_session_start.py",
+    # D1.3-fu4 R2-M3: the worker-thread contract test file is the new
+    # canonical pin for the BronzeArchiver._on_frame asyncio→worker
+    # split. Adding to TRACKED_DOCS so the L99 ratchet covers it
+    # (closes the asymmetric-coverage gap the R2 reviewer flagged).
+    REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_worker_thread.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_rest_snapshot.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_main_loop_wireup.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_rest_snapshot_refresh_cycle.py",
@@ -672,21 +677,14 @@ def test_d1_3_shipped_status_in_at_least_one_tracked_doc():
 # a git blame. Same R1-M4 lesson as the D1.4 + D1.5 patterns above.
 
 STALE_PATTERNS_POST_D1_3_FU4: list[str] = [
-    # The retracted bot_layout.md:251 phrasing (pre-fu4 narrative had
-    # _on_frame routing the envelope DIRECTLY to writers_by_channel; post-
-    # fu4 it enqueues + a worker dispatches). Match a narrow substring so
-    # legitimate worker-side prose (e.g., "_drain_loop routes the envelope")
-    # is NOT mis-flagged.
-    "on_frame .* then routes the envelope",
-    "on_frame .* routes the envelope to writers_by_channel",
     # The fu4-PROVED-INSUFFICIENT D1.3-fu3 forward-tense "proper fix" prose.
     "proper fix is to decouple the bronze write from the asyncio loop",
-    # Pre-fu4 KB / plan-doc framing — "Steps 4 are heavy" or "the asyncio
-    # thread does ALL of: ... writer.write" framed as a future-to-fix
-    # rather than a past-pivot. Narrow enough that a fresh post-mortem
-    # quoting the steps-4-are-heavy RCA verbatim won't trip (use
-    # past-tense + a citation marker per the legacy-cite carve-out).
-    "Loop blocks > 30s",  # the future-tense framing of the bug
+    # Pre-fu4 KB / plan-doc framing — "loop blocks > 30s" framed as a
+    # future-to-fix rather than a past-pivot. (Past-tense framing
+    # "the loop USED TO block > 30s" or "the loop blocked past the
+    # keepalive-ping-timeout window" is legitimate post-fix narrative
+    # and won't substring-match these literals.)
+    "Loop blocks > 30s",
     "loop blocks > 30s",
     # Pre-fu4 stopgap-still-stands phrasing.
     "ping_timeout stopgap PROVED INSUFFICIENT",  # past, but framed open-loop
@@ -702,11 +700,18 @@ STALE_PATTERNS_POST_D1_3_FU4: list[str] = [
     "Expected initial WS-reconnect alert cadence ~288/day",
     "~288 WS-reconnect alerts/day",
     # Pre-fu4 architectural framing — synchronous writer dispatch claim.
-    "_on_frame .* synchronous .* writer.write",
     "BronzeArchiver writes synchronously on the asyncio thread",
     # Pre-fu4 WSClient.stop() fire-and-forget claim (the bug C1 retracted).
     "WSClient.stop is fire-and-forget",
     "wire.stop is fire-and-forget",
+    # R2-M1 narrowing — the broader "wire.stop guarantees no callbacks
+    # after return" claim is also wrong (R2-M1 narrowed the claim to
+    # "joins the asyncio thread with bounded timeout").
+    "wire.stop guarantees no callbacks after return",
+    # R2-m2 cleanup: the 3 dead-regex patterns from R1
+    # (substring-with-.*) removed entirely rather than kept as
+    # documented-but-never-matching anti-patterns — they were
+    # misleading to a future maintainer assuming regex semantics.
 ]
 
 
@@ -720,13 +725,10 @@ def test_no_post_d1_3_fu4_stale_forward_looking_phrase(pattern: str):
     kwarg). Same lesson as D1.4 / D1.5 R1-M4: encode retracted prose at
     ship time so sister-doc drift cannot re-introduce it.
 
-    NOTE: pattern matching is plain substring (not regex). Patterns that
-    use regex metachars like ``.*`` would not actually match those
-    metachars literally — they'd require the literal ``.*`` string in
-    the line, which is unlikely. The intent is for those entries to
-    serve as DOCUMENTED-but-NEVER-MATCHING anti-patterns (style guide)
-    until the scan helper is regex-aware. If you want a true wildcard
-    match, add the exact literal strings.
+    NOTE: pattern matching is plain substring (not regex). R1 included
+    3 patterns with ``.*`` wildcards which (per the substring matcher)
+    would never fire — those were removed in R2-m2 cleanup. To match a
+    range of phrasings, add multiple literal-substring entries.
     """
     findings: list[str] = []
     for doc in TRACKED_DOCS:

@@ -201,6 +201,10 @@ class BronzeArchiver:
         # the first drop deterministically while suppressing the next
         # ~1000 (storm-time logspam is its own stall risk).
         self._drop_log_counter: int = 0
+        # R2-M5 idempotency guard: a second ``stop()`` call (e.g., signal
+        # handler + finally-block chain) must NOT block on putting a
+        # second sentinel when the worker is already wedged.
+        self._stop_called: bool = False
 
         # Direct kwargs (not **dict-spread) so AST contract tests can
         # statically verify on_session_start + on_session_end are wired
@@ -606,6 +610,10 @@ class BronzeArchiver:
                 # observability has a known floor.
                 self._dropped_frames = 0
                 self._drop_log_counter = 0
+                # R2-M5: clear the idempotency guard so a subsequent
+                # stop() (post-restart) executes its drain logic instead
+                # of early-returning.
+                self._stop_called = False
             self._write_worker = threading.Thread(
                 target=self._drain_loop,
                 # R1-M6: include id(self) so multiple archivers with the
@@ -638,9 +646,26 @@ class BronzeArchiver:
         Both joins use ``_WORKER_JOIN_TIMEOUT_S``. Total worst-case
         ``stop()`` latency = 2 × timeout (wire-thread join + worker join);
         in practice the wire-thread exits in milliseconds after the
-        ``_stop_event.set`` lands.
+        ``_stop_event.set`` + ``ws.close()`` schedule lands (R2-M1).
+
+        R2-M5 idempotency: a second ``stop()`` call early-returns. This
+        protects against the signal-handler-then-finally chain (e.g.,
+        SIGTERM fires the handler which calls stop(), then ``run()``'s
+        finally also calls stop()) — without the guard, the second
+        call's blocking ``put(_SHUTDOWN_SENTINEL)`` would deadlock
+        against a wedged worker since the asyncio thread (the only
+        other producer) is already joined.
         """
-        # R1-C1 fix: join the asyncio thread so no _on_frame can fire
+        with self._lock:
+            if self._stop_called:
+                logging.debug(
+                    "BronzeArchiver.stop (conn=%s) called again — no-op "
+                    "(idempotency guard).", self._conn_id,
+                )
+                return
+            self._stop_called = True
+        # R1-C1 fix + R2-M1: join the asyncio thread (now waked by
+        # ws.close() schedule in WSClient.stop) so no _on_frame can fire
         # after this returns. join_timeout > 0 triggers the join (default
         # 0 preserves the bot-side fire-and-forget caller).
         self._wire.stop(join_timeout=_WORKER_JOIN_TIMEOUT_S)

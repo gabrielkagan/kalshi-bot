@@ -2,13 +2,15 @@
 worker thread (ticket 86b9zk4hz, 2026-05-17).
 
 Predecessor: D1.3-fu3 raised ``ping_timeout`` from 10s → 30s as a stopgap
-against the 1011 keepalive-ping-timeout storm. Production verified the
-stopgap INSUFFICIENT — 82 × 1011 errors in 32 min, collector self-restart
-every ~30 min, D1.6 health monitor firing ~288 alerts/day.
+against the 1011 keepalive-ping-timeout storm. The stopgap was verified
+insufficient in production (pre-fu4): the prior failure mode was ~80
+keepalive-ping-timeout reconnects per 30-minute window, with collector
+self-restart every ~30 min and D1.6 health monitor firing alerts at
+~daily-hundreds cadence.
 
-Root cause (RCA): post-D1.3-fu1's ``ws_max_size`` uncap, Kalshi sends 3-4
-MiB subscribe-ack messages over 7 concurrent WS connections. The asyncio
-thread does ALL of:
+Root cause (RCA, pre-fu4): post-D1.3-fu1's ``ws_max_size`` uncap, Kalshi
+sends 3-4 MiB subscribe-ack messages over 7 concurrent WS connections.
+The asyncio thread did ALL of:
 
   1. Frame parse (kalshi_wire pre-populates ``Frame.parsed``)
   2. sid → channel lookup (lock-held)
@@ -16,9 +18,11 @@ thread does ALL of:
   4. ``build_envelope(...)`` (JSON re-serialize for envelope)
   5. ``writer.write(envelope)`` (zstd compress + disk IO)
 
-Steps 4-5 are heavy. Under burst load (subscribe storm OR backlog drain)
-the loop blocks > 30s → ping pong cycle misses → WS lib raises 1011 →
-reconnect. Reconnect re-subscribes → bigger ack → bigger drain → loop.
+Steps 4-5 were heavy. Under burst load (subscribe storm OR backlog drain)
+the loop used to block past the keepalive-ping-timeout window → ping pong
+cycle missed → WS lib raised 1011 → reconnect. Reconnect re-subscribed
+→ bigger ack → bigger drain → loop. This Bit (fu4) closed that class
+by moving steps 4-5 onto a dedicated worker thread.
 
 Fix: introduce a bounded ``queue.Queue`` + single worker thread. Steps
 1-3 stay synchronous (sid binding race-free + monotonic seq preserved).
