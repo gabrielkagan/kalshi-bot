@@ -147,7 +147,7 @@ On a fresh bucket: run §1-§5 verbatim from the runbook (templates are now at t
 
 `sudo systemctl stop kalshi-collector` → bot unaffected. `sudo systemctl stop kalshi-bot` → collector unaffected. Verified structurally: separate process group, separate WS conns, separate API key (in dedicated `.env.collector`), zero `bot.*` imports (`.importlinter` enforced), separate disk path (`COLLECTOR_BRONZE_ROOT`), no shared SQLite writes.
 
-The one residual shared failure surface is root filesystem disk-full — D1.6 ships the `df < 20%` alerting that closes this gap.
+The one residual shared failure surface is root filesystem disk-full — D1.6 (`86b9zk4we`) ships a passive `shutil.disk_usage` ≥ 80% used Telegram alert (via `scripts/ops/collector_health_monitor.py`, operator-installed cron every 5 min) that closes this gap.
 
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth

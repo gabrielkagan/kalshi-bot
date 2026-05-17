@@ -248,7 +248,7 @@ STALE_PATTERNS_POST_D1_4: list[str] = [
 # bucket-policy/lifecycle extension + dedicated .env.collector).
 #
 # What's legitimately STILL forward-looking after D1.5:
-# - D1.6+ health monitoring (df<20%, conn-loss alert)
+# - D1.6+ health monitoring (shutil.disk_usage ≥80% used, conn-loss alert)
 # - D1.7+ lifecycle hygiene
 # - D1.8+ silver backfill
 # - D1.9-D1.13 multi-source

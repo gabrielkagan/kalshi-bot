@@ -23,9 +23,19 @@ would store ``chunk.jsonl.zst`` at ``s3://bucket/.../chunk.jsonl.zst/chunk.jsonl
 
 NOTE on disk-pressure failure mode (D0.3 §6 last bullet): sustained
 upload-stall accumulation can fill the bot VPS root volume in <1 hour.
-D1.6 must alert on the FIRST rclone non-zero, not wait on a passive
-``df`` watermark. The ERROR log emitted on rclone failure is D1.6's
-hook (structured log, exit code in the message).
+D1.6 ships a passive ``shutil.disk_usage`` ≥ 80%-used Telegram alert
+(via ``scripts/ops/collector_health_monitor.py``, operator-installed
+cron every 5 min) — chosen over rclone-event grepping because the
+disk-% watermark trips well before disk-full at typical chunk cadence
+(D0.3 §6 off-peak: ~21 MB/min ⇒ ~19 min headroom from 80% threshold to
+disk-full); at sustained-stall rates (D0.3 §6: ~21 GB/hour ≈ ~350
+MB/min) the 5-min cron interval cannot precede disk-full (accepted
+trade-off vs tighter polling cadence — the failure mode is delayed
+alert, not data-loss beyond what disk-full would cause anyway).
+The ERROR log emitted on rclone failure remains a useful diagnostic
+for triage (operator can `journalctl -u kalshi-collector | grep ERROR`
+to surface the specific rclone exit code) — but is NOT the D1.6 alert
+hook.
 
 Contract pins:
 - tests/contracts/test_collector_uploader.py — flag pinning (copyto +
