@@ -3,6 +3,17 @@ title: "The Kalshi Trading Bot — A Plain-English Tour"
 subtitle: "What I'm building, why it works, and why it's only possible now"
 author: "Gabriel Kagan"
 date: "May 2026"
+titlepage: true
+titlepage-color: "0F1B33"
+titlepage-text-color: "FFFFFF"
+titlepage-rule-color: "D4883E"
+titlepage-rule-height: 4
+mainfont: "TeX Gyre Termes"
+sansfont: "TeX Gyre Heros"
+monofont: "DejaVu Sans Mono"
+fontsize: "11pt"
+linestretch: 1.2
+geometry: "margin=1.2in"
 ---
 
 # The thirty-second version
