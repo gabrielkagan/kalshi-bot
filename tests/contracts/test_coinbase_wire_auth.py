@@ -4,7 +4,7 @@ HMAC-stub contract.
 Ticket 86b9zkpny (2026-05-17). The operator scoped D2.1.5 to PUBLIC
 Coinbase Exchange WS channels — default subscribe set is the 4
 verified-public channels (ticker / matches / heartbeat / status);
-``level2_batch`` is deferred to D2.2 pending in-archiver reachability
+``level2_batch`` is deferred pending in-archiver reachability
 verification. No HMAC handshake is required for any of these.
 
 The auth module therefore exposes:

@@ -17,9 +17,9 @@ product coverage — out of scope for D2.1.5.
 
 D2.1.5 NARROWED the D2.1 forecast to PUBLIC channels only. The default
 subscribe set ships 4 verified-public channels (``ticker`` + ``matches``
-+ ``heartbeat`` + ``status``); ``level2_batch`` is reserved for the
-D2.2 archiver to verify-then-extend (it can observe ``type=error``
-subscribe-rejection before bronze goes silent). Public-only Exchange WS
++ ``heartbeat`` + ``status``); ``level2_batch`` is reserved for an
+in-archiver reachability check to verify-then-extend (observing
+``type=error`` subscribe-rejection before bronze goes silent). Public-only Exchange WS
 connects need no signature, api_key, timestamp, or passphrase. The HMAC
 stubs at ``sign`` + ``make_ws_headers`` below preserve the D2.1 forecast
 surface for a future Bit that adds private channels (full ``user``
@@ -55,8 +55,8 @@ def build_public_subscribe_message(
 
     The default ``WSClient`` constructor dispatches one subscribe with
     ``channels=("ticker", "matches", "heartbeat", "status")`` — the
-    verified-public subset at D2.1.5. ``level2_batch`` lands at D2.2
-    once subscribe-success is verified there.
+    verified-public subset at D2.1.5. ``level2_batch`` lands in a
+    followup once subscribe-success is verified in the archiver.
 
     Coinbase Exchange WS lets a SINGLE subscribe message cover multiple
     channels (the field name is ``channels`` plural, accepting an array

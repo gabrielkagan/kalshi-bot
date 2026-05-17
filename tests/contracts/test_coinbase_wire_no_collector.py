@@ -3,9 +3,9 @@
 Ticket 86b9zkpc6 (2026-05-17). Sister contract to ``coinbase_wire-no-bot``.
 Mirrors the D1.1.5 ``kalshi_wire-no-collector`` pattern: the wire library
 is a pure-transport leaf consumed by BOTH the bot side (future
-``bot/feeds/coinbase.py`` refactor in a later D2 Bit) AND the collector
-side (future ``collector/coinbase_archiver.py`` at D2.2). The dependency
-arrow is consumer → wire, never wire → consumer:
+``bot/feeds/coinbase.py`` refactor at D2.3) AND the collector side
+(``collector/coinbase_archiver.py``, D2.2 SHIPPED 2026-05-17, ticket
+86b9zkppk). The dependency arrow is consumer → wire, never wire → consumer:
 
   bot.feeds.coinbase           ─┐
                                 ├─→ coinbase_wire

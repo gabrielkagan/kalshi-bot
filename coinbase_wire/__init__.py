@@ -1,5 +1,6 @@
 """Pure-transport Coinbase wire library — shared by the bot's spot feed
-and (post-D2.2) the collector's Coinbase bronze archiver.
+and the collector's Coinbase bronze archiver (D2.2 SHIPPED 2026-05-17,
+ticket 86b9zkppk).
 
 D2.1 (ticket ``86b9zkpc6``, 2026-05-17) shipped scaffolding; D2.1.5
 (ticket ``86b9zkpny``, 2026-05-17) lands the body. Sub-Bits of the
@@ -11,9 +12,9 @@ for the Coinbase wire surface:
   > "Capture and replay need to be two sides of the same coin for the
   >  data to serve your needs."
 
-The bronze tape captured by the future ``collector/coinbase_archiver.py``
-(D2.2) and the live decisions made by ``bot/feeds/coinbase.py`` (refactor
-in D2.3) MUST agree on what came over the wire. Putting auth + WS
+The bronze tape captured by ``collector/coinbase_archiver.py``
+(D2.2 SHIPPED) and the live decisions made by ``bot/feeds/coinbase.py``
+(refactor in D2.3) MUST agree on what came over the wire. Putting auth + WS
 connect/reconnect + envelope construction behind a shared package
 eliminates the drift surface — both consumers parse the same bytes the
 same way.
@@ -56,11 +57,11 @@ Default channel set: ``ticker`` + ``matches`` + ``heartbeat`` +
 reachability via the production ``bot/feeds/coinbase.py`` + Coinbase
 public docs). ``level2_batch`` is intentionally OMITTED from D2.1.5
 defaults — its reachability on the public WS endpoint without auth is
-not in-repo verified, and the D2.2 archiver (which lands next) is the
-right place to verify-then-extend the channel set (it can monitor
-``type=error`` frames and surface a rejected subscribe before bronze
-goes silent). A followup ticket adds ``level2_batch`` to defaults after
-D2.2 verification.
+not in-repo verified, and an in-archiver reachability check (observing
+``type=error`` subscribe-rejection frames before bronze goes silent on
+that channel) is the right place to verify-then-extend the channel
+set. A followup ticket adds ``level2_batch`` to defaults once that
+verification lands.
 
 Default product set: 7 entries — BTC / ETH / SOL / XRP / HYPE / DOGE /
 BNB — mirroring ``bot.constants.COINBASE_PRODUCTS``. HYPE-USD verified
@@ -85,8 +86,8 @@ D1.1.5 ``kalshi_wire/__init__.py`` convention).
 
 - No bot-specific state (cross-exchange feed cache, blacklist, schema
   probes) — those stay in ``bot/feeds/coinbase.py``.
-- No collector-specific state (write rotation, S3 upload) — those will
-  live in the post-D2.2 ``collector/coinbase_archiver.py``.
+- No collector-specific state (write rotation, S3 upload) — those live
+  in ``collector/coinbase_archiver.py`` (D2.2 SHIPPED).
 - No async at the public API — sync/threading per project anti-pattern.
   asyncio lives INSIDE ``WSClient`` but does not leak through the
   public surface.

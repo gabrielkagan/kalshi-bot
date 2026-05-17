@@ -1,8 +1,8 @@
 """Coinbase Exchange WS transport — D2.1.5 (ticket 86b9zkpny, 2026-05-17).
 
-Pure-transport leaf consumed by (post-D2.2)
-``collector/coinbase_archiver.py`` and (post-D2.3) the refactored
-``bot/feeds/coinbase.py``. Mirrors the D1.1.5 ``kalshi_wire/ws_client.py``
+Pure-transport leaf consumed by ``collector/coinbase_archiver.py``
+(D2.2 SHIPPED 2026-05-17, ticket 86b9zkppk) and (post-D2.3) the
+refactored ``bot/feeds/coinbase.py``. Mirrors the D1.1.5 ``kalshi_wire/ws_client.py``
 shape — same "two sides of the same coin" symmetry per the 2026-05-16
 AMENDMENT to ``kb/decisions/data-corpus-architecture.md`` §5 — but
 adapted for Coinbase Exchange WS's wire shape (public-only auth at
@@ -64,16 +64,17 @@ Lessons carried forward from Kalshi-bronze ship arc (2026-05-17):
   - D1.3-fu4 / fu5 patterns are NOT relevant here — those are consumer
     (collector) concerns about whether write dispatch blocks the
     asyncio thread. coinbase_wire is pure-transport; the consumer
-    (D2.2 archiver) will land worker-thread decouple + skip-ack-enqueue
-    from day 1 because we already paid those lessons on Kalshi.
+    (``collector/coinbase_archiver.py``, D2.2 SHIPPED) applies worker-
+    thread decouple + skip-ack-enqueue from day 1 because we already
+    paid those lessons on Kalshi.
 
 Wire-level seq-gap detection: deliberately NOT implemented here.
 Coinbase Exchange WS ``sequence`` is per-product monotonic (not
 per-connection like Kalshi's per-sid ``seq``), and the per-product
 grouping requires joining ``sequence`` with ``product_id`` — context
-the consumer (D2.2 archiver) holds more cleanly than the wire layer.
-``Frame.sequence_num`` is passed through verbatim so consumers can run
-their own gap detection.
+the consumer (``collector/coinbase_archiver.py``, D2.2 SHIPPED) holds
+more cleanly than the wire layer. ``Frame.sequence_num`` is passed
+through verbatim so consumers can run their own gap detection.
 """
 from __future__ import annotations
 
@@ -117,14 +118,14 @@ DEFAULT_WS_URL = "wss://ws-feed.exchange.coinbase.com"
 # progressively gated some `level2` access since 2024; the public
 # reachability of ``level2_batch`` on ``wss://ws-feed.exchange.coinbase.com``
 # is not in-repo verified (the production bot only consumes ``ticker``).
-# The D2.2 archiver (next Bit) is the right place to verify-then-extend
-# the default channel set — it can observe Coinbase's ``type=error``
+# An in-archiver reachability check (observing Coinbase's ``type=error``
 # response to an unauthorized subscribe before bronze goes silent on
-# that channel. Adding ``level2_batch`` to the default set without
+# that channel) is the right place to verify-then-extend the default
+# channel set. Adding ``level2_batch`` to the default set without
 # verification risks shipping a silent partial-degradation failure
 # mode that the wire library cannot detect on its own. A followup
 # ticket promotes ``level2_batch`` into ``DEFAULT_CHANNELS`` once
-# D2.2 verifies subscribe-success.
+# subscribe-success is verified.
 #
 # Coinbase Exchange WS has no ``candles`` channel; OHLC is derived from
 # ``matches`` downstream.
@@ -168,7 +169,8 @@ class Frame:
         ``msg_type`` → channel using their own dispatch table
         (``match`` → matches, ``ticker`` → ticker, ``heartbeat`` →
         heartbeat, ``status`` → status; ``snapshot`` / ``l2update``
-        → level2_batch arrives once D2.2 promotes that channel).
+        → level2_batch lands once that channel is promoted into the
+        default set per the L99 ratchet pin).
       - ``sequence_num`` is populated from Coinbase's ``sequence`` field
         when present. Per-product monotonic (NOT per-connection like
         Kalshi). Wire-level gap detection is deferred to the consumer
@@ -264,9 +266,9 @@ def build_envelope(
 class WSClient:
     """Coinbase Exchange WS transport client.
 
-    Consumers (post-D2.2 ``collector/coinbase_archiver.py``, post-D2.3
-    refactored ``bot/feeds/coinbase.py``) own state — orderbook caches,
-    schema probes, blacklists. This client owns transport: connect,
+    Consumers (``collector/coinbase_archiver.py`` SHIPPED at D2.2,
+    post-D2.3 refactored ``bot/feeds/coinbase.py``) own state —
+    orderbook caches, schema probes, blacklists. This client owns transport: connect,
     reconnect, public subscribe, silence watchdog, frame parse, thread-
     safe send queue.
 
