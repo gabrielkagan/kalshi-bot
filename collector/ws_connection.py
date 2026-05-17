@@ -243,6 +243,41 @@ class BronzeArchiver:
                 ping_timeout=30.0,
             )
 
+    # ── Health snapshot (D1.6 fu) ──────────────────────────────────────
+
+    def get_health_snapshot(self) -> Dict[str, object]:
+        """Return a JSON-serializable health dict for the per-archiver
+        operational state. Consumed by
+        ``collector.main_loop.write_bronze_health_sidecar`` which
+        aggregates across all archivers + writes the bronze_health.json
+        sidecar that ``scripts/ops/collector_health_monitor.py`` polls
+        via cron.
+
+        Snapshot keys (D1.6 fu schema_version=1):
+          - conn_id: WS conn identifier (A/B/C/...)
+          - dropped_frames: cumulative count of queue.Full drops since
+            worker (re)spawn (R1-M2 reset semantic)
+          - write_queue_size: instantaneous Queue.qsize() — approximate
+            under concurrent producer/consumer but close enough for
+            saturation alerting
+          - write_queue_maxsize: capacity (so callers can compute
+            saturation %)
+          - write_worker_alive: True iff the worker thread is currently
+            alive (start() spawned + stop() not yet drained)
+          - collector_seq: monotonic per-frame seq high-water mark (lets
+            the monitor verify frames are flowing — flat seq across two
+            ticks means no data arriving)
+        """
+        worker = self._write_worker
+        return {
+            "conn_id": self._conn_id,
+            "dropped_frames": self._dropped_frames,
+            "write_queue_size": self._write_queue.qsize(),
+            "write_queue_maxsize": self._write_queue.maxsize,
+            "write_worker_alive": bool(worker is not None and worker.is_alive()),
+            "collector_seq": self._collector_seq,
+        }
+
     # ── Subscription updates (D1.4) ─────────────────────────────────────
 
     def update_subscriptions(

@@ -103,6 +103,12 @@ TRACKED_DOCS: list[Path] = [
     # split. Adding to TRACKED_DOCS so the L99 ratchet covers it
     # (closes the asymmetric-coverage gap the R2 reviewer flagged).
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_worker_thread.py",
+    # D1.6 fu R1-M5: monitor + sidecar narrative surfaces. The 144 LOC
+    # added to collector_health_monitor.py + the new contract test file
+    # carry the dropped-frames/STALE/SCHEMA alert documentation; close
+    # the L99 lockstep gap at ship time (not as a future-Bit followup).
+    REPO_ROOT / "scripts" / "ops" / "collector_health_monitor.py",
+    REPO_ROOT / "tests" / "contracts" / "test_bronze_health_sidecar.py",
     REPO_ROOT / "tests" / "contracts" / "test_collector_rest_snapshot.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_main_loop_wireup.py",
     REPO_ROOT / "tests" / "integration" / "test_collector_rest_snapshot_refresh_cycle.py",

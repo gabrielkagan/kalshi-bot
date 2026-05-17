@@ -1,8 +1,9 @@
-"""D1.6: collector health monitor — disk + WS-conn-loss + service-down alerts.
+"""D1.6 + D1.6 fu: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
 
-Ticket 86b9zk4we (2026-05-17). Standalone CLI run via cron on the VPS.
-Polls 3 health surfaces and sends Telegram alerts via the existing
-``bot.notifier.TelegramNotifier`` (no Telegram client re-implementation).
+Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17).
+Standalone CLI run via cron on the VPS. Polls 4 health surfaces and
+sends Telegram alerts via the existing ``bot.notifier.TelegramNotifier``
+(no Telegram client re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -11,12 +12,24 @@ surface pre-D1.6:
   - WS conn-loss (multiple disconnect classes; manual audit was the
     only surface).
 
-D1.6 adds:
+D1.6 adds 3 checks:
   - check_disk: alert if /var/lib/kalshi-collector/ partition >= threshold_pct
   - check_ws_reconnects: alert if kalshi_ws_disconnected count over
     last N minutes >= threshold_count (with 1006/1009/1011 class breakdown)
   - check_collector_active: alert if `systemctl is-active kalshi-collector`
     returns non-zero
+
+D1.6 fu adds the 4th check:
+  - check_dropped_frames: positive observability for D1.3-fu4 worker
+    queue saturation. Reads ``bronze_health.json`` sidecar written by
+    the collector drain thread; alerts on:
+      * cumulative dropped-frames delta >= threshold (default 100)
+        across ticks (rolling-window catches sustained drip-drops the
+        per-tick design would miss)
+      * sidecar STALE (mtime > 120s; catches wedged drain thread / dead
+        collector within ~2 monitor ticks vs waiting for systemctl flip)
+      * sidecar SCHEMA SKEW (schema_version != 1; future bumps would
+        silently degrade the signal otherwise)
 
 Operator install (manual, post-D1.6 merge):
     # In /etc/cron.d/kalshi-collector-health or `crontab -e` (botuser):
@@ -32,10 +45,12 @@ flood the operator's mail spool).
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +61,18 @@ DEFAULT_WS_WINDOW_MIN = 5
 DEFAULT_WS_THRESHOLD_COUNT = 10
 DEFAULT_BRONZE_ROOT = "/var/lib/kalshi-collector"
 DEFAULT_COLLECTOR_UNIT = "kalshi-collector"
+
+# D1.6 fu defaults.
+DEFAULT_SIDECAR_PATH = "/var/lib/kalshi-collector/bronze_health.json"
+DEFAULT_MONITOR_STATE_PATH = "/var/lib/kalshi-collector/monitor_state.json"
+DEFAULT_DROPPED_FRAMES_THRESHOLD = 100
+# Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
+# 2x the cron tick interval (5min = 300s) = ~610s. Use 120s as a tight
+# floor so we catch a wedged drain thread within 2 monitor ticks, not 2
+# cron intervals. The 60s rotation cadence (D0.3 §4) does NOT bound
+# sidecar freshness — sidecar is written every drain-poll, not every
+# rotation.
+DEFAULT_SIDECAR_STALE_SECONDS = 120
 
 
 def check_disk(
@@ -141,6 +168,203 @@ def check_collector_active(unit: str = DEFAULT_COLLECTOR_UNIT) -> Optional[str]:
     )
 
 
+def check_dropped_frames(
+    sidecar_path: Optional[Path] = None,
+    state_path: Path = Path(DEFAULT_MONITOR_STATE_PATH),
+    threshold: int = DEFAULT_DROPPED_FRAMES_THRESHOLD,
+    stale_after_seconds: int = DEFAULT_SIDECAR_STALE_SECONDS,
+) -> Optional[str]:
+    """Return alert string if BronzeArchiver drops cross ``threshold``
+    cumulatively-since-last-alert, else None. D1.6 fu observability for
+    D1.3-fu4 worker queue saturation.
+
+    Three distinct alert classes:
+      1. DROPS: cumulative ``total_dropped_frames`` delta accumulated
+         across ticks reaches ``threshold``. Reset on alert. R1-M2 fix:
+         this is a ROLLING-WINDOW running sum, NOT per-tick delta —
+         a sustained 30 drops/tick × 4 ticks = 120 cumulative drops
+         WILL alert at threshold=100, even though no single tick
+         crossed the bar alone. Pre-fix per-tick design missed this
+         steady-state-drip class.
+      2. STALE: sidecar mtime older than ``stale_after_seconds``.
+         Catches wedged drain thread / dead collector within ~2 monitor
+         ticks (vs waiting for systemctl-is-active flip).
+      3. SCHEMA: sidecar schema_version != 1 — a future schema bump
+         that adds/renames keys would silently degrade this check to
+         delta=0 forever; alert instead of fail-quiet so the operator
+         notices the version skew.
+
+    Fail-quiet posture mirrors the other 3 checks: missing sidecar,
+    malformed JSON, missing state file are all logged-and-skipped — the
+    cron framework expects exit 0 always and alerts via Telegram.
+
+    State persistence:
+      - On FIRST run (state file absent): baseline against current
+        sidecar's total + save state. Return None. Otherwise the first
+        tick after install would alert on the cumulative-since-process-
+        start total — false alarm.
+      - On RESET (state's last_total > sidecar's current total): the
+        collector restarted (BronzeArchiver.start() resets
+        ``_dropped_frames=0`` per D1.3-fu4 R1-M2). Re-baseline against
+        the new floor + zero pending_drops. Return None.
+      - On NO-ALERT tick (pending below threshold): accumulate the new
+        delta into ``pending_drops_since_last_alert`` and persist.
+      - On ALERT tick: reset ``pending_drops_since_last_alert`` to 0
+        so the same backlog doesn't re-alert.
+
+    Args:
+        sidecar_path: bronze_health.json written by
+            collector.main_loop.write_bronze_health_sidecar. When None
+            (default), resolves via ``COLLECTOR_HEALTH_SIDECAR_PATH``
+            env var at CALL time (NOT module-import time — R1-M1 fix).
+            Falls back to ``DEFAULT_SIDECAR_PATH``. Coupling-by-env-var
+            keeps the monitor aligned with the collector's chosen path
+            without requiring config-file synchronization.
+        state_path: monitor-owned state file persisting
+            ``last_total_dropped_frames`` + ``pending_drops_since_last_alert``.
+        threshold: alert if pending_drops_since_last_alert >= threshold
+            (default 100).
+        stale_after_seconds: alert if sidecar mtime older than this
+            (default 120s ≈ 2 monitor ticks).
+
+    Returns:
+        Alert string (Markdown for Telegram) or None.
+    """
+    # R1-M1: env-var resolution at CALL time (not function-def default,
+    # which would freeze the value at module import).
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "COLLECTOR_HEALTH_SIDECAR_PATH", DEFAULT_SIDECAR_PATH,
+        ))
+
+    if not sidecar_path.is_file():
+        return None
+
+    # STALE check (before reading content — a stale file's content may
+    # also be uninformative).
+    try:
+        mtime = sidecar_path.stat().st_mtime
+    except OSError:
+        return None
+    age = time.time() - mtime
+    if age > stale_after_seconds:
+        return (
+            f"*COLLECTOR BRONZE_HEALTH STALE* — sidecar {sidecar_path} "
+            f"not written in {int(age)}s (threshold {stale_after_seconds}s; "
+            f"next monitor tick fires alert within 5min of staleness onset). "
+            f"Collector drain thread may be wedged or process dead. "
+            f"Check: `systemctl status kalshi-collector` + "
+            f"`journalctl -u kalshi-collector --since '5 min ago' | tail`."
+        )
+
+    try:
+        sidecar_data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        # Malformed (partial write?) — fail quiet; next tick will
+        # likely catch the steady-state file.
+        return None
+
+    # R1-m1: schema-version check. Future-bump would silently degrade
+    # the dropped-frames signal to delta=0 (since missing keys default
+    # to 0); alert instead of fail-quiet.
+    sidecar_schema = sidecar_data.get("schema_version")
+    if sidecar_schema != 1:
+        return (
+            f"*COLLECTOR BRONZE_HEALTH SCHEMA SKEW* — sidecar "
+            f"{sidecar_path} schema_version={sidecar_schema!r} "
+            f"(monitor expects 1). The dropped-frames signal is "
+            f"disabled until the monitor + collector schemas align. "
+            f"Update scripts/ops/collector_health_monitor.py to handle "
+            f"the new schema OR pin the collector to the old schema."
+        )
+
+    current_total = int(sidecar_data.get("total_dropped_frames", 0))
+
+    # Load + interpret state.
+    if not state_path.is_file():
+        # First run: baseline, no alert.
+        _save_state(
+            state_path,
+            last_total_dropped_frames=current_total,
+            pending_drops_since_last_alert=0,
+        )
+        return None
+    try:
+        state_data = json.loads(state_path.read_text())
+        last_total = int(state_data.get("last_total_dropped_frames", 0))
+        pending = int(state_data.get("pending_drops_since_last_alert", 0))
+    except (OSError, ValueError):
+        # Corrupt state file — re-baseline rather than alert-spam.
+        _save_state(
+            state_path,
+            last_total_dropped_frames=current_total,
+            pending_drops_since_last_alert=0,
+        )
+        return None
+
+    # Reset detection (counter went down → collector restarted).
+    if current_total < last_total:
+        _save_state(
+            state_path,
+            last_total_dropped_frames=current_total,
+            pending_drops_since_last_alert=0,
+        )
+        return None
+
+    delta = current_total - last_total
+    pending += delta
+
+    # R1-M2: accumulate-then-check. Sustained drip-drop reaches threshold
+    # over multiple ticks rather than requiring a single-tick burst.
+    if pending < threshold:
+        _save_state(
+            state_path,
+            last_total_dropped_frames=current_total,
+            pending_drops_since_last_alert=pending,
+        )
+        return None
+
+    # ALERT — reset pending so the same backlog doesn't re-alert next tick.
+    _save_state(
+        state_path,
+        last_total_dropped_frames=current_total,
+        pending_drops_since_last_alert=0,
+    )
+    return (
+        f"*COLLECTOR BRONZE_DROPPED_FRAMES* — {pending} new drops "
+        f"accumulated since last alert (threshold {threshold}). "
+        f"Total since collector boot: {current_total}. Worker queue "
+        f"saturated — D1.3-fu4 bounded queue dropped frames on "
+        f"`queue.Full`. Check: per-archiver breakdown in {sidecar_path}; "
+        f"collector load (subscribe burst? backlog drain?) in "
+        f"`journalctl -u kalshi-collector --since '10 min ago' | "
+        f"grep -i 'write_queue full'`."
+    )
+
+
+def _save_state(
+    state_path: Path,
+    *,
+    last_total_dropped_frames: int,
+    pending_drops_since_last_alert: int = 0,
+) -> None:
+    """Atomic-replace persist of monitor state. Best-effort (a state-
+    write failure means next tick may re-baseline, which is fine for
+    monotonic counter semantics)."""
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.with_suffix(state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps({
+            "last_total_dropped_frames": last_total_dropped_frames,
+            "pending_drops_since_last_alert": pending_drops_since_last_alert,
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }))
+        os.replace(tmp, state_path)
+    except OSError:
+        # Fail-quiet (cron convention).
+        pass
+
+
 def main() -> int:
     """Entry point. Runs all 3 checks; sends Telegram alerts as needed.
 
@@ -158,6 +382,7 @@ def main() -> int:
         ("disk", check_disk),
         ("ws_reconnects", check_ws_reconnects),
         ("collector_active", check_collector_active),
+        ("dropped_frames", check_dropped_frames),
     ]
     for check_name, check_fn in checks:
         alert = check_fn()
