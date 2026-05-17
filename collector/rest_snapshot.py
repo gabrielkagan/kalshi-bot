@@ -195,9 +195,13 @@ def fetch_tickers_by_tier(
         for row in markets:
             if not isinstance(row, dict):
                 continue
-            if row.get("status") != "open":
-                # Defensive double-filter; we sent status=open but a race
-                # during settlement could yield mixed statuses.
+            if row.get("status") not in ("open", "active"):
+                # Defensive double-filter: drops closed/settled if a race
+                # during settlement yields mixed statuses. Accepts both
+                # trading-active labels because Kalshi's response body
+                # uses a different vocabulary than the query parameter
+                # — the ``status=open`` query returns rows whose response
+                # field is ``status="active"``. Ticket ``86b9zjqhn``.
                 continue
             ticker = row.get("ticker")
             if isinstance(ticker, str) and ticker:

@@ -265,24 +265,27 @@ def test_fetch_partial_pagination_returns_none_not_partial():
     )
 
 
-def test_fetch_filters_non_open_markets_defensively():
-    """Even though we send ``status=open``, defensive double-filter on
-    the response in case Kalshi ever returns mixed statuses (e.g.,
-    races during settlement). Only ``status=open`` rows produce
-    subscribes."""
+def test_fetch_filters_non_trading_markets_defensively():
+    """Defensive double-filter on the response in case Kalshi ever returns
+    mixed statuses (e.g., races during settlement). Kalshi's response body
+    labels trading-active markets ``status="active"`` (the query-param
+    vocab and response-field vocab differ); the filter accepts both forms
+    and drops ``closed`` / ``settled``. Ticket ``86b9zjqhn``."""
     session = _build_session([{
         "markets": [
             {"ticker": "OPEN-1", "status": "open"},
+            {"ticker": "ACTIVE-1", "status": "active"},
             {"ticker": "CLOSED-1", "status": "closed"},
             {"ticker": "SETTLED-1", "status": "settled"},
-            {"ticker": "OPEN-2", "status": "open"},
+            {"ticker": "ACTIVE-2", "status": "active"},
         ],
         "cursor": "",
     }])
     out = fetch_tickers_by_tier(
         api_key="kid", private_key=None, session=session, _test_skip_auth=True,
     )
-    assert out == {TIER_ALL: ["OPEN-1", "OPEN-2"]}
+    # active + open pass; closed + settled get filtered.
+    assert out == {TIER_ALL: ["ACTIVE-1", "ACTIVE-2", "OPEN-1"]}
 
 
 def test_fetch_skips_rows_missing_ticker_field():
