@@ -181,6 +181,6 @@ echo "Done."
 for name in "${UNIT_NAMES[@]}"; do
     echo "  Verify ${name}: systemctl cat ${name} | head -20"
 done
-echo "Restart hints:"
+echo "Restart hints (post-D1.5.2: deploy.yml auto-restarts kalshi-collector on collector-affecting deploys; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
 echo "  Bot       : sudo -n /bin/systemctl restart kalshi-bot"
-echo "  Collector : sudo systemctl restart kalshi-collector  (interactive sudo)"
+echo "  Collector : sudo -n /bin/systemctl restart kalshi-collector  (NOPASSWD assumes operator has extended /etc/sudoers.d/botuser-systemctl-restart to include kalshi-collector; see feedback_vps_sudoers_collector_gap_may17)"
