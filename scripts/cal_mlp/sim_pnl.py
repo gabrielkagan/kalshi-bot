@@ -428,9 +428,17 @@ def _strategy_size(
 ) -> SizingResult:
     """Per-strategy dispatcher. Routes terminal_momentum_* and
     decided_t* via their bot.py-specific sizing formulas; weekend_discount
-    falls back to WEEKEND_FIXED_RISK when Kelly produces 0; everything
+    falls back to WEEKEND_FIXED_RISK when contract_count rounds to 0; everything
     else (including overnight_discount, TAKER_NOW, MAKER_PATIENT, NULL)
     uses the standard compute_size path.
+
+    DIVERGENCE NOTE (86b9zjx7r): live runtime gates the weekend_discount
+    fallback on `_wknd_kelly_f > 0` (skip on negative Kelly). The sim path
+    here lacks that gate AND does not compute Kelly sign at all — its
+    `compute_size` returns 0 only on edge-below-tier, not on negative-Kelly.
+    For positive-edge / negative-Kelly rows (possible post-P4.1 calibration),
+    the sim's counterfactual will over-credit weekend_discount. Followup
+    ticket needed for sim_pnl parity.
 
     Bankroll input semantics match the standard sim_pnl path:
         * available_balance_cents — per-row stored snapshot (production's
@@ -511,8 +519,10 @@ def _strategy_size(
             and sizing.contract_count == 0
             and available_balance_cents > 0
             and entry_price_cents > 0):
-        # bot.py:14074-14085 — Kelly=0 fallback to WEEKEND_FIXED_RISK.
-        # Drawdown scaler applied to the fixed sizing too (bot.py:14077-79).
+        # bot/scanner/__init__.py:3823 — fallback to WEEKEND_FIXED_RISK when
+        # positive Kelly rounds to 0 contracts. Live gate also requires
+        # `_wknd_kelly_f > 0` (86b9zjx7r); sim path does NOT mirror that
+        # gate — followup ticket needed for parity. Drawdown scaler applied.
         drawdown = compute_drawdown_scaler(current_balance_cents, hwm_cents)
         fixed_raw = max(1, int(available_balance_cents * WEEKEND_FIXED_RISK / entry_price_cents))
         if drawdown < 1.0:

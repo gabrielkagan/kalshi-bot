@@ -235,5 +235,60 @@ class TestWeekendDiscountWeekdayUnchanged(unittest.TestCase):
         self.assertNotIn("weekday() !=", block)
 
 
+class TestWeekendDiscountFixedFallbackKellySign(unittest.TestCase):
+    """Regression: weekend_discount fixed-size fallback must gate on Kelly sign.
+
+    Surfaced 2026-05-17 by P4.1 (band-calibrated sizing) — SOL 91c shadow
+    trace showed Kelly=-0.825 but the fallback fired at WEEKEND_FIXED_RISK
+    because the predicate only checked `_wknd_position == 0`. Negative Kelly
+    is clamped to 0 contracts by PositionSizer.compute() (bot/models.py:1063),
+    making the bare position-check ambiguous between "small positive Kelly
+    rounded to 0" (fallback should fire) and "negative Kelly" (fallback
+    must NOT fire). Ticket 86b9zjx7r.
+    """
+
+    def setUp(self):
+        self.source = _read_bot()
+        self.block_start = self.source.find("Weekend Edge Discount (Live + Shadow)")
+        self.assertGreater(self.block_start, 0, "Weekend discount block not found")
+        self.block_end = self.source.find("Overnight Edge Discount", self.block_start)
+        self.assertGreater(self.block_end, self.block_start)
+        self.block = self.source[self.block_start:self.block_end]
+
+    def test_fallback_predicate_references_kelly(self):
+        """The fixed-size fallback predicate must reference `_wknd_kelly_f`
+        — without it, the gate cannot distinguish positive-but-tiny Kelly
+        (fallback intended) from negative Kelly (fallback must skip)."""
+        fallback_anchor = self.block.find("Fixed sizing fallback when Kelly")
+        self.assertGreater(fallback_anchor, 0, "Fallback site comment not found")
+        # The predicate + body live in the ~200 chars after the anchor
+        predicate_region = self.block[fallback_anchor:fallback_anchor + 300]
+        self.assertIn("_wknd_kelly_f", predicate_region,
+                      "Fallback predicate must reference _wknd_kelly_f for Kelly-sign gate")
+
+    def test_fallback_if_line_includes_positive_kelly_check(self):
+        """The fallback if-line itself (not the body) must include a positive-Kelly
+        check on the SAME conditional. Pinning to the if-line prevents the
+        regression where the Kelly check could be added below as a no-op
+        log-only branch while the fallback still fires unconditionally."""
+        fallback_anchor = self.block.find("Fixed sizing fallback when Kelly")
+        self.assertGreater(fallback_anchor, 0)
+        predicate_region = self.block[fallback_anchor:fallback_anchor + 300]
+        if_idx = predicate_region.find("if _wknd_position == 0")
+        self.assertGreater(if_idx, 0, "Could not locate fallback predicate line")
+        colon_idx = predicate_region.find(":", if_idx)
+        self.assertGreater(colon_idx, if_idx)
+        if_line = predicate_region[if_idx:colon_idx]
+        self.assertIn("_wknd_kelly_f", if_line,
+                      f"Fallback if-line must include Kelly-sign check on same line. Got: {if_line!r}")
+        # The check must be a positivity test, not just non-None
+        positivity_present = (
+            "_wknd_kelly_f > 0" in if_line
+            or "(_wknd_kelly_f or 0) > 0" in if_line
+        )
+        self.assertTrue(positivity_present,
+                        f"Fallback predicate must check `_wknd_kelly_f > 0` (positivity, not non-None). Got: {if_line!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
