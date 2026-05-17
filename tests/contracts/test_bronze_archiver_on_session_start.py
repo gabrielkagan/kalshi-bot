@@ -344,8 +344,10 @@ def test_ok_ack_binds_sid_to_channel(monkeypatch):
 def test_data_frame_with_unmapped_sid_routes_to_unrouted_writer(monkeypatch):
     """A data frame arriving BEFORE the subscribe-ack lands (race window)
     has a sid we haven't bound to a channel yet. Route to the _unrouted
-    writer (None-key) so we don't drop the frame — bronze captures
-    everything, the unrouted partition keeps the bytes for silver QA.
+    writer (None-key) so we don't drop the frame — bronze captures every
+    data frame, the unrouted partition keeps the bytes for silver QA.
+    (Post-D1.3-fu5: ack frames themselves do NOT write — only data
+    frames in race windows hit _unrouted.)
     """
     archiver, _, writers = _make_archiver(monkeypatch)
     # No prior subscribe-ack → sid=42 is unmapped.
@@ -381,7 +383,9 @@ def test_data_frame_with_mapped_sid_envelope_channel_populated(monkeypatch):
          "msg": {"market_ticker": "T1"}},
     ))
     # Post-D1.3-fu4: dispatch is on the worker; wait for the orderbook_delta
-    # write (the subscribe-ack itself went to writers[None]).
+    # write. (Post-D1.3-fu5: the subscribe-ack itself binds sid and
+    # returns — does NOT write anywhere; only this data frame is
+    # expected to reach the writer.)
     assert _wait_for_write(writers["orderbook_delta"], count=1), (
         "data frame did not reach orderbook_delta writer within polling timeout."
     )

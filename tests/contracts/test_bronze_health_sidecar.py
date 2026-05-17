@@ -76,6 +76,7 @@ def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
     required = {
         "conn_id", "dropped_frames", "write_queue_size",
         "write_queue_maxsize", "write_worker_alive", "collector_seq",
+        "ack_frames_processed",  # D1.3-fu5 observability addition
     }
     missing = required - set(snap.keys())
     assert not missing, (

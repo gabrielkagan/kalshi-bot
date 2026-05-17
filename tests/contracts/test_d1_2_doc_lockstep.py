@@ -843,6 +843,15 @@ STALE_PATTERNS_POST_D1_3_FU5: list[str] = [
     "OOM-via-large-ack class will be addressed",
     "cgroup OOM kill from large-ack queue is unresolved",
     "subscribe-ack queue OOM unresolved",
+    # R1-M1 retracts: sister-test comment phrasings that pinned the
+    # pre-fu5 ack-writes-to-bronze behavior. Encode the retracted
+    # strings so a future paraphrase cannot drift them back via copy-
+    # paste from a git blame.
+    "subscribe-acks ARE written to bronze",
+    "subscribe-ack itself routes to writers[None]",
+    "subscribe-ack itself went to writers[None]",
+    "subscribe-ack that bound sid=42 also went through the queue",
+    "the bind ack adds 1",
 ]
 
 

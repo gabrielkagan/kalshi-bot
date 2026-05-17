@@ -217,9 +217,11 @@ class BronzeArchiver:
         # WITHOUT enqueueing for bronze write (the ack's `Frame.raw` can
         # be up to ~5 MB cumulative-ticker payload; queueing them at
         # subscribe burst rate OOM'd the cgroup 2026-05-17 — see
-        # kb/failures/collector-oom-via-ack-queue-may17.md). This counter
-        # is the observability surface for "collector is healthy +
-        # receiving acks" vs "collector wedged + no activity".
+        # kb/failures/collector-oom-via-ack-queue-may17.md). Exposed via
+        # ``get_health_snapshot()`` → ``bronze_health.json`` sidecar so
+        # ``scripts/ops/collector_health_monitor.py`` can distinguish
+        # "collector healthy + receiving acks" from "collector wedged +
+        # no activity at all".
         self._ack_frames_processed: int = 0
         # R2-M5 idempotency guard: a second ``stop()`` call (e.g., signal
         # handler + finally-block chain) must NOT block on putting a
@@ -273,10 +275,11 @@ class BronzeArchiver:
         sidecar that ``scripts/ops/collector_health_monitor.py`` polls
         via cron.
 
-        Snapshot keys (D1.6 fu schema_version=1):
+        Snapshot keys (D1.6 fu schema_version=1, extended in D1.3-fu5
+        with ``ack_frames_processed`` — sidecar schema bumped accordingly):
           - conn_id: WS conn identifier (A/B/C/...)
           - dropped_frames: cumulative count of queue.Full drops since
-            worker (re)spawn (R1-M2 reset semantic)
+            worker (re)spawn (D1.3-fu4 R1-M2 reset semantic)
           - write_queue_size: instantaneous Queue.qsize() — approximate
             under concurrent producer/consumer but close enough for
             saturation alerting
@@ -287,6 +290,12 @@ class BronzeArchiver:
           - collector_seq: monotonic per-frame seq high-water mark (lets
             the monitor verify frames are flowing — flat seq across two
             ticks means no data arriving)
+          - ack_frames_processed: D1.3-fu5 observability — cumulative
+            count of subscribe-acks processed (binds happened, frames
+            NOT enqueued for bronze writing). Lets the monitor
+            distinguish "collector healthy + receiving acks" from
+            "collector wedged + no activity". Flat ack_count + flat
+            collector_seq across two ticks = no WS traffic at all.
         """
         worker = self._write_worker
         return {
@@ -296,6 +305,7 @@ class BronzeArchiver:
             "write_queue_maxsize": self._write_queue.maxsize,
             "write_worker_alive": bool(worker is not None and worker.is_alive()),
             "collector_seq": self._collector_seq,
+            "ack_frames_processed": self._ack_frames_processed,
         }
 
     # ── Subscription updates (D1.4) ─────────────────────────────────────

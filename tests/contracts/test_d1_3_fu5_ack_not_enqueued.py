@@ -39,8 +39,11 @@ Pins (this file):
      has seq gaps; symmetrical to skipping the write)
   7. AST guard: `_on_frame` has an early-return inside the
      `if frame.msg_type in _SUBSCRIBE_ACK_TYPES:` branch
-  8. Memory-regression: enqueuing N=1000 mock-acks with 5 MB Frame.raw
-     each leaves queue size 0 (pre-fix would queue all 1000 → ~5 GB)
+  8. Memory-regression: enqueuing N=1000 mock-acks with 50 KB Frame.raw
+     each (smaller than production's ~5 MB but same SHAPE for fast test
+     runtime — verifies that "ack frames don't enqueue at all"; the
+     specific byte count is incidental) leaves queue size 0 (pre-fix
+     would queue all 1000)
   9. New _ack_frames_processed counter increments per-ack (observability)
 """
 from __future__ import annotations
