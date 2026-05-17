@@ -125,12 +125,87 @@ jobs:
             # body comments): this install lands deps for BOTH
             # kalshi-bot AND kalshi-collector. `[dev]` extras intentionally
             # NOT installed here — runtime-only deps; deploy.yml never
-            # pushes pytest/ruff/etc. to the VPS. D1.5.2 will add
-            # path-aware collector restart on collector/** changes.
+            # pushes pytest/ruff/etc. to the VPS. D1.5.2 (lines ~135-200
+            # below) ADDS path-aware kalshi-collector restart.
             ~/kalshi-bot-repo/venv/bin/pip install -r requirements.txt
             # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. On-VPS syntax-check
             # targets the canonical runtime hotspots (matches Makefile `ast-check`).
             python3 -c "import ast; ast.parse(open('bot/constants.py').read()); ast.parse(open('bot/main_loop.py').read()); ast.parse(open('bot/scanner/__init__.py').read()); print('SYNTAX OK')"
             sudo systemctl restart kalshi-bot
+            # D1.5.2 (ticket 86b9zjtya, 2026-05-17): path-aware
+            # kalshi-collector restart. Pre-D1.5.2 deploy.yml restarted
+            # ONLY kalshi-bot; every change to collector code paths
+            # required an operator-issued manual restart on the VPS.
+            # Bit us 3x in one session (D1.3-fu1 + D1.4-fu + D1.3-fu3,
+            # all collector-affecting fixes that required manual ops
+            # follow-up). The new block detects the changed paths in
+            # the deploy commit and restarts kalshi-collector iff any
+            # changed path matches the affecting set AND the collector
+            # is currently active (opt-out via VPS-side
+            # `sudo systemctl stop kalshi-collector` — operator's
+            # stop-intent lives at the VPS terminal, not in commit
+            # messages). `git diff --name-only` between the prior
+            # deploy's SHA (${{ github.event.before }}) and the
+            # current deploy's SHA (${{ github.sha }}) — NOT HEAD~1,
+            # which is misleading post `git reset --hard`. Pinned by
+            # tests/contracts/test_deploy_yml_path_aware_collector_restart.py.
+            # Regex uses literal `.` (matches any char including `.`)
+            # rather than escaped `\.` — functionally identical for path
+            # strings that contain literal dots, and keeps the contract
+            # test's literal-substring assertion simple.
+            #
+            # R1-M1 (D1.5.2 adv round 1): explicit null-SHA detection.
+            # `${{ github.event.before }}` is 40 zeroes on initial push
+            # to a new branch / after force-push history rewrite. `git
+            # diff --name-only 0000... HEAD` fails. Fall back to ALWAYS
+            # restart (safer than silent-skip — matches the plan doc's
+            # Verification §4 fail-safe intent).
+            #
+            # R1-M2 + R2-C1 (D1.5.2 adv rounds 1+2): on git-diff failure
+            # (valid SHA but unreachable — gc'd or never-fetched),
+            # capture the exit separately and log + fall back to always-
+            # restart rather than silently masking with `|| true`.
+            # R2-C1: the substitution MUST run with `set +e` so a
+            # failing $() doesn't trigger `set -e` and abort the WHOLE
+            # script (which would skip the doc-drift check AND the
+            # fallback restart itself). Re-enable `set -e` immediately
+            # after the capture.
+            COLLECTOR_RESTART_REASON=""
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              COLLECTOR_RESTART_REASON="initial-push / force-push history rewrite (null SHA)"
+            else
+              set +e
+              COLLECTOR_DIFF_OUT=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>&1)
+              COLLECTOR_DIFF_EXIT=$?
+              set -e
+              if [ $COLLECTOR_DIFF_EXIT -ne 0 ]; then
+                COLLECTOR_RESTART_REASON="git diff failed (exit=$COLLECTOR_DIFF_EXIT): $(echo "$COLLECTOR_DIFF_OUT" | head -3 | tr '\n' '|') — falling back to always-restart"
+              else
+                COLLECTOR_PATHS_CHANGED=$(echo "$COLLECTOR_DIFF_OUT" | grep -E "^(collector/|kalshi_wire/|ops/kalshi-collector.service$|collector-start.sh$|requirements.txt$)" || true)
+                if [ -n "$COLLECTOR_PATHS_CHANGED" ]; then
+                  COLLECTOR_RESTART_REASON="affected paths: $COLLECTOR_PATHS_CHANGED"
+                fi
+              fi
+            fi
+            if [ -n "$COLLECTOR_RESTART_REASON" ]; then
+              if systemctl is-active --quiet kalshi-collector; then
+                echo "D1.5.2 path-aware restart: $COLLECTOR_RESTART_REASON"
+                # R3-C1 (D1.5.2 adv round 3): use `sudo -n` (non-interactive)
+                # to match the bot-restart pattern AND fail LOUD-AND-FAST
+                # if sudoers NOPASSWD has not been extended to include
+                # kalshi-collector. appleboy/ssh-action has no tty, so
+                # bare `sudo` would either hang waiting for a password
+                # or fail with "sudo: a terminal is required" — either
+                # way aborting the deploy silently. `sudo -n` fails
+                # immediately with exit 1 + a recognizable error.
+                # Operator action needed if this fires: extend
+                # /etc/sudoers.d/botuser-systemctl-restart to include
+                # `/bin/systemctl restart kalshi-collector` (see
+                # feedback_vps_sudoers_collector_gap_may17).
+                sudo -n /bin/systemctl restart kalshi-collector
+              else
+                echo "D1.5.2 path-aware restart: $COLLECTOR_RESTART_REASON — but kalshi-collector is NOT active (operator stopped); skipping restart to preserve operator intent. Run 'sudo systemctl start kalshi-collector' on VPS to resume auto-restart."
+              fi
+            fi
             # Documentation drift check (warning only — never blocks deploy)
             python3 scripts/audit/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"
