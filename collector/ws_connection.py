@@ -137,6 +137,16 @@ class BronzeArchiver:
         # without needing a dataflow analyzer (defense-in-depth against
         # the D1.2 R1-C3 class: callback wired in test fixture but not
         # in production code).
+        # D1.3-fu3 (ticket 86b9zjyr0, 2026-05-17): raise ping_timeout from
+        # the kalshi_wire default (10s) to 30s. Post-D1.3-fu1 ws_max_size
+        # uncap, Kalshi sends 3-4 MiB subscribe-ack messages; processing
+        # them on the single asyncio thread blocks the loop past the 10s
+        # ping-timeout window → WS lib raises 1011 (keepalive ping timeout)
+        # → reconnect storm. Per-collector override (bot's default 10s
+        # stays unchanged — bot subscribes to ~50-100 tickers, no buffer
+        # backup). Stopgap; the proper fix is to decouple the bronze
+        # write from the asyncio loop (separate worker thread). Pinned
+        # by tests/contracts/test_collector_ws_client_ping_timeout.py.
         if url is None:
             self._wire = WSClient(
                 api_key=api_key,
@@ -144,6 +154,7 @@ class BronzeArchiver:
                 on_frame=self._on_frame,
                 on_session_start=self._on_session_start,
                 on_session_end=self._on_session_end,
+                ping_timeout=30.0,
             )
         else:
             self._wire = WSClient(
@@ -153,6 +164,7 @@ class BronzeArchiver:
                 on_session_start=self._on_session_start,
                 on_session_end=self._on_session_end,
                 url=url,
+                ping_timeout=30.0,
             )
 
     # ── Subscription updates (D1.4) ─────────────────────────────────────
