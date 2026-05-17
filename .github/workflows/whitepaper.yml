@@ -90,6 +90,12 @@ jobs:
           tar xf Eisvogel.tar.gz -C ~/.local/share/pandoc/templates --strip-components=1 --wildcards "*/eisvogel.latex"
 
       - name: Generate technical PDF
+        # NOTE: --listings dropped 2026-05-17 — the LaTeX `listings` package's
+        # \lstinline does not handle Unicode (Greek letters like σ, γ, λ inside
+        # inline-code spans broke xelatex with "Undefined control sequence" at
+        # line 826 of whitepaper_rendered.md, ref run 25998483839). Without
+        # --listings, pandoc uses its default Highlighting environment (fancyvrb
+        # + tango palette via --highlight-style) which is Unicode-safe.
         run: >-
           pandoc docs/whitepaper/whitepaper_rendered.md
           -o docs/whitepaper/whitepaper.pdf
@@ -97,7 +103,6 @@ jobs:
           --pdf-engine=xelatex
           --template eisvogel
           --highlight-style=tango
-          --listings
 
       - name: Generate investor PDF
         run: >-
