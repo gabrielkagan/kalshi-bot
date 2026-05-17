@@ -168,14 +168,26 @@ def test_load_handles_unknown_asset_in_persist_file(tmp_path: Path):
 
 def test_persist_serialization_roundtrip_full_buffer(tmp_path: Path):
     """A full 30-min buffer (1800 entries × 4 assets) must round-trip
-    correctly through persist→load. This is the production case."""
+    correctly through persist→load. This is the production case.
+
+    Bit-7 fix-forward (2026-05-17 ticket 86b9zkk2x): originally used
+    ``now - i`` spacing (oldest entry age = 1799s), which sits at the
+    boundary of the 1800s filter (see ``test_load_drops_entries_older
+    _than_buffer_maxage`` above for the filter contract). Under
+    pytest-xdist CPU contention introduced by Bit-7's 3-parallel-job
+    structure, elapsed wall-clock between populate and load could
+    push the oldest entry past 1800s → load filter drops 1 entry →
+    assertion fails as ``1799 == 1800``. Fix: use 0.99s spacing so
+    the oldest entry age = 1781s, well inside the 1800s window. The
+    "full buffer" semantics (1800 entries × 4 assets) are preserved.
+    """
     bot, feed = _make_feed_isolated(tmp_path)
     now = time.time()
     with feed._lock:
         for asset, base_price in [('BTC', 75000.0), ('ETH', 3000.0),
                                    ('SOL', 200.0), ('XRP', 0.5)]:
             for i in range(1800):
-                feed._buffers[asset].append((now - i, base_price + (i * 0.01)))
+                feed._buffers[asset].append((now - i * 0.99, base_price + (i * 0.01)))
     feed.persist_buffer()
     feed2 = bot.feeds.CoinbaseFeed(persist_path=str(tmp_path / 'spot_buffer.json'))
     for asset in ('BTC', 'ETH', 'SOL', 'XRP'):
