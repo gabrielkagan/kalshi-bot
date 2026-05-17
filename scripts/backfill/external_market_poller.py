@@ -52,12 +52,14 @@ DERIBIT_INDEX_URL = 'https://www.deribit.com/api/v2/public/get_index_price?index
 
 # OKX uses INST-USDT-SWAP for USDT-margined perpetuals.
 # DOGE + HYPE added 2026-05-10 (T1.5, ticket 86b9vre9p) — both verified
-# live via /api/v5/public/instruments?instType=SWAP. T3 (cal_mlp training)
-# needs okx_funding/okx_oi features for HYPE+DOGE rows at parity with
-# BTC/ETH/SOL/XRP; without these, shadow rows would have NULL columns
-# the model was trained to expect populated.
-FUNDING_SYMBOLS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'HYPE-USDT-SWAP']
-OI_SYMBOLS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'HYPE-USDT-SWAP']
+# live via /api/v5/public/instruments?instType=SWAP. BNB added 2026-05-17
+# (T1.5, ticket 86b9zmj15) — verified live (state=live, listTime=Dec
+# 2022) via same endpoint. T3 (cal_mlp training) needs okx_funding/
+# okx_oi features for BNB+HYPE+DOGE rows at parity with BTC/ETH/SOL/XRP;
+# without these, shadow rows would have NULL columns the model was
+# trained to expect populated.
+FUNDING_SYMBOLS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'HYPE-USDT-SWAP', 'BNB-USDT-SWAP']
+OI_SYMBOLS = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'XRP-USDT-SWAP', 'DOGE-USDT-SWAP', 'HYPE-USDT-SWAP', 'BNB-USDT-SWAP']
 # Deribit DVOL: correct index names are btcdvol_usdc / ethdvol_usdc
 # (verified at /public/get_index_price_names). Only BTC + ETH have DVOL.
 DVOL_SYMBOLS = ['btcdvol_usdc', 'ethdvol_usdc']

@@ -138,7 +138,7 @@ kalshi-bot/
 │   │   ├── sports_engine.py      ← Bayesian comeback model
 │   │   └── sports_data.py        ← per-sport LR tables + state-shape helpers
 │   ├── feeds/                    ← market data feeds
-│   │   ├── coinbase.py           ← spot price WS (6 assets, 5-min buffer + 15-hour EGARCH)
+│   │   ├── coinbase.py           ← spot price WS (7 assets — BNB added T1 2026-05-17, 5-min buffer + 15-hour EGARCH)
 │   │   ├── cross_exchange.py     ← Binance/Kraken/Bybit WS (CrossExchangeFeed)
 │   │   ├── kalshi.py             ← Kalshi WS feed (consumes kalshi_wire)
 │   │   └── orderbook_schema.py
@@ -355,11 +355,11 @@ Returns above an adaptive threshold are flagged as jumps and excluded from RK es
 
 ### 3.3.7 DVOL integration
 
-When Deribit's DVOL implied volatility (BTC, ETH only — SOL/XRP/HYPE/DOGE have no public IV index) diverges materially from realized, the engine blends in the implied estimate using inverse-variance weighting. This respects forward-looking information during regime changes while anchoring to observed data.
+When Deribit's DVOL implied volatility (BTC, ETH only — SOL/XRP/HYPE/DOGE/BNB have no public IV index) diverges materially from realized, the engine blends in the implied estimate using inverse-variance weighting. This respects forward-looking information during regime changes while anchoring to observed data.
 
 ### 3.3.8 Cross-asset beta
 
-For assets without direct DVOL data (SOL, XRP, HYPE, DOGE), the system estimates a cross-asset beta against BTC using a 60-return lookback window, clamped to [0.5, 3.0]. This allows derivative-implied signals to propagate across correlated assets via:
+For assets without direct DVOL data (SOL, XRP, HYPE, DOGE, BNB), the system estimates a cross-asset beta against BTC using a 60-return lookback window, clamped to [0.5, 3.0]. This allows derivative-implied signals to propagate across correlated assets via:
 
 $$\sigma_\text{asset}^\text{implied} \approx \beta_\text{asset,BTC} \cdot \sigma_\text{BTC}^\text{implied}$$
 
@@ -772,7 +772,7 @@ Each sport group maintains its own CalEngine (`sports_basketball`, `sports_baseb
 
 ## 5.4 Hourly crypto (disabled)
 
-Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD, plus KXHYPED and KXDOGED which are in `HOURLY_EXCLUDED_ASSETS`/`HOURLY_NO_EXCLUDED_ASSETS`) with 75 strikes per event. **Currently disabled** (kill-switched 2026-04-18). Both `HOURLY_LIVE_ENABLED=0` and `HOURLY_NO_SIDE_LIVE=0` on the VPS.
+Hourly cryptocurrency markets (KXBTCD, KXETHD, KXSOLD, KXXRPD, plus KXHYPED, KXDOGED, and KXBNBD which are in `HOURLY_EXCLUDED_ASSETS`/`HOURLY_NO_EXCLUDED_ASSETS` — KXBNBD added T1 2026-05-17 ticket 86b9zmj0c) with 75 strikes per event. **Currently disabled** (kill-switched 2026-04-18). Both `HOURLY_LIVE_ENABLED=0` and `HOURLY_NO_SIDE_LIVE=0` on the VPS.
 
 ### 5.4.1 Kill rationale
 
@@ -1429,7 +1429,7 @@ Two cohort upgrades are in the pipeline:
 
 - **v2** (+8 features beyond v1.1): momentum features (1m/5m), buffer features (distance to next strike), BTC RV (cross-asset volatility). K=1 train target 2026-05-19.
 - **v3** (+3 features beyond v2): spread, flow, CB-Kraken gap. K=2 train target 2026-06-22.
-- **External market data integration**: OKX funding+OI for all 6 assets, Deribit BTC/ETH DVOL. Earliest v3 use 2026-06-22. The `external_market_data` table does not exist on VPS (the poller `scripts/backfill/external_market_poller.py` is `CRON-NEVER-INSTALLED` — open ticket to install daily cron and create the table on first run).
+- **External market data integration**: OKX funding+OI for all 7 assets, Deribit BTC/ETH DVOL. Earliest v3 use 2026-06-22. The `external_market_data` table does not exist on VPS (the poller `scripts/backfill/external_market_poller.py` is `CRON-NEVER-INSTALLED` — open ticket to install daily cron and create the table on first run).
 
 Each cohort upgrade ships atomically: train surface, serve surface, sigma winsorize, cfg_fp bump, lock-step contract test all in one commit. The Sprint A.1a / A.1b discipline (canonical helper homes, drift-site enumeration, AST guard) ensures the surface remains in lock-step across cohort upgrades.
 

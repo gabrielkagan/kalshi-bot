@@ -10,9 +10,10 @@ pipeline:
   ``DVOL_FETCH_INTERVAL`` seconds.
 - ``CoinGlassFetcher`` — CoinGlass funding-rate API for every
   symbol in ``bot.config.ASSETS`` (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1
-  2026-05-10; BNB post-T1 2026-05-17 ticket 86b9zmj0c — verification
-  + COINGLASS_SYMBOLS["BNB"] entry pending T1.5 ticket 86b9zmj15)
-  via authenticated REST every ``COINGLASS_FETCH_INTERVAL`` seconds.
+  2026-05-10; BNB post-T1 2026-05-17 ticket 86b9zmj0c;
+  ``COINGLASS_SYMBOLS["BNB"]="BNB"`` entry added in T1.5 ticket
+  86b9zmj15) via authenticated REST every
+  ``COINGLASS_FETCH_INTERVAL`` seconds.
 
 ``bot/_impl.py`` does
 ``from bot.fetchers import DeribitDVOLFetcher, CoinGlassFetcher``

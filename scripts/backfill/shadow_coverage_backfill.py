@@ -486,7 +486,7 @@ def lookup_xasset_spots_for_row(
     """Resolve cross-asset spots for a given evaluation_time.
 
     Returns dict with one `<asset_lower>_spot_at_decision` key per
-    `COINBASE_PRODUCTS` entry — 6 keys post-T1.5 (btc/eth/sol/xrp/hype/doge).
+    `COINBASE_PRODUCTS` entry — 7 keys post-T1 (btc/eth/sol/xrp/hype/doge/bnb).
     If exact minute is missing for an asset, falls back to the nearest
     minute within ±`fallback_minutes`. Beyond that, returns None for that
     asset (staler is dishonest for a minute-grade feature)."""
@@ -940,9 +940,12 @@ def backfill_path_metrics(
 
 # OKX uses USDT-quoted perps for these assets.
 # T1.5 (2026-05-10, ticket 86b9vre9p): DOGE + HYPE added. Both verified live
-# via /api/v5/public/funding-rate-history. Must stay lock-step with the live
-# poller's FUNDING_SYMBOLS (regression test: TestBackfillOkxFundingInstruments
-# in tests/integration/test_doge_hype_onboarding_t1_5.py) — divergence biases T3 training.
+# via /api/v5/public/funding-rate-history. T1.5 (2026-05-17, ticket
+# 86b9zmj15): BNB added (verified live via same endpoint).
+# Must stay lock-step with the live poller's FUNDING_SYMBOLS (regression
+# tests: TestBackfillOkxFundingInstruments in
+# tests/integration/test_doge_hype_onboarding_t1_5.py +
+# tests/integration/test_bnb_onboarding_t1_5.py) — divergence biases T3 training.
 OKX_FUNDING_INSTRUMENTS = {
     "BTC": "BTC-USDT-SWAP",
     "ETH": "ETH-USDT-SWAP",
@@ -950,13 +953,16 @@ OKX_FUNDING_INSTRUMENTS = {
     "XRP": "XRP-USDT-SWAP",
     "DOGE": "DOGE-USDT-SWAP",
     "HYPE": "HYPE-USDT-SWAP",
+    "BNB": "BNB-USDT-SWAP",
 }
 # Deribit uses USD-quoted PERPETUAL for BTC/ETH; SOL/XRP/DOGE are USDC-quoted.
 # T1.5: DOGE added (verified live via /public/get_funding_rate_history).
 # HYPE STAYS ABSENT — Deribit does not list a HYPE perpetual (verified via
 # /public/get_instruments?currency=HYPE&kind=future returning empty).
-# Documented gap, not silent NULL. Consumer code uses .get(asset)/iteration
-# so key-absence is safe.
+# BNB STAYS ABSENT (T1.5 2026-05-17, ticket 86b9zmj15) — Deribit does not
+# list a BNB perpetual either (verified via /public/get_instruments?
+# currency=BNB&kind=future returning empty). Same documented-gap pattern
+# as HYPE. Consumer code uses .get(asset)/iteration so key-absence is safe.
 DERIBIT_FUNDING_INSTRUMENTS = {
     "BTC": "BTC-PERPETUAL",
     "ETH": "ETH-PERPETUAL",
