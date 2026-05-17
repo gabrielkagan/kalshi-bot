@@ -10,7 +10,7 @@ titlepage-rule-color: "D4883E"
 titlepage-rule-height: 4
 toc: true
 toc-own-page: true
-numbersections: true
+numbersections: false
 colorlinks: true
 linkcolor: "navylink"
 urlcolor: "bluelink"
@@ -53,11 +53,18 @@ header-includes:
         boxrule=0.5pt,
         arc=3pt,
         left=10pt, right=10pt, top=8pt, bottom=8pt,
-        fontupper=\small\ttfamily,
+        fontupper=\footnotesize\ttfamily,
       ]
     }{%
       \end{tcolorbox}
     }
+
+    % Shrink the Highlighting environment (pandoc's default for fenced code)
+    % to footnotesize so wide ASCII diagrams and source trees fit the page width
+    % without manual line-by-line shrinkage.
+    \usepackage{etoolbox}
+    \AtBeginEnvironment{Highlighting}{\footnotesize}
+    \AtBeginEnvironment{verbatim}{\footnotesize}
 
     \newtcolorbox{quotecallout}{
       breakable,
@@ -119,27 +126,27 @@ These five commitments are surprisingly load-bearing. Most of the unusual archit
 ## 2.1 Overview
 
 ```
-                    Coinbase WS ──┐
-                       Kraken WS ─┤
-                          Bybit ──┤───→ VolatilityEngine ──→ ProbabilityEngine ──→ OpportunityScanner
-                  Deribit (REST) ─┘           ↑                       ↑                      │
-                                              │                       │                      ▼
-                                          EGARCHEstimator         CalibrationEngine    PositionSizer
-                                                                  + cal_mlp v1.1            │
-                                                                  + market blend             │
-                                                                  + P4.1 band                ▼
-                                                                                       OrderExecutor
-        Kalshi REST + WS ◄──────────────────────────────────────────────────────────────────┘
-              │                                                          │
-              ▼                                                          ▼
-        SettlementTracker ──→ StateManager (SQLite/WAL) ◄──── Logger (JSONL journals)
-                                                                         │
-                                                                  Analyst ──→ Telegram
+  Coinbase WS  ─┐
+  Kraken WS    ─┤
+  Bybit        ─┼─→ VolatilityEngine ─→ ProbabilityEngine ─→ OpportunityScanner
+  Deribit REST ─┘         ↑                    ↑                     │
+                          │                    │                     ▼
+                    EGARCHEstimator     CalibrationEngine      PositionSizer
+                                        + cal_mlp v1.1               │
+                                        + market blend               │
+                                        + P4.1 band                  ▼
+                                                                OrderExecutor
+  Kalshi REST + WS ◄─────────────────────────────────────────────────┘
+       │                                                  │
+       ▼                                                  ▼
+  SettlementTracker ─→ StateManager (SQLite/WAL) ◄── Logger (JSONL journals)
+                                                          │
+                                                     Analyst ─→ Telegram
 
-                                  [SEPARATE PROCESS — bronze isolation]
+  ── separate process: bronze isolation ──────────────────────────────
 
-        Kalshi WS  ──→  collector/  ──→  JSONL.zst rotation  ──→  rclone copy --checksum --immutable
-                                                                   ──→  s3://kalshi-bot-archive/bronze/...
+  Kalshi WS ─→ collector/ ─→ JSONL.zst rotation ─→ rclone copy
+                                                  ─→ s3://kalshi-bot-archive/bronze/
 ```
 
 The trading bot and the data collector run as separate systemd units, in separate Python processes, with separate API keys, separate disk paths, and zero shared imports. Both consume the Kalshi WebSocket via a shared *transport-only* library `kalshi_wire/` (RSA-PSS authentication, connect/reconnect logic, frame parsing) — but the trading bot's `bot/feeds/kalshi.py` and the collector's `collector/ws_connection.py` consume it independently. This is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents drift in how Kalshi frames are interpreted across the two pipelines.
