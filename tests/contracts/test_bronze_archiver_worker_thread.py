@@ -343,8 +343,14 @@ def test_on_frame_returns_quickly_when_writer_blocks(monkeypatch):
 # ─── 4. Functional: worker drains queue → frames written ───────────────────
 
 
-def _wait_for(predicate, *, timeout=2.0, interval=0.005):
-    """Poll predicate() until truthy or timeout — avoids racing the worker."""
+def _wait_for(predicate, *, timeout=5.0, interval=0.005):
+    """Poll predicate() until truthy or timeout — avoids racing the worker.
+
+    R4-MINOR-3: timeout raised from 2.0s → 5.0s to absorb pytest-xdist
+    parallel-tier load (one observed flake at the 2.0s ceiling). The
+    polling interval stays small so the wait is still fast in the
+    common case; the longer ceiling only matters under contention.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -513,6 +519,12 @@ def test_stop_joins_worker_thread(monkeypatch):
     """``stop()`` MUST join the worker so pending frames flush before
     process exit. A daemon thread that gets killed mid-drain would
     truncate the JSONL chunk → silver QA detects gap.
+
+    R4-MINOR-2: stop() IS the subject of this test, so the usual
+    try/finally pattern would just re-call stop() on failure (no-op
+    after idempotency guard) — kept the straight-line form. Worker
+    thread leak on test-raise is bounded by daemon-thread reap at
+    process exit and the R2-M2 sister-test fixture's lessons.
     """
     archiver, fake_wire, _ = _make_archiver(monkeypatch)
     archiver.start()

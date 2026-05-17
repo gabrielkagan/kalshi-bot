@@ -166,8 +166,6 @@ def _make_archiver(monkeypatch, **overrides):
     above stops them in teardown so the daemon worker doesn't leak
     across tests.
     """
-    import time
-
     from collector import ws_connection as wc
 
     # Mock load_private_key BEFORE the BronzeArchiver ctor runs so a missing
@@ -217,12 +215,15 @@ def _make_archiver(monkeypatch, **overrides):
     return archiver, fake_wire, writers_by_channel
 
 
-def _wait_for_write(mock_writer, *, count=1, timeout=2.0, interval=0.005):
+def _wait_for_write(mock_writer, *, count=1, timeout=5.0, interval=0.005):
     """Bounded polling helper: returns True once ``mock_writer.write`` has
     been called at least ``count`` times, or False on timeout.
 
     Used by tests post-D1.3-fu4 to bridge the asyncio-thread → worker-thread
     handoff that ``_on_frame`` performs.
+
+    R4-MINOR-3: timeout raised from 2.0s → 5.0s to absorb pytest-xdist
+    parallel-tier load.
     """
     import time
     deadline = time.monotonic() + timeout
