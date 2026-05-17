@@ -585,6 +585,64 @@ def test_strategy_size_weekend_discount_fallback_applies_drawdown_scaler():
     assert got.contract_count == 3
 
 
+def test_strategy_size_weekend_discount_skips_fallback_on_negative_edge():
+    """Regression: weekend_discount fallback must NOT fire when sim's
+    fee_adjusted_edge is negative. Pre-86b9zk0aw the sim mirror lacked any
+    Kelly-sign gate on the fallback predicate; this Bit added the obvious-case
+    `fee_adjusted_edge_frac > 0` gate that closes the bug for rows where sim's
+    raw edge is already negative.
+
+    Partial parity caveat: production's `_wknd_kelly_f > 0` gate at
+    bot/scanner/__init__.py:3823 uses Kelly computed from band-calibrated
+    probability (P4.1, c1e6d85). Sim's `fee_adjusted_edge_frac` is computed
+    from `p_mean` (cal_mlp center) — band-calibration wrap is NOT applied.
+    So post-P4.1 rows where production correctly refused (band-calibrated
+    Kelly<0 but raw edge still positive) are NOT covered by this fix —
+    tracked as deeper structural followup ticket 86b9zk3at.
+
+    Ticket 86b9zk0aw.
+    """
+    import sim_pnl
+
+    got = sim_pnl._strategy_size(
+        strategy='weekend_discount',
+        fee_adjusted_edge_frac=-0.005,
+        available_balance_cents=100_000,
+        entry_price_cents=95,
+        current_balance_cents=100_000,
+        hwm_cents=100_000,
+        seconds_to_close=120.0,
+        asset='BTC',
+    )
+    assert got.contract_count == 0, (
+        f"weekend_discount must NOT fire fallback on negative sim edge. "
+        f"Got contract_count={got.contract_count}."
+    )
+    assert got.tier_idx == -1
+
+
+def test_strategy_size_weekend_discount_fallback_boundary_at_zero_edge():
+    """Boundary: fee_adjusted_edge_frac == 0.0 must NOT fire fallback.
+    Mirrors production's `(_wknd_kelly_f or 0) > 0` gate which evaluates
+    to False at Kelly==0. Pins boundary semantics in 86b9zk0aw."""
+    import sim_pnl
+
+    got = sim_pnl._strategy_size(
+        strategy='weekend_discount',
+        fee_adjusted_edge_frac=0.0,
+        available_balance_cents=100_000,
+        entry_price_cents=95,
+        current_balance_cents=100_000,
+        hwm_cents=100_000,
+        seconds_to_close=120.0,
+        asset='BTC',
+    )
+    assert got.contract_count == 0, (
+        f"weekend_discount must NOT fire fallback at edge==0. "
+        f"Got contract_count={got.contract_count}."
+    )
+
+
 def test_strategy_size_overnight_discount_no_fallback():
     """overnight_discount has NO Kelly=0 fallback (bot/_impl.py:14232 only
     applies the standard compute_size — no equivalent of WEEKEND_FIXED_RISK)."""
