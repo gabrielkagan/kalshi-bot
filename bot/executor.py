@@ -802,7 +802,10 @@ class OrderExecutor:
                         cal_mlp_p_std=candidate.get("cal_mlp_p_std"),
                         cal_mlp_final_lo=candidate.get("cal_mlp_final_lo"),
                         cal_mlp_final_hi=candidate.get("cal_mlp_final_hi"),
-                        cal_mlp_train_id=candidate.get("cal_mlp_train_id"))
+                        cal_mlp_train_id=candidate.get("cal_mlp_train_id"),
+                        config_snapshot_id=(
+                            self._ml.config_snapshot_id if self._ml else None
+                        ))
             except Exception as e:
                 logging.error(f"OBSERVATION_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
             return None
@@ -884,7 +887,10 @@ class OrderExecutor:
                 cal_mlp_p_std=candidate.get("cal_mlp_p_std"),
                 cal_mlp_final_lo=candidate.get("cal_mlp_final_lo"),
                 cal_mlp_final_hi=candidate.get("cal_mlp_final_hi"),
-                cal_mlp_train_id=candidate.get("cal_mlp_train_id"))
+                cal_mlp_train_id=candidate.get("cal_mlp_train_id"),
+                config_snapshot_id=(
+                    self._ml.config_snapshot_id if self._ml else None
+                ))
         except Exception as e:
             logging.error(f"CANDIDATE_DB_INSERT_FAILED: {candidate.get('ticker')}: {e}")
 
@@ -5236,6 +5242,9 @@ class OrderExecutor:
                         hourly_shadow_temp_1_75=None, hourly_shadow_temp_3_0=None,
                         hourly_shadow_blend_20=None, hourly_shadow_blend_30=None,
                         hourly_shadow_blend_60=None, hourly_post_temp_prob=None,
+                        config_snapshot_id=(
+                            self._ml.config_snapshot_id if self._ml else None
+                        ),
                         **_dip_oft_db,
                     )
                 except Exception:

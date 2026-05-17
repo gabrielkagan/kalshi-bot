@@ -147,6 +147,7 @@ from bot.constants import (
     WS_PERIODIC_RESNAPSHOT_INTERVAL_S,
 )
 from bot.helpers.breakers import _extract_tick_error_location
+from bot.helpers.config_snapshot import persist_config_snapshot
 from bot.helpers.strings import dollars_str_to_cents
 
 # Leaf classes (Sprint 4 + 7)
@@ -229,6 +230,20 @@ class MainLoop:
 
         self.client = KalshiClient(api_key, private_key_path)
         self.state = StateManager()
+        # Per-decision config snapshot capture (ticket 86b9zkp8p, 2026-05-17).
+        # Stamped onto every evaluated_opportunities + rejected_opportunities
+        # row this process writes, via OpportunityScanner reading
+        # `self._ml.config_snapshot_id`. Idempotent: INSERT OR IGNORE on the
+        # UNIQUE config_hash, so a restart that lands on the same config
+        # re-uses the existing snapshot id. Phase-1 captures ONCE per process
+        # boot; mid-day mutation re-capture is Phase-2 (followup ticket).
+        # Helper home: bot/helpers/config_snapshot.py. Schema chain pinned by
+        # tests/contracts/test_config_snapshot.py.
+        self.config_snapshot_id = persist_config_snapshot(self.state.conn)
+        logging.info(
+            "CONFIG_SNAPSHOT: id=%d (see config_snapshots table for hash + env_flags_json)",
+            self.config_snapshot_id,
+        )
         self.logger = Logger()
         self.feed = CoinbaseFeed()
         self.dvol_fetcher = DeribitDVOLFetcher()

@@ -11,6 +11,19 @@
   cid=  3  name=sizing_parity_status                                type=TEXT                  notnull=0  pk=0  dflt=None
   cid=  4  name=pid                                                 type=INTEGER               notnull=0  pk=0  dflt=None
 
+## config_snapshots (8 columns)
+  cid=  0  name=id                                                  type=INTEGER               notnull=0  pk=1  dflt=None
+  cid=  1  name=config_hash                                         type=TEXT                  notnull=1  pk=0  dflt=None
+  cid=  2  name=captured_at                                         type=TEXT                  notnull=1  pk=0  dflt=None
+  cid=  3  name=git_head_sha                                        type=TEXT                  notnull=0  pk=0  dflt=None
+  cid=  4  name=constants_sha                                       type=TEXT                  notnull=1  pk=0  dflt=None
+  cid=  5  name=config_sha                                          type=TEXT                  notnull=1  pk=0  dflt=None
+  cid=  6  name=market_config_sha                                   type=TEXT                  notnull=1  pk=0  dflt=None
+  cid=  7  name=env_flags_json                                      type=TEXT                  notnull=1  pk=0  dflt=None
+  Indexes (2):
+    idx_config_snapshots_hash                                 unique=0  origin=c  partial=0  cols=['config_hash']
+    sqlite_autoindex_config_snapshots_1                       unique=1  origin=u  partial=0  cols=['config_hash']
+
 ## egarch_params (9 columns)
   cid=  0  name=asset                                               type=TEXT                  notnull=0  pk=1  dflt=None
   cid=  1  name=omega                                               type=REAL                  notnull=1  pk=0  dflt=None
@@ -24,7 +37,7 @@
   Indexes (1):
     sqlite_autoindex_egarch_params_1                              unique=1  origin=pk  partial=0  cols=['asset']
 
-## evaluated_opportunities (142 columns)
+## evaluated_opportunities (143 columns)
   cid=  0  name=id                                                  type=INTEGER               notnull=0  pk=1  dflt=None
   cid=  1  name=ticker                                              type=TEXT                  notnull=1  pk=0  dflt=None
   cid=  2  name=event_ticker                                        type=TEXT                  notnull=1  pk=0  dflt=None
@@ -160,15 +173,17 @@
   cid=132  name=deribit_funding_rate_at_decision                    type=REAL                  notnull=0  pk=0  dflt=None
   cid=133  name=data_provenance                                     type=TEXT                  notnull=0  pk=0  dflt=None
   cid=134  name=bot_state_snapshot_json                             type=TEXT                  notnull=0  pk=0  dflt=None
-  cid=135  name=cal_mlp_p_mean                                      type=REAL                  notnull=0  pk=0  dflt=None
-  cid=136  name=cal_mlp_p_std                                       type=REAL                  notnull=0  pk=0  dflt=None
-  cid=137  name=cal_mlp_final_lo                                    type=REAL                  notnull=0  pk=0  dflt=None
-  cid=138  name=cal_mlp_final_hi                                    type=REAL                  notnull=0  pk=0  dflt=None
-  cid=139  name=cal_mlp_train_id                                    type=TEXT                  notnull=0  pk=0  dflt=None
-  cid=140  name=cal_mlp_skipped_reason                              type=TEXT                  notnull=0  pk=0  dflt=None
-  cid=141  name=cal_mlp_request_id                                  type=TEXT                  notnull=0  pk=0  dflt=None
-  Indexes (4):
+  cid=135  name=config_snapshot_id                                type=INTEGER               notnull=0  pk=0  dflt=None
+  cid=136  name=cal_mlp_p_mean                                      type=REAL                  notnull=0  pk=0  dflt=None
+  cid=137  name=cal_mlp_p_std                                       type=REAL                  notnull=0  pk=0  dflt=None
+  cid=138  name=cal_mlp_final_lo                                    type=REAL                  notnull=0  pk=0  dflt=None
+  cid=139  name=cal_mlp_final_hi                                    type=REAL                  notnull=0  pk=0  dflt=None
+  cid=140  name=cal_mlp_train_id                                    type=TEXT                  notnull=0  pk=0  dflt=None
+  cid=141  name=cal_mlp_skipped_reason                              type=TEXT                  notnull=0  pk=0  dflt=None
+  cid=142  name=cal_mlp_request_id                                  type=TEXT                  notnull=0  pk=0  dflt=None
+  Indexes (5):
     idx_eval_opp_calmlp_pending                               unique=0  origin=c  partial=1  cols=['evaluation_time']
+    idx_eval_opp_config_snapshot                              unique=0  origin=c  partial=0  cols=['config_snapshot_id']
     idx_eval_opp_ticker_stage                                 unique=1  origin=c  partial=0  cols=['ticker', 'filter_stage', 'side']
     idx_eval_opp_ticker                                       unique=0  origin=c  partial=0  cols=['ticker']
     idx_eval_opp_status                                       unique=0  origin=c  partial=0  cols=['status']
@@ -312,7 +327,7 @@
     idx_positions_asset                                           unique=0  origin=c  partial=0  cols=['asset']
     sqlite_autoindex_positions_1                                  unique=1  origin=pk  partial=0  cols=['ticker']
 
-## rejected_opportunities (36 columns)
+## rejected_opportunities (37 columns)
   cid=  0  name=ticker                                              type=TEXT                  notnull=0  pk=1  dflt=None
   cid=  1  name=event_ticker                                        type=TEXT                  notnull=1  pk=0  dflt=None
   cid=  2  name=asset                                               type=TEXT                  notnull=1  pk=0  dflt=None
@@ -349,9 +364,11 @@
   cid= 33  name=vol_regime                                          type=TEXT                  notnull=0  pk=0  dflt=None
   cid= 34  name=data_provenance                                     type=TEXT                  notnull=0  pk=0  dflt=None
   cid= 35  name=orderbook_levels_json                               type=TEXT                  notnull=0  pk=0  dflt=None
-  Indexes (2):
-    idx_rejected_status                                           unique=0  origin=c  partial=0  cols=['status']
-    sqlite_autoindex_rejected_opportunities_1                     unique=1  origin=pk  partial=0  cols=['ticker']
+  cid= 36  name=config_snapshot_id                                type=INTEGER               notnull=0  pk=0  dflt=None
+  Indexes (3):
+    idx_rejected_opp_config_snapshot                          unique=0  origin=c  partial=0  cols=['config_snapshot_id']
+    idx_rejected_status                                       unique=0  origin=c  partial=0  cols=['status']
+    sqlite_autoindex_rejected_opportunities_1                 unique=1  origin=pk  partial=0  cols=['ticker']
 
 ## settled_trades (24 columns)
   cid=  0  name=ticker                                              type=TEXT                  notnull=0  pk=1  dflt=None

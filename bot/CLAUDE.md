@@ -165,6 +165,67 @@ Adding keys to `_shadow_diag`: also update
 All schema-chain sites ship in one commit, otherwise the new key gets dropped
 silently at write time.
 
+## `config_snapshot_id` schema chain (ticket 86b9zkp8p, 2026-05-17)
+
+Per-decision config snapshot — every `evaluated_opportunities` +
+`rejected_opportunities` row carries an advisory pointer to `config_snapshots(id)` (no SQL FOREIGN KEY constraint — sqlite ALTER TABLE limitation) that
+captures EXACTLY which config produced the decision (sha256 over
+`bot/constants.py` + `bot/config.py` + `market_config.py` + sorted-key JSON of
+tracked env-var flags + git HEAD). Replay = look up the snapshot →
+restore the exact config → re-run.
+
+Schema-chain sites that ship in ONE commit (same discipline as `_shadow_diag`):
+
+1. `bot/helpers/config_snapshot.py` — `compute_config_snapshot()` returns the
+   7-key bundle (composite hash + 6 source fields); `persist_config_snapshot(conn)` inserts or looks up the
+   row, returns `id`. Helper-leaf module (stdlib only — reads the three
+   config files as FILE CONTENTS via sha256, not as Python imports).
+2. `bot/state.py::_create_tables` — `CREATE TABLE config_snapshots` + index +
+   `ALTER TABLE evaluated_opportunities ADD COLUMN config_snapshot_id INTEGER` +
+   matching `rejected_opportunities` ALTER + advisory-pointer indexes on both tables.
+3. `bot/state.py::insert_evaluated_opportunity` + `insert_rejection` —
+   `config_snapshot_id: Optional[int] = None` kwarg + INSERT column + VALUES
+   placeholder + (eval-only) `COALESCE(...)` in the ON CONFLICT DO UPDATE so
+   the FIRST snapshot stamp on a row survives subsequent UPSERTs.
+4. `bot/main_loop.py::MainLoop.__init__` — `self.config_snapshot_id =
+   persist_config_snapshot(self.state.conn)` after StateManager init. Phase-1
+   captures ONCE per process boot; mid-day mutation re-capture is Phase-2.
+5. **Every CALLER** of `insert_evaluated_opportunity(...)` and
+   `insert_rejection(...)` passes `config_snapshot_id=...`. Today's callers:
+   - `bot/scanner/__init__.py` — uses `config_snapshot_id=self._ml.config_snapshot_id`
+     (mirrors the existing `self._ml.X` constructor-injected attribute
+     pattern documented in `bot/scanner/CLAUDE.md`).
+   - `bot/executor.py` — uses `config_snapshot_id=self._ml.config_snapshot_id
+     if self._ml else None` (R1-C1 fix: 3 sites including the LIVE
+     `filter_stage="candidate"` trade-decision path; pre-fix all LIVE
+     trades had `config_snapshot_id IS NULL`, defeating the Bit goal).
+   - `bot/engines/sports_engine.py` — raw INSERT (bypasses StateManager
+     for thread-local conn); stamps `self._config_snapshot_id` cached
+     at first `_get_db_conn()` call via `persist_config_snapshot`
+     (R1-M1 fix; mirrors the parallel `data_provenance` lock-step
+     pattern from Sprint A.2).
+   AST guard `tests/contracts/test_config_snapshot.py::test_callers_pass_config_snapshot_id_to_inserts`
+   walks the CALLER_FILES list — extend that list when a new caller
+   appears.
+6. `tests/contracts/test_config_snapshot.py` — full chain pin: table exists,
+   columns exist, signatures accept kwarg, helper produces stable hashes,
+   hash rotates on file/env drift, persist returns existing id on dup hash,
+   round-trip via insert + JOIN reproduces the env bundle, AST guard verifies
+   every scanner call site passes the kwarg, AST guard verifies helper-leaf
+   rule, AST guard verifies `MainLoop.__init__` calls the helper.
+7. `tests/fixtures/state_db_schema_baseline.txt` — append `config_snapshots`
+   table section + bump `evaluated_opportunities` (142 → 143 cols,
+   advisory-pointer at cid=135 just before the cal_mlp_* cols added
+   later by `_calmlp_migrate_schema`) + `rejected_opportunities`
+   (36 → 37) + add advisory-pointer index entries. Bit 7.1
+   baseline-as-snapshot discipline.
+
+Splitting → new column gets silently dropped at write time (the prior
+`_shadow_diag` failure class). Phase-2 followup (filed at ship time): when
+a tracked env var or constant changes mid-process, the current snapshot
+becomes stale; Phase-2 adds a periodic re-hash + INSERT OR IGNORE per scan
+tick if the hash changed.
+
 ## Engine → CalEngine wiring (one-commit rule)
 
 Engine → CalEngine wiring ships in ONE commit:
