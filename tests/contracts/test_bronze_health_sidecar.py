@@ -344,3 +344,152 @@ def test_check_dropped_frames_handles_stale_sidecar(tmp_path):
     )
     assert result is not None
     assert "STALE" in result.upper() or "stale" in result.lower()
+
+
+# ─── R1-M2: rolling-window sustained-drip alerting ──────────────────────────
+
+
+def test_check_dropped_frames_alerts_on_sustained_drip(tmp_path):
+    """R1-M2 fix: a sustained 50 drops/tick × 6 ticks = 300 cumulative drops
+    must alert, even though each individual delta (50) < per-tick threshold (100).
+
+    The monitor now tracks ``pending_drops_since_last_alert`` across ticks
+    and alerts when that cumulative sum reaches ``threshold``. This closes
+    the silent observability hole where load-balanced steady-state drops
+    never trip the per-tick threshold.
+    """
+    from scripts.ops.collector_health_monitor import check_dropped_frames
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    # Baseline.
+    _write_sidecar(sidecar, archivers_data=[
+        {"conn_id": "A", "dropped_frames": 0, "write_queue_size": 0},
+    ], total_dropped=0)
+    check_dropped_frames(sidecar_path=sidecar, state_path=state, threshold=100)
+    # 5 ticks of 30 drops each = 150 cumulative; per-tick delta 30 < 100
+    # but pending_drops_since_last_alert reaches 150 by tick 5 → alert.
+    alerts = []
+    for i in range(1, 6):
+        _write_sidecar(sidecar, archivers_data=[
+            {"conn_id": "A", "dropped_frames": 30 * i, "write_queue_size": 0},
+        ], total_dropped=30 * i)
+        r = check_dropped_frames(
+            sidecar_path=sidecar, state_path=state, threshold=100,
+        )
+        if r is not None:
+            alerts.append((i, r))
+    assert alerts, (
+        "sustained 30-drops/tick × 5 ticks (150 total) should have alerted "
+        "via the pending_drops_since_last_alert running sum, but did not. "
+        "R1-M2 fix regression."
+    )
+    # The alert should reflect the cumulative sustained drops, not just
+    # the most-recent per-tick delta. The alert message should mention a
+    # count >= 100 (the threshold + at least one tick's worth above).
+    _, alert_msg = alerts[0]
+    assert "BRONZE_DROPPED_FRAMES" in alert_msg
+    # Extract the "N new drops" number from the alert message; should be
+    # >= threshold (100). Exact value depends on which tick crossed the
+    # bar — for 30/tick, tick 4 has pending=120 → alert "120 new drops".
+    import re as _re
+    m = _re.search(r"(\d+) new drops", alert_msg)
+    assert m is not None, f"alert missing 'N new drops': {alert_msg!r}"
+    assert int(m.group(1)) >= 100
+
+
+def test_check_dropped_frames_pending_resets_after_alert(tmp_path):
+    """After an alert fires, ``pending_drops_since_last_alert`` resets to 0
+    so the same backlog doesn't re-alert on every subsequent tick. New
+    drops accumulate fresh from the next tick.
+    """
+    from scripts.ops.collector_health_monitor import check_dropped_frames
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    _write_sidecar(sidecar, archivers_data=[
+        {"conn_id": "A", "dropped_frames": 0, "write_queue_size": 0},
+    ], total_dropped=0)
+    check_dropped_frames(sidecar_path=sidecar, state_path=state, threshold=100)
+    # Burst that alerts.
+    _write_sidecar(sidecar, archivers_data=[
+        {"conn_id": "A", "dropped_frames": 200, "write_queue_size": 0},
+    ], total_dropped=200)
+    r1 = check_dropped_frames(
+        sidecar_path=sidecar, state_path=state, threshold=100,
+    )
+    assert r1 is not None
+    # Same total (no new drops) → no alert.
+    r2 = check_dropped_frames(
+        sidecar_path=sidecar, state_path=state, threshold=100,
+    )
+    assert r2 is None
+    # +50 more drops (< threshold) → still no alert (pending reset to 0).
+    _write_sidecar(sidecar, archivers_data=[
+        {"conn_id": "A", "dropped_frames": 250, "write_queue_size": 0},
+    ], total_dropped=250)
+    r3 = check_dropped_frames(
+        sidecar_path=sidecar, state_path=state, threshold=100,
+    )
+    assert r3 is None
+
+
+# ─── R1-M1: env-var override propagates to monitor ──────────────────────────
+
+
+def test_check_dropped_frames_resolves_sidecar_via_env_var(tmp_path, monkeypatch):
+    """R1-M1 fix: if operator sets COLLECTOR_HEALTH_SIDECAR_PATH (e.g., to
+    relocate the sidecar onto a dedicated mount), the monitor's default
+    must resolve THROUGH that env var, NOT against a hardcoded module
+    constant. Otherwise the collector writes to the new location and
+    the monitor silently polls the absent old location → no alerts ever.
+    """
+    from scripts.ops import collector_health_monitor as mod
+    relocated_sidecar = tmp_path / "relocated_bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    monkeypatch.setenv("COLLECTOR_HEALTH_SIDECAR_PATH", str(relocated_sidecar))
+    _write_sidecar(relocated_sidecar, archivers_data=[
+        {"conn_id": "A", "dropped_frames": 500, "write_queue_size": 0},
+    ], total_dropped=500)
+    # Call WITHOUT explicit sidecar_path — must resolve env var.
+    # First call baselines (returns None) — that itself proves the env
+    # var resolved, because the state file gets written with the right
+    # baseline.
+    result = mod.check_dropped_frames(state_path=state, threshold=10)
+    assert result is None
+    saved = json.loads(state.read_text())
+    assert saved["last_total_dropped_frames"] == 500, (
+        "monitor did NOT read the env-var-relocated sidecar — baseline "
+        f"is {saved.get('last_total_dropped_frames')} instead of 500. "
+        "M1 fix regression: env var COLLECTOR_HEALTH_SIDECAR_PATH not "
+        "resolved at call time."
+    )
+
+
+# ─── R1-m1: schema-version validation ───────────────────────────────────────
+
+
+def test_check_dropped_frames_rejects_future_schema_version(tmp_path):
+    """R1-m1 fix: a future Bit that bumps schema_version (renaming or
+    removing keys) would silently make the monitor degrade to delta=0
+    forever. Validate schema_version == 1; on mismatch return an alert
+    instead of fail-quiet so the operator notices the version skew
+    rather than losing the dropped-frames signal.
+    """
+    from scripts.ops.collector_health_monitor import check_dropped_frames
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    payload = {
+        "schema_version": 99,  # future schema
+        "written_at": "2026-05-17T16:30:00.123456Z",
+        "archivers": [],
+        "total_dropped_frames": 0,
+        "total_queue_size": 0,
+    }
+    sidecar.write_text(json.dumps(payload))
+    result = check_dropped_frames(
+        sidecar_path=sidecar, state_path=state, threshold=10,
+    )
+    assert result is not None
+    assert "schema" in result.lower(), (
+        f"schema_version=99 should have surfaced a schema-mismatch alert; "
+        f"got: {result!r}"
+    )
