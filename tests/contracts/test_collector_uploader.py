@@ -249,13 +249,17 @@ def test_success_deletes_both_outbox_and_in_flight(tmp_path: Path):
 
 
 def test_failure_emits_alert_log(tmp_path: Path, caplog):
-    """rclone non-zero exits MUST emit a structured log line that D1.6 can
-    grep for. Per D0.3 §6 last bullet: D1.6 alerts on FIRST rclone non-zero,
-    not waiting on passive df watermark.
+    """rclone non-zero exits MUST emit a structured ERROR-level log line
+    that operators can grep for during disk-pressure triage. Per D0.3 §6
+    last bullet — but note D1.6 ships a passive `shutil.disk_usage`
+    ≥80%-used Telegram alert (NOT a per-rclone-failure alert), so this
+    log line is a diagnostic surface, not the D1.6 alert hook itself.
+    Operator runbook: `journalctl -u kalshi-collector | grep ERROR` to
+    surface the specific rclone exit code when D1.6's disk alert fires.
 
     The log line must include enough context for ops to triage
-    (exit code, stderr summary). The CONTRACT here is presence; exact
-    format is a D1.6 concern.
+    (exit code, stderr summary). The CONTRACT here is presence + exit
+    code; exact format is operator-discretion.
     """
     import logging
     outbox_dir = tmp_path / "outbox"
@@ -287,7 +291,7 @@ def test_failure_emits_alert_log(tmp_path: Path, caplog):
     ]
     assert matching, (
         f"no ERROR-level log emitted on rclone exit=6. D0.3 §6 last bullet "
-        f"requires D1.6 to alert on first rclone non-zero — uploader must "
+        f"requires the uploader to emit a structured ERROR for operator triage — "
         f"surface the failure as a structured log. Captured records: "
         f"{[(r.levelname, r.getMessage()) for r in caplog.records]}"
     )
