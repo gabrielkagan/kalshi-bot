@@ -165,6 +165,54 @@ Adding keys to `_shadow_diag`: also update
 All schema-chain sites ship in one commit, otherwise the new key gets dropped
 silently at write time.
 
+## `config_snapshot_id` schema chain (ticket 86b9zkp8p, 2026-05-17)
+
+Per-decision config snapshot — every `evaluated_opportunities` +
+`rejected_opportunities` row carries a FK to `config_snapshots(id)` that
+captures EXACTLY which config produced the decision (sha256 over
+`bot/constants.py` + `bot/config.py` + `market_config.py` + sorted-key JSON of
+tracked env-var flags + git HEAD). Replay = look up the snapshot →
+restore the exact config → re-run.
+
+Schema-chain sites that ship in ONE commit (same discipline as `_shadow_diag`):
+
+1. `bot/helpers/config_snapshot.py` — `compute_config_snapshot()` returns the
+   6-field bundle; `persist_config_snapshot(conn)` inserts or looks up the
+   row, returns `id`. Helper-leaf module (stdlib only — reads the three
+   config files as FILE CONTENTS via sha256, not as Python imports).
+2. `bot/state.py::_create_tables` — `CREATE TABLE config_snapshots` + index +
+   `ALTER TABLE evaluated_opportunities ADD COLUMN config_snapshot_id INTEGER` +
+   matching `rejected_opportunities` ALTER + FK indexes on both tables.
+3. `bot/state.py::insert_evaluated_opportunity` + `insert_rejection` —
+   `config_snapshot_id: Optional[int] = None` kwarg + INSERT column + VALUES
+   placeholder + (eval-only) `COALESCE(...)` in the ON CONFLICT DO UPDATE so
+   the FIRST snapshot stamp on a row survives subsequent UPSERTs.
+4. `bot/main_loop.py::MainLoop.__init__` — `self.config_snapshot_id =
+   persist_config_snapshot(self.state.conn)` after StateManager init. Phase-1
+   captures ONCE per process boot; mid-day mutation re-capture is Phase-2.
+5. `bot/scanner/__init__.py` — EVERY `insert_evaluated_opportunity(...)` and
+   `insert_rejection(...)` call passes
+   `config_snapshot_id=self._ml.config_snapshot_id` (mirrors the existing
+   `self._ml.X` constructor-injected attribute pattern documented in
+   `bot/scanner/CLAUDE.md`). 69 call sites today.
+6. `tests/contracts/test_config_snapshot.py` — full chain pin: table exists,
+   columns exist, signatures accept kwarg, helper produces stable hashes,
+   hash rotates on file/env drift, persist returns existing id on dup hash,
+   round-trip via insert + JOIN reproduces the env bundle, AST guard verifies
+   every scanner call site passes the kwarg, AST guard verifies helper-leaf
+   rule, AST guard verifies `MainLoop.__init__` calls the helper.
+7. `tests/fixtures/state_db_schema_baseline.txt` — append `config_snapshots`
+   table section + bump `evaluated_opportunities` (142 → 143 cols, FK at
+   cid=135 just before the cal_mlp_* cols added later by
+   `_calmlp_migrate_schema`) + `rejected_opportunities` (36 → 37) + add FK
+   index entries. Bit 7.1 baseline-as-snapshot discipline.
+
+Splitting → new column gets silently dropped at write time (the prior
+`_shadow_diag` failure class). Phase-2 followup (filed at ship time): when
+a tracked env var or constant changes mid-process, the current snapshot
+becomes stale; Phase-2 adds a periodic re-hash + INSERT OR IGNORE per scan
+tick if the hash changed.
+
 ## Engine → CalEngine wiring (one-commit rule)
 
 Engine → CalEngine wiring ships in ONE commit:

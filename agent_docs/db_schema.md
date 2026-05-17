@@ -47,6 +47,27 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 | counterfactual_pnl | REAL | Simulated PnL |
 | product_type | TEXT | 15m, hourly, spx_hourly, weather, sports |
 | orderbook_levels_json | TEXT | Top-10 YES ladder JSON `{"yes_bids":[[p,q],...],"yes_asks":[[p,q],...]}` from `_extract_book_levels`. Auto-filled from `_scan_ob_cache` (10s freshness gate; stale → NULL). |
+| config_snapshot_id | INTEGER FK | (Ticket 86b9zkp8p, 2026-05-17) FK → `config_snapshots(id)`. Captures EXACTLY which config produced this decision (sha256 over `bot/constants.py` + `bot/config.py` + `market_config.py` + sorted-key JSON of tracked env flags + git HEAD). Phase-1 stamped at `MainLoop.__init__` and propagated to every scanner call site via `self._ml.config_snapshot_id`. UPSERT-stable via `COALESCE` so re-emitted stages preserve their original decision-time snapshot. NULL on pre-Bit rows + any test/backfill caller that doesn't pass the kwarg. See `bot/helpers/config_snapshot.py` + `bot/CLAUDE.md` "config_snapshot_id schema chain". |
+
+## config_snapshots
+
+Per-decision config-hash table. Ticket 86b9zkp8p (2026-05-17). Replay = look up
+the snapshot row → restore the exact config bundle → re-run the decision.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INTEGER PK | Auto-increment. FK target for `evaluated_opportunities.config_snapshot_id` + `rejected_opportunities.config_snapshot_id`. |
+| config_hash | TEXT UNIQUE | sha256 over `constants_sha + "|" + config_sha + "|" + market_config_sha + "|" + env_flags_json + "|" + git_head_sha`. Composite key — drift in any one input rotates the hash. UNIQUE constraint + `INSERT OR IGNORE` means re-stamping an unchanged config returns the existing id (no row duplication on restart). |
+| captured_at | TEXT | ISO-8601 UTC of FIRST stamp. Subsequent INSERT-or-IGNORE returns the same id (won't update this field). |
+| git_head_sha | TEXT | Best-effort `git rev-parse HEAD`. "unknown" if git unavailable / no commits / 2s subprocess timeout exceeded. NULL never happens (deterministic sentinel). |
+| constants_sha | TEXT | sha256 of `bot/constants.py` file bytes. Missing file → sha256(b''). |
+| config_sha | TEXT | sha256 of `bot/config.py` file bytes. |
+| market_config_sha | TEXT | sha256 of `market_config.py` file bytes. |
+| env_flags_json | TEXT | sorted-key JSON of tracked env-var flags that are CURRENTLY SET: `CALMLP_ENABLED`, `WEATHER_NO_SIDE_LIVE`, `HOURLY_NO_SIDE_LIVE`, `BRACKET_NO_ENABLED`, `MEXC_FEED_ENABLED`, `BINANCE_FEED_ENABLED`, `BAND_CALIBRATION_DISABLED_CELLS`. Unset flags are OMITTED (keeps legacy-environment hash stable when a new flag is added later — only the live setting rotates the hash). |
+
+Indexes: `idx_config_snapshots_hash` (config_hash). Phase-1 captures the snapshot
+once per process boot at `MainLoop.__init__`; mid-day mutation re-capture is
+Phase-2 (followup ticket).
 
 ## rejected_opportunities
 
@@ -73,6 +94,7 @@ This doc is sister Bit 7.2 (ClickUp `86b9vda5u`); refreshed in lock-step with Bi
 | vol_regime | TEXT | (B.1a) 'normal' / 'elevated' from `vol_est["regime"]` at rejection time. NULL when rejection fires before vol_est is built. |
 | data_provenance | TEXT | (B.1a) 'live_ws' for live-bot inserts (mirrors `evaluated_opportunities.data_provenance` Sprint A.2 / commit f26a611). B.1a-fu2 (2026-05-12) adds 'backfill_b1a_fu2' for rows touched by `scripts/backfill/wave1_derived_cols.py` (stamped only when the backfill actually computed at least one Wave 1 cell; rows with all-live-written cells keep prov=NULL). |
 | orderbook_levels_json | TEXT | (B.1a) Top-N YES ladder JSON via `_get_fresh_ob_ladder` (10s freshness gate; stale → NULL). NULL on `no_orderbook` rejections — correct, the gate fires precisely because the ladder is absent. |
+| config_snapshot_id | INTEGER FK | (Ticket 86b9zkp8p, 2026-05-17) FK → `config_snapshots(id)`. Same semantics as the matching column on `evaluated_opportunities` — every rejection-decision row carries the snapshot that produced it, so regime-filter replay of rejected-side cohorts is deterministic. |
 
 ## Other tables
 

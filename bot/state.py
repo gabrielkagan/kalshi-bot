@@ -300,6 +300,26 @@ class StateManager:
                 updated_at TEXT NOT NULL DEFAULT ''
             );
 
+            -- Per-decision config snapshot (ticket 86b9zkp8p, 2026-05-17).
+            -- Captures EXACTLY which config produced each evaluated/rejected
+            -- decision via sha256 of bot/constants.py + bot/config.py +
+            -- market_config.py + sorted-key JSON of tracked env-var flags +
+            -- git HEAD. Phase-1 captures once at MainLoop.__init__; mid-day
+            -- mutation re-capture is Phase-2. See bot/CLAUDE.md
+            -- "config_snapshot_id schema chain" + bot/helpers/config_snapshot.py.
+            CREATE TABLE IF NOT EXISTS config_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                config_hash TEXT NOT NULL UNIQUE,
+                captured_at TEXT NOT NULL,
+                git_head_sha TEXT,
+                constants_sha TEXT NOT NULL,
+                config_sha TEXT NOT NULL,
+                market_config_sha TEXT NOT NULL,
+                env_flags_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_config_snapshots_hash
+                ON config_snapshots(config_hash);
+
             CREATE INDEX IF NOT EXISTS idx_positions_asset
                 ON positions(asset);
             CREATE INDEX IF NOT EXISTS idx_positions_status
@@ -795,6 +815,13 @@ class StateManager:
             # snapshot computation at the call site.
             # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
             ("bot_state_snapshot_json", "TEXT"),
+            # Per-decision config snapshot FK (ticket 86b9zkp8p, 2026-05-17).
+            # NULLABLE so legacy rows (pre-snapshot ship) and any caller that
+            # forgets to pass the kwarg remain insertable. New scanner call
+            # sites pass `config_snapshot_id=self._ml.config_snapshot_id`.
+            # See bot/helpers/config_snapshot.py + bot/CLAUDE.md
+            # "config_snapshot_id schema chain".
+            ("config_snapshot_id", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -812,6 +839,16 @@ class StateManager:
                 "ON evaluated_opportunities(ticker, filter_stage, side)")
             self.conn.commit()
         except Exception:
+            pass
+
+        # Migration: index on config_snapshot_id FK for fast replay lookups.
+        # Ticket 86b9zkp8p (2026-05-17). Idempotent: re-runs are no-ops.
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_eval_opp_config_snapshot "
+                "ON evaluated_opportunities(config_snapshot_id)")
+            self.conn.commit()
+        except sqlite3.OperationalError:
             pass
 
         # Migration: add new columns to rejected_opportunities (safe to re-run)
@@ -851,12 +888,26 @@ class StateManager:
             ("vol_regime", "TEXT"),
             ("data_provenance", "TEXT"),
             ("orderbook_levels_json", "TEXT"),
+            # Per-decision config snapshot FK (ticket 86b9zkp8p, 2026-05-17).
+            # See bot/helpers/config_snapshot.py + the matching
+            # evaluated_opportunities ALTER above for the schema chain.
+            ("config_snapshot_id", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE rejected_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
             except sqlite3.OperationalError:
                 pass  # column already exists
         self.conn.commit()
+
+        # Migration: index on config_snapshot_id FK for fast replay lookups
+        # (ticket 86b9zkp8p, 2026-05-17). Idempotent.
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rejected_opp_config_snapshot "
+                "ON rejected_opportunities(config_snapshot_id)")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
         # Migration: add enrichment columns to settled_trades
         for col_def in [
@@ -1740,7 +1791,15 @@ class StateManager:
                          sigma_winsorize: Optional[float] = None,
                          hour_sin: Optional[float] = None,
                          hour_cos: Optional[float] = None,
-                         prob_breakeven_gap: Optional[float] = None):
+                         prob_breakeven_gap: Optional[float] = None,
+                         # Per-decision config snapshot FK (ticket 86b9zkp8p,
+                         # 2026-05-17). NULLABLE for backward compat with
+                         # callers that pre-date the schema chain (e.g.
+                         # backfill scripts, integration tests). Production
+                         # scanner call sites pass
+                         # `config_snapshot_id=self._ml.config_snapshot_id`.
+                         # See bot/helpers/config_snapshot.py.
+                         config_snapshot_id: Optional[int] = None):
         """Insert a rejected opportunity. INSERT OR IGNORE keeps the first rejection reason.
 
         Sprint B Bit B.1a (2026-05-12) added auto-fill for the 7 new
@@ -1799,8 +1858,9 @@ class StateManager:
                  oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
                  no_ask_cents,
                  sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
-                 vol_regime, data_provenance, orderbook_levels_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 vol_regime, data_provenance, orderbook_levels_json,
+                 config_snapshot_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (ticker, event_ticker, asset, rejection_reason, now,
               z_score, spot_price, threshold, volatility, market_price,
               seconds_to_close, calibrated_prob, raw_prob, "pending",
@@ -1810,7 +1870,8 @@ class StateManager:
               oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
               no_ask_cents,
               sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
-              vol_regime, data_provenance, orderbook_levels_json))
+              vol_regime, data_provenance, orderbook_levels_json,
+              config_snapshot_id))
         self.conn.commit()
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -2004,7 +2065,16 @@ class StateManager:
                                      # wires the snapshot computation at the call site so
                                      # callers actually pass the JSON string.
                                      # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
-                                     bot_state_snapshot_json: Optional[str] = None):
+                                     bot_state_snapshot_json: Optional[str] = None,
+                                     # Per-decision config snapshot FK
+                                     # (ticket 86b9zkp8p, 2026-05-17). NULLABLE
+                                     # for backward compat. Production scanner
+                                     # call sites pass
+                                     # `config_snapshot_id=self._ml.config_snapshot_id`.
+                                     # See bot/helpers/config_snapshot.py +
+                                     # bot/CLAUDE.md "config_snapshot_id
+                                     # schema chain".
+                                     config_snapshot_id: Optional[int] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2360,8 +2430,9 @@ class StateManager:
                      sol_spot_at_decision, xrp_spot_at_decision,
                      hype_spot_at_decision, doge_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
-                     data_provenance, bot_state_snapshot_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     data_provenance, bot_state_snapshot_json,
+                     config_snapshot_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2513,7 +2584,17 @@ class StateManager:
                     -- (b) BEGIN IMMEDIATE raised + provider raised, or
                     -- (c) product_type != '15m' (by design — non-15M
                     -- product_types leave the column NULL).
-                    bot_state_snapshot_json=excluded.bot_state_snapshot_json
+                    bot_state_snapshot_json=excluded.bot_state_snapshot_json,
+                    -- Per-decision config snapshot FK (ticket 86b9zkp8p,
+                    -- 2026-05-17). COALESCE so the FIRST snapshot stamp on
+                    -- a row survives subsequent UPSERTs (e.g. mid-day
+                    -- mutation that re-captures via a future Phase-2
+                    -- followup — the original decision-time snapshot is
+                    -- what replay must consult, not whichever snapshot
+                    -- happens to be current at the next tick). Mirrors the
+                    -- data_provenance COALESCE pattern immediately above
+                    -- (round-2 review of the H-2 Phase G-6 ship).
+                    config_snapshot_id=COALESCE(evaluated_opportunities.config_snapshot_id, excluded.config_snapshot_id)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -2572,7 +2653,8 @@ class StateManager:
                   sol_spot_at_decision, xrp_spot_at_decision,
                   hype_spot_at_decision, doge_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
-                  data_provenance, bot_state_snapshot_json))
+                  data_provenance, bot_state_snapshot_json,
+                  config_snapshot_id))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.

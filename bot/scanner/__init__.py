@@ -623,7 +623,7 @@ class OpportunityScanner:
                 fee_adjusted_edge=_v2_fee_edge,
                 product_type="hourly",
                 shadow_cal_temperature=_v2_data.get("temperature"),
-                **_shadow_diag)
+                config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
         except Exception:
             logging.warning("insert_evaluated_opportunity failed (hourly_observation_v2)", exc_info=True)
 
@@ -1598,7 +1598,7 @@ class OpportunityScanner:
                         filter_stage="silent_loss_cooldown",
                         rejection_reason="asset in cooldown_assets",
                         seconds_to_close=window.get("seconds_to_close"),
-                        product_type=_pt or "15m")
+                        product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
                 except Exception:
                     logging.debug(
                         "silent_loss_cooldown trace insert failed",
@@ -1634,7 +1634,7 @@ class OpportunityScanner:
                             rejection_reason=f"spot={spot} from feed",
                             spot_price=spot if spot is not None else None,
                             seconds_to_close=window.get("seconds_to_close"),
-                            product_type=_pt or "15m")
+                            product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
                     except Exception:
                         logging.debug(
                             "silent_spot_none trace insert failed",
@@ -1706,7 +1706,7 @@ class OpportunityScanner:
                                 else f"blended_rv={_br} buf_len={_buf_len}"),
                             spot_price=spot,
                             seconds_to_close=seconds_remaining,
-                            product_type=_pt or "15m")
+                            product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
                     except Exception:
                         logging.debug(
                             "silent_vol_none trace insert failed",
@@ -1807,7 +1807,7 @@ class OpportunityScanner:
                                 asset, "threshold_unparsable",
                                 None, spot, None, blended_rv, None,
                                 seconds_remaining, None,
-                                product_type=window.get("product_type"))
+                                product_type=window.get("product_type"), config_snapshot_id=self._ml.config_snapshot_id)
                         except Exception:
                             logging.warning(
                                 "threshold_unparsable insert_rejection failed",
@@ -1845,6 +1845,7 @@ class OpportunityScanner:
                                     filter_stage="threshold_implausible",
                                     rejection_reason=f"|thr-spot|/spot={_thr_ratio:.4f} > 0.05",
                                     spot_price=spot, threshold=threshold,
+                                    config_snapshot_id=self._ml.config_snapshot_id,
                                 )
                             except Exception:
                                 logging.debug("threshold_implausible log failed", exc_info=True)
@@ -1885,7 +1886,7 @@ class OpportunityScanner:
                                         # paths that lead to spx_hourly/hourly/weather
                                         # price_out_of_range_early reach here with
                                         # vol_est populated).
-                                        vol_regime=vol_est["regime"])
+                                        vol_regime=vol_est["regime"], config_snapshot_id=self._ml.config_snapshot_id)
                                 except Exception:
                                     logging.warning(
                                         "price_out_of_range_early insert_rejection failed",
@@ -1925,7 +1926,7 @@ class OpportunityScanner:
                                     None, spot, threshold,
                                     blended_rv, None,
                                     seconds_remaining, None,
-                                    product_type=_pt)
+                                    product_type=_pt, config_snapshot_id=self._ml.config_snapshot_id)
                             except Exception:
                                 logging.warning(
                                     "weather_prob_none insert_rejection failed",
@@ -1949,6 +1950,7 @@ class OpportunityScanner:
                                 wx_ensemble_mean=None, wx_ensemble_std=None,
                                 wx_n_members=0,
                                 wx_market_type=_shadow_extra.get("wx_market_type"),
+                                config_snapshot_id=self._ml.config_snapshot_id,
                             )
                         continue
                     prob_result = {
@@ -2022,7 +2024,7 @@ class OpportunityScanner:
                                 blended_rv, rej_ask, seconds_remaining, cal_prob,
                                 raw_prob=raw_prob_pre,
                                 product_type=window.get("product_type"),
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.warning(
                                 "tradeable_false insert_rejection failed",
@@ -2095,7 +2097,7 @@ class OpportunityScanner:
                                 product_type=window.get("product_type"),
                                 # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                                 vol_regime=vol_est["regime"],
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.warning(
                                 "low_probability_15m insert_rejection failed",
@@ -2174,7 +2176,7 @@ class OpportunityScanner:
                                 product_type=window.get("product_type"),
                                 # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                                 vol_regime=vol_est["regime"],
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.debug(
                                 "insert_rejection no_orderbook failed",
@@ -2246,7 +2248,7 @@ class OpportunityScanner:
                             product_type=window.get("product_type"),
                             # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                             vol_regime=vol_est["regime"],
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.debug(
                             "insert_rejection no_best_ask failed",
@@ -2537,7 +2539,7 @@ class OpportunityScanner:
                                 hourly_shadow_temp_1_75=None, hourly_shadow_temp_3_0=None,
                                 hourly_shadow_blend_20=None, hourly_shadow_blend_30=None,
                                 hourly_shadow_blend_60=None, hourly_post_temp_prob=None,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.warning("insert_evaluated_opportunity failed (price_out_of_range)", exc_info=True)
                     if PRICE_SHADOW_ENABLED and PRICE_SHADOW_FLOOR <= best_ask < _entry_floor:
@@ -2677,7 +2679,7 @@ class OpportunityScanner:
                                             (1.0 - best_ask / 100.0) - _no_ask_dc / 100.0 - _no_fee_dc / 100.0, 6),
                                         product_type=window.get("product_type"),
                                         side="no",
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (dc_shadow_no_side POR)", exc_info=True)
 
@@ -2789,7 +2791,7 @@ class OpportunityScanner:
                                                 drawdown_scaler=self._sizer._drawdown_scaler_readonly(self._get_balance_cached() or 0),
                                                 strategy="low_price_near_expiry",
                                                 product_type=window.get("product_type"),
-                                                **_oft_db, **_shadow_diag)
+                                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                         except Exception:
                                             logging.warning("insert_evaluated_opportunity failed (lpne)", exc_info=True)
                                     continue  # Skip floor rejection — this is now an LPNE candidate
@@ -2825,7 +2827,7 @@ class OpportunityScanner:
                             raw_prob=raw_prob_pre,
                             calibration_method=calibration_method_pre,
                             product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # Re-run probability with market price for sanity check
@@ -2868,7 +2870,7 @@ class OpportunityScanner:
                                 product_type=window.get("product_type"),
                                 **_oft_db,
                                 **{k: v for k, v in _shadow_diag.items()
-                                   if not k.startswith("cal_mlp_")})
+                                   if not k.startswith("cal_mlp_")}, config_snapshot_id=self._ml.config_snapshot_id)
                         except Exception:
                             logging.warning(
                                 "tradeable_false (with_market) insert_rejection failed",
@@ -3279,7 +3281,7 @@ class OpportunityScanner:
                                     fee_adjusted_edge=kwargs.get("fee_adjusted_edge", fee_adjusted_edge),
                                     product_type=window.get("product_type"),
                                     side=kwargs.get("side"),
-                                    **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
 
@@ -3422,7 +3424,7 @@ class OpportunityScanner:
                                                     z_score=z_score, raw_prob=raw_prob,
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     best_ask_source=best_ask_source,
-                                                    product_type="15m", **_shadow_diag)
+                                                    product_type="15m", config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                             except Exception:
                                                 logging.warning("insert_evaluated_opportunity failed (tm_nbbo_buffer)", exc_info=True)
                                     else:
@@ -3489,7 +3491,7 @@ class OpportunityScanner:
                                                         product_type="15m",
                                                         **{k: v for k, v in _shadow_diag.items()
                                                            if not k.startswith('cal_mlp_')},
-                                                        **_tm96_diag_clean)
+                                                        config_snapshot_id=self._ml.config_snapshot_id, **_tm96_diag_clean)
                                                 except Exception:
                                                     logging.warning("insert_evaluated_opportunity failed (tm96_calmlp_gate)", exc_info=True)
                                             # Round-1 #3: distinguish "trade was actually
@@ -3588,7 +3590,7 @@ class OpportunityScanner:
                                                     calibration_method=calibration_method,
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     product_type=window.get("product_type"),
-                                                    **_shadow_diag)
+                                                    config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                             except Exception:
                                                 logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
 
@@ -3735,7 +3737,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.warning("insert_evaluated_opportunity failed (hourly_observation)", exc_info=True)
                     # V2 variant: shadow cal pipeline (temperature + no blend)
@@ -3911,7 +3913,7 @@ class OpportunityScanner:
                                         calibration_method=calibration_method,
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _wknd_stage, exc_info=True)
 
@@ -4077,7 +4079,7 @@ class OpportunityScanner:
                                         calibration_method=calibration_method,
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _ovn_stage, exc_info=True)
 
@@ -4230,7 +4232,7 @@ class OpportunityScanner:
                                         calibration_method=calibration_method,
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _dc_tier, exc_info=True)
 
@@ -4269,7 +4271,7 @@ class OpportunityScanner:
                                             calibration_method=calibration_method,
                                             fee_adjusted_edge=fee_adjusted_edge,
                                             product_type=window.get("product_type"),
-                                            **_shadow_diag)
+                                            config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                     except Exception:
                                         logging.warning("insert_evaluated_opportunity failed (dc_t2_z2_phase1_shadow)", exc_info=True)
 
@@ -4317,7 +4319,7 @@ class OpportunityScanner:
                                                     raw_prob=raw_prob,
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     product_type=window.get("product_type"),
-                                                    **_shadow_diag)
+                                                    config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                             except Exception:
                                                 logging.warning("insert_evaluated_opportunity failed (decided_window_cap_skip)", exc_info=True)
                                         self._dc_window_cap_skips += 1
@@ -4428,7 +4430,7 @@ class OpportunityScanner:
                                         raw_prob=raw_prob,
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
 
@@ -4474,7 +4476,7 @@ class OpportunityScanner:
                                         ask_depth=ask_depth, best_ask_source=best_ask_source,
                                         position_size=HOURLY_DC_CONTRACTS,
                                         product_type="hourly",
-                                        **_oft_db, **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc)", exc_info=True)
 
@@ -4521,7 +4523,7 @@ class OpportunityScanner:
                                         position_size=25,
                                         product_type="hourly",
                                         egarch_sigma=_hdc2_sigma,
-                                        **_oft_db)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc_97c_stc600)", exc_info=True)
 
@@ -4564,7 +4566,7 @@ class OpportunityScanner:
                                         position_size=25,
                                         product_type="hourly",
                                         egarch_sigma=_hdc3_sigma,
-                                        **_oft_db)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc_93c_stc300)", exc_info=True)
 
@@ -4602,7 +4604,7 @@ class OpportunityScanner:
                                         breakeven_wr=best_ask / 100.0,
                                         ask_depth=ask_depth, best_ask_source=best_ask_source,
                                         product_type="spx_hourly",
-                                        **_oft_db, **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                     logging.info(
                                         "SPX_DC_SHADOW: %s %dc z=%.1f sig=%s spot=%.1f thresh=%.1f dist=$%.0f (%.2f%%) stc=%.0f day=%d",
                                         ticker, best_ask, z_score,
@@ -4668,7 +4670,7 @@ class OpportunityScanner:
                                         calibration_method=calibration_method,
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (relaxed_edge_shadow)", exc_info=True)
 
@@ -4913,7 +4915,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                             _dbw_dt = time.perf_counter() - _dbw_start
                             if _dbw_dt > 0.2:
                                 logging.warning(
@@ -5059,7 +5061,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     except Exception:
                         logging.warning("insert_evaluated_opportunity failed (strategy_wait)", exc_info=True)
                     # For observation-only product types, let signal flow through
@@ -5103,7 +5105,7 @@ class OpportunityScanner:
                             hourly_shadow_blend_30=_hourly_shadow_blend_30,
                             hourly_shadow_blend_60=_hourly_shadow_blend_60,
                             hourly_post_temp_prob=_hourly_post_temp_prob,
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # Layer 2: STC timing restriction (config-driven)
@@ -5144,7 +5146,7 @@ class OpportunityScanner:
                             hourly_shadow_blend_30=_hourly_shadow_blend_30,
                             hourly_shadow_blend_60=_hourly_shadow_blend_60,
                             hourly_post_temp_prob=_hourly_post_temp_prob,
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # Layer 3b: Per-window position limit (config-driven)
@@ -5185,7 +5187,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         continue
 
                 # Layer 3c: Per-window aggregate risk cap (config-driven)
@@ -5228,7 +5230,7 @@ class OpportunityScanner:
                                 hourly_shadow_blend_30=_hourly_shadow_blend_30,
                                 hourly_shadow_blend_60=_hourly_shadow_blend_60,
                                 hourly_post_temp_prob=_hourly_post_temp_prob,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         continue
 
                 # ── WEATHER FOCUS FILTER ──
@@ -5271,7 +5273,7 @@ class OpportunityScanner:
                                 kelly_f=sizing.get("kelly_f") if sizing else None,
                                 position_size=sizing.get("contracts") if sizing else None,
                                 drawdown_scaler=sizing.get("drawdown_scaler") if sizing else None,
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         continue
 
                 # ── HOURLY EDGE CAP ──
@@ -5290,7 +5292,7 @@ class OpportunityScanner:
                                 vol_regime=vol_est["regime"], raw_prob=raw_prob,
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0,
-                                product_type="hourly", **_oft_db, **_shadow_diag)
+                                product_type="hourly", config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.warning("insert_evaluated_opportunity failed (hourly_edge_cap)", exc_info=True)
                     continue
@@ -5405,7 +5407,7 @@ class OpportunityScanner:
                             ofa_adjustment=ofa_adjustment,
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
-                            product_type=_obs_pt, **_obs_extra, **_oft_db, **_shadow_diag)
+                            product_type=_obs_pt, config_snapshot_id=self._ml.config_snapshot_id, **_obs_extra, **_oft_db, **_shadow_diag)
                     _obs_log_prefix = {"hourly": "HOURLY_OBS", "spx_hourly": "SPX_OBS", "weather": "WEATHER_OBS"}.get(_obs_pt, "OBS")
                     logging.info("%s: %s ask=%d edge=%.2f%% prob=%.1f%% stc=%.0fs",
                                  _obs_log_prefix, ticker, best_ask, fee_adjusted_edge * 100, final_prob * 100, seconds_remaining)
@@ -5438,7 +5440,7 @@ class OpportunityScanner:
                                         z_score=z_score, raw_prob=round(1.0 - raw_prob, 6) if raw_prob else None,
                                         product_type="spx_hourly",
                                         side="no",
-                                        **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                 except Exception:
                                     logging.debug("spx_no_side_observation insert failed", exc_info=True)
                     # ── Weather Shadow Variants (capped30, short_stc) ──
@@ -5484,7 +5486,7 @@ class OpportunityScanner:
                                     wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
                                     wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                     wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
-                                    **_oft_db, **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _wsname, exc_info=True)
                         # ── Bracket NO intercept ──────────────────────────
@@ -5581,7 +5583,7 @@ class OpportunityScanner:
                                                 wx_market_type=_shadow_extra.get("wx_market_type"),
                                                 wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
                                                 wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
-                                                **_oft_db, **_shadow_diag)
+                                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                         except Exception:
                                             logging.warning("insert_evaluated_opportunity failed (bracket_no)", exc_info=True)
 
@@ -5638,7 +5640,7 @@ class OpportunityScanner:
                                         wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
                                         wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                         wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
-                                        **_oft_db, **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (weather_no_shadow)", exc_info=True)
                             # Note: the weather NO LIVE CANDIDATE was previously here, nested
@@ -5685,7 +5687,7 @@ class OpportunityScanner:
                                     drawdown_scaler=sizing["drawdown_scaler"],
                                     strategy=strategy, old_system_prob=_old_system_prob,
                                     product_type="hourly",
-                                    **_oft_db, **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (hourly_config_a)", exc_info=True)
                     # ── Config B: BTC 70-89c wl2 (promotion candidate) ──
@@ -5726,7 +5728,7 @@ class OpportunityScanner:
                                         drawdown_scaler=sizing["drawdown_scaler"],
                                         strategy=strategy, old_system_prob=_old_system_prob,
                                         product_type="hourly",
-                                        **_oft_db, **_shadow_diag)
+                                        config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                                 except Exception:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_config_b)", exc_info=True)
                     # ── Configs C–G: data-driven shadow variants ──
@@ -5787,7 +5789,7 @@ class OpportunityScanner:
                                     drawdown_scaler=sizing["drawdown_scaler"],
                                     strategy=strategy, old_system_prob=_old_system_prob,
                                     product_type="hourly",
-                                    **_oft_db, **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _sname, exc_info=True)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
@@ -5898,7 +5900,7 @@ class OpportunityScanner:
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
                             product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # ── STC EXTENDED ZONE FLOOR (300-600s, 15M only) ──
@@ -5965,7 +5967,7 @@ class OpportunityScanner:
                                     strategy=strategy,
                                     old_system_prob=_old_system_prob,
                                     product_type=window.get("product_type"),
-                                    **_oft_db, **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                             continue
 
                 # ── XRP SHADOW GATE (15M only) ──
@@ -5994,7 +5996,7 @@ class OpportunityScanner:
                             old_system_prob=_old_system_prob,
                             product_type=window.get("product_type"),
                             counterfactual=_xrp_88_tag,
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # ── HYPE KILL-SWITCH GATE (15M only — T1 shadow 2026-05-10 → T4 live 2026-05-14) ──
@@ -6024,7 +6026,7 @@ class OpportunityScanner:
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
                             product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # ── DOGE KILL-SWITCH GATE (15M only — T1 shadow 2026-05-10 → T4 live 2026-05-14) ──
@@ -6054,7 +6056,7 @@ class OpportunityScanner:
                             strategy=strategy,
                             old_system_prob=_old_system_prob,
                             product_type=window.get("product_type"),
-                            **_oft_db, **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
                 # ── SOL SUB-86c TIME GATE (15M only) ──
@@ -6088,7 +6090,7 @@ class OpportunityScanner:
                                 strategy=strategy,
                                 old_system_prob=_old_system_prob,
                                 product_type=window.get("product_type"),
-                                **_oft_db, **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                         except Exception:
                             logging.warning("insert_evaluated_opportunity failed (sol_low_entry_high_stc)", exc_info=True)
                     continue
@@ -6158,7 +6160,7 @@ class OpportunityScanner:
                             z_score=z_score, raw_prob=raw_prob,
                             fee_adjusted_edge=fee_adjusted_edge,
                             product_type=window.get("product_type"),
-                            **_shadow_diag)
+                            config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                     except Exception:
                         logging.debug("sol_high_edge_shadow insert failed", exc_info=True)
 
@@ -6265,7 +6267,7 @@ class OpportunityScanner:
                                     calibration_method=calibration_method,
                                     fee_adjusted_edge=fee_adjusted_edge,
                                     product_type=window.get("product_type"),
-                                    **_shadow_diag)
+                                    config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                             except Exception:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _tod_stage, exc_info=True)
 
@@ -6290,7 +6292,7 @@ class OpportunityScanner:
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 position_size=sizing.get("contracts"),
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                         except Exception:
                             logging.debug("sol_usmorn_sub88 insert failed", exc_info=True)
 
@@ -6316,7 +6318,7 @@ class OpportunityScanner:
                                 fee_adjusted_edge=fee_adjusted_edge,
                                 position_size=sizing.get("contracts"),
                                 product_type=window.get("product_type"),
-                                **_shadow_diag)
+                                config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                         except Exception:
                             logging.debug("usaft_short_stc insert failed", exc_info=True)
 
@@ -6512,7 +6514,7 @@ class OpportunityScanner:
                                     hourly_shadow_blend_20=c.get("hourly_shadow_blend_20"),
                                     hourly_shadow_blend_30=c.get("hourly_shadow_blend_30"),
                                     hourly_shadow_blend_60=c.get("hourly_shadow_blend_60"),
-                                    hourly_post_temp_prob=c.get("hourly_post_temp_prob"))
+                                    hourly_post_temp_prob=c.get("hourly_post_temp_prob"), config_snapshot_id=self._ml.config_snapshot_id)
                         except Exception:
                             logging.warning("single_asset_selection insert failed for %s", c.get("ticker"), exc_info=True)
         else:
@@ -6636,7 +6638,7 @@ class OpportunityScanner:
                                 cal_mlp_p_std=_drop.get("cal_mlp_p_std"),
                                 cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
                                 cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
-                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"))
+                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"), config_snapshot_id=self._ml.config_snapshot_id)
                         except Exception:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
@@ -6746,7 +6748,7 @@ class OpportunityScanner:
                                 cal_mlp_p_std=_drop.get("cal_mlp_p_std"),
                                 cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
                                 cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
-                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"))
+                                cal_mlp_train_id=_drop.get("cal_mlp_train_id"), config_snapshot_id=self._ml.config_snapshot_id)
                         except Exception:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
@@ -6960,7 +6962,7 @@ class OpportunityScanner:
                     hourly_shadow_blend_30=_hourly_shadow_blend_30,
                     hourly_shadow_blend_60=_hourly_shadow_blend_60,
                     hourly_post_temp_prob=_hourly_post_temp_prob,
-                    **item["_oft_db"], **item["_shadow_diag"])
+                    config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("price_shadow processing error", exc_info=True)
 
@@ -7204,7 +7206,7 @@ class OpportunityScanner:
                         raw_prob=raw_prob,
                         calibration_method=calibration_method,
                         product_type=_pt,
-                        **item["_oft_db"], **item["_shadow_diag"])
+                        config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
                 except Exception:
                     logging.warning("insert_evaluated_opportunity failed (overnight_lp_shadow)", exc_info=True)
         except Exception:
@@ -7406,7 +7408,7 @@ class OpportunityScanner:
                         raw_prob=raw_prob,
                         calibration_method=calibration_method,
                         product_type=_pt,
-                        **item["_oft_db"], **item["_shadow_diag"])
+                        config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
                 except Exception:
                     logging.warning("insert_evaluated_opportunity failed (low_price_shadow)", exc_info=True)
 
@@ -7596,7 +7598,7 @@ class OpportunityScanner:
                                         wx_hrrr_temp=_wnl_sx.get("wx_hrrr_temp"),
                                         wx_corrected_mean=_wnl_sx.get("wx_corrected_mean"),
                                         wx_no_side_edge=_wnl_sx.get("wx_no_side_edge"),
-                                        **item.get("_oft_db", {}),
+                                        config_snapshot_id=self._ml.config_snapshot_id, **item.get("_oft_db", {}),
                                         **item.get("_shadow_diag", {}))
                                 except Exception:
                                     logging.warning(
@@ -7689,7 +7691,7 @@ class OpportunityScanner:
                                     hourly_pre_temp_prob=item.get("hourly_pre_temp_prob"),
                                     hourly_applied_temp_t=item.get("hourly_applied_temp_t"),
                                     hourly_post_temp_prob=item.get("hourly_post_temp_prob"),
-                                    **item.get("_oft_db", {}),
+                                    config_snapshot_id=self._ml.config_snapshot_id, **item.get("_oft_db", {}),
                                     **item.get("_shadow_diag", {}))
                             except Exception:
                                 logging.warning(
@@ -7846,7 +7848,7 @@ class OpportunityScanner:
                     hourly_pre_temp_prob=_no_hourly_pre,
                     hourly_applied_temp_t=_no_hourly_t,
                     hourly_post_temp_prob=_no_hourly_post,
-                    **item["_oft_db"], **item["_shadow_diag"])
+                    config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
         except Exception:
             logging.warning("no_side_shadow processing error", exc_info=True)
 
