@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP, HYPE, DOGE — all six live post P2.3 promotion 2026-05-14) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. BNB is in T1 shadow observation as of 2026-05-17 (ticket 86b9zmj0c) — bot evaluates BNB 15M/hourly via Coinbase BNB-USD + Kalshi KXBNB15M/KXBNBD feeds, accumulating diagnostic rows for T3 calibration, but submits zero live BNB orders until T4 promotion. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
+Automated trading platform for Kalshi prediction markets. The core engine trades 15-minute cryptocurrency contracts (BTC, ETH, SOL, XRP, HYPE, DOGE — all six live post P2.3 promotion 2026-05-14) live, with several adjacent strategies layered on top: decided contracts, late-window momentum, weekend/overnight discounts, and a near-expiry low-price entry. Adjacent products (S&P 500 intraday, daily weather temperature across 19 US cities, and live sports outcomes across 28 leagues) run in observation or 1-contract verification mode while their CalEngines train.
 
 ## How It Works
 
@@ -114,7 +114,7 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Source | Transport | Data | Frequency |
 |--------|-----------|------|-----------|
-| Coinbase | WebSocket | BTC, ETH, SOL, XRP, HYPE, DOGE, BNB spot prices | 1s snapshots (300-sample buffer) |
+| Coinbase | WebSocket | BTC, ETH, SOL, XRP, HYPE, DOGE spot prices | 1s snapshots (300-sample buffer) |
 | Kraken | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Bybit | WebSocket | Spot prices for lead/lag detection | Real-time |
 | Binance | WebSocket | Spot prices (geo-blocked on VPS) | Real-time when reachable |
@@ -128,21 +128,20 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 214,993 |
+| Markets evaluated | 215,306 |
 | Observation period | 2026-02-22 to 2026-05-17 |
-| Filter pass rate | 4.0\% (8,670 of 214,993) |
-| Top rejection reason | Insufficient Edge (63,604) |
-| Settled trades | 4,378 (4,049 W / 327 L / 2 BE) |
+| Filter pass rate | 4.0\% (8,685 of 215,306) |
+| Top rejection reason | Insufficient Edge (63,683) |
+| Settled trades | 4,388 (4,059 W / 327 L / 2 BE) |
 | Win rate | 92.5\% |
 
-*Last updated: 2026-05-17T19:06:59Z*
+*Last updated: 2026-05-17T21:22:34Z*
 
 ## Live vs Observation
 
 The bot runs multiple product engines in parallel, with different live/observation states:
 
 - **15M crypto (BTC, ETH, SOL, XRP, HYPE, DOGE)** --- LIVE (XRP gated to 92c+, ETH to 90c+ main path with a separate 75--79c capped sub-tier; HYPE 90c+, DOGE 85c+ post P2.3 promotion 2026-05-14)
-- **15M crypto (BNB)** --- T1 SHADOW (2026-05-17, ticket 86b9zmj0c) — full evaluation pipeline writes diagnostic rows; zero live orders until T4
 - **Decided contracts (T1, T1B, T2, T2-Z25)** --- LIVE on top of 15M
 - **Late-window momentum (terminal_momentum at 96/98/99c)** --- LIVE
 - **Weekend / overnight discount entries** --- LIVE in restricted price/STC zones

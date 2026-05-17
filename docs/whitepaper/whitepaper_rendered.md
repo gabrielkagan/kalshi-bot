@@ -46,7 +46,7 @@ header-includes:
 
 This is the technical whitepaper. It is the deepest of the three companion documents (the others are a layperson summary and an investor whitepaper) and is intended for readers who want every implementation detail — the volatility math, the calibration pipeline architecture, the testing infrastructure, the data-corpus internals, the agentic-engineering operating model, and the roadmap. Citations are inline footnotes; primary references are listed at the end.
 
-The system is a quantitative trading platform that operates on **Kalshi**, the only CFTC-regulated Designated Contract Market for event contracts in the United States.[^kalshi-dcm] The primary live business is short-duration cryptocurrency contracts (15-minute windows on BTC, ETH, SOL, XRP, HYPE, DOGE), augmented by conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend and overnight discount entries, loss-burst cooldown). Adjacent verticals — S&P 500 intraday, weather temperature across 19 U.S. cities, sports comebacks across 28 leagues — run in observation mode. Hourly crypto is currently disabled, with the re-enable path preserved.
+The system is a quantitative trading platform that operates on **Kalshi**, the only CFTC-regulated Designated Contract Market for event contracts in the United States.[^kalshi-dcm] The primary live business is short-duration cryptocurrency contracts (15-minute windows on BTC, ETH, SOL, XRP, HYPE, DOGE), augmented by conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend and overnight discount entries, loss-burst cooldown). BNB is in T1 shadow observation as of 2026-05-17 (evaluation pipeline accumulates diagnostic rows; zero live BNB orders until T4 promotion ~3-4 weeks post-T1). Adjacent verticals — S&P 500 intraday, weather temperature across 19 U.S. cities, sports comebacks across 28 leagues — run in observation mode. Hourly crypto is currently disabled, with the re-enable path preserved.
 
 [^kalshi-dcm]: Kalshi was granted DCM status by the CFTC in November 2020 and publicly launched in 2021. Per the CEA, DCM operators must satisfy 23 Core Principles covering surveillance, financial integrity, position-reporting, anti-manipulation, and rulebook compliance. Sources: [Kalshi Market Integrity](https://kalshi.com/market-integrity/regulation); [Britannica](https://www.britannica.com/money/Kalshi-Inc); [CRS IF13187](https://www.congress.gov/crs-product/IF13187).
 
@@ -61,7 +61,7 @@ Two additional first-class assets coexist with the trading system: a **Data Corp
 > - `kalshi-collector.service` active since 2026-05-17 09:57:59 UTC after an operator-initiated restart; bronze day-zero (first non-empty chunk in S3) was ~09:52 UTC during an earlier run cycle on the same day.
 > - Six 15M live assets: BTC (88¢+), ETH (90¢+ main tier with a 75–79¢ sub-tier capped at 50 contracts), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+).
 > - P4.1 band-calibrated sizing live; soak through 2026-05-31.
-> - ~6,269 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
+> - ~6,506 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
 
 ## 1.3 First-principles statement of the system
 
@@ -181,7 +181,7 @@ kalshi-bot/
 │   ├── audit/                    ← /audit skill scripts (per-vertical Wilson CI)
 │   └── ops/                      ← maintenance crons (collector_health_monitor.py, etc.)
 │
-├── tests/                        ← ~6,269 tests, ~270 files, multi-tier
+├── tests/                        ← ~6,506 tests, ~270 files, multi-tier
 │   ├── contracts/                ← Tier 1: API + signature contracts
 │   ├── integration/              ← Tier 2: cross-module flow
 │   ├── unit/                     ← Tier 3: function-level
@@ -1000,7 +1000,7 @@ D2.1 (silver schema design) and D2.2 (ETL implementation) are upcoming tickets.
 
 ## 7.1 Motivation
 
-This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,269 tests, multi-vertical engines, a corpus collector, automated deploys, daily JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
+This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,506 tests, multi-vertical engines, a corpus collector, automated deploys, daily JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
 
 The published benchmark data is the empirical anchor for this thesis: as of May 2026, SWE-bench Verified shows that *the same LLM in different scaffolds* varies by 15+ percentage points.[^swebench-tech] The model is roughly fixed; the discipline around it varies; the discipline is the moat.
 
@@ -1072,7 +1072,7 @@ Tests are organized in 4 in-tree tiers plus out-of-band mutation testing:
 
 `mutmut` (mutation testing) periodically mutates the codebase one operator at a time and checks whether any test still fails. A "live" mutant — a code change that doesn't break a single test — indicates a gap in test coverage. The mutmut baseline is checked against `make` targets in CI.
 
-Test count at time of writing: **~6,269 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing**.
+Test count at time of writing: **~6,506 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing**.
 
 ### 7.3.5 Adversarial review (the distinctive pattern)
 
@@ -1197,7 +1197,7 @@ Tests are stratified in 4 in-tree tiers plus out-of-band mutation testing (§7.3
 | hooks | `tests/hooks/` (Claude Code hook integration) | 20 | CI required |
 | mutmut (out-of-band) | `make test-mutmut` against `bot/engines/{volatility,probability}.py` | ongoing | Periodic |
 
-Total in-tree: 6,269 tests at time of writing. Counts confirmed by `pytest --collect-only`.
+Total in-tree: 6,506 tests at time of writing. Counts confirmed by `pytest --collect-only`.
 
 ## 8.2 Tier 1 — contracts
 
@@ -1593,4 +1593,4 @@ The following are the primary sources cited by inline footnote elsewhere in this
 
 ---
 
-*Document last updated: 2026-05-17T19:06:59Z*
+*Document last updated: 2026-05-17T21:22:34Z*
