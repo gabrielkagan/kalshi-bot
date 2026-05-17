@@ -19,48 +19,20 @@ header-right: "\\footnotesize Investor Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
 footer-center: ""
 footer-right: "\\footnotesize \\thepage"
-mainfont: "DejaVu Sans"
+mainfont: "TeX Gyre Termes"
+sansfont: "TeX Gyre Heros"
 monofont: "DejaVu Sans Mono"
 fontsize: "11pt"
-geometry: "margin=1in"
+linestretch: 1.15
+geometry: "margin=1.1in"
 header-includes:
   - |
     ```{=latex}
-    \usepackage{tcolorbox}
+    \usepackage{etoolbox}
     \usepackage{xcolor}
-    \usepackage{textcomp}
-    \usepackage{colortbl}
-
     \definecolor{investorlink}{HTML}{1B4F72}
-    \definecolor{accent}{HTML}{E8A838}
-    \definecolor{darkblue}{HTML}{0D1B2A}
-    \definecolor{medblue}{HTML}{1B4F72}
-    \definecolor{calloutbg}{HTML}{EEF2F7}
-    \definecolor{calloutborder}{HTML}{1B4F72}
-    \definecolor{warningbg}{HTML}{FFF8E7}
-    \definecolor{warningborder}{HTML}{E8A838}
-
-    \newtcolorbox{metricbox}{
-      colback=calloutbg,
-      colframe=calloutborder,
-      arc=3pt,
-      boxrule=1.5pt,
-      left=12pt, right=12pt, top=10pt, bottom=10pt,
-      fontupper=\normalsize
-    }
-    \newtcolorbox{importantbox}{
-      colback=warningbg,
-      colframe=warningborder,
-      arc=3pt,
-      boxrule=1.5pt,
-      left=12pt, right=12pt, top=10pt, bottom=10pt,
-      fontupper=\normalsize
-    }
-    \usepackage{sectsty}
-    \sectionfont{\color{darkblue}}
-    \subsectionfont{\color{medblue}}
-    \subsubsectionfont{\color{medblue}}
-    \arrayrulecolor{medblue}
+    \AtBeginEnvironment{Highlighting}{\footnotesize}
+    \AtBeginEnvironment{verbatim}{\footnotesize}
     \setcounter{tocdepth}{2}
     ```
 ---
@@ -84,16 +56,13 @@ The third structural fact is that the entire platform is **operated by one perso
 
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
-\begin{metricbox}
-\textbf{Live trading snapshot (auto-updated, last refresh 2026-05-17T18:41:09Z):}
-\begin{itemize}
-\item \textbf{ 4,376 } settled trades since 2026-02-22 --- 4,047W / 327L / 2 BE; win rate 92.5\%
-\item Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
-\item Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
-\item 19 weather cities, 28 sports leagues, and S\&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
-\item Hourly crypto disabled since Apr 18 after a correlated multi-strike loss event; re-enable path preserved behind two environment variables
-\end{itemize}
-\end{metricbox}
+> **Live trading snapshot (auto-updated, last refresh 2026-05-17T19:06:59Z):**
+>
+> - **4,378** settled trades since 2026-02-22 — 4,049W / 327L / 2 BE; win rate 92.5\%
+> - Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
+> - Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
+> - 19 weather cities, 28 sports leagues, and S&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
+> - Hourly crypto disabled since Apr 18 after a correlated multi-strike loss event; re-enable path preserved behind two environment variables
 
 This document is structured around three theses. **Section 1** describes the bot — what trades today, why those particular assets, and where the edge comes from. **Section 2** describes the Data Corpus — what it is, why it might matter more than the bot, and what the realistic upside scenarios look like. **Section 3** describes the agentic-engineering operating model — why one person plus AI agents can credibly run this without quality collapse, and why the discipline embedded in the code is itself defensible. **Sections 4–6** cover risk management, capital ask context, and fair-witness disclosures.
 
@@ -159,28 +128,23 @@ The seven-step loop runs every second across every active contract. Most ticks r
 
 This section is more interesting than it looks. The single most important quality indicator for a multi-strategy trading system is **the willingness to turn things off when they stop working**. The current state, as of May 2026:
 
-\begin{importantbox}
-\textbf{Live (real capital at risk):}
-\begin{itemize}
-\item \textbf{15-minute crypto, six assets.} BTC (min entry 88\textcent), ETH (90\textcent\ main tier, 75--79\textcent\ sub-tier capped at 50 contracts), SOL (86\textcent, taker-first due to thin orderbooks), XRP (92\textcent), HYPE (90\textcent), DOGE (85\textcent). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14).
-\item \textbf{Six conditional overlays.} Decided contracts (four live tiers identifying near-certain outcomes via extreme z-scores), terminal momentum (96/98/99\textcent\ trades in the final 1--5 minutes), low-price near-expiry (BTC 80--87\textcent\ in the final 10--120 seconds), weekend discount (Sat/Sun 90\textcent+ at STC $\leq$ 600s), overnight discount (weekday 04--11 UTC 89\textcent+ at STC $\leq$ 600s), loss-burst cooldown (per-asset 2-hour lockout after any 15M loss; +\$441/30d counterfactual at last measurement).
-\item \textbf{P4.1 band-calibrated sizing.} Promoted 2026-05-17. Kelly sizing on 15M trades now receives a band-stratified calibrated probability (42-cell hierarchical-shrunk empirical lookup) rather than the raw model probability — this only changes Kelly magnitudes, not trade selection. Soak through 2026-05-31.
-\end{itemize}
+**Live (real capital at risk):**
 
-\textbf{Observation (capital not at risk, calibration data accumulating):}
-\begin{itemize}
-\item \textbf{S\&P 500 intraday} via Polygon.io and Finnhub price feeds, with VIX-adapted EGARCH and intraday-seasonal deseasonalization. Briefly live March 17, 2026 and reverted same-day after Polygon returned a 403 error, breaking the primary feed. Shadow throughout, with a HAR-RV competitor running in parallel.
-\item \textbf{Sports comeback signals} across 28 leagues (NBA, NHL, MLB, NFL, EPL, ATP/WTA tennis, soccer worldwide, UFC). Bayesian comeback model with conservative likelihood-ratio compression. Basketball alpha detected (69.2\% WR n=39 at last reading; sequential probability ratio test running, has not yet converged on stop-or-continue).
-\item \textbf{Hourly crypto NO-side} at 40--54\textcent\ price tier in single-contract verification mode. BTC NO at this tier had 53.9\% WR (n=1,113, p=0.005) pre-kill.
-\item \textbf{Shadow strategies in 15M:} A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (late-window 55--74\textcent).
-\end{itemize}
+- **15-minute crypto, six assets.** BTC (min entry 88¢), ETH (90¢ main tier, 75–79¢ sub-tier capped at 50 contracts), SOL (86¢, taker-first due to thin orderbooks), XRP (92¢), HYPE (90¢), DOGE (85¢). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14).
+- **Six conditional overlays.** Decided contracts (four live tiers identifying near-certain outcomes via extreme z-scores), terminal momentum (96/98/99¢ trades in the final 1–5 minutes), low-price near-expiry (BTC 80–87¢ in the final 10–120 seconds), weekend discount (Sat/Sun 90¢+ at STC ≤ 600s), overnight discount (weekday 04–11 UTC 89¢+ at STC ≤ 600s), loss-burst cooldown (per-asset 2-hour lockout after any 15M loss; +$441/30d counterfactual at last measurement).
+- **P4.1 band-calibrated sizing.** Promoted 2026-05-17. Kelly sizing on 15M trades now receives a band-stratified calibrated probability (42-cell hierarchical-shrunk empirical lookup) rather than the raw model probability — this only changes Kelly magnitudes, not trade selection. Soak through 2026-05-31.
 
-\textbf{Killed (turned off, not deferred --- explicit decision to halt with postmortem):}
-\begin{itemize}
-\item \textbf{Hourly crypto, full kill 2026-04-18.} Correlated multi-strike losses concentrated in the same hour-window across BTC/ETH/SOL/XRP. Re-enable path preserved (two env vars on the VPS), but the kill is the default state.
-\item \textbf{Weather NO-side, kill 2026-05-16.} Live from 2026-04-11 through kill in 1-contract verification mode at 39--40\textcent\ NO. Settlement-rate review showed lifetime n=167 with 38.3\% WR (Wilson 95\% CI [23.6\%, 47.0\%]) against an assumed 70\% prior --- the near-ATM zone is the market-maker zone, with no available edge. The far-ITM NO band (4--12\textcent) showed 91.7\% WR (n=157) in shadow and is where the next iteration of weather research is anchored.
-\end{itemize}
-\end{importantbox}
+**Observation (capital not at risk, calibration data accumulating):**
+
+- **S&P 500 intraday** via Polygon.io and Finnhub price feeds, with VIX-adapted EGARCH and intraday-seasonal deseasonalization. Briefly live March 17, 2026 and reverted same-day after Polygon returned a 403 error, breaking the primary feed. Shadow throughout, with a HAR-RV competitor running in parallel.
+- **Sports comeback signals** across 28 leagues (NBA, NHL, MLB, NFL, EPL, ATP/WTA tennis, soccer worldwide, UFC). Bayesian comeback model with conservative likelihood-ratio compression. Basketball alpha detected (69.2% WR n=39 at last reading; sequential probability ratio test running, has not yet converged on stop-or-continue).
+- **Hourly crypto NO-side** at 40–54¢ price tier in single-contract verification mode. BTC NO at this tier had 53.9% WR (n=1,113, p=0.005) pre-kill.
+- **Shadow strategies in 15M:** A1 (RecalibratedEGARCH), A2 (LightGBM), A3 (EGARCH gating), A4 (late-window 55–74¢).
+
+**Killed (turned off, not deferred — explicit decision to halt with postmortem):**
+
+- **Hourly crypto, full kill 2026-04-18.** Correlated multi-strike losses concentrated in the same hour-window across BTC/ETH/SOL/XRP. Re-enable path preserved (two env vars on the VPS), but the kill is the default state.
+- **Weather NO-side, kill 2026-05-16.** Live from 2026-04-11 through kill in 1-contract verification mode at 39–40¢ NO. Settlement-rate review showed lifetime n=167 with 38.3% WR (Wilson 95% CI [23.6%, 47.0%]) against an assumed 70% prior — the near-ATM zone is the market-maker zone, with no available edge. The far-ITM NO band (4–12¢) showed 91.7% WR (n=157) in shadow and is where the next iteration of weather research is anchored.
 
 The kill discipline matters. A system that ships every shadow strategy to live without an exit ramp accumulates dead-weight quickly. The architectural pattern — shadow → observation → live, with explicit pre-committed rollback rules — is the load-bearing quality control on every new strategy.
 
@@ -542,4 +506,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-17T18:41:09Z*
+*Last updated: 2026-05-17T19:06:59Z*

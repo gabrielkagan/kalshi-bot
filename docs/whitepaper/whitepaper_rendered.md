@@ -20,62 +20,23 @@ header-right: "\\footnotesize Technical Whitepaper"
 footer-left: "\\footnotesize Gabriel Kagan"
 footer-center: ""
 footer-right: "\\footnotesize \\thepage"
-mainfont: "DejaVu Sans"
+mainfont: "TeX Gyre Termes"
+sansfont: "TeX Gyre Heros"
 monofont: "DejaVu Sans Mono"
 fontsize: "11pt"
-geometry: "margin=1in"
+linestretch: 1.15
+geometry: "margin=1.1in"
 header-includes:
   - |
     ```{=latex}
-    \usepackage{tcolorbox}
-    \tcbuselibrary{breakable}
+    \usepackage{etoolbox}
     \usepackage{xcolor}
-    \usepackage{colortbl}
-
     \definecolor{navylink}{HTML}{2C4270}
     \definecolor{bluelink}{HTML}{2C5AA0}
-    \definecolor{navyprimary}{HTML}{1B2A4A}
-    \definecolor{navydark}{HTML}{0F1B33}
-    \definecolor{navylight}{HTML}{2C4270}
-    \definecolor{accentwarm}{HTML}{D4883E}
-    \definecolor{codebg}{HTML}{F5F6FA}
-    \definecolor{codeborder}{HTML}{D1D5E0}
-    \definecolor{calloutbg}{HTML}{FFF8F0}
-    \definecolor{calloutborder}{HTML}{D4883E}
-
-    % renewenvironment (not new) — pandoc's default highlighting engine pre-defines
-    % \Shaded; we override it to render code blocks as styled tcolorbox callouts.
-    \renewenvironment{Shaded}{%
-      \begin{tcolorbox}[
-        breakable,
-        colback=codebg,
-        colframe=codeborder,
-        boxrule=0.5pt,
-        arc=3pt,
-        left=10pt, right=10pt, top=8pt, bottom=8pt,
-        fontupper=\footnotesize\ttfamily,
-      ]
-    }{%
-      \end{tcolorbox}
-    }
-
-    % Shrink the Highlighting environment (pandoc's default for fenced code)
-    % to footnotesize so wide ASCII diagrams and source trees fit the page width
-    % without manual line-by-line shrinkage.
-    \usepackage{etoolbox}
+    % Shrink fenced code blocks one size so wide ASCII diagrams + source trees
+    % fit the page width without manual shrinkage.
     \AtBeginEnvironment{Highlighting}{\footnotesize}
     \AtBeginEnvironment{verbatim}{\footnotesize}
-
-    \newtcolorbox{quotecallout}{
-      breakable,
-      colback=calloutbg,
-      colframe=calloutborder,
-      leftrule=3pt, rightrule=0pt, toprule=0pt, bottomrule=0pt,
-      arc=0pt, outer arc=0pt,
-      left=12pt, right=12pt, top=10pt, bottom=10pt,
-      fontupper=\small,
-    }
-    \renewenvironment{quote}{\begin{quotecallout}}{\end{quotecallout}}
     ```
 ---
 
@@ -93,17 +54,14 @@ Two additional first-class assets coexist with the trading system: a **Data Corp
 
 ## 1.2 Operational state at time of writing
 
-\begin{quotecallout}
-\textbf{Production state, 2026-05-17:}
-\begin{itemize}
-\item \texttt{OBSERVATION\_MODE = False} — live trading with real capital, continuous since 2026-02-22.
-\item \texttt{kalshi-bot.service} active on DigitalOcean (45.55.181.30), Ubuntu 24.04, 2 vCPU, 2 GB RAM, no swap.
-\item \texttt{kalshi-collector.service} active since 2026-05-17 09:57:59 UTC after an operator-initiated restart; bronze day-zero (first non-empty chunk in S3) was ~09:52 UTC during an earlier run cycle on the same day.
-\item Six 15M live assets: BTC (88c+), ETH (90c+ main tier with a 75–79c sub-tier capped at 50 contracts), SOL (86c+, taker-first), XRP (92c+), HYPE (90c+), DOGE (85c+).
-\item P4.1 band-calibrated sizing live; soak through 2026-05-31.
-\item ~6,269 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
-\end{itemize}
-\end{quotecallout}
+> **Production state, 2026-05-17:**
+>
+> - `OBSERVATION_MODE = False` — live trading with real capital, continuous since 2026-02-22.
+> - `kalshi-bot.service` active on DigitalOcean (45.55.181.30), Ubuntu 24.04, 2 vCPU, 2 GB RAM, no swap.
+> - `kalshi-collector.service` active since 2026-05-17 09:57:59 UTC after an operator-initiated restart; bronze day-zero (first non-empty chunk in S3) was ~09:52 UTC during an earlier run cycle on the same day.
+> - Six 15M live assets: BTC (88¢+), ETH (90¢+ main tier with a 75–79¢ sub-tier capped at 50 contracts), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+).
+> - P4.1 band-calibrated sizing live; soak through 2026-05-31.
+> - ~6,269 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
 
 ## 1.3 First-principles statement of the system
 
@@ -1635,4 +1593,4 @@ The following are the primary sources cited by inline footnote elsewhere in this
 
 ---
 
-*Document last updated: 2026-05-17T18:41:09Z*
+*Document last updated: 2026-05-17T19:06:59Z*
