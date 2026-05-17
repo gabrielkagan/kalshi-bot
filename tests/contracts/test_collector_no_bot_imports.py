@@ -391,6 +391,13 @@ def test_lint_imports_fails_when_collector_imports_bot(tmp_path: Path):
     shutil.copytree(REPO_ROOT / "bot", fixture_root / "bot")
     shutil.copytree(COLLECTOR_DIR, fixture_root / "collector")
     shutil.copytree(REPO_ROOT / "kalshi_wire", fixture_root / "kalshi_wire")
+    # D2.1 (ticket 86b9zkpc6, 2026-05-17): coinbase_wire/ joined the
+    # .importlinter `root_packages` plural list; extend the fixture
+    # mirror the same way D1.1.5 added kalshi_wire above so
+    # lint-imports doesn't error "Could not find package
+    # 'coinbase_wire' in your Python path" before evaluating the
+    # collector-no-bot contract.
+    shutil.copytree(REPO_ROOT / "coinbase_wire", fixture_root / "coinbase_wire")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     # Inject a real collector→bot import edge into main_loop.py.

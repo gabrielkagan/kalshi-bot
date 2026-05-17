@@ -120,6 +120,21 @@ EXPECTED_CONTRACTS = (
     # tests/contracts/test_kalshi_wire_no_collector.py.
     "kalshi_wire-no-bot",
     "kalshi_wire-no-collector",
+    # D2.1 (ticket 86b9zkpc6, 2026-05-17) — Coinbase wire library
+    # `coinbase_wire/` scaffolding (sub-Bit of the 86b9zkkv4 D2.x
+    # umbrella). Mirrors the D1.1.5 kalshi_wire pattern for the
+    # Coinbase wire surface: pure-transport leaf, consumed by both the
+    # bot's spot feed (post-D2.x refactor) and the future collector
+    # Coinbase archiver (post-D2.2). The two forbidden contracts lock
+    # coinbase_wire as a pure-transport leaf — cannot reach `bot` and
+    # cannot reach `collector`. D2.1 ships SCAFFOLDING ONLY (empty stub
+    # modules); the contracts are pinned now so the body implementer at
+    # D2.1.5 cannot accidentally introduce a forbidden edge. Shape pins
+    # here pair with the dedicated mutation tests in
+    # tests/contracts/test_coinbase_wire_no_bot_imports.py +
+    # tests/contracts/test_coinbase_wire_no_collector.py.
+    "coinbase_wire-no-bot",
+    "coinbase_wire-no-collector",
 )
 
 # bot.constants is the only allowed internal dep for the helpers leaf.

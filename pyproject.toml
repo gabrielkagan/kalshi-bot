@@ -173,13 +173,19 @@ ml = [
 # when the 2026-05-16 AMENDMENT to D0.3 §5 introduced the shared transport
 # library (sibling to bot/ and collector/, consumed by both, zero bot.* /
 # collector.* imports per the `kalshi_wire-no-bot` + `kalshi_wire-no-collector`
-# .importlinter contracts).
+# .importlinter contracts). D2.1 (ticket 86b9zkpc6, 2026-05-17) added the
+# coinbase_wire entries when the sub-Bit of the 86b9zkkv4 D2.x Coinbase WS
+# bronzing umbrella introduced the Coinbase-side wire library (sibling to
+# bot/, collector/, kalshi_wire/; pure-transport leaf per the new
+# `coinbase_wire-no-bot` + `coinbase_wire-no-collector` .importlinter
+# contracts; D2.1 ships SCAFFOLDING ONLY with empty stub bodies — D2.1.5
+# lands the HMAC + WSClient body).
 # `namespaces = false`: defense-in-depth — gates discovery on __init__.py
 # existence so a future include-pattern broadening can't silently sweep in
 # a PEP 420 namespace dir.
 # Pinned by tests/unit/test_pyproject.py::test_pyproject_packages_find_scoped_to_bot_and_collector_and_wire.
 [tool.setuptools.packages.find]
-include = ["bot", "bot.*", "collector", "collector.*", "kalshi_wire", "kalshi_wire.*"]
+include = ["bot", "bot.*", "collector", "collector.*", "kalshi_wire", "kalshi_wire.*", "coinbase_wire", "coinbase_wire.*"]
 namespaces = false
 
 [tool.pytest.ini_options]
