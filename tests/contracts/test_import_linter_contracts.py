@@ -124,8 +124,8 @@ EXPECTED_CONTRACTS = (
     # `coinbase_wire/` scaffolding (sub-Bit of the 86b9zkkv4 D2.x
     # umbrella). Mirrors the D1.1.5 kalshi_wire pattern for the
     # Coinbase wire surface: pure-transport leaf, consumed by both the
-    # bot's spot feed (post-D2.x refactor) and the future collector
-    # Coinbase archiver (post-D2.2). The two forbidden contracts lock
+    # bot's spot feed (post-D2.3 refactor) and the collector Coinbase
+    # archiver (D2.2 SHIPPED). The two forbidden contracts lock
     # coinbase_wire as a pure-transport leaf — cannot reach `bot` and
     # cannot reach `collector`. D2.1 ships SCAFFOLDING ONLY (empty stub
     # modules); the contracts are pinned now so the body implementer at

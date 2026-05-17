@@ -7,10 +7,14 @@ sync callbacks.
 
 This test file pins the **API surface**. Behavioral coverage (mocked-
 websocket event loop checks against a synthetic Coinbase Exchange WS
-server) lands at D2.2 alongside the ``CoinbaseArchiver`` consumer —
-mirrors the kalshi_wire pattern where ``tests/equivalence/
-test_kalshi_wire_differential.py`` shipped alongside the
-BronzeArchiver, not alongside the wire body itself.
+server) is the responsibility of a separate behavioral test file
+shipped with the consumer side — mirrors the kalshi_wire pattern
+where ``tests/equivalence/test_kalshi_wire_differential.py`` shipped
+alongside the BronzeArchiver consumer, not alongside the wire body
+itself. (D2.2 shipped the ``CoinbaseArchiver`` consumer with 3
+contract test files exercising the constructor + worker-thread +
+skip-ack invariants; full mocked-WS behavioral suite remains a
+future ticket.)
 
 D2.1 (PR #66) shipped scaffolding-only — instantiating ``WSClient``
 raised NotImplementedError. D2.1.5 landed the body, so these tests flip
@@ -108,8 +112,9 @@ def test_ws_client_init_signature():
             "coinbase_wire so consumer code is symmetric."
         )
     # Default channels + product_ids are constructor kwargs so the
-    # consumer can override per-Bit (D2.2 archiver may want a different
-    # set than the D2.3 bot feed refactor).
+    # consumer can override per-Bit (the CoinbaseArchiver D2.2 default
+    # accepts the wire library's 4-channel set; the D2.3 bot feed
+    # refactor may pick a narrower subset).
     assert "channels" in params, (
         "WSClient.__init__ missing `channels` kwarg — Coinbase WS "
         "subscribe is per-channel; this list controls the default "
@@ -362,15 +367,18 @@ def test_default_channels_match_post_r2_scope():
     Exchange WS channels at the post-R2 scope: ``ticker`` + ``matches``
     + ``heartbeat`` + ``status``.
 
-    R2 fix M4 deferred ``level2_batch`` to D2.2 pending in-archiver
+    R2 fix M4 deferred ``level2_batch`` pending in-archiver
     reachability verification. Without this structural pin, a future
     Bit could quietly re-add ``level2_batch`` to ``DEFAULT_CHANNELS``
     without any sister-doc drift firing (L99 catches doc paraphrases,
     not code-side mutation). This test is the code-test parity guard.
 
-    When D2.2 promotes ``level2_batch`` into the default set, update
-    BOTH this assertion AND the L99 STALE_PATTERNS entries that retract
-    the post-R2 4-channel scope.
+    When a followup Bit promotes ``level2_batch`` into the default set,
+    update BOTH this assertion AND the L99 STALE_PATTERNS entries that
+    retract the post-R2 4-channel scope. The D2.2 ``CoinbaseArchiver``
+    dispatch table (``DEFAULT_MSG_TYPE_TO_CHANNEL``) must extend
+    in the SAME Bit (add ``"snapshot": "level2_batch"`` +
+    ``"l2update": "level2_batch"``).
     """
     from coinbase_wire.ws_client import DEFAULT_CHANNELS
     assert DEFAULT_CHANNELS == (
@@ -378,6 +386,6 @@ def test_default_channels_match_post_r2_scope():
     ), (
         f"DEFAULT_CHANNELS = {DEFAULT_CHANNELS!r}; expected the 4 "
         f"verified-public Exchange WS channels per the R2 M4 trim. "
-        f"If level2_batch was added back, verify D2.2 reachability "
-        f"first + update the L99 ratchet."
+        f"If level2_batch was added back, verify reachability first + "
+        f"update the L99 ratchet + the D2.2 dispatch table."
     )

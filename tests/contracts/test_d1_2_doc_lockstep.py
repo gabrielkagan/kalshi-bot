@@ -151,6 +151,17 @@ TRACKED_DOCS: list[Path] = [
     REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_ws_client.py",
     REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_auth.py",
     REPO_ROOT / "tests" / "contracts" / "test_coinbase_wire_envelope.py",
+    # D2.2 (ticket 86b9zkppk, 2026-05-17): the new CoinbaseArchiver
+    # consumer + its 3 contract test files. Adding to TRACKED_DOCS so
+    # the L99 ratchet covers any future drift on the Coinbase-bronze
+    # consumer surface.
+    REPO_ROOT / "collector" / "coinbase_archiver.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_coinbase_archiver_on_session_start.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_coinbase_archiver_worker_thread.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_coinbase_archiver_skip_ack.py",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -1132,6 +1143,153 @@ def test_d2_1_5_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D2.1.5 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D2.2 (coinbase_archiver body, 2026-05-17, ticket 86b9zkppk) ────────────
+#
+# D2.2 wires ``collector/coinbase_archiver.py`` — the consumer that turns
+# coinbase_wire.WSClient into bronze-in-S3 for the Coinbase side. Mirror
+# of the Kalshi-side BronzeArchiver shape, adapted for Exchange WS's
+# single-conn + msg_type-dispatch model. The Bit applies the D1.3-fu4
+# worker-thread decouple + D1.3-fu5 skip-ack-enqueue lessons FROM DAY 1.
+#
+# Forward-looking phrases that become FALSE post-D2.2-ship — encode per
+# L99 PARANOID-at-day-1 so sister-doc drift cannot reintroduce them via
+# paraphrase from a git blame.
+
+STALE_PATTERNS_POST_D2_2: list[str] = [
+    # Pre-D2.2 "D2.2 wires the consumer" framing (CLAUDE.md +
+    # agent_docs/bot_layout.md surfaces).
+    "D2.2 wires `collector/coinbase_archiver.py`",
+    "D2.2 wires ``collector/coinbase_archiver.py``",
+    "D2.2 wires the `collector/coinbase_archiver.py`",
+    "D2.2 wires the ``collector/coinbase_archiver.py``",
+    "D2.2 wires the consumer",
+    # Pre-D2.2 "body not yet consumed" framing.
+    "Body NOT yet consumed; D2.2",
+    "body NOT yet consumed; D2.2",
+    "body not yet consumed; D2.2",
+    # "D2.2 (the archiver) is the right place" — pre-ship deferral.
+    "D2.2 (the archiver) is the right place",
+    "the D2.2 archiver (next Bit)",
+    "D2.2 archiver (next Bit)",
+    "D2.2 archiver (which lands next)",
+    # Pre-D2.2 "lands at D2.2" forward-tense.
+    "lands at D2.2",
+    "land at D2.2",
+    # Pre-D2.2 "the consumer (D2.2 archiver) will land".
+    "the consumer (D2.2 archiver) will land",
+    "(D2.2 archiver) will land",
+    # Generic forward-tense D2.2 framings.
+    "D2.2 target",
+    "D2.2 will add",
+    "D2.2 will wire",
+    "D2.2 will ship",
+    "D2.2 will land",
+    "D2.2 will verify",
+    "until D2.2 lands",
+    "until D2.2 ships",
+    "until D2.2 wires",
+    "after D2.2 lands",
+    "future D2.2",
+    "D2.2 (next Bit)",
+    # Pre-D2.2 "D2.2 archiver to verify-then-extend" pre-ship language.
+    "D2.2 archiver to verify-then-extend",
+    # The D2.1.5 module-docstring pre-D2.2 framing in coinbase_wire.auth:
+    # "D2.2 archiver to verify-then-extend ... before bronze goes silent"
+    # — post-D2.2 ship the archiver IS the place where that verification
+    # would happen (no longer a forward-looking deferral).
+    "the D2.2 archiver to verify-then-extend",
+    # R1-M2 paraphrase coverage: the parenthetical "(post-D2.2)" form +
+    # "the future ``collector/coinbase_archiver.py``" paraphrases that
+    # escaped the literal-substring matcher on R1's first cut. Same L99
+    # meta-ratchet lesson as the D1.4 R2-M1 / D1.5 R3-MN2 retracts —
+    # encode the regressing phrasings at ship time so a sister doc that
+    # paraphrases via git-blame copy-paste fires the ratchet at lockstep.
+    "(post-D2.2)",
+    "the future ``collector/coinbase_archiver",
+    "the future `collector/coinbase_archiver",
+    "future ``collector/coinbase_archiver.py`` at D2.2",
+    "the future Coinbase bronze archiver",
+    "future Coinbase bronze archiver",
+    # R2-M1 / R2-M2 retract: the R1-M1 fix correctly flipped the FUNCTION
+    # docstring + the code, but the DELEGATION CLAIM survived in the
+    # MODULE docstring of coinbase_archiver.py + agent_docs/bot_layout.md
+    # + the contract test module docstring. Same paraphrase-drift class
+    # as the D1.5 R3 "match-what-the-audit-observed" retract — when
+    # retracting a multi-surface claim, encode the retracted phrase as
+    # STALE so it cannot survive in higher-level descriptions of the
+    # same code. Per the R1-M1 retract: on_session_start does NOT
+    # delegate to the WSClient default; it builds the payload itself.
+    "delegates to the WSClient default",
+    "delegates to the wire library's _default_on_session_start",
+    "delegates to the wire library's ``_default_on_session_start``",
+    "delegates to the wire layer",
+    "accepts the WSClient default",
+    "accepts that default; per-subscribe customization",
+    "calls the underlying WSClient's default subscribe path",
+    "doesn't second-guess the channel/product set",
+    "consumer accepts the WSClient default",
+    # R3-M1 + R3-N1 retract: the ASCII architecture diagram in
+    # coinbase_archiver.py + the test-file docstring/error-message
+    # described the on_session_start path as "default subscribe" /
+    # "default-subscribe path" — both phrasings paraphrase the same
+    # retracted delegation claim. Third consecutive round catching a
+    # survivor of the R1-M1 retract — encode the surviving paraphrases
+    # so future drift cannot re-introduce them via copy-paste from a
+    # git blame or visual ASCII-diagram recall.
+    "──► default subscribe",
+    "the default subscribe never dispatches",
+    "the default-subscribe path never fires",
+    "default-subscribe path",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D2_2)
+def test_no_post_d2_2_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D2.2-pending phrase after D2.2
+    shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D2.2
+    (collector/coinbase_archiver.py body landing). Same lesson as
+    D1.3-fu4 / D1.3-fu5 / D2.1.5 — when a Bit narrows or fulfills a
+    forecast, sister-doc retracts of the original forecast MUST ship
+    same-Bit to prevent paraphrase drift.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D2.2-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nPer L99 + L106: when a Bit fulfills a forecast (D2.2 wires "
+        "the consumer that D2.1.5 deferred), sister-doc retracts of the "
+        "OLD forecast MUST ship same-Bit to prevent paraphrase drift."
+    )
+
+
+def test_d2_2_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D2.2 as SHIPPED. Catches the inverse failure mode where staleness
+    patterns pass (no D2.2 mention at all) but the docs haven't been
+    updated.
+    """
+    shipped_re = re.compile(
+        r"D2\.2\s+SHIPPED|D2\.2.*shipped|shipped.*D2\.2",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D2.2 SHIPPED — staleness ratchets "
         "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )

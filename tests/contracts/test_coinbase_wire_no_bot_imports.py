@@ -4,14 +4,17 @@ Ticket 86b9zkpc6 (2026-05-17, D2.1 scaffolding) + 86b9zkpny (2026-05-17,
 D2.1.5 body) — sub-Bits of the 86b9zkkv4 D2.x Coinbase WS bronzing
 umbrella. Mirrors the D1.1.5 ``kalshi_wire/`` pattern for the Coinbase
 wire surface, with the same "two sides of the same coin" symmetry between
-the trading bot's spot feed and the future Coinbase bronze archiver.
+the trading bot's spot feed and the Coinbase bronze archiver
+(``collector/coinbase_archiver.py``, D2.2 SHIPPED 2026-05-17, ticket
+86b9zkppk).
 
 D2.1 shipped scaffolding (empty stub modules + docstrings + the test
 guards in this file); D2.1.5 lands the bodies (public subscribe helper +
 WSClient + Frame + build_envelope). The collector-side
-``coinbase_archiver.py`` lands at D2.2. This file pins the structural
-isolation contracts so any current or future implementer cannot
-accidentally couple the wire layer to bot-side state.
+``coinbase_archiver.py`` SHIPPED at D2.2 (ticket 86b9zkppk,
+2026-05-17). This file pins the structural isolation contracts so any
+current or future implementer cannot accidentally couple the wire layer
+to bot-side state.
 
 Two new import-linter forbidden contracts lock the third sibling wire
 package (after ``kalshi_wire``) as a pure-transport leaf:
