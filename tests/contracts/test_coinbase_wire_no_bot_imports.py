@@ -1,15 +1,16 @@
-"""D2.1 — ``coinbase_wire/`` is a pure-transport leaf with zero ``bot.*`` imports.
+"""D2.1 / D2.1.5 — ``coinbase_wire/`` is a pure-transport leaf with zero ``bot.*`` imports.
 
-Ticket 86b9zkpc6 (2026-05-17), sub-Bit of the 86b9zkkv4 D2.x Coinbase WS
-bronzing umbrella. Mirrors the D1.1.5 ``kalshi_wire/`` scaffolding pattern
-for the Coinbase wire surface (HMAC-based auth, distinct from Kalshi's
-RSA-PSS, but the same "two sides of the same coin" symmetry between the
-trading bot's spot feed and the future Coinbase bronze archiver).
+Ticket 86b9zkpc6 (2026-05-17, D2.1 scaffolding) + 86b9zkpny (2026-05-17,
+D2.1.5 body) — sub-Bits of the 86b9zkkv4 D2.x Coinbase WS bronzing
+umbrella. Mirrors the D1.1.5 ``kalshi_wire/`` pattern for the Coinbase
+wire surface, with the same "two sides of the same coin" symmetry between
+the trading bot's spot feed and the future Coinbase bronze archiver.
 
-D2.1 ships SCAFFOLDING ONLY — empty stub modules (docstrings + the test
-guards). Body lands in D2.1.5 (auth + ws_client implementation) and the
-collector-side ``coinbase_archiver.py`` lands in D2.2. This file pins the
-structural isolation contracts NOW so any future implementer cannot
+D2.1 shipped scaffolding (empty stub modules + docstrings + the test
+guards in this file); D2.1.5 lands the bodies (public subscribe helper +
+WSClient + Frame + build_envelope). The collector-side
+``coinbase_archiver.py`` lands at D2.2. This file pins the structural
+isolation contracts so any current or future implementer cannot
 accidentally couple the wire layer to bot-side state.
 
 Two new import-linter forbidden contracts lock the third sibling wire
@@ -137,9 +138,10 @@ def test_coinbase_wire_scaffolded_files_exist(filename: str):
     """Each required submodule exists.
 
     D2.1 ships ``__init__.py`` + ``auth.py`` + ``ws_client.py`` as
-    empty stubs (docstrings only). D2.1.5 lands the body (HMAC auth +
-    WSClient body). Add ``envelope.py`` to REQUIRED_SUBMODULES later
-    if it's broken out instead of folded into ``ws_client.py``.
+    empty stubs (docstrings only). D2.1.5 lands the bodies (public-
+    subscribe helper + WSClient + Frame + build_envelope). Add
+    ``envelope.py`` to REQUIRED_SUBMODULES later if it's broken out
+    instead of folded into ``ws_client.py``.
     """
     path = WIRE_DIR / filename
     assert path.is_file(), (
