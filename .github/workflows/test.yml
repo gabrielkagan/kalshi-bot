@@ -6,24 +6,34 @@ on:
   pull_request:
     branches: [main]
 
+# Bit-7 (CI perf umbrella 86b9zjtzk, 2026-05-17): split the historical
+# single `test` job into 3 parallel jobs so the long-pole integration
+# tier no longer gates the fast tiers.
+#
+#   fast-tiers          — unit + contract + equivalence + fragile (BLOCKING)
+#   integration-parallel — make test-integration (xdist)  (INFORMATIONAL)
+#   integration-serial   — make test-integration-serial   (INFORMATIONAL)
+#
+# Wall-time projection: 220s (pre-Bit-7) → ~90-110s (post-Bit-7), the
+# `max(fast-tiers wall, integration-parallel wall, integration-serial wall)`
+# plus per-job setup overhead. Each job independently restores Bit-2's pip
+# cache (no cross-job sharing in GH Actions, but the cache key is shared so
+# all 3 jobs hit the same cached wheels). Contract pin at
+# tests/contracts/test_ci_workflows_parallel_jobs.py.
+
 jobs:
-  test:
+  fast-tiers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # CI perf Bit-2 (umbrella 86b9zjtzk, this Bit 86b9zju0d,
-          # 2026-05-17). Caches the pip download + wheel build dir
-          # across runs (~20-25s saving per the umbrella's anatomy
-          # table where cold pip install was 34s of the 5:41 wall).
-          # cache-dependency-path lists BOTH dep files so a change
-          # in either invalidates. Without this, setup-python@v5's
-          # auto-discovery would hash `**/requirements.txt` only —
-          # a pyproject-only dep change (e.g. `[project.optional-
-          # dependencies].dev` bump) would NOT bust the cache, and
-          # CI could install stale deps. Contract pin lives at
+          # CI perf Bit-2 (umbrella 86b9zjtzk, 2026-05-17). Caches the pip
+          # download + wheel build dir across runs (~20-25s saving). The
+          # SAME cache key (hash of requirements.txt + pyproject.toml) is
+          # used by all 3 Bit-7 parallel jobs so a single cache fill on
+          # main feeds every PR job. Contract pin lives at
           # tests/contracts/test_ci_workflows_pip_cache.py.
           cache: 'pip'
           cache-dependency-path: |
@@ -34,62 +44,60 @@ jobs:
           pip install -r requirements.txt
           pip install -e '.[dev]'
       - name: Syntax check
-        # Bit 9.3-iii.c (2026-05-11): bot/_impl.py DELETED. Syntax-check
-        # the runtime hotspots: bot/constants.py + bot/main_loop.py +
-        # bot/scanner/__init__.py (matches `make ast-check`).
         run: make ast-check
-      # Pillar 5 (testing-foundation-sprint, ticket 86b9ve11y) tiers the
-      # pytest suite into unit < contract < equivalence < integration so
-      # the cheapest-to-fail-loudest layer fires first. Each tier maps to
-      # a Make target — single source of truth in the Makefile, mirrored
-      # here. Blocking = unit + contract + equivalence; integration runs
-      # but is informational (continue-on-error: true) so a slow
-      # integration regression doesn't gate every PR. Deploy.yml keeps
-      # integration BLOCKING because deploys are the higher-stakes gate.
       - name: Unit tier (Pillar 5)
-        # Pure-Python invariants: pyproject parsing, Makefile parsing,
-        # repo hygiene. <10s budget; sub-second on Linux.
         run: make test-unit
-      # Contract tier split into two distinct CI steps (ticket
-      # 86b9vgh3t). Pre-split, `make test-contract` chained pytest
-      # then lint-imports in one Make recipe — a red `Contract tier`
-      # step left the operator guessing which half failed.
-      # Post-split, the step names map unambiguously to one half:
-      #   * `Contract tier — pytest`        — public_api snapshot,
-      #     AST guards (test_*_extraction.py family + call_sites /
-      #     db_signatures / config_consistency / order_outcome_vocab).
-      #   * `Contract tier — import-linter` — Pillar 2 layering
-      #     contracts (.importlinter).
-      # Both must pass for the tier to gate green; pytest-half runs
-      # first because it's the louder failure (more lines of output).
       - name: Contract tier — pytest
         run: make test-contract-pytest
       - name: Contract tier — import-linter
         run: make test-contract-lint
       - name: Equivalence tier (Pillar 3)
-        # Numeric snapshots + property tests for bot/engines/{volatility,
-        # probability}.py. Kept as its own non-testmon-cached step
-        # (testmon's "skip unchanged" semantics conflict with snapshot
-        # regen-detection — a YAML diff is real signal that testmon
-        # would silently skip if no .py file in the equivalence dir
-        # changed).
         run: make test-equivalence
-      - name: Integration tier (Pillar 5 — informational)
-        # The remaining ~2900 tests. continue-on-error: true means a
-        # failure here flags red on the step but doesn't fail the
-        # workflow. Combined with the blocking tiers above, agents get
-        # fast PR feedback while real integration regressions still
-        # surface in the UI. Deploy.yml's mirror step IS blocking.
-        #
-        # Bit-5 (CI perf umbrella 86b9zjtzk): test-integration now runs
-        # pytest-xdist (-n auto --dist=loadfile) for ~4× speedup on the
-        # 2-vCPU GH runner. test-integration-serial runs the timing-
-        # sensitive @serial-marked tests in a separate single-worker pass.
-        if: always()
-        continue-on-error: true
-        run: make test-integration test-integration-serial
       - name: Fragile tests (informational)
-        # Existing fragile-marker informational step. Kept as-is —
-        # Pillar 5 didn't reclassify fragile tests.
         if: always()
         run: pytest tests/ -m "fragile" -v --tb=short --ignore=venv --ignore=tests/equivalence || true
+
+  integration-parallel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e '.[dev]'
+      - name: Integration tier — parallel (xdist)
+        # Bit-5 (CI perf umbrella 86b9zjtzk): pytest-xdist parallelizes
+        # the integration tier via -n auto --dist=loadfile. Bit-7 lifts
+        # this into its own GH job so it runs concurrently with
+        # fast-tiers + integration-serial.
+        continue-on-error: true
+        run: make test-integration
+
+  integration-serial:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e '.[dev]'
+      - name: Integration tier — serial (@serial-marked)
+        # Bit-5: timing-sensitive @serial-marked tests
+        # (subprocess/threading-Barrier/SIGALRM) run in a single-worker
+        # pass. Bit-7 lifts this into its own GH job for full concurrency.
+        continue-on-error: true
+        run: make test-integration-serial
