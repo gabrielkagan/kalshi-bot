@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""state.db nightly backup to S3 (via rclone).
+"""state.db sub-daily backup to S3 (via rclone) — every 4h post-86b9zkp89.
 
 Phase 0a per kb/decisions/autoresearch-design-may05.md hazards table —
 "Loss of historical training data | No state.db backup | Phase 0a blocker".

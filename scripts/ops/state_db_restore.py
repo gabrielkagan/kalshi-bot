@@ -315,12 +315,21 @@ def verify_only(
     # key is more than DEFAULT_MAX_SNAPSHOT_AGE_HOURS old, the backup
     # cadence has been broken — partially closes the deferred heartbeat-
     # alerter (B-M3). Skip if --key was passed explicitly (operator
-    # restoring an old version on purpose). Post-86b9zkp89 the cadence
-    # is every 4h; this falls back to the conservative legacy date-parse
-    # because BackupStore.list() doesn't expose LastModified — the
-    # date-only fallback overestimates (start-of-NEXT-day) which is
-    # safe for the verify-fail direction (false positive ok, false
-    # negative on a stale backup would be bad).
+    # restoring an old version on purpose).
+    #
+    # Post-86b9zkp89 the cadence is every 4h; this falls back to the
+    # legacy date-parse because BackupStore.list() doesn't expose
+    # LastModified. The end-of-NEXT-day anchor (snap_taken = date + 24h)
+    # is chosen to AVOID the negative-age silent-pass bug: a fresh
+    # same-day late-tick key dated today queried at 21:00 would compute
+    # as +21h under start-of-day anchoring OR -3h under naive end-of-day
+    # anchoring → clamped to 0 = correct. The TRADE-OFF is a narrow
+    # false-NEGATIVE window: legacy age UNDERESTIMATES true age by up
+    # to 4h for keys >1 day old (last tick of any UTC day is 20:00 UTC,
+    # anchor is 24:00 UTC), so a true-age-10h snapshot may compute as
+    # 6h and stay under the 8h threshold. The heartbeat (Mac-side,
+    # every 6h, uses LastModified EXACTLY) is the load-bearing alert
+    # path; this stale check is a defense-in-depth second layer.
     if key_override is None:
         age = snapshot_age_hours(key, now=now)
         if age is not None and age > DEFAULT_MAX_SNAPSHOT_AGE_HOURS:
