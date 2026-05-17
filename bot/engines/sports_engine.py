@@ -1187,7 +1187,8 @@ class SportsEngine:
             except Exception:
                 # Best-effort: if persist fails (e.g., config files
                 # unreadable in test env), leave snapshot_id NULL.
-                # Downstream rows just won't have the FK populated.
+                # Downstream rows just won't have the advisory-pointer
+                # column populated.
                 logging.debug("SportsEngine config_snapshot stamp failed",
                               exc_info=True)
                 self._config_snapshot_id = None
