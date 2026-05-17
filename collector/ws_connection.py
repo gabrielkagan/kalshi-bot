@@ -276,7 +276,12 @@ class BronzeArchiver:
         via cron.
 
         Snapshot keys (D1.6 fu schema_version=1, extended in D1.3-fu5
-        with ``ack_frames_processed`` — sidecar schema bumped accordingly):
+        with ``ack_frames_processed`` as an ADDITIVE backward-compat
+        key — sidecar ``schema_version`` STAYS at 1; consumers that
+        predate the new key default it to 0. DO NOT bump schema_version
+        unless you're also updating the monitor's SCHEMA SKEW check at
+        ``scripts/ops/collector_health_monitor.py::check_dropped_frames``
+        which rejects any value != 1):
           - conn_id: WS conn identifier (A/B/C/...)
           - dropped_frames: cumulative count of queue.Full drops since
             worker (re)spawn (D1.3-fu4 R1-M2 reset semantic)
