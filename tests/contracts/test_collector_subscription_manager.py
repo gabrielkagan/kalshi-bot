@@ -26,6 +26,9 @@ What this file pins:
 """
 from __future__ import annotations
 
+import inspect
+import json
+
 import pytest
 
 from collector.subscription_manager import (
@@ -291,3 +294,165 @@ def test_build_subscribe_frames_payload_shape_matches_bot_feeds_kalshi():
     assert f["cmd"] == "subscribe"
     assert f["params"]["channels"] == ["orderbook_delta"]
     assert f["params"]["market_tickers"] == ["T1"]
+
+
+# ─── 5. D1.3-fu2 — size-aware OUTGOING subscribe-frame batcher ──────────────
+#
+# Ticket 86b9zjx3x. Defense-in-depth: count-based ``batch_size`` is still the
+# outer cap, but each frame is additionally byte-budget-checked against
+# ``max_frame_bytes`` (default 900_000, ~150 KB headroom under the 1 MiB WS
+# frame limit) before each ticker is appended. If appending the next ticker
+# would push the frame past the byte budget, the current frame is finalized
+# and a new frame is started (with a fresh cmd_id bound to the same channel).
+#
+# This is the OUTGOING counterpart to D1.3-fu1's INCOMING ``ws_max_size`` lift
+# (kalshi_wire/ws_client.py); kalshi_wire's send-side stays uncapped, but the
+# protocol partner (Kalshi) may still enforce a receive-side limit on our
+# subscribe frames. Even with batch_size=1000 at ~42 char/ticker today we sit
+# ~46 KB per frame — well under any plausible limit — but a future change
+# (longer ticker names; larger event_ticker prefixes; per-conn density growth)
+# could push us toward 1 MiB. Pack-by-bytes guarantees we never cross it.
+
+
+def test_build_subscribe_frames_default_max_frame_bytes_900k():
+    """Default ``max_frame_bytes`` must be 900_000 — that's 150 KB headroom
+    below Kalshi's likely 1 MiB receive cap (the same value kalshi_wire's
+    ws_max_size was lifted FROM in D1.3-fu1). Smaller defaults waste frame
+    budget; larger defaults risk the same 1009 close-class we just escaped.
+    """
+    sig = inspect.signature(SubscriptionManager.build_subscribe_frames)
+    assert "max_frame_bytes" in sig.parameters, (
+        "build_subscribe_frames must expose `max_frame_bytes` kwarg "
+        "(D1.3-fu2, ticket 86b9zjx3x). See pickup prompt §P4."
+    )
+    assert sig.parameters["max_frame_bytes"].default == 900_000, (
+        f"max_frame_bytes default should be 900_000 (150 KB headroom under "
+        f"the 1 MiB WS limit); got {sig.parameters['max_frame_bytes'].default}."
+    )
+
+
+def test_build_subscribe_frames_respects_max_frame_bytes():
+    """Realistic-distribution tickers (mix of short + long, mean ~42 chars)
+    at batch_size=1000 + max_frame_bytes=900_000 — every emitted frame's
+    json.dumps must be ≤ 900_000 bytes. This is the load-bearing invariant
+    of D1.3-fu2: even count-batched frames stay under the WS receive cap.
+    """
+    # 1000 realistic tickers: mix of short (e.g., "KXBTC-25MAY16-T100000")
+    # and long (e.g., event-prefixed
+    # "KXBTCRESIDENTIAL-25MAY16-T100000-LONG-EVENT-NAME-PADDING-MORE-CHARS").
+    short = [f"KXBTC-25MAY16-T{100000+i}" for i in range(500)]
+    long_ = [f"KXBTCRESIDENTIAL-25MAY16-T{100000+i}-LONG-PAD-MORE-PAD" for i in range(500)]
+    tickers = tuple(short + long_)
+    plan = ConnPlan(
+        conn_id="A", market_tickers=tickers,
+        channels=("orderbook_delta",),
+    )
+    frames, _ = SubscriptionManager.build_subscribe_frames(
+        plan, cmd_id_start=1, batch_size=1000, max_frame_bytes=900_000,
+    )
+    assert frames, "non-empty ticker plan must produce frames"
+    for f in frames:
+        encoded = json.dumps(f).encode("utf-8")
+        assert len(encoded) <= 900_000, (
+            f"frame exceeds max_frame_bytes=900_000 "
+            f"(cmd_id={f['id']}, tickers={len(f['params']['market_tickers'])}, "
+            f"bytes={len(encoded)})"
+        )
+
+
+def test_build_subscribe_frames_splits_on_byte_overflow():
+    """Synthesize tickers that fit count-wise but overflow byte-wise — assert
+    multiple frames are produced (the byte budget became the binding cap,
+    not the count cap). Without size-aware packing, the caller would
+    receive a single oversized frame that Kalshi could reject.
+    """
+    # 500 tickers, each ~2000 bytes wide → at batch_size=1000 (count-wise
+    # fits in 1 frame) but ~1_000_000 bytes total payload — must split.
+    wide_ticker = "K" + "X" * 2000
+    tickers = tuple(f"{wide_ticker}-{i}" for i in range(500))
+    plan = ConnPlan(
+        conn_id="A", market_tickers=tickers,
+        channels=("orderbook_delta",),
+    )
+    frames, cmd_id_map = SubscriptionManager.build_subscribe_frames(
+        plan, cmd_id_start=1, batch_size=1000, max_frame_bytes=900_000,
+    )
+    # Count-only batcher would emit 1 frame; size-aware must emit ≥ 2.
+    assert len(frames) >= 2, (
+        f"byte-overflow must force a split — count batcher would emit 1 "
+        f"frame, size-aware must emit ≥ 2 (got {len(frames)})"
+    )
+    # And every emitted frame respects the budget.
+    for f in frames:
+        encoded = json.dumps(f).encode("utf-8")
+        assert len(encoded) <= 900_000
+
+
+def test_build_subscribe_frames_pathological_ticker_raises():
+    """Single ticker whose payload alone exceeds ``max_frame_bytes`` ⇒
+    ValueError. We refuse to silently drop the ticker or emit an oversized
+    frame; the operator needs to see this loud + early because it indicates
+    either a Kalshi schema change (ticker names suddenly multi-KB) or a
+    config typo (max_frame_bytes set too low).
+    """
+    pathological = "X" * 100_000  # 100KB single ticker
+    plan = ConnPlan(
+        conn_id="A", market_tickers=(pathological,),
+        channels=("orderbook_delta",),
+    )
+    with pytest.raises(ValueError, match="max_frame_bytes"):
+        SubscriptionManager.build_subscribe_frames(
+            plan, cmd_id_start=1, batch_size=1000, max_frame_bytes=10_000,
+        )
+
+
+def test_build_subscribe_frames_cmd_id_to_channel_preserved_under_byte_split():
+    """Byte-splitting produces MORE frames than count-batching would; every
+    new frame still gets a unique cmd_id bound to its channel in the
+    returned map. BronzeArchiver._handle_subscribe_ack consumes this map
+    keyed by cmd_id to bind sid→channel — if even one cmd_id is missing,
+    the subscribe-ack for that frame can't be routed and the channel's
+    sid map stays empty (silent data drop).
+    """
+    # Wide tickers across MULTIPLE channels — exercises both the inner
+    # byte-split AND the outer per-channel boundary.
+    wide_ticker = "K" + "X" * 2000
+    tickers = tuple(f"{wide_ticker}-{i}" for i in range(300))
+    plan = ConnPlan(
+        conn_id="A", market_tickers=tickers,
+        channels=("orderbook_delta", "trade", "market_lifecycle_v2"),
+    )
+    frames, cmd_id_map = SubscriptionManager.build_subscribe_frames(
+        plan, cmd_id_start=10_000, batch_size=1000, max_frame_bytes=900_000,
+    )
+    # Every frame's cmd_id is in the map.
+    for f in frames:
+        cmd_id = f["id"]
+        assert cmd_id in cmd_id_map, (
+            f"cmd_id={cmd_id} missing from cmd_id_to_channel map — "
+            "subscribe-ack for this frame would fail to route"
+        )
+        # And the mapped channel matches the frame's own channel.
+        assert cmd_id_map[cmd_id] == f["params"]["channels"][0]
+    # cmd_ids unique.
+    ids = [f["id"] for f in frames]
+    assert len(set(ids)) == len(ids), (
+        f"cmd_ids must be unique across all (channel × byte-split) frames; "
+        f"got duplicates in {ids}"
+    )
+    # And cmd_id_map has one entry per frame, no leftovers.
+    assert len(cmd_id_map) == len(frames)
+
+
+def test_build_subscribe_frames_rejects_invalid_max_frame_bytes():
+    """max_frame_bytes must be ≥ 1 — zero/negative makes no sense and
+    would either infinite-loop or refuse every ticker. Raise loud + early.
+    """
+    plan = ConnPlan(
+        conn_id="A", market_tickers=("T1",),
+        channels=("orderbook_delta",),
+    )
+    with pytest.raises(ValueError, match="max_frame_bytes"):
+        SubscriptionManager.build_subscribe_frames(
+            plan, cmd_id_start=1, batch_size=1000, max_frame_bytes=0,
+        )
