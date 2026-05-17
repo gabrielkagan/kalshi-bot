@@ -63,6 +63,11 @@ from sizing import (
 # bot.py side effects). bot.models.calculate_taker_fee / calculate_maker_fee
 # are the authoritative implementations bot.py itself calls.
 from bot.models import calculate_taker_fee, calculate_maker_fee  # noqa: E402  (Sprint 10.5b 2026-05-11)
+# 86b9zk3at: P4.1 band-calibrated sizing-prob wrap, mirrors production at
+# bot/scanner/__init__.py:3804 (`calibrated_prob_for_sizing(asset, ...)`).
+# Used ONLY for the sizing edge (not the gate edge — gates keep raw p_mean
+# per P4.1 design). Closes the deeper parity gap that 86b9zk0aw flagged.
+from bot.helpers.band_calibration import calibrated_prob_for_sizing  # noqa: E402
 
 
 # ── Shared method_output construction ──────────────────────────────────
@@ -414,6 +419,34 @@ def _lpne_size(balance_cents: int) -> int:
     return LPNE_FIXED_CONTRACTS
 
 
+def _calibrated_edge_for_sizing(
+    p_mean: float,
+    asset: str,
+    entry_price_cents: int,
+    breakeven: float,
+    fee_frac_taker: float,
+    product_type: str = '15m',
+) -> float:
+    """Mirror of production's `_sizer.compute(calibrated_prob_for_sizing(...))` path.
+
+    Production wraps the sizing-prob through `bot.helpers.band_calibration.
+    calibrated_prob_for_sizing` BEFORE feeding it to Kelly (see
+    bot/scanner/__init__.py:3804). Sim must use the SAME prob to match
+    production's Kelly sign — otherwise sim's counterfactual would
+    over-credit weekend_discount on post-P4.1 rows where production
+    correctly refused (band-calibrated Kelly < 0 but raw p_mean still
+    positive).
+
+    Per P4.1 design: ONLY sizing uses band-calibrated prob. Gates still
+    use bare p_mean upstream. Ticket 86b9zk3at closes the deeper parity
+    gap that 86b9zk0aw R1 flagged.
+    """
+    sizing_prob = calibrated_prob_for_sizing(
+        asset, entry_price_cents, p_mean, product_type=product_type,
+    )
+    return float(sizing_prob) - breakeven - fee_frac_taker
+
+
 def _strategy_size(
     strategy: Optional[str],
     fee_adjusted_edge_frac: float,
@@ -433,17 +466,16 @@ def _strategy_size(
     overnight_discount, TAKER_NOW, MAKER_PATIENT, NULL) uses the standard
     compute_size path.
 
-    PARTIAL PARITY NOTE (86b9zk0aw): the `fee_adjusted_edge_frac > 0` gate
-    closes the obvious-case bug where sim's raw edge is already negative
-    (production's PositionSizer.compute() at bot/models.py:1063 short-circuits
-    on `kelly_edge <= 0`; sim mirrors that here via the algebraic identity
-    `sign(kelly_edge) === sign(fee_adjusted_edge)` valid for SAME probability
-    input). Full parity with the post-P4.1 production gate at
-    bot/scanner/__init__.py:3804-3823 ALSO requires wrapping the sizing
-    probability through `bot/helpers/band_calibration.calibrated_prob_for_sizing`
-    — the sim's `fee_adjusted_edge_frac` is currently computed from `p_mean`
-    (cal_mlp center) rather than the band-calibrated probability production
-    uses for sizing. Tracked as deeper followup 86b9zk3at.
+    PARITY NOTE: this dispatcher accepts `fee_adjusted_edge_frac` as-is.
+    The 86b9zk0aw `> 0` gate closes the obvious-case bug for any caller
+    passing a positive-Kelly-signal edge; the 86b9zk3at structural wrap
+    of `_replay_one_path` (where `edge_frac` is derived from
+    `_calibrated_edge_for_sizing(p_mean, ...)`) ensures the edge handed
+    in here actually corresponds to production's band-calibrated sizing
+    prob (mirrors bot/scanner/__init__.py:3804). Direct callers in tests
+    that hand-craft `fee_adjusted_edge_frac` exercise just the dispatch
+    logic, not the calibration wrap — that's intentional, the wrap site
+    is `_replay_one_path` not `_strategy_size`.
 
     Bankroll input semantics match the standard sim_pnl path:
         * available_balance_cents — per-row stored snapshot (production's
@@ -527,10 +559,10 @@ def _strategy_size(
             and entry_price_cents > 0):
         # bot/scanner/__init__.py:3823 — fallback to WEEKEND_FIXED_RISK when
         # positive Kelly rounds to 0 contracts. The `fee_adjusted_edge_frac > 0`
-        # gate closes the obvious-case bug (sim's raw edge negative); full parity
-        # with post-P4.1 production gate requires also wrapping the sizing prob
-        # through band_calibration — see PARTIAL PARITY NOTE in docstring + ticket
-        # 86b9zk3at for the structural followup. Drawdown scaler applied.
+        # gate (86b9zk0aw) closes the obvious-case; callers from `_replay_one_path`
+        # pass a band-calibrated edge_frac (`_calibrated_edge_for_sizing`,
+        # 86b9zk3at) so this gate evaluates on the same prob production uses
+        # for `_sizer.compute()`. Drawdown scaler applied.
         drawdown = compute_drawdown_scaler(current_balance_cents, hwm_cents)
         fixed_raw = max(1, int(available_balance_cents * WEEKEND_FIXED_RISK / entry_price_cents))
         if drawdown < 1.0:
@@ -1419,7 +1451,18 @@ def _replay_one_path(
         # H7: dispatch through _strategy_size so terminal_momentum_*,
         # decided_t*, and weekend_discount honor their bot.py-specific
         # paths. Default fall-through is compute_size.
-        edge_frac = float(p_mean) - breakeven - fee_frac_taker
+        # 86b9zk3at: route through _calibrated_edge_for_sizing so the SIZING
+        # edge mirrors production's `calibrated_prob_for_sizing(asset, ...)`
+        # wrap at bot/scanner/__init__.py:3804. Gate edge above stays on
+        # bare p_mean (P4.1: only sizing changes, not gates).
+        edge_frac = _calibrated_edge_for_sizing(
+            p_mean=float(p_mean),
+            asset=asset,
+            entry_price_cents=int(row['entry_price_cents']),
+            breakeven=breakeven,
+            fee_frac_taker=fee_frac_taker,
+            product_type='15m',
+        )
         _spot_val = row.get('spot_price')
         _thr_val = row.get('threshold')
         # R3 MAJOR #1: NaN-safe balance coercion. `np.nan or 100000`

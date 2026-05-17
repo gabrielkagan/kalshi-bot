@@ -586,19 +586,16 @@ def test_strategy_size_weekend_discount_fallback_applies_drawdown_scaler():
 
 
 def test_strategy_size_weekend_discount_skips_fallback_on_negative_edge():
-    """Regression: weekend_discount fallback must NOT fire when sim's
-    fee_adjusted_edge is negative. Pre-86b9zk0aw the sim mirror lacked any
-    Kelly-sign gate on the fallback predicate; this Bit added the obvious-case
-    `fee_adjusted_edge_frac > 0` gate that closes the bug for rows where sim's
-    raw edge is already negative.
+    """Regression: weekend_discount fallback must NOT fire when caller passes
+    negative `fee_adjusted_edge_frac` to `_strategy_size`. Pre-86b9zk0aw the
+    sim mirror lacked any Kelly-sign gate on the fallback predicate.
 
-    Partial parity caveat: production's `_wknd_kelly_f > 0` gate at
-    bot/scanner/__init__.py:3823 uses Kelly computed from band-calibrated
-    probability (P4.1, c1e6d85). Sim's `fee_adjusted_edge_frac` is computed
-    from `p_mean` (cal_mlp center) — band-calibration wrap is NOT applied.
-    So post-P4.1 rows where production correctly refused (band-calibrated
-    Kelly<0 but raw edge still positive) are NOT covered by this fix —
-    tracked as deeper structural followup ticket 86b9zk3at.
+    This test exercises `_strategy_size` directly with a hand-crafted negative
+    edge (the obvious-case raw-edge-negative path). The post-86b9zk3at
+    structural wrap of `_replay_one_path`'s `edge_frac` through
+    `_calibrated_edge_for_sizing` is exercised separately by
+    `test_calibrated_edge_for_sizing_sol_91c_negative` +
+    `test_sim_pnl_sizing_uses_calibrated_edge_helper`.
 
     Ticket 86b9zk0aw.
     """
@@ -640,6 +637,102 @@ def test_strategy_size_weekend_discount_fallback_boundary_at_zero_edge():
     assert got.contract_count == 0, (
         f"weekend_discount must NOT fire fallback at edge==0. "
         f"Got contract_count={got.contract_count}."
+    )
+
+
+def test_calibrated_edge_for_sizing_sol_91c_negative():
+    """Regression: deeper parity. The SOL 91c shape (raw p_mean positive,
+    band-calibrated Kelly negative) must produce a NEGATIVE edge_frac
+    through the new `_calibrated_edge_for_sizing` helper, which mirrors
+    production's `calibrated_prob_for_sizing(asset, ...)` wrap at
+    bot/scanner/__init__.py:3804. Pre-86b9zk3at, sim's edge_frac came
+    from bare p_mean (POSITIVE for this row) and sim over-credited the
+    weekend_discount fallback by claiming the bot would have sized.
+
+    Per band_calibration baseline (SOL × 90-93 band): n=20, raw=0.800,
+    band_prior=0.889952, k=30 → shrunk = 0.8540. At entry_price_cents=91,
+    breakeven=0.91 with taker fee ~0.7c → fee_frac ~0.007 → calibrated
+    edge_frac = 0.8540 - 0.91 - 0.007 = -0.063. Negative.
+
+    Ticket 86b9zk3at.
+    """
+    import sim_pnl
+
+    # SOL 91c, raw p_mean ~0.99 (high), band-calibrated → 0.8540
+    p_mean = 0.9978
+    asset = 'SOL'
+    entry_price_cents = 91
+    breakeven = 0.91
+    fee_frac_taker = 0.007
+    edge = sim_pnl._calibrated_edge_for_sizing(
+        p_mean=p_mean,
+        asset=asset,
+        entry_price_cents=entry_price_cents,
+        breakeven=breakeven,
+        fee_frac_taker=fee_frac_taker,
+        product_type='15m',
+    )
+    # Calibrated prob 0.8540, breakeven 0.91, fee 0.007 → edge = -0.063
+    assert edge < 0, (
+        f"Calibrated edge_frac for SOL 91c with raw p_mean=0.9978 must be "
+        f"negative (band-calibration shrinks SOL × 90-93 to ~0.854 < breakeven "
+        f"0.91). Got edge={edge}."
+    )
+
+
+def test_calibrated_edge_for_sizing_preserves_raw_for_non_15m():
+    """Helper must short-circuit to raw p_mean for non-15M product types.
+    Mirrors `calibrated_prob_for_sizing` contract: P4.1 is 15M-only."""
+    import sim_pnl
+
+    edge_15m = sim_pnl._calibrated_edge_for_sizing(
+        p_mean=0.95, asset='BTC', entry_price_cents=99,
+        breakeven=0.99, fee_frac_taker=0.007, product_type='15m',
+    )
+    edge_hourly = sim_pnl._calibrated_edge_for_sizing(
+        p_mean=0.95, asset='BTC', entry_price_cents=99,
+        breakeven=0.99, fee_frac_taker=0.007, product_type='hourly',
+    )
+    # hourly: helper returns raw_prob → edge = 0.95 - 0.99 - 0.007 = -0.047
+    assert abs(edge_hourly - (0.95 - 0.99 - 0.007)) < 1e-9, (
+        f"Non-15M product_type must short-circuit to raw p_mean. Got edge_hourly={edge_hourly}."
+    )
+
+
+def test_sim_pnl_sizing_uses_calibrated_edge_helper():
+    """AST guard: the sizing edge_frac assignment in `simulate_replay` MUST
+    route through `_calibrated_edge_for_sizing` (which wraps p_mean through
+    `bot.helpers.band_calibration.calibrated_prob_for_sizing`), NOT use the
+    bare `float(p_mean) - breakeven - fee_frac_taker` form.
+
+    Pre-86b9zk3at, the sizing site used bare p_mean → sim's counterfactual
+    over-credited weekend_discount on post-P4.1 rows. Post-fix, the site
+    uses the helper → algebraic identity sign(kelly)===sign(edge) actually
+    delivers parity with production.
+
+    Pinning to the helper-call form rather than to a specific edge value
+    keeps the test resilient to band-calibration baseline refreshes.
+    Ticket 86b9zk3at.
+    """
+    import os
+    sim_pnl_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'scripts', 'cal_mlp', 'sim_pnl.py',
+    )
+    with open(sim_pnl_path) as f:
+        source = f.read()
+    # The sizing site historically read `edge_frac = float(p_mean) - breakeven - fee_frac_taker`.
+    # Post-fix it routes through `_calibrated_edge_for_sizing(...)`.
+    bare_pattern = "edge_frac = float(p_mean) - breakeven - fee_frac_taker"
+    helper_pattern = "_calibrated_edge_for_sizing("
+    assert bare_pattern not in source, (
+        f"Sim sizing edge_frac must NOT use bare p_mean — pre-86b9zk3at form "
+        f"`{bare_pattern}` found in scripts/cal_mlp/sim_pnl.py. Route through "
+        f"_calibrated_edge_for_sizing(...) to mirror production's band-calibration wrap."
+    )
+    assert helper_pattern in source, (
+        f"Sim sizing edge_frac must call `{helper_pattern}` to mirror production's "
+        f"band-calibration sizing-prob wrap (bot/scanner/__init__.py:3804)."
     )
 
 
