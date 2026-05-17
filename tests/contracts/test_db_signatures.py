@@ -41,7 +41,7 @@ PRODUCTION_FILES = [
     "bot/shadows/spx_harrv_shadow.py",  # Sprint 10.2 (2026-05-11)
     "bot/engines/sports_engine.py",  # Sprint 10.1d (2026-05-11)
     "bot/snapshots/supabase_sync.py",  # Sprint 10 Bit 10.4 (2026-05-12)
-    "watchdog.py",
+    "ops/watchdog.py",  # Sprint 14-A Bit X.5 (2026-05-17)
     "bot/engines/weather_engine.py",  # Sprint 10.1c sibling-reorg (2026-05-11)
     "bot/infra/capital_allocator.py",  # Sprint 10.5a (2026-05-11)
 ]

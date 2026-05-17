@@ -1,11 +1,11 @@
 """Layer 3.5 of orphan prevention — mid-session detection via the
-existing 2-min `watchdog.py` cron.
+existing 2-min `ops/watchdog.py` cron.
 
 Layer 3 (`bot/_impl.py:detect_orphan_db_holders`) runs at bot startup. If
 an orphan H-4 backfill spawns DURING bot uptime (operator manually
 triggers `gh workflow run h4_backfill.yml -f source=...` mid-day,
 script orphans itself), Layer 3 won't catch it until the next bot
-restart. This file extends `watchdog.py` (already runs every 2 min
+restart. This file extends `ops/watchdog.py` (already runs every 2 min
 via systemd cron) with the same orphan check, so mid-session
 orphans are detected within ≤2 min.
 
@@ -29,7 +29,7 @@ def test_watchdog_check_orphan_db_holders_returns_no_offenders_clean(
 ):
     """Healthy state: lsof shows only the bot process and the
     watchdog itself. No orphan alerts."""
-    import watchdog
+    import ops.watchdog as watchdog
     db = tmp_path / "state.db"
     db.touch()
 
@@ -46,7 +46,7 @@ def test_watchdog_check_orphan_db_holders_returns_no_offenders_clean(
     )
     monkeypatch.setattr(
         watchdog, "_get_pid_cmdline",
-        lambda pid: "venv/bin/python3 bot/_impl.py" if pid == 12345 else "watchdog.py",
+        lambda pid: "venv/bin/python3 bot/_impl.py" if pid == 12345 else "ops/watchdog.py",
     )
 
     msg = watchdog.check_orphan_db_holders(str(db))
@@ -59,7 +59,7 @@ def test_watchdog_check_orphan_db_holders_alerts_on_h4_backfill(
 ):
     """Orphan H-4c (cryptocompare_news_backfill) PID holding state.db
     → alert returned for caller to send."""
-    import watchdog
+    import ops.watchdog as watchdog
     db = tmp_path / "state.db"
     db.touch()
 
@@ -88,13 +88,13 @@ def test_watchdog_check_orphan_db_holders_skips_legitimate_processes(
     """Same positive-list as Layer 3 — must NOT alert on the bot's
     own state.db conn or on the watchdog itself or on bot/ai/auditor.py /
     audit_cron.py / dashboard_snapshot.py."""
-    import watchdog
+    import ops.watchdog as watchdog
     db = tmp_path / "state.db"
     db.touch()
 
     legit_pids = {
         2001: "venv/bin/python3 bot/_impl.py",
-        2002: "venv/bin/python3 watchdog.py",
+        2002: "venv/bin/python3 ops/watchdog.py",
         2003: "venv/bin/python3 bot/ai/auditor.py",
         2004: "venv/bin/python3 scripts/audit/audit_cron.py --db state.db",
         2005: "venv/bin/python3 dashboard_snapshot.py",
@@ -122,7 +122,7 @@ def test_watchdog_check_orphan_db_holders_handles_lsof_missing(
     silently (defense-in-depth that has zero observability of its
     own health is acceptable here because Layer 3 in bot/_impl.py emits
     its own one-shot Telegram if lsof is missing)."""
-    import watchdog
+    import ops.watchdog as watchdog
     db = tmp_path / "state.db"
     db.touch()
 
@@ -139,7 +139,7 @@ def test_watchdog_main_calls_check_orphan_db_holders(monkeypatch):
     check_orphan_db_holders so the 2-min cron actually exercises
     the new check. Verified via AST scan."""
     import ast
-    src = (PROJECT_ROOT / "watchdog.py").read_text()
+    src = (PROJECT_ROOT / "ops" / "watchdog.py").read_text()
     tree = ast.parse(src)
     main_fn = None
     for node in ast.walk(tree):

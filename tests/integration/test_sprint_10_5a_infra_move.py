@@ -23,10 +23,12 @@ Real caller imports:
     - 30+ tests/integration/test_circuit_breaker.py method-body imports
     - bot/scanner/__init__.py + others (search-time discovery)
 
-Deferred from Sprint 10.5 (filed as separate Bits):
-  - 10.5b: models.py (8 prod + 6 test import sites — larger surface)
-  - 10.5c: watchdog.py (__file__-derived paths + CLI invocation, same
-    risk class as Sprint 10.3 ai/ bot/ai/auditor.py + bot/ai/researcher.py)
+Deferred from Sprint 10.5 (filed as separate Bits, both SHIPPED):
+  - 10.5b (SHIPPED 2026-05-11): models.py → bot/models.py
+  - 10.5c (CLOSED via Sprint 14-A Bit X.5, 2026-05-17): watchdog.py →
+    ops/watchdog.py (NOT under bot/infra/; root-cleanup track placed it
+    alongside the systemd units; STATE_FILE/DB_PATH bumped to
+    Path(__file__).parent.parent to keep repo-root anchoring).
 """
 from __future__ import annotations
 

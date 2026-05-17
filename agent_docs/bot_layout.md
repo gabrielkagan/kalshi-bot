@@ -224,7 +224,7 @@ Shadows (observation-only):
 - `bot/shadows/hourly_alt_shadow.py` — hourly alternate sims (relocated Sprint 10.2, 2026-05-11)
 - `bot/shadows/spx_harrv_shadow.py` — SPX HAR-RV shadow (relocated Sprint 10.2, 2026-05-11)
 
-AI helpers (`bot/ai/`, relocated Sprint 10.3, 2026-05-12; standalone Telegram-driven entrypoints, NOT imported by bot runtime hot path; `auditor.py` + `researcher.py` anchor `__file__`-derived paths — `state.db`, `auditor_state.db`, `researcher_state.db`, `.env`, journals — to repo root via a 3-level dirname chain mirroring `bot/snapshots/supabase_sync.py:30`; `analyst.py` uses CWD-relative `state.db` literal — VPS cron invokes from repo root, so the literal still resolves there post-move; same risk class as Sprint 10.5c `watchdog.py` deferral):
+AI helpers (`bot/ai/`, relocated Sprint 10.3, 2026-05-12; standalone Telegram-driven entrypoints, NOT imported by bot runtime hot path; `auditor.py` + `researcher.py` anchor `__file__`-derived paths — `state.db`, `auditor_state.db`, `researcher_state.db`, `.env`, journals — to repo root via a 3-level dirname chain mirroring `bot/snapshots/supabase_sync.py:30`; `analyst.py` uses CWD-relative `state.db` literal — VPS cron invokes from repo root, so the literal still resolves there post-move; same risk class as the deferred-then-closed Sprint 14-A Bit X.5 `watchdog.py` → `ops/watchdog.py` move (2026-05-17)):
 - `bot/ai/analyst.py` — Claude API loss analysis + news sentiment
 - `bot/ai/auditor.py` — hourly deterministic health checks → Telegram alerts
 - `bot/ai/researcher.py` — 3×/day performance reports → Telegram
@@ -236,7 +236,7 @@ Snapshots/sync (`bot/snapshots/`, relocated Sprint 10.4, 2026-05-12; helpers-lea
 - `bot/snapshots/supabase_sync.py` — Postgres mirror
 
 Infra:
-- `bot/infra/capital_allocator.py`, `bot/infra/circuit_breaker.py` (relocated Sprint 10.5a, 2026-05-11), `bot/models.py` (relocated Sprint 10.5b, 2026-05-11 — sibling under bot/, NOT under bot/infra/; helpers-leaf carve-out for bot.helpers.tm_sweep -> bot.models), `watchdog.py` (10.5c deferred — watchdog has __file__-derived load-bearing paths + CLI invocation)
+- `bot/infra/capital_allocator.py`, `bot/infra/circuit_breaker.py` (relocated Sprint 10.5a, 2026-05-11), `bot/models.py` (relocated Sprint 10.5b, 2026-05-11 — sibling under bot/, NOT under bot/infra/; helpers-leaf carve-out for bot.helpers.tm_sweep -> bot.models), `ops/watchdog.py` (relocated Sprint 14-A Bit X.5, 2026-05-17 — STATE_FILE + DB_PATH bumped to `Path(__file__).parent.parent` to keep `.watchdog_state.json` + `state.db` lookups anchored at repo root; `ops/__init__.py` added so `import ops.watchdog` resolves from the test suite; Usage docstring + VPS crontab updated to `python3 ops/watchdog.py`)
 
 Config:
 - `market_config.py` — MarketTypeConfig dataclass; asserts against bot/_impl.py at startup

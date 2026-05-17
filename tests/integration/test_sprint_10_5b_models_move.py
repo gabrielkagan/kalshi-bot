@@ -40,8 +40,9 @@ Real caller imports (~13 prod + ~8 test):
 Notable: bot/__main__.py:10 mentions `from models import ...` in a
 docstring (NOT an import) — descriptive narrative. Update for consistency.
 
-Deferred (Sprint 10.5c — separate Bit): watchdog.py (same risk class
-as 10.3 ai/, __file__ + CLI).
+10.5c CLOSED via Sprint 14-A Bit X.5 (2026-05-17): watchdog.py →
+ops/watchdog.py (NOT under bot/infra/; STATE_FILE/DB_PATH bumped to
+Path(__file__).parent.parent).
 """
 from __future__ import annotations
 

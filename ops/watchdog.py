@@ -4,7 +4,7 @@ Lightweight bot watchdog — runs via cron every 2 minutes.
 Catches issues the bot itself can't report (crashes, stalls, OOM).
 Sends alerts via Telegram.
 
-Usage: */2 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 watchdog.py
+Usage: */2 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 ops/watchdog.py
 """
 
 import os
@@ -20,8 +20,8 @@ from datetime import datetime, timezone
 # ── Config ────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-STATE_FILE = Path(__file__).parent / ".watchdog_state.json"
-DB_PATH = Path(__file__).parent / "state.db"
+STATE_FILE = Path(__file__).parent.parent / ".watchdog_state.json"
+DB_PATH = Path(__file__).parent.parent / "state.db"
 
 # Thresholds
 MAX_LOG_AGE_SECONDS = 300       # alert if no log output for 5 min
