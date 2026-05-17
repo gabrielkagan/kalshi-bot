@@ -7,7 +7,8 @@ deterministic reproducibility. Today it requires correlating
 which leave no git trace. Operator runtime mutations are invisible.
 
 Goal: every `evaluated_opportunities` + `rejected_opportunities` row
-carries a FK to `config_snapshots(id)`. Replay = look up snapshot →
+carries an advisory pointer to `config_snapshots(id)` (no SQL FOREIGN
+KEY — sqlite ALTER TABLE limitation). Replay = look up snapshot →
 restore the config → re-run.
 
 This test pins the full schema chain in ONE commit:
@@ -68,7 +69,7 @@ def test_evaluated_opportunities_has_config_snapshot_id_column(tmp_path, monkeyp
     try:
         cols = {r[1] for r in sm.conn.execute("PRAGMA table_info(evaluated_opportunities)").fetchall()}
         assert "config_snapshot_id" in cols, (
-            "evaluated_opportunities is missing the config_snapshot_id FK column"
+            "evaluated_opportunities is missing the config_snapshot_id advisory-pointer column"
         )
     finally:
         sm.conn.close()
@@ -81,7 +82,7 @@ def test_rejected_opportunities_has_config_snapshot_id_column(tmp_path, monkeypa
     try:
         cols = {r[1] for r in sm.conn.execute("PRAGMA table_info(rejected_opportunities)").fetchall()}
         assert "config_snapshot_id" in cols, (
-            "rejected_opportunities is missing the config_snapshot_id FK column"
+            "rejected_opportunities is missing the config_snapshot_id advisory-pointer column"
         )
     finally:
         sm.conn.close()
@@ -388,7 +389,7 @@ def _read_module_ast(relpath):
 
 def test_callers_pass_config_snapshot_id_to_inserts():
     """EVERY caller of insert_evaluated_opportunity / insert_rejection
-    must pass `config_snapshot_id=...` so the FK is populated.
+    must pass `config_snapshot_id=...` so the advisory-pointer column is populated.
 
     Per CLAUDE.md schema-chain discipline: a new column that isn't passed at
     the call site gets silently dropped at write time.
@@ -438,6 +439,63 @@ def test_scanner_passes_config_snapshot_id_to_inserts():
     grepped. Just delegates to the union walk.
     """
     test_callers_pass_config_snapshot_id_to_inserts()
+
+
+def test_raw_insert_callers_include_config_snapshot_id_column():
+    """R2-M2 ratchet — engines/scripts that bypass StateManager and
+    write to evaluated_opportunities / rejected_opportunities via raw
+    `conn.execute("INSERT ... INTO evaluated_opportunities ...")` MUST
+    include the `config_snapshot_id` column name in their column list.
+
+    The AST guard `test_callers_pass_config_snapshot_id_to_inserts`
+    catches MISSED kwarg on `self._state.insert_X(...)` method calls
+    but is structurally blind to raw INSERT strings (different call
+    pattern). Sports engine (Sprint A.2-style separate-conn pattern)
+    hit this class — R1-M1 fixed sports specifically; this guard
+    prevents the next raw-INSERT-caller from regressing the same
+    class.
+
+    Coverage: walks files in RAW_INSERT_FILES, parses every string
+    literal that begins with INSERT (case-insensitive) and mentions
+    evaluated_opportunities or rejected_opportunities, asserts
+    `config_snapshot_id` appears in the column list.
+    """
+    import re
+    RAW_INSERT_FILES = [
+        "bot/engines/sports_engine.py",
+    ]
+    # Match `INSERT [OR REPLACE/IGNORE] INTO (evaluated|rejected)_opportunities`
+    INSERT_RE = re.compile(
+        r"INSERT\s+(?:OR\s+(?:REPLACE|IGNORE)\s+)?INTO\s+"
+        r"(?:evaluated_opportunities|rejected_opportunities)\b",
+        re.IGNORECASE,
+    )
+    missing = []  # list of (file, lineno, snippet)
+    for caller in RAW_INSERT_FILES:
+        tree = _read_module_ast(caller)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant):
+                continue
+            if not isinstance(node.value, str):
+                continue
+            s = node.value
+            if not INSERT_RE.search(s):
+                continue
+            if "config_snapshot_id" not in s:
+                snippet = s[:120].replace("\n", " ")
+                missing.append((caller, node.lineno, snippet))
+    assert not missing, (
+        f"Raw INSERT sites missing config_snapshot_id column "
+        f"({len(missing)}):\n"
+        + "\n".join(
+            f"  {f}:{ln}: {snp}..." for f, ln, snp in missing[:10]
+        )
+        + "\n\nPer bot/CLAUDE.md schema-chain discipline (extended for "
+        + "config_snapshot_id post-86b9zkp8p R1): engines/scripts with "
+        + "their own DB conn MUST mirror the column. See "
+        + "bot/engines/sports_engine.py for the canonical lazy-persist "
+        + "via `self._config_snapshot_id` pattern."
+    )
 
 
 def test_helpers_leaf_contract_for_config_snapshot():

@@ -815,7 +815,7 @@ class StateManager:
             # snapshot computation at the call site.
             # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
             ("bot_state_snapshot_json", "TEXT"),
-            # Per-decision config snapshot FK (ticket 86b9zkp8p, 2026-05-17).
+            # Per-decision config snapshot advisory-pointer (ticket 86b9zkp8p, 2026-05-17).
             # NULLABLE so legacy rows (pre-snapshot ship) and any caller that
             # forgets to pass the kwarg remain insertable. New scanner call
             # sites pass `config_snapshot_id=self._ml.config_snapshot_id`.
@@ -841,7 +841,7 @@ class StateManager:
         except Exception:
             pass
 
-        # Migration: index on config_snapshot_id FK for fast replay lookups.
+        # Migration: index on config_snapshot_id advisory pointer for fast replay lookups.
         # Ticket 86b9zkp8p (2026-05-17). Idempotent: re-runs are no-ops.
         try:
             self.conn.execute(
@@ -888,7 +888,7 @@ class StateManager:
             ("vol_regime", "TEXT"),
             ("data_provenance", "TEXT"),
             ("orderbook_levels_json", "TEXT"),
-            # Per-decision config snapshot FK (ticket 86b9zkp8p, 2026-05-17).
+            # Per-decision config snapshot advisory-pointer (ticket 86b9zkp8p, 2026-05-17).
             # See bot/helpers/config_snapshot.py + the matching
             # evaluated_opportunities ALTER above for the schema chain.
             ("config_snapshot_id", "INTEGER"),
@@ -899,7 +899,7 @@ class StateManager:
                 pass  # column already exists
         self.conn.commit()
 
-        # Migration: index on config_snapshot_id FK for fast replay lookups
+        # Migration: index on config_snapshot_id advisory pointer for fast replay lookups
         # (ticket 86b9zkp8p, 2026-05-17). Idempotent.
         try:
             self.conn.execute(
@@ -1792,7 +1792,7 @@ class StateManager:
                          hour_sin: Optional[float] = None,
                          hour_cos: Optional[float] = None,
                          prob_breakeven_gap: Optional[float] = None,
-                         # Per-decision config snapshot FK (ticket 86b9zkp8p,
+                         # Per-decision config snapshot advisory-pointer (ticket 86b9zkp8p,
                          # 2026-05-17). NULLABLE for backward compat with
                          # callers that pre-date the schema chain (e.g.
                          # backfill scripts, integration tests). Production
@@ -2066,7 +2066,7 @@ class StateManager:
                                      # callers actually pass the JSON string.
                                      # See kb/decisions/phase-h2-bot-microstate-fwd-may02.md.
                                      bot_state_snapshot_json: Optional[str] = None,
-                                     # Per-decision config snapshot FK
+                                     # Per-decision config snapshot advisory-pointer
                                      # (ticket 86b9zkp8p, 2026-05-17). NULLABLE
                                      # for backward compat. Production scanner
                                      # call sites pass
@@ -2585,7 +2585,7 @@ class StateManager:
                     -- (c) product_type != '15m' (by design — non-15M
                     -- product_types leave the column NULL).
                     bot_state_snapshot_json=excluded.bot_state_snapshot_json,
-                    -- Per-decision config snapshot FK (ticket 86b9zkp8p,
+                    -- Per-decision config snapshot advisory-pointer (ticket 86b9zkp8p,
                     -- 2026-05-17). COALESCE so the FIRST snapshot stamp on
                     -- a row survives subsequent UPSERTs (e.g. mid-day
                     -- mutation that re-captures via a future Phase-2

@@ -10,7 +10,7 @@ bot/constants.py bot/main_loop.py bot/scanner/__init__.py bot/executor.py`
   - Operator runtime mutations are invisible.
 
 Goal: every `evaluated_opportunities` + `rejected_opportunities` row carries
-a FK to a `config_snapshots` row that captures EXACTLY which config produced
+an advisory pointer to a `config_snapshots` row that captures EXACTLY which config produced
 the decision. Replay = look up snapshot -> restore the config -> re-run.
 
 Phase-1 captures the snapshot once at `MainLoop.__init__`. Mid-day mutation
@@ -195,8 +195,8 @@ def persist_config_snapshot(conn) -> int:
     if row is None:
         # Defensive: this can only happen if the INSERT was silently dropped
         # AND no prior row existed -- should be unreachable. Raising is
-        # safer than returning a fake id (would break the FK invariant
-        # at the call sites in scanner).
+        # safer than returning a fake id (would break the advisory-pointer
+        # invariant at the scanner / executor / sports caller sites).
         raise RuntimeError(
             f"persist_config_snapshot: row lookup failed after insert "
             f"(config_hash={bundle['config_hash'][:8]}...)"
