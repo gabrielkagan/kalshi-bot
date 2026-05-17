@@ -428,17 +428,22 @@ def _strategy_size(
 ) -> SizingResult:
     """Per-strategy dispatcher. Routes terminal_momentum_* and
     decided_t* via their bot.py-specific sizing formulas; weekend_discount
-    falls back to WEEKEND_FIXED_RISK when contract_count rounds to 0; everything
-    else (including overnight_discount, TAKER_NOW, MAKER_PATIENT, NULL)
-    uses the standard compute_size path.
+    falls back to WEEKEND_FIXED_RISK when `fee_adjusted_edge_frac > 0` AND
+    compute_size rounds to 0 contracts; everything else (including
+    overnight_discount, TAKER_NOW, MAKER_PATIENT, NULL) uses the standard
+    compute_size path.
 
-    DIVERGENCE NOTE (86b9zjx7r): live runtime gates the weekend_discount
-    fallback on `_wknd_kelly_f > 0` (skip on negative Kelly). The sim path
-    here lacks that gate AND does not compute Kelly sign at all — its
-    `compute_size` returns 0 only on edge-below-tier, not on negative-Kelly.
-    For positive-edge / negative-Kelly rows (possible post-P4.1 calibration),
-    the sim's counterfactual will over-credit weekend_discount. Followup
-    ticket needed for sim_pnl parity.
+    PARTIAL PARITY NOTE (86b9zk0aw): the `fee_adjusted_edge_frac > 0` gate
+    closes the obvious-case bug where sim's raw edge is already negative
+    (production's PositionSizer.compute() at bot/models.py:1063 short-circuits
+    on `kelly_edge <= 0`; sim mirrors that here via the algebraic identity
+    `sign(kelly_edge) === sign(fee_adjusted_edge)` valid for SAME probability
+    input). Full parity with the post-P4.1 production gate at
+    bot/scanner/__init__.py:3804-3823 ALSO requires wrapping the sizing
+    probability through `bot/helpers/band_calibration.calibrated_prob_for_sizing`
+    — the sim's `fee_adjusted_edge_frac` is currently computed from `p_mean`
+    (cal_mlp center) rather than the band-calibrated probability production
+    uses for sizing. Tracked as deeper followup 86b9zk3at.
 
     Bankroll input semantics match the standard sim_pnl path:
         * available_balance_cents — per-row stored snapshot (production's
@@ -517,12 +522,15 @@ def _strategy_size(
     )
     if (strategy == 'weekend_discount'
             and sizing.contract_count == 0
+            and fee_adjusted_edge_frac > 0
             and available_balance_cents > 0
             and entry_price_cents > 0):
         # bot/scanner/__init__.py:3823 — fallback to WEEKEND_FIXED_RISK when
-        # positive Kelly rounds to 0 contracts. Live gate also requires
-        # `_wknd_kelly_f > 0` (86b9zjx7r); sim path does NOT mirror that
-        # gate — followup ticket needed for parity. Drawdown scaler applied.
+        # positive Kelly rounds to 0 contracts. The `fee_adjusted_edge_frac > 0`
+        # gate closes the obvious-case bug (sim's raw edge negative); full parity
+        # with post-P4.1 production gate requires also wrapping the sizing prob
+        # through band_calibration — see PARTIAL PARITY NOTE in docstring + ticket
+        # 86b9zk3at for the structural followup. Drawdown scaler applied.
         drawdown = compute_drawdown_scaler(current_balance_cents, hwm_cents)
         fixed_raw = max(1, int(available_balance_cents * WEEKEND_FIXED_RISK / entry_price_cents))
         if drawdown < 1.0:
