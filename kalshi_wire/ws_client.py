@@ -203,8 +203,32 @@ class WSClient:
         ping_timeout: float = 10.0,
         max_backoff_s: float = 60.0,
         seq_gap_max_logs: int = 500,
+        ws_max_size: int = 16 * 1024 * 1024,
         _test_skip_auth: bool = False,
     ):
+        # ws_max_size: incoming-message ceiling passed to
+        # ``websockets.connect(max_size=...)``. Default 16 MiB.
+        #
+        # D1.3-fu1 (86b9zju8h, 2026-05-17): python websockets defaults
+        # max_size=1 MiB. Kalshi's type=subscribed/type=ok acks include
+        # the cumulative subscribed-ticker list per sid, so collector
+        # subscriptions (~74K tickers/conn) produce acks that grow past
+        # 1 MiB → our lib closes with 1009 → reconnect → loop (verified
+        # bronze ack at cmd_id=21: 21,000 tickers, ~951 KB). Bot is
+        # unaffected (subscribes to ~50-100 tickers, acks tiny). 16 MiB
+        # default clears worst-case Kalshi ack at full subscription
+        # growth (~74K × ~50 bytes ≈ 3.7 MiB) with ~4x headroom. See
+        # ``kb/decisions/d1-3-fu1-max-size-fix-plan.md``.
+        if not isinstance(ws_max_size, int) or isinstance(ws_max_size, bool):
+            raise TypeError(
+                f"ws_max_size must be int (got {type(ws_max_size).__name__}). "
+                "The wire library declines None/non-int to keep incoming-frame "
+                "memory bounded against accidental no-cap configuration."
+            )
+        if ws_max_size < 1:
+            raise ValueError(
+                f"ws_max_size must be ≥ 1 (got {ws_max_size})."
+            )
         self._api_key = api_key
         self._private_key = private_key
         self._url = url
@@ -220,6 +244,7 @@ class WSClient:
         self._ping_timeout = ping_timeout
         self._max_backoff_s = max_backoff_s
         self._seq_gap_max_logs = seq_gap_max_logs
+        self._ws_max_size = ws_max_size
         # Internal flag — allow tests to skip RSA-PSS signing when pointing
         # at a mock server. Not part of the public API surface.
         self._skip_auth = _test_skip_auth
@@ -360,6 +385,7 @@ class WSClient:
                     additional_headers=headers,
                     ping_interval=self._ping_interval,
                     ping_timeout=self._ping_timeout,
+                    max_size=self._ws_max_size,
                 ) as ws:
                     self._ws = ws
                     now = time.time()
