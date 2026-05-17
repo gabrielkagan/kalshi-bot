@@ -239,6 +239,41 @@ STALE_PATTERNS_POST_D1_4: list[str] = [
     "return an empty / partial",
     "return an empty or partial",
     "return an empty/partial",
+    # D1.4-fu (ticket ``86b9zjqhn``, commit ``0c19a0a``) — the original
+    # D1.4 ship read ``row.get("status") != "open"`` and dropped 100%
+    # of markets in production because Kalshi's response body labels
+    # trading-active markets ``status="active"`` (the query-param vocab
+    # and response-field vocab differ; the collector booted with
+    # subscribes=0 and empty bronze on the first bronze day-zero run).
+    # Fix accepted both ``open`` and ``active`` in the filter. Encode
+    # the retracted "response status is open" / "filter responses by
+    # status='open'" framings so a future sister-doc claim or copy-
+    # paste regression at the response-handling site fires the ratchet
+    # before R-N rounds discover it. Ticket ``86b9zjtf2`` (D1.4-fu
+    # NIT-2 closure) — L99 meta-ratchet retroactive encoding for the
+    # L97 vocab-drift class.
+    'row.get("status") != "open"',
+    "row.get('status') != 'open'",
+    'response rows have status="open"',
+    "response rows have status='open'",
+    "response rows arrive with status=\"open\"",
+    "response rows arrive with status='open'",
+    "filter rows where status=\"open\"",
+    "filter rows where status='open'",
+    "response field is status=\"open\"",
+    "response field is status='open'",
+    'response-field is ``status="open"``',
+    "Kalshi response body labels trading-active markets status=\"open\"",
+    "Kalshi response body labels trading-active markets status='open'",
+    "response body uses ``status=\"open\"``",
+    "response-field vocab is status=\"open\"",
+    "response-field vocab is status='open'",
+    # Note: the legitimate query-parameter phrasings ``status=open`` (URL
+    # query-string form) and ``params["status"] = "open"`` (Python kwarg
+    # form) remain TRUE post-D1.4-fu (the QUERY is still status=open;
+    # only the RESPONSE-side filter widened). Those phrasings are NOT
+    # added here — narrowing the patterns above to the response-handling
+    # context keeps the ratchet load-bearing.
 ]
 
 

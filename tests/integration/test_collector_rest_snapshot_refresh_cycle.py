@@ -427,6 +427,102 @@ def test_refresher_stop_via_shutdown_event_terminates_thread():
         rs.fetch_tickers_by_tier = orig
 
 
+# ─── D1.4-fu (86b9zjqhn) — status="active" vocab parity at integration tier ──
+#
+# The contract tier (``tests/contracts/test_collector_rest_snapshot.py
+# ::test_fetch_filters_non_trading_markets_defensively``) already pins
+# that fetch_tickers_by_tier accepts BOTH ``open`` and ``active`` rows.
+# The integration tier was a blind spot — all sister fixtures used
+# ``status="open"``, mirroring the query parameter rather than what
+# Kalshi's response body actually labels trading-active markets
+# (``status="active"``). A future regression that re-narrows the filter
+# to ``status="open"`` only (the original D1.4 bug — booted collector
+# with subscribes=0 in production) would still pass every test in this
+# file. The fixtures below extend the integration coverage so the
+# regression class is caught at the integration tier too.
+#
+# Ticket ``86b9zjter`` (D1.4-fu NIT-1, LOW). Closes the L97 vocab-
+# drift class at the integration seam (the contract tier already
+# pins the single-call invariant; this pins the end-to-end fetch →
+# planner round-trip under production's actual vocab).
+
+
+def test_fetch_to_planner_round_trip_accepts_active_status_rows():
+    """Production reality: Kalshi's REST ``/markets?status=open`` response
+    rows arrive with ``status="active"`` (the query-param vocab and the
+    response-field vocab differ). The fetch → planner round-trip MUST
+    handle the production vocab end-to-end without dropping rows.
+
+    Belt-and-suspenders against the L97 assertion-fossil class — the
+    D1.4 ship initially read ``status != "open"`` and dropped 100% of
+    markets in production (collector booted with subscribes=0). If a
+    future Bit re-narrows the filter, this integration test fires
+    alongside the contract-tier guard."""
+    page = {"markets": [
+        {"ticker": "M-A", "status": "active"},
+        {"ticker": "M-B", "status": "active"},
+        {"ticker": "M-C", "status": "active"},
+        {"ticker": "M-D", "status": "active"},
+    ], "cursor": ""}
+    session = _fake_session([page])
+    out = fetch_tickers_by_tier(
+        api_key="kid", private_key=None, session=session,
+        _test_skip_auth=True,
+    )
+    assert out == {TIER_ALL: ["M-A", "M-B", "M-C", "M-D"]}, (
+        "status='active' rows were dropped by the response-side filter — "
+        "regression to the original D1.4 'status != open' bug. Kalshi's "
+        "response body labels trading-active markets status='active'; the "
+        "filter MUST accept both 'open' and 'active'. Ticket 86b9zjqhn."
+    )
+
+    plans = SubscriptionManager(
+        tickers_by_tier=out, conn_count=2).assign()
+    total = sum(len(p.market_tickers) for p in plans)
+    assert total == 4, (
+        f"planner saw {total} tickers, expected 4 — fetch dropped active "
+        f"rows OR planner regressed determinism. plans={plans}"
+    )
+    # Both conns must receive at least one ticker — round-robin spreads
+    # 4 tickers across 2 conns 2/2.
+    for p in plans:
+        assert p.market_tickers, (
+            f"conn={p.conn_id} got 0 tickers despite 4 active rows in "
+            f"the REST response; round-robin assignment regressed."
+        )
+
+
+def test_fetch_to_planner_mixed_open_and_active_rows_all_pass_through():
+    """Mixed-vocab page (some rows ``status="open"``, some ``status="active"``)
+    is exactly what a race during a settlement window can produce.
+    The fetch → planner pipeline MUST accept the union — dropping
+    either vocab leaves a partial subscription set + a reconnect when
+    Kalshi normalizes back to a single vocab in the next page."""
+    page = {"markets": [
+        {"ticker": "OPEN-1", "status": "open"},
+        {"ticker": "ACTIVE-1", "status": "active"},
+        {"ticker": "OPEN-2", "status": "open"},
+        {"ticker": "ACTIVE-2", "status": "active"},
+        {"ticker": "CLOSED-1", "status": "closed"},   # filtered (defensive)
+        {"ticker": "SETTLED-1", "status": "settled"}, # filtered (defensive)
+    ], "cursor": ""}
+    session = _fake_session([page])
+    out = fetch_tickers_by_tier(
+        api_key="kid", private_key=None, session=session,
+        _test_skip_auth=True,
+    )
+    # Both vocab-forms pass; defensive non-trading statuses drop.
+    assert out == {TIER_ALL: ["ACTIVE-1", "ACTIVE-2", "OPEN-1", "OPEN-2"]}
+
+    plans = SubscriptionManager(
+        tickers_by_tier=out, conn_count=2).assign()
+    total = sum(len(p.market_tickers) for p in plans)
+    assert total == 4, (
+        f"planner total={total}, expected 4 (2 open + 2 active, with "
+        f"closed/settled defensively filtered). plans={plans}"
+    )
+
+
 # ─── BronzeArchiver.update_subscriptions + request_reconnect surface ────────
 
 
