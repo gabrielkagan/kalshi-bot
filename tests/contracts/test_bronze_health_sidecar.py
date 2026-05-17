@@ -52,8 +52,9 @@ import pytest
 
 
 def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
-    """Per-archiver snapshot must expose the 6 keys the sidecar aggregator
-    + the monitor's check_dropped_frames depend on.
+    """Per-archiver snapshot must expose the 7 keys the sidecar aggregator
+    + the monitor's check_dropped_frames depend on (6 D1.6-fu base keys +
+    `ack_frames_processed` added in D1.3-fu5 as additive backward-compat).
     """
     from collector import ws_connection as wc
 

@@ -296,11 +296,13 @@ class BronzeArchiver:
             the monitor verify frames are flowing — flat seq across two
             ticks means no data arriving)
           - ack_frames_processed: D1.3-fu5 observability — cumulative
-            count of subscribe-acks processed (binds happened, frames
-            NOT enqueued for bronze writing). Lets the monitor
-            distinguish "collector healthy + receiving acks" from
-            "collector wedged + no activity". Flat ack_count + flat
-            collector_seq across two ticks = no WS traffic at all.
+            count of ack-shape frames seen (bind ATTEMPTED via
+            ``_handle_subscribe_ack``; may no-op if frame is malformed
+            or cmd_id is unknown), frames NOT enqueued for bronze
+            writing. Lets the monitor distinguish "collector healthy +
+            receiving acks" from "collector wedged + no activity". Flat
+            ack_count + flat collector_seq across two ticks = no WS
+            traffic at all.
         """
         worker = self._write_worker
         return {
