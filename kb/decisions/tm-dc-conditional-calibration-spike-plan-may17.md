@@ -70,7 +70,7 @@ To keep the spike scoped and reproducible, these are LOCKED — don't drift mid-
 |---|---|
 | `state.db.evaluated_opportunities` | TM/DC eligibility population — for TM: `(strategy = 'terminal_momentum' OR strategy LIKE 'terminal\_momentum\_%' ESCAPE '\')` covering both bare + suffixed forms (R1-C1 fix); for DC: `strategy IN ('decided_t1', 'decided_t1b', 'decided_t2', 'decided_t2_z25', 'decided_t2_z2')` (R2-M3 fix — production writes `decided_t*` not `decided_contract_*`). Cohort UNION on `filter_stage` IN `COHORT_PARTITION_STAGES`. |
 | `state.db.fifteenm_shadow_signals` | `market_result` linkage for realized YES/NO |
-| `state.db.settled_trades` | TM live outcomes (~1633 yes / 19 no in 60d for the eligibility window). DC has SOME settled trades from historic live periods (~218 in this snapshot — R2-M4 correction). Net PnL via `pnl_cents - COALESCE(fee_cents, 0)` per row, then divided by `count` for per-contract net (real path), or synthesized via Kalshi fee schedule for unrealized rows. |
+| `state.db.settled_trades` | **TM is LIVE** (`TERMINAL_MOMENTUM_ENABLED=1`, ~1633 yes / 19 no in 60d). **DC is LIVE for 4 of 5 tiers**: T1/T1B/T2/T2_Z25 default `DECIDED_T*_ENABLED=1`; only T2_Z2 is shadow (`DECIDED_T2_Z2_ENABLED=0`, due to -$333 PnL in 47 historic trades). Total ~218 DC settled rows joined to EO. The `DECIDED_CONTRACT_SHADOW=1` constant default gates only shadow-LOGGING paths in scanner; live trading is per-tier. Spike misframed DC as "shadow only" through R1-R8; corrected post-R8 by user catch. Net PnL via `pnl_cents - COALESCE(fee_cents, 0)` per row, then divided by `count` for per-contract net (real path), or synthesized via Kalshi fee schedule for rows without settled_trades match. |
 | `PRAGMA table_info(<table>)` + `SELECT DISTINCT` | Schema verification before query per CLAUDE.md |
 
 ## Methodology
@@ -137,7 +137,7 @@ Pin a **NULL-HYPOTHESIS baseline**: if proposed sizing == current sizing within 
 ## Followup tickets (file ONLY if spike recommends SHIP)
 
 - TM production wire-in proposal — REQUIRES-APPROVAL tier (live code change at live Kelly site)
-- DC sim-sizing wire-in proposal — CAUTION tier (shadow only, no live impact)
+- DC skip-gate wire-in proposal — REQUIRES-APPROVAL tier (DC is LIVE for 4/5 tiers — real money impact, not shadow-only as originally stated; spike misframing corrected post-R8)
 
 ## Branch + worktree hygiene
 

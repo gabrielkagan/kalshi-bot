@@ -33,7 +33,8 @@ Discipline:
     (gross/net trap — postmortem `kb/failures/audit-pnl-fee-omission-apr29.md`).
     Per-contract scaling: real per-contract net derived from `settled_trades`
     (`(pnl_cents - fee_cents) / count`) when available; synthetic fallback
-    via `market_result + price - Kalshi-fee-schedule` for shadow rows.
+    via `market_result + price - Kalshi-fee-schedule` for rows without
+    a settled_trades match (un-fired evaluation rows).
   - Cohort UNION on `filter_stage` per `bot/CLAUDE.md` cell-block section
     (canonical 5-set in `bot.helpers.cohort_attribution.COHORT_PARTITION_STAGES`)
   - Mac-side only per `feedback_vps_compute_isolation` — VPS cannot host sustained compute
@@ -500,7 +501,10 @@ def _per_contract_net_cents(row: sqlite3.Row) -> Optional[float]:
     R1-M1 fix: prefer REAL `settled_trades.pnl_cents / count` when available
     (LIVE TM rows that actually fired), and fall back to SYNTHETIC
     `(100 - price - fee) if yes else (-price)` for rows without a
-    `settled_trades` join (DC shadow + un-fired TM).
+    `settled_trades` match (un-fired TM/DC evaluation rows). NOTE: DC is
+    LIVE for 4 of 5 tiers (T1/T1B/T2/T2_Z25 = `DECIDED_T*_ENABLED=1`); only
+    T2_Z2 is shadow. The `DECIDED_CONTRACT_SHADOW=1` constant default gates
+    shadow-LOGGING paths in scanner, NOT live trading.
 
     Returns None when the row lacks both real PnL and a known outcome.
     """

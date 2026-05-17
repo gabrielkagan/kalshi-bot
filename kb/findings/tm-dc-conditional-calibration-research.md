@@ -7,7 +7,7 @@ lookback_days: 60
 n_tm_rows: 2858 (EO rows; 2753 unique (ticker,strategy) pairs after R2-C3 dedup)
 n_dc_rows: 1080 (EO rows; 1059 unique pairs after dedup)
 n_tm_rows_real_pnl: 1650 (unique pairs with settled_trades match)
-n_dc_rows_real_pnl: 218 (DC is shadow; subset has historic live periods)
+n_dc_rows_real_pnl: 218 (DC is LIVE: 4 of 5 tiers — T1/T1B/T2/T2_Z25 — are `*_ENABLED=1`; only T2_Z2 is shadow due to historic -$334 PnL. Spike incorrectly framed DC as "shadow" through R1-R8 adv review; corrected post-R8 by user catch.)
 predecessor: bot/helpers/band_calibration.py (P4.1 c1e6d85)
 plan_doc: kb/decisions/tm-dc-conditional-calibration-spike-plan-may17.md
 data_appendix: kb/findings/tm-dc-conditional-calibration-research.data.md (auto-generated)
@@ -15,6 +15,21 @@ adversarial_rounds: R1 (3C+7M+7Mn fixed), R2 (3C+8M+6Mn fixed), R3 (0C+6M+6Mn fi
 ---
 
 # TM/DC conditional band-calibration — research findings
+
+## Strategy live/shadow status (corrected post-R8)
+
+`DECIDED_CONTRACT_SHADOW=1` constant default gates only SHADOW-LOGGING paths in scanner, NOT live trading. Live DC trading is per-tier via `DECIDED_T*_ENABLED` flags in `bot/constants.py:1139-1147`:
+
+| Tier | Flag default | Status | Settled trades 90d | Net PnL 90d |
+|---|---|---|---:|---:|
+| decided_t1 | `DECIDED_T1_ENABLED=1` | **LIVE** | 71 | +$108.24 |
+| decided_t1b | `DECIDED_T1B_ENABLED=1` | **LIVE** | 42 | +$40.64 |
+| decided_t2 | `DECIDED_T2_ENABLED=1` | **LIVE** | 37 | +$45.12 |
+| decided_t2_z25 | `DECIDED_T2_Z25_ENABLED=1` | **LIVE** | 43 | +$6.27 |
+| decided_t2_z2 | `DECIDED_T2_Z2_ENABLED=0` | shadow | 47 | -$333.87 |
+| TM | `TERMINAL_MOMENTUM_ENABLED=1` | **LIVE** | 1,376 | (live) |
+
+`OBSERVATION_MODE=False` in `bot/constants.py:22` → real money. The 218 DC `real-PnL` rows used in this spike's matrix are real live trades, not historic shadow. Any production wire-in is REQUIRES-APPROVAL tier for BOTH TM and DC (not just TM).
 
 ## Executive summary
 
@@ -45,8 +60,9 @@ The conditional matrix surfaces two production-actionable signals; the right pat
 | R5 | 0 | 1 | 6 | Bookkeeping recursion: R4 fix-forward introduced same drift at R4 boundary. Fixed in R5 fix-forward (THIS commit). Recursion halted by self-encoding R5 outcome inline. |
 | R6 | 0 | 1 | 4 | Content finding (R6-M1: factual claim about DC floor-passing cells contradicted own data). Fixed in R6 fix-forward. |
 | R7 | 0 | 3 | 4 | Three new content findings (TM parallel-construction asymmetry, "1 day before" temporal direction, snapshot_ts bookkeeping at a surface R5 halt didn't cover). All 3 MAJORs fixed in R7 fix-forward. |
-| R8 | 0 | 1 | 0 | R7-M1 fix-forward introduced reverse-direction precision drift: claimed "TM ≥ 0.933" but cited "lowest = 0.9326" (0.9326 < 0.933). Fixed by changing threshold to "≥ 0.932" (R8 fix-forward, this commit). |
-| R9 | pending | pending | pending | Verification round — should be 0C+0M; if so, R10 closes the 2-zero gate. |
+| R8 | 0 | 1 | 0 | R7-M1 fix-forward introduced reverse-direction precision drift: claimed "TM ≥ 0.933" but cited "lowest = 0.9326" (0.9326 < 0.933). Fixed by changing threshold to "≥ 0.932" (R8 fix-forward). |
+| User-catch | 1C | — | — | **CRITICAL framing error not caught by R1-R8**: spike consistently characterized DC as "shadow strategy" throughout plan doc + findings doc + executive summary + recommendation. Reality: 4 of 5 DC tiers are LIVE (`DECIDED_T1/T1B/T2/T2_Z25_ENABLED=1`); `DECIDED_CONTRACT_SHADOW=1` constant gates only shadow-LOGGING paths in scanner. Force-rewrite applied: corrected "Strategy live/shadow status" section added, plan-doc data sources + followup ticket descriptions updated, recommendation tier classification corrected (DC wire-in = REQUIRES-APPROVAL, not CAUTION). 8 rounds of adv review never re-verified the runtime behavior against the constant default — discipline gap surfaced. |
+| Cap-binding audit | — | — | — | Followup investigation post-PR-merge: cap-binding audit of bespoke `_tm_size`/`_dc_size` against synthetic + real production. Headlines: (a) TM_MAX=500 binds only 0.5% of rows (not the lever); (b) TM thin-buffer 50ct cap binds 55.3% of rows (dominant cap, matches spike Finding 1 noise on buf_pct sub-signal); (c) DC per-asset 15% risk cap binds 52.6% of rows AND 100% at the high-confidence BTC/XRP 97-98c+99c cells. Implications: skip-gate remains the right Phase 1 lever; matrix value is upstream of bespoke formula. DC cap-raise is a data-supported but policy-dependent decision separate from skip-gate. |
 
 **Recursion-halt note** (scoped post-R7): R4 and R5 both found the same class — bookkeeping-lag where the previous round's outcomes weren't encoded in the changelog table + adversarial_rounds frontmatter. R5's fix-forward self-encoded that pattern inline. R7 found the same class recurred at the `snapshot_ts` frontmatter field, which R5's halt didn't cover. Lesson: bookkeeping-halt cannot be assumed structural across all narrative surfaces. The changelog-row + adversarial_rounds-list bookkeeping-lag pattern is structurally closed; other narrative fields (`snapshot_ts`, section titles) still need per-round verification. R7 fix-forward removed the round-number-specific changelog title to reduce the per-round drift surface.
 
@@ -182,7 +198,7 @@ Full grid in `kb/findings/tm-dc-conditional-calibration-research.data.md`.
 - Initial `EDGE_FLOOR ≈ 0.005` (0.5pp buffer) to avoid skipping marginally-positive cells.
 - Operating point: k=30 (more aggressive gating) for the first soak window; can shift to k=50 if k=30 over-gates legitimate cells.
 - Strongest evidence: **DC max drawdown drops 59.0%** at fractional=0.25/k=30. Cleanest causal claim in the spike — the gate avoids losing cells without sacrificing winners.
-- Shadow first; promote after 14d soak validates the gated cells indeed lose money on average.
+- Stand up the matrix lookup + skip-gate as a SHADOW INSTRUMENTATION layer first (log the would-skip decision against live trades without acting on it); after 14d soak validates the gated cells indeed lose money on average, promote to live skip. **Note: DC is LIVE for 4/5 tiers — wire-in is REQUIRES-APPROVAL real-money change, NOT a shadow-only follow-up. T2_Z2 (the one shadow tier) can be wired separately as a contained pilot.**
 
 **Phase 2 — multiplicative scaler (incremental, gated on Phase 1 soak)**:
 - Scale bespoke sizer output by `clip(shrunk_p / band_prior, 0.5, 1.5)`.
@@ -206,7 +222,7 @@ Full grid in `kb/findings/tm-dc-conditional-calibration-research.data.md`.
 
 ## Followup tickets (file IF Phase 1 advances)
 
-- **TM/DC skip-gate wire-in** — REQUIRES-APPROVAL tier; new helper `bot/helpers/tm_dc_skip_gate.py`, AST-pinned skip site in `bot/scanner/__init__.py` upstream of `_tm_size`/`_dc_size` calls. Shadow-flag protected, soak-validated 14d. **Strongest data support**: DC max drawdown -59.0% at f=0.25/k=30.
+- **TM/DC skip-gate wire-in** — REQUIRES-APPROVAL tier; new helper `bot/helpers/tm_dc_skip_gate.py`, AST-pinned skip site in `bot/scanner/__init__.py` upstream of `_tm_size`/`_dc_size` calls. **Both TM and DC are live with real money** (4/5 DC tiers live per `DECIDED_T*_ENABLED`; TM via `TERMINAL_MOMENTUM_ENABLED`). Phased rollout: (a) shadow-instrumentation log the would-skip decision against live trades for 14d soak; (b) promote to live skip behind a new `TM_DC_SKIP_GATE_LIVE_ENABLED` env-toggleable flag; (c) per-tier roll-out (T2_Z2 as the contained pilot — already shadow). **Strongest data support**: DC max drawdown -59.0% at f=0.25/k=30.
 - **Multiplicative scaler wire-in** — gated on Phase 1 soak success; CAUTION tier. Same helper home, multiplicative `(shrunk_p / band_prior)` factor applied to bespoke output, clip to [0.5, 1.5].
 - **Conditional matrix refresh recipe** — NORMAL tier; document the per-asset/band realized-rate refresh recipe in `agent_docs/`, mirroring `agent_docs/p4_1_calibration_baseline.md`. Cadence: monthly or post-regime-change. Operator runs `python scripts/cal_mlp/tm_dc_calibration_research.py --db ... --out .data.md` and the data appendix updates; prose stays human-authored.
 
