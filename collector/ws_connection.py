@@ -37,6 +37,17 @@ Bit ordering:
     allocation + non-blocking enqueue. On queue full → drop counter +
     throttled log; never block, never raise. Closes the 1011
     keepalive-ping-timeout storm class that D1.3-fu3 only mitigated.
+  - **D1.3-fu5** (`86b9zky3u`) skips enqueueing subscribe-ack frames.
+    fu4's bounded queue accidentally opened an OOM-via-large-ack class:
+    cumulative-ticker payloads in Kalshi acks reach ~5 MB per frame;
+    queueing 7K acks during subscribe burst pushed RSS past the
+    cgroup MemoryMax → SIGKILL → restart loop. Acks are protocol
+    metadata (no silver/gold pipeline consumes them); fu5 binds sid
+    synchronously and returns without enqueueing. Postmortem:
+    ``kb/failures/collector-oom-via-ack-queue-may17.md``. The
+    ``_unrouted/`` bronze partition no longer receives ack frames;
+    operator can still observe ack activity via the new
+    ``_ack_frames_processed`` counter.
 
 NO ``bot.*`` imports (pinned by ``collector-no-bot`` import-linter
 contract). Auth + WS transport reach into ``kalshi_wire/`` only.
@@ -201,6 +212,15 @@ class BronzeArchiver:
         # the first drop deterministically while suppressing the next
         # ~1000 (storm-time logspam is its own stall risk).
         self._drop_log_counter: int = 0
+        # D1.3-fu5 observability counter — increments per subscribe-ack
+        # processed. Post-fu5 acks bind sid synchronously and RETURN
+        # WITHOUT enqueueing for bronze write (the ack's `Frame.raw` can
+        # be up to ~5 MB cumulative-ticker payload; queueing them at
+        # subscribe burst rate OOM'd the cgroup 2026-05-17 — see
+        # kb/failures/collector-oom-via-ack-queue-may17.md). This counter
+        # is the observability surface for "collector is healthy +
+        # receiving acks" vs "collector wedged + no activity".
+        self._ack_frames_processed: int = 0
         # R2-M5 idempotency guard: a second ``stop()`` call (e.g., signal
         # handler + finally-block chain) must NOT block on putting a
         # second sentinel when the worker is already wedged.
@@ -383,39 +403,60 @@ class BronzeArchiver:
         per-channel writer's zstd-compress + disk IO) is decoupled onto
         a dedicated worker thread that drains ``self._write_queue``.
 
-        Three steps execute synchronously here (must, for correctness):
+        D1.3-fu5 amendment (ticket 86b9zky3u, 2026-05-17): subscribe-ack
+        frames (``type=subscribed`` / ``type=ok``) bind sid → channel
+        synchronously and then RETURN — they are NOT enqueued for bronze
+        writing. Rationale + RCA:
+        ``kb/failures/collector-oom-via-ack-queue-may17.md``. Brief:
+        cumulative-ticker payloads in acks can reach ~5 MB per frame;
+        queueing them at subscribe-burst rate (~7K acks across 7 conns)
+        OOM'd the cgroup. Acks are protocol metadata, not market data;
+        no silver/gold pipeline consumes them. The ``_unrouted/`` bronze
+        partition no longer receives ack frames.
 
-          1. Subscribe-ack (``type=subscribed`` / ``type=ok``): bind
-             sid → channel via ``cmd_id_to_channel`` lookup. The ack
-             ALSO routes through the data path (we still write it to
-             bronze — the ack itself is part of the wire trace). The
-             binding MUST be visible to the very next ``_on_frame``
-             call in this tick — deferring it to the worker would let
-             data frames arriving immediately after the ack route to
-             the _unrouted partition (silent ordering bug).
-          2. sid → channel lookup (read lock). Must happen here because
-             the binding map is also updated synchronously above.
-          3. ``collector_seq`` allocation (write lock). Single-FIFO-worker
-             dispatch preserves the monotonic-emit ordering only if the
-             producer assigns seq under the same lock; deferring would
-             let the worker observe out-of-order seqs on bursts.
+        Three steps execute synchronously for DATA frames:
 
-        Step 4 (envelope build + writer dispatch) is enqueued + handled
-        by ``_drain_loop`` on the worker thread.
+          1. (acks only) Subscribe-ack: bind sid → channel via
+             ``cmd_id_to_channel`` lookup, increment
+             ``_ack_frames_processed`` observability counter, RETURN.
+             The binding MUST be visible to the very next ``_on_frame``
+             call in this tick — deferring it would let data frames
+             arriving immediately after the ack route to the _unrouted
+             partition (silent ordering bug).
+          2. (data frames) sid → channel lookup (read lock). Must happen
+             here because the binding map is also updated synchronously
+             in the ack branch above.
+          3. (data frames) ``collector_seq`` allocation (write lock).
+             Single-FIFO-worker dispatch preserves the monotonic-emit
+             ordering only if the producer assigns seq under the same
+             lock; deferring would let the worker observe out-of-order
+             seqs on bursts. Acks do NOT consume a seq (symmetric to
+             skipping the write — otherwise unrouted partition has seq
+             gaps that silver QA would flag as data loss).
+
+        Step 4 (envelope build + writer dispatch) for data frames is
+        enqueued + handled by ``_drain_loop`` on the worker thread.
 
         On queue-full: drop the frame, bump ``_dropped_frames`` counter,
         log a throttled WARNING. We deliberately do NOT block here —
         the whole purpose of the Bit is to keep this callback fast so
         the asyncio loop services its ping-pong cycle.
         """
-        # Step 1: subscribe-ack binds sid → channel. Note: type=subscribed
-        # nests sid in ``msg.sid`` (NOT at the envelope top level) while
-        # kalshi_wire.WSClient only pulls top-level ``sid`` onto
-        # ``Frame.sid``. So Frame.sid is None for the type=subscribed
-        # case — _handle_subscribe_ack does its own msg.sid lookup.
-        # type=ok puts sid at top level and Frame.sid IS populated.
+        # Step 1: subscribe-ack — bind sid synchronously then RETURN
+        # (D1.3-fu5). type=subscribed nests sid in ``msg.sid`` (NOT at
+        # the envelope top level) while kalshi_wire.WSClient only pulls
+        # top-level ``sid`` onto ``Frame.sid``. So Frame.sid is None for
+        # the type=subscribed case — _handle_subscribe_ack does its own
+        # msg.sid lookup. type=ok puts sid at top level and Frame.sid
+        # IS populated. Either way, the binding lives in
+        # ``_handle_subscribe_ack``; the early return here skips the
+        # seq-alloc + enqueue paths that previously held the ack body
+        # (up to ~5 MB cumulative-ticker payload) in queue memory.
         if frame.msg_type in _SUBSCRIBE_ACK_TYPES:
             self._handle_subscribe_ack(frame)
+            with self._lock:
+                self._ack_frames_processed += 1
+            return
 
         # Step 2: resolve channel for this frame's envelope.
         channel: Optional[str] = None
