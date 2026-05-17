@@ -3819,16 +3819,17 @@ class OpportunityScanner:
                                         and _wknd_position > 0):
                                     _wknd_position = max(1, int(_wknd_position * (STC_SIZING_SCALER_KNEE / seconds_remaining)))
                                 _wknd_ev = round((final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c, 2)
-                                # Fixed sizing fallback when Kelly produces 0 (edge near zero)
-                                if _wknd_position == 0:
+                                # Fixed sizing fallback when Kelly produces 0 (edge near zero).
+                                # Kelly-sign gate: negative or zero Kelly also clamps to 0 contracts — must skip fallback (86b9zjx7r).
+                                if _wknd_position == 0 and (_wknd_kelly_f or 0) > 0:
                                     _wknd_fixed_raw = max(1, int((_wknd_balance * WEEKEND_FIXED_RISK) / best_ask))
                                     # Apply drawdown scaler to fixed sizing
                                     if _wknd_drawdown is not None and _wknd_drawdown < 1.0:
                                         _wknd_fixed_raw = max(1, int(_wknd_fixed_raw * _wknd_drawdown))
                                     _wknd_position = _wknd_fixed_raw
                                     logging.info(
-                                        "WEEKEND_FIXED_SIZE: %s edge=%.4f kelly=0 fixed=%dct risk=%.0f%% balance=%d scaler=%.2f",
-                                        ticker, fee_adjusted_edge, _wknd_position,
+                                        "WEEKEND_FIXED_SIZE: %s edge=%.4f kelly=%.4f fixed=%dct risk=%.0f%% balance=%d scaler=%.2f",
+                                        ticker, fee_adjusted_edge, _wknd_kelly_f, _wknd_position,
                                         WEEKEND_FIXED_RISK * 100, _wknd_balance,
                                         _wknd_drawdown if _wknd_drawdown else 1.0)
 

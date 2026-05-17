@@ -1039,7 +1039,7 @@ WEEKEND_DISCOUNT_MAX_STC = 600    # STC gate — 600-900s is 57% WR, kills PnL
 
 WEEKEND_EDGE_FLOOR = 0.0          # Allow zero-edge trades on weekends (data: 95.5% WR at 0% threshold, +$9.43/wknd-day)
 
-WEEKEND_FIXED_RISK = 0.07         # 7% bankroll when Kelly produces 0 (bypasses Kelly for zero-edge weekend trades)
+WEEKEND_FIXED_RISK = 0.07         # 7% bankroll when positive-but-tiny Kelly rounds to 0 contracts (gated on Kelly>0 since 86b9zjx7r)
 
 OVERNIGHT_EDGE_DISCOUNT = 0.60    # multiply MIN_EDGE_BY_PRICE by this during overnight quiet hours (04-11 UTC)
 
