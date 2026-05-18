@@ -83,11 +83,15 @@ COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.
 
 # B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
 # `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
-# Post-B3-fu2 the LPNE + dc_shadow_no_side except clauses are narrowed
-# to sqlite3.OperationalError; any future hit of this WARNING is a
-# real DB-class signal (or a regression worth investigating quickly).
-# Threshold defaults to 1 — these WARNs should be 0/day under healthy
-# operation, so even one hit warrants operator attention.
+# The marker substring matches ~20 WARN sites across bot/scanner +
+# bot/state. B3-fu2 narrowed 2 of them (LPNE + dc_shadow_no_side POR)
+# to sqlite3.OperationalError; the other ~18 still use bare
+# `except Exception:` and will WARN on any Python-level exception
+# (B3-fu7 `86ba067mg` sweeps them). Either way the alert is real-signal:
+# a hit means a genuine DB error at the narrowed sites OR an
+# exception (DB or otherwise) at the bare-except sister sites — both
+# warrant operator attention. Threshold defaults to 1 — these WARNs
+# should be 0/day under healthy operation, so even one hit fires.
 BOT_UNIT = "kalshi-bot"
 DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
 DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
@@ -194,14 +198,18 @@ def check_insert_evaluated_opportunity_failures(
     """Return alert string if `insert_evaluated_opportunity failed` WARN
     count in last ``window_min`` minutes >= ``threshold_count``, else None.
 
-    Post-B3-fu2 (ticket 86b9zxb02, 2026-05-18) the LPNE +
-    dc_shadow_no_side `except` clauses in `bot/scanner/__init__.py` are
-    narrowed to `sqlite3.OperationalError`. The remaining
-    WARN-on-DB-failure path is now a real-signal alert surface — any
-    future hit is either a genuine DB error (disk full / corruption /
-    busy timeout) or a sibling-strategy regression worth investigating
-    within minutes (B3 itself was 42 days of silent LPNE row drops
-    behind the pre-narrow bare-`except Exception:` swallow).
+    The marker substring matches ~20 WARN sites across
+    `bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 (ticket
+    86b9zxb02, 2026-05-18) narrowed 2 of them (LPNE +
+    dc_shadow_no_side POR) to `sqlite3.OperationalError`; the other
+    ~18 still use bare `except Exception:` and will WARN for any
+    Python-level exception (NameError / UnboundLocalError /
+    AttributeError) — the B3-fu7 `86ba067mg` sweep scope. Either way
+    the alert is real-signal: a hit means either a genuine DB error
+    at the narrowed sites OR an exception (DB or otherwise) at the
+    bare-`except` sister sites. Both warrant operator attention within
+    minutes (B3 itself was 42 days of silent LPNE row drops behind
+    the pre-narrow bare-`except Exception:` swallow at the LPNE site).
 
     Fail-quiet posture mirrors `check_ws_reconnects`: journalctl
     absent (test env), timeout, or non-zero exit returns None rather
@@ -227,12 +235,15 @@ def check_insert_evaluated_opportunity_failures(
     return (
         f"*BOT INSERT_EVALUATED_OPPORTUNITY FAILED* — {len(hits)} hits "
         f"of `{log_marker}` in last {window_min}min (threshold {threshold_count}). "
-        f"Post-B3-fu2 narrow makes this a real DB-class signal — disk full, "
-        f"corruption, busy timeout, or regression. "
+        f"Marker matches ~20 WARN sites (B3-fu2 narrowed 2 to "
+        f"sqlite3.OperationalError; the other ~18 still bare-except, "
+        f"B3-fu7 sweep scope). A hit is either a genuine DB error at "
+        f"the narrowed sites OR an exception (DB or otherwise) at the "
+        f"bare-except sites — both worth investigating. "
         f"Check: `journalctl -u {unit} --since '{window_min} min ago' | "
         f"grep -i 'insert_evaluated_opportunity failed' | tail`. "
-        f"If recurrence: investigate `bot/state.py::insert_evaluated_opportunity` + "
-        f"`bot/scanner/__init__.py` LPNE / dc_shadow_no_side narrow handlers."
+        f"Then trace to `bot/state.py::insert_evaluated_opportunity` + "
+        f"the emitting `bot/scanner/__init__.py` strategy block."
     )
 
 

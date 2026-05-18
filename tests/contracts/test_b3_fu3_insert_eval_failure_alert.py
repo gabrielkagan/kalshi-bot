@@ -5,15 +5,16 @@ Adds a 5th check tier to `scripts/ops/collector_health_monitor.py`:
 `insert_evaluated_opportunity failed` WARNING fires in `kalshi-bot`
 journalctl.
 
-Why: B3-fu2 narrowed the LPNE + dc_shadow_no_side `except` clauses to
-`sqlite3.OperationalError`. The remaining WARN-on-DB-failure path is
-now a real-signal alert surface — pre-B3-fu2 the same WARNING also
-swallowed unbound-name bugs, which is what kept the 42-day silent
-LPNE drop invisible. With the L106 narrow in place, ANY future
-`insert_evaluated_opportunity failed` WARN is either a genuine DB
-error (disk full / corruption / busy timeout) or a regression of
-some other DB-class path. Both warrant operator awareness within
-minutes, not 42 days.
+Why: the marker substring matches ~20 WARN sites across
+`bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 narrowed 2 of them
+(LPNE + dc_shadow_no_side POR) to `sqlite3.OperationalError`; the
+other ~18 still use bare `except Exception:` and will WARN for any
+Python-level exception (B3-fu7 `86ba067mg` sweep scope). Either way
+the alert is real-signal: a hit means either a genuine DB error at
+the narrowed sites OR an exception (DB or otherwise) at the
+bare-except sister sites. Both warrant operator awareness within
+minutes, not 42 days (B3 itself was 42 days of silent LPNE row drops
+behind the pre-narrow bare-except swallow at the LPNE site).
 
 Pins:
   1. `check_insert_evaluated_opportunity_failures` exists with
