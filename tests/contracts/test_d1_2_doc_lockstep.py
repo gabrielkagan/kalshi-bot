@@ -162,6 +162,24 @@ TRACKED_DOCS: list[Path] = [
         / "test_coinbase_archiver_worker_thread.py",
     REPO_ROOT / "tests" / "contracts"
         / "test_coinbase_archiver_skip_ack.py",
+    # D2.3 (ticket 86b9zkppt, 2026-05-17): bot/feeds/coinbase.py
+    # refactored to consume coinbase_wire.WSClient + its 2 new pinning
+    # tests (the AST contract guard + the wire-equivalence differential).
+    # Adding to TRACKED_DOCS so the L99 ratchet covers any future drift
+    # on the Coinbase bot-side consumer surface.
+    REPO_ROOT / "bot" / "feeds" / "coinbase.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_bot_feeds_coinbase_delegates_to_wire.py",
+    REPO_ROOT / "tests" / "equivalence"
+        / "test_coinbase_wire_differential.py",
+    # D2.3 R2-M1: agent_docs/config_reference.md described
+    # SPOT_BUFFER_PERSIST_INTERVAL_S as flushing "async via
+    # asyncio.to_thread" — the deleted pre-D2.3 mechanism. The R2-M1
+    # fix retracted the asyncio.to_thread claim to "dedicated sampler
+    # daemon thread"; adding this file to TRACKED_DOCS so the L99
+    # ratchet catches any future drift on the persist-mechanism
+    # narrative.
+    REPO_ROOT / "agent_docs" / "config_reference.md",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -1290,6 +1308,136 @@ def test_d2_2_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D2.2 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D2.3 (bot/feeds/coinbase.py → coinbase_wire consumer, 2026-05-17,
+#          ticket 86b9zkppt) ──────────────────────────────────────────────────
+#
+# D2.3 refactors ``bot/feeds/coinbase.py`` to consume
+# ``coinbase_wire.ws_client.WSClient`` (parallel of the D1.1.5 Phase 3b
+# refactor that did the same for ``bot/feeds/kalshi.py`` on the Kalshi
+# side). Bot becomes a wire-library consumer: 3 sync callbacks
+# (``_on_session_start`` / ``_on_frame`` / ``_on_session_end``) + a
+# dedicated sampler daemon thread that replaces the pre-D2.3 asyncio
+# ``_snapshot_loop`` coroutine.
+#
+# Forward-looking phrases that become FALSE post-D2.3-ship — encode per
+# L99 PARANOID-at-day-1 so sister-doc drift cannot reintroduce them via
+# paraphrase from a git blame.
+
+STALE_PATTERNS_POST_D2_3: list[str] = [
+    # Pre-D2.3 "future refactor" framing (appears in coinbase_wire
+    # docstrings + agent_docs/bot_layout.md + CLAUDE.md).
+    "future D2.3 refactor",
+    "the future D2.3 refactor",
+    "future D2.3",
+    "until D2.3 lands",
+    "until D2.3 ships",
+    "until D2.3 refactors",
+    "after D2.3 lands",
+    "after D2.3 ships",
+    "D2.3 target",
+    "D2.3 will",
+    "D2.3 (next Bit)",
+    "D2.3 (the bot-side refactor)",
+    # Present-tense forecast verbs that become past-tense post-ship.
+    # Narrow + literal so a sister doc that paraphrases via git-blame
+    # copy-paste fires the ratchet (same L99 lesson as D2.2 R1-M2).
+    "D2.3 refactors `bot/feeds/coinbase.py`",
+    "D2.3 refactors ``bot/feeds/coinbase.py``",
+    "D2.3 refactors the bot",
+    # Stub-fossil claims about the pre-D2.3 CoinbaseFeed shape.
+    "`_swallow_persist_exception` moved to `bot/feeds/coinbase.py`",
+    "_swallow_persist_exception moved to bot/feeds/coinbase.py",
+    "hosts the `_swallow_persist_exception` done-callback helper",
+    "hosts the _swallow_persist_exception done-callback helper",
+    "alongside `CoinbaseFeed._snapshot_loop`",
+    "alongside CoinbaseFeed._snapshot_loop",
+    "CoinbaseFeed._snapshot_loop",
+    # Pre-D2.3 CoinbaseFeed asyncio-internal claims (the bot used to own
+    # its own asyncio event loop + websockets.connect; post-D2.3 the
+    # wire owns those).
+    "CoinbaseFeed runs an asyncio event loop in a daemon thread",
+    "CoinbaseFeed._ws_loop",
+    "CoinbaseFeed._handle_message",
+    "CoinbaseFeed._run_thread",
+    # Pre-D2.3 "bot owns WS" framing.
+    "bot/feeds/coinbase.py owns its own WS",
+    "bot/feeds/coinbase.py opens its own WS",
+    "CoinbaseFeed opens its own WS connection",
+    # The D2.2 R1-M1 retracted-delegation paraphrase class extended for
+    # the bot side. Same defensive pattern as the D2.2 "delegates to the
+    # WSClient default" retract — applies symmetrically to CoinbaseFeed:
+    # the consumer MUST build its subscribe payload via the public
+    # ``coinbase_wire.auth.build_public_subscribe_message`` helper, not
+    # by reaching into the wire's private ``_default_on_session_start``.
+    "CoinbaseFeed delegates to the WSClient default",
+    "bot/feeds/coinbase.py delegates to the WSClient default",
+    "CoinbaseFeed accepts the WSClient default",
+    # R2-M1 retract: the pre-D2.3 persist mechanism was ``asyncio.to_thread(
+    # self.persist_buffer)`` invoked from inside the asyncio _snapshot_loop
+    # coroutine. Post-D2.3 the dedicated sampler daemon thread runs
+    # persist directly — no asyncio dependency. Encode the retracted
+    # descriptions so sister-doc drift cannot reintroduce the false
+    # mechanism claim via paraphrase from a git blame.
+    "Async via `asyncio.to_thread`",
+    "Async via ``asyncio.to_thread``",
+    "async via `asyncio.to_thread`",
+    "async via ``asyncio.to_thread``",
+    "asyncio.to_thread(self.persist_buffer)",
+    "asyncio.to_thread persist",
+    "asyncio.to_thread done-callback",
+    "fire-and-forget via asyncio.to_thread",
+    "off-loop via asyncio.to_thread",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D2_3)
+def test_no_post_d2_3_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D2.3-pending phrase after D2.3
+    shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D2.3 (bot/feeds/coinbase.py
+    refactored to consume coinbase_wire.WSClient). Same lesson as D1.4 /
+    D1.5 / D1.3-fu4 / D1.3-fu5 / D2.1.5 / D2.2 — when a Bit fulfills a
+    forecast, sister-doc retracts of the original forecast MUST ship
+    same-Bit to prevent paraphrase drift.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D2.3-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nPer L99 + L106: when a Bit fulfills a forecast (D2.3 "
+        "refactors bot/feeds/coinbase.py to consume coinbase_wire), "
+        "sister-doc retracts of the OLD forecast MUST ship same-Bit "
+        "to prevent paraphrase drift."
+    )
+
+
+def test_d2_3_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D2.3 as SHIPPED. Catches the inverse failure mode where staleness
+    patterns pass (no D2.3 mention at all) but the docs haven't been
+    updated.
+    """
+    shipped_re = re.compile(
+        r"D2\.3\s+SHIPPED|D2\.3.*shipped|shipped.*D2\.3",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D2.3 SHIPPED — staleness ratchets "
         "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )

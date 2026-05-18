@@ -17,8 +17,12 @@ tests/contracts/test_fetchers_extraction.py (Bit 4.4) and
 tests/contracts/test_kalshi_client_extraction.py (Bit 4.3).
 
 Class-specific notes:
-- `_swallow_persist_exception` helper moved alongside CoinbaseFeed (its sole
-  consumer) in Bit 4.5a.
+- `_swallow_persist_exception` helper was moved alongside CoinbaseFeed
+  (its sole consumer) in Bit 4.5a. **D2.3 (2026-05-17) DELETED the
+  helper** when CoinbaseFeed stopped using ``asyncio.to_thread`` for
+  persist (the dedicated sampler thread runs persist directly under
+  its own try/except). The `test_swallow_persist_exception_not_defined_in_bot_impl`
+  test below still pins that bot/_impl.py doesn't reintroduce it.
 - OrderbookSchemaError raise/except sites live inside KalshiFeed; post-Bit-4.5b
   the import is sibling-local
   (`from bot.feeds.orderbook_schema import OrderbookSchemaError`).
@@ -26,6 +30,14 @@ Class-specific notes:
   cross-submodule dep, requires explicit import in cross_exchange.py.
 - VolatilityEngine.__init__ has `feed: CoinbaseFeed` annotation (not extracted)
   — must continue resolving via the bot._impl re-import.
+- **D2.3 (2026-05-17, ticket 86b9zkppt)**: CoinbaseFeed refactored to
+  consume ``coinbase_wire.ws_client.WSClient``. The pre-D2.3 methods
+  ``_run_thread`` / ``_run`` / ``_ws_loop`` / ``_handle_message`` /
+  ``_snapshot_loop`` are GONE — replaced by 3 sync callbacks
+  (``_on_session_start`` / ``_on_frame`` / ``_on_session_end``) +
+  the sampler daemon thread (``_sampler_loop``). The AST contract
+  guard pinning that transition lives in
+  ``tests/contracts/test_bot_feeds_coinbase_delegates_to_wire.py``.
 
 L33 (Bit 4.4): wrong-class attribution in extraction breadcrumbs is a recurring
 drift class. Pin consumer-class identity with positive + negative regression
@@ -168,8 +180,12 @@ def test_class_not_defined_in_bot_impl(class_name):
 
 def test_swallow_persist_exception_not_defined_in_bot_impl():
     """The `_swallow_persist_exception` helper moved to bot/feeds/coinbase.py
-    alongside CoinbaseFeed (its sole consumer). bot/_impl.py must NOT
-    redefine it."""
+    in Bit 4.5a alongside CoinbaseFeed (its sole consumer at the time).
+    **D2.3 (2026-05-17) DELETED the helper** when CoinbaseFeed stopped
+    routing persist through ``asyncio.to_thread`` (the dedicated sampler
+    daemon thread runs persist directly under its own try/except). This
+    test still pins that bot/_impl.py doesn't re-introduce it — Bit
+    9.3-iii.c deleted bot/_impl.py entirely so the test self-skips."""
     bot_impl = REPO_ROOT / "bot" / "_impl.py"
     if not bot_impl.exists() if hasattr(bot_impl, 'exists') else not __import__('os').path.exists(bot_impl): pytest.skip("bot/_impl.py removed (Bit 9.3-iii.c)")
     tree = ast.parse(bot_impl.read_text(), filename=str(bot_impl))
@@ -179,9 +195,10 @@ def test_swallow_persist_exception_not_defined_in_bot_impl():
         and node.name == "_swallow_persist_exception"
     ]
     assert funcdefs == [], (
-        "_swallow_persist_exception module-level function found in bot/_impl.py. "
-        "It moved to bot/feeds/coinbase.py in Bit 4.5a (alongside its sole "
-        "consumer, CoinbaseFeed._snapshot_loop)."
+        "_swallow_persist_exception module-level function found in "
+        "bot/_impl.py. It moved to bot/feeds/coinbase.py in Bit 4.5a "
+        "and was DELETED at D2.3 (2026-05-17) — bot/_impl.py must NOT "
+        "re-introduce it."
     )
 
 
@@ -274,7 +291,13 @@ COINBASE_METHODS = (
     "__init__", "start", "stop",
     "_load_persisted_buffer", "persist_buffer",
     "get_price", "get_all_prices", "get_buffer", "get_price_trailing_avg",
-    "_run_thread", "_run", "_ws_loop", "_handle_message", "_snapshot_loop",
+    # D2.3 (2026-05-17, ticket 86b9zkppt): WS transport delegated to
+    # coinbase_wire.WSClient. The pre-D2.3 methods (_run_thread / _run /
+    # _ws_loop / _handle_message / _snapshot_loop) are GONE — replaced by
+    # 3 sync callbacks + the sampler daemon thread. AST contract guard
+    # pinning the transition: test_bot_feeds_coinbase_delegates_to_wire.py.
+    "_on_session_start", "_on_frame", "_on_session_end",
+    "_sampler_loop",
 )
 
 

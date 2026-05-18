@@ -1,40 +1,71 @@
-"""CoinbaseFeed — Coinbase WS feed with persistent 30-min snapshot buffer.
+"""CoinbaseFeed — Coinbase WS feed consumer with persistent 30-min spot buffer.
 
 Extracted from bot/_impl.py in Sprint 4 Bit 4.5a (2026-05-08). Daemon
-thread that subscribes to Coinbase ticker channel for every symbol in
-`bot.config.ASSETS` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10;
-BNB post-T1 2026-05-17 ticket 86b9zmj0c —
-ASSETS is the canonical source; see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md
-+ bit-1-5-shipped-may10.md + agent_docs/bnb-t1-plan-may17.md). Maintains a 1-second-resolution rolling
-buffer (PRICE_BUFFER_SIZE), and persists the buffer to disk every
-SPOT_BUFFER_PERSIST_INTERVAL_S so 30-min momentum features (5m/30m
-used by cal_mlp) don't go NULL on restart.
+thread that maintains per-asset spot prices for every symbol in
+``bot.config.ASSETS`` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10;
+BNB post-T1 2026-05-17 ticket 86b9zmj0c — ASSETS is the canonical source;
+see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md +
+bit-1-5-shipped-may10.md + agent_docs/bnb-t1-plan-may17.md). Maintains a
+1-second-resolution rolling buffer (PRICE_BUFFER_SIZE), and persists the
+buffer to disk every SPOT_BUFFER_PERSIST_INTERVAL_S so 30-min momentum
+features (5m/30m used by cal_mlp) don't go NULL on restart.
 
-The module-level helper ``_swallow_persist_exception`` is the
-done-callback for the off-loop persist task. It moved here from
-bot/_impl.py because CoinbaseFeed is its sole consumer.
+**D2.3 (2026-05-17, ticket 86b9zkppt)** refactored the WS transport spine
+out of this class into ``coinbase_wire.ws_client.WSClient`` per the
+2026-05-16 §5 AMENDMENT to ``kb/decisions/data-corpus-architecture.md``
+("two sides of the same coin" — bot + collector share one transport).
+CoinbaseFeed is now a WSClient consumer: it instantiates one ``WSClient``
+wire instance, hands it 3 sync callbacks (``_on_session_start`` /
+``_on_frame`` / ``_on_session_end``), and keeps ALL bot-state machinery
+— price dict, rolling 1-second buffer, 30-min persistence. The asyncio
+event loop, ``websockets.connect``, exponential-backoff reconnect,
+silence watchdog, and frame parse live in WSClient.
 
-Imports are deliberate: stdlib + ``websockets`` + ``bot.constants``
-(5 explicit names) + ``ASSETS`` from ``bot/config.py`` (left there in
-Bit 3.1 because it's used by models.py + tests outside the bot
-package). Does NOT import ``bot._impl`` (would create a circular
-import — `_impl` imports this module).
+Sister class ``KalshiFeed`` (``bot/feeds/kalshi.py``) shipped the
+parallel kalshi_wire-consumer refactor at D1.1.5 (PR ~30, ticket
+86b9zdhz2, 2026-05-16); D2.3 brings the Coinbase side into the same
+shape so both feeds + both collector archivers route through the
+parallel wire libraries.
+
+Subscribe scope: bot subscribes to ``channels=("ticker",)`` only — the
+wire library's ``DEFAULT_CHANNELS`` defaults to a 4-channel set (ticker
++ matches + heartbeat + status) that the collector uses for bronze
+archiving. The bot only needs spot price; matches/heartbeat/status
+frames would be CPU + GIL noise on the bot side. Narrowing here keeps
+the bot path lean while the collector keeps the wide set.
+
+Threading model (post-D2.3):
+
+  - ``WSClient`` (asyncio thread, owned by coinbase_wire) — websocket
+    connect/reconnect, silence watchdog, frame parse, callback dispatch.
+  - Sampler daemon thread (owned by CoinbaseFeed) — every 1s, snapshot
+    ``self._prices`` into ``self._buffers``; every
+    SPOT_BUFFER_PERSIST_INTERVAL_S, persist buffer to disk.
+
+The sampler thread replaces the pre-D2.3 asyncio ``_snapshot_loop``
+coroutine since WSClient now owns the asyncio event loop and we cannot
+``asyncio.gather`` from outside it. Disk I/O lives on the sampler
+thread (not the wire's asyncio thread) so persist failures + slow disk
+cannot block the WS keepalive ping cycle.
+
+Imports are deliberate: stdlib + ``bot.constants`` (5 explicit names) +
+``ASSETS`` from ``bot/config.py`` (left there in Bit 3.1 because it's
+used by models.py + tests outside the bot package) + ``coinbase_wire``
+(WSClient + Frame + build_public_subscribe_message). Does NOT import
+``asyncio`` / ``websockets`` / ``random`` (those live in the wire) and
+does NOT import ``bot._impl`` (deleted in Bit 9.3-iii.c).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import random
 import threading
 import time
 import uuid
 from collections import deque
 from typing import Dict, List, Optional, Tuple
-
-import websockets
 
 from bot.constants import (
     COINBASE_PRODUCTS,
@@ -44,21 +75,26 @@ from bot.constants import (
     SPOT_BUFFER_PERSIST_PATH,
 )
 from bot.config import ASSETS
+from coinbase_wire.auth import build_public_subscribe_message
+from coinbase_wire.ws_client import Frame, WSClient
 
 
-def _swallow_persist_exception(fut):
-    """Done-callback for the off-loop persist task. Logs but doesn't
-    propagate — a persist failure is non-fatal (next pass retries)."""
-    exc = fut.exception()
-    if exc is not None:
-        logging.warning("persist_buffer (off-loop) failed: %s", exc)
+# Bot subscribes to ticker channel only — narrower than the wire's
+# DEFAULT_CHANNELS (ticker + matches + heartbeat + status). The bot
+# only consumes spot price; the other 3 channels would be CPU/GIL
+# noise. The collector (D2.2) uses the wider set for bronze archiving.
+_BOT_CHANNELS: Tuple[str, ...] = ("ticker",)
 
 
 class CoinbaseFeed:
-    """Coinbase WebSocket feed for real-time crypto prices.
+    """Coinbase WebSocket feed consumer for real-time crypto prices.
 
-    Runs an asyncio event loop in a daemon thread. Shares price data with
-    the synchronous main loop via a lock-protected dict and deque buffers.
+    Post-D2.3 wraps ``coinbase_wire.ws_client.WSClient`` with 3 sync
+    callbacks (``_on_session_start`` / ``_on_frame`` / ``_on_session_end``).
+    All consumer state (price dict, rolling 30-min buffer, periodic
+    persistence) stays on this class. WSClient owns the asyncio thread,
+    connect/reconnect, silence watchdog, and frame parse; the bot owns
+    a separate sampler daemon thread for the 1-second snapshot cadence.
     """
 
     def __init__(self, persist_path: str = SPOT_BUFFER_PERSIST_PATH):
@@ -67,23 +103,49 @@ class CoinbaseFeed:
             asset: deque(maxlen=PRICE_BUFFER_SIZE) for asset in ASSETS
         }
         self._lock = threading.Lock()
-        self._connected = False
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._stop_event: Optional[asyncio.Event] = None
         # Reverse lookup: "BTC-USD" -> "BTC"
         self._product_to_asset = {v: k for k, v in COINBASE_PRODUCTS.items()}
         # R-p7-deploy-r11: persist 30-min buffer across restarts so cal_mlp
         # 5m/30m momentum features don't go NULL post-deploy. See
         # kb/concepts/calibrator-data-hygiene-apr29.md.
-        # R5 (HIGH): persist_lock serializes concurrent persists between
-        # stop() (main thread) and the asyncio to_thread executor.
-        # Without this, two snapshots race on os.replace and the later-
-        # finishing one wins regardless of which had fresher data.
+        # _persist_lock is defensive — at D2.3 the only persist site is
+        # the sampler thread (single-threaded) + the final flush in
+        # stop() (after sampler join). The lock pins safety against a
+        # future Bit that adds an external persist_buffer() invocation.
         self._persist_path = persist_path
-        self._last_persist_ts: float = 0.0
+        # Seed _last_persist_ts at wall-clock NOW so the first sampler
+        # tick defers persist by the full SPOT_BUFFER_PERSIST_INTERVAL_S.
+        # A 0.0 seed would trigger an immediate persist on the first
+        # sample (since any epoch second ≫ 30s), overwriting the freshly
+        # loaded persisted buffer with one fresh sample appended —
+        # wasteful disk I/O on every boot for no benefit.
+        self._last_persist_ts: float = time.time()
         self._persist_lock = threading.Lock()
         self._load_persisted_buffer()
+        # D2.3: WS transport delegated to coinbase_wire.WSClient.
+        # ``channels`` narrows the wire default to ticker only (bot
+        # doesn't need matches/heartbeat/status — see _BOT_CHANNELS
+        # constant docstring). product_ids comes from
+        # bot.constants.COINBASE_PRODUCTS so a new-asset onboarding
+        # flows naturally into the WS subscribe via the bot's existing
+        # config surface.
+        self._product_ids: Tuple[str, ...] = tuple(
+            COINBASE_PRODUCTS.values())
+        self._channels: Tuple[str, ...] = _BOT_CHANNELS
+        self._wire = WSClient(
+            on_frame=self._on_frame,
+            on_session_start=self._on_session_start,
+            on_session_end=self._on_session_end,
+            url=COINBASE_WS_URL,
+            channels=self._channels,
+            product_ids=self._product_ids,
+        )
+        # D2.3: sampler runs in its own daemon thread (replaces the
+        # pre-D2.3 asyncio _snapshot_loop coroutine). WSClient owns its
+        # own asyncio loop; the sampler cannot share it via
+        # asyncio.gather from outside.
+        self._sampler_stop = threading.Event()
+        self._sampler_thread: Optional[threading.Thread] = None
 
     def _load_persisted_buffer(self) -> None:
         """Restore buffers from `self._persist_path` if present. Drops
@@ -129,7 +191,7 @@ class CoinbaseFeed:
 
     def persist_buffer(self) -> None:
         """Write current buffers to disk atomically (.tmp + os.replace).
-        Called from `_snapshot_loop` every SPOT_BUFFER_PERSIST_INTERVAL_S
+        Called from the sampler thread every SPOT_BUFFER_PERSIST_INTERVAL_S
         and from `stop()` for shutdown-flush.
 
         The .tmp filename includes pid + uuid8 so two processes (test
@@ -146,7 +208,9 @@ class CoinbaseFeed:
             # rather than on every 30s call. Tracked via a flag.
             if not getattr(self, '_persist_dir_ready', False):
                 try:
-                    os.makedirs(os.path.dirname(self._persist_path) or '.', exist_ok=True)
+                    os.makedirs(
+                        os.path.dirname(self._persist_path) or '.',
+                        exist_ok=True)
                     self._persist_dir_ready = True
                 except OSError:
                     return
@@ -155,7 +219,8 @@ class CoinbaseFeed:
                     asset: [[ts, price] for ts, price in buf]
                     for asset, buf in self._buffers.items()
                 }
-            tmp = f"{self._persist_path}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+            tmp = (f"{self._persist_path}.tmp-{os.getpid()}-"
+                   f"{uuid.uuid4().hex[:8]}")
             try:
                 with open(tmp, 'w') as f:
                     json.dump(data, f, separators=(',', ':'))
@@ -178,33 +243,68 @@ class CoinbaseFeed:
     # ── Public API (called from main thread) ──────────────────────────────
 
     def start(self):
-        self._thread = threading.Thread(target=self._run_thread, daemon=True)
-        self._thread.start()
+        """Start sampler thread, then the underlying WSClient.
+
+        Order: sampler first so it's running before the first ticks
+        arrive (no hard ordering requirement — sampler reads
+        ``self._prices`` written by ``_on_frame``; an empty initial
+        sample is harmless — but the precedent in D2.2's
+        ``CoinbaseArchiver.start`` starts the worker before the wire
+        for symmetry).
+
+        Re-entrancy: if ``start()`` is called after a prior ``stop()``,
+        a fresh sampler thread is spawned. WSClient handles its own
+        re-entrancy on ``start()``.
+        """
+        if (self._sampler_thread is None
+                or not self._sampler_thread.is_alive()):
+            self._sampler_stop.clear()
+            self._sampler_thread = threading.Thread(
+                target=self._sampler_loop,
+                name=f"CoinbaseFeed-sampler-{id(self):x}",
+                daemon=True,
+            )
+            self._sampler_thread.start()
+        self._wire.start()
 
     def stop(self):
-        # R-p7-deploy-r11 R2: flush persistent buffer on shutdown so
-        # last 30s of ticks survive restart. R4 (MED): order matters —
-        # we MUST set stop_event FIRST so _snapshot_loop won't schedule
-        # another `to_thread(persist_buffer)` after our final flush.
-        # Without the ordering, two concurrent persists race on os.replace
-        # and the LATER-running thread wins, potentially writing a
-        # SLIGHTLY OLDER snapshot. Set stop_event first, then briefly
-        # wait for any in-flight to_thread, then do the final synchronous
-        # flush.
-        if self._loop and self._stop_event:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
-        # 250ms join + up to ~100ms _persist_lock contention + 5-10ms
-        # final persist. Worst case (silent-WS path where thread.join
-        # times out + asyncio thread is mid-persist holding the lock):
-        # ~360ms total stop() latency. Well below any reasonable
-        # TimeoutStopSec — but the unit file is outside this repo, so
-        # operators should verify their TimeoutStopSec is ≥ 1s.
-        if self._thread is not None:
-            self._thread.join(timeout=0.25)
+        """Stop the WSClient (best-effort 2s join), signal sampler stop,
+        join (2s), then do a final synchronous persist flush so the last
+        30s of ticks survive restart.
+
+        Ordering:
+          1. ``self._wire.stop(join_timeout=2.0)`` — schedules the wire
+             stop_event + ws.close. Under normal shutdown the asyncio
+             thread breaks out of its frame loop, fires ``_on_session_end``
+             (which sets ``_connected_state=False``), and exits well
+             within 2s. Under wire-side backoff-sleep the 2s timeout
+             may return before the asyncio thread has fully exited;
+             that's acceptable here because the wire only mutates
+             ``self._prices`` (under ``self._lock``) on the frame path,
+             never ``self._buffers`` — the buffer surface flushed below.
+             The wire's daemon thread continues running in the background
+             until its current backoff sleep wakes and the stop_event
+             check fires (next iteration breaks out); process-exit
+             cleanup is the final backstop for the daemon thread.
+          2. Signal + JOIN the sampler thread (2s timeout). The sampler
+             is the only writer to ``self._buffers``, so joining it
+             quiesces the persist-write set.
+          3. Synchronous ``persist_buffer()`` final flush. Reads
+             ``self._buffers`` under ``self._lock`` (safe regardless of
+             whether the wire thread is still in flight).
+        """
+        try:
+            self._wire.stop(join_timeout=2.0)
+        except Exception:
+            logging.warning("CoinbaseFeed _wire.stop failed", exc_info=True)
+        self._sampler_stop.set()
+        if self._sampler_thread is not None:
+            self._sampler_thread.join(timeout=2.0)
         try:
             self.persist_buffer()
         except Exception:
-            logging.warning("persist_buffer in stop() failed", exc_info=True)
+            logging.warning(
+                "persist_buffer in stop() failed", exc_info=True)
 
     def get_price(self, asset: str) -> Optional[float]:
         with self._lock:
@@ -218,13 +318,14 @@ class CoinbaseFeed:
         with self._lock:
             return list(self._buffers.get(asset, []))
 
-    def get_price_trailing_avg(self, asset: str, seconds: int = 60) -> Optional[float]:
+    def get_price_trailing_avg(
+            self, asset: str, seconds: int = 60) -> Optional[float]:
         """Return the average spot price over the last N seconds.
 
-        Uses the 1-second snapshot buffer (PRICE_BUFFER_SIZE=300, 5 min of data).
-        Returns None if fewer than 5 samples available (feed just started or
-        reconnected). This approximates the CFB RTI 60-second settlement
-        averaging mechanism.
+        Uses the 1-second snapshot buffer (PRICE_BUFFER_SIZE=300, 5 min of
+        data). Returns None if fewer than 5 samples available (feed just
+        started or reconnected). This approximates the CFB RTI 60-second
+        settlement averaging mechanism.
         """
         now = time.time()
         with self._lock:
@@ -242,128 +343,128 @@ class CoinbaseFeed:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        """Delegate to WSClient (D2.3). Pre-D2.3 this read a local
+        ``_connected`` flag set by the now-deleted in-class WS loop."""
+        return self._wire.is_connected
 
-    # ── Background thread ─────────────────────────────────────────────────
+    # ── WSClient callbacks ────────────────────────────────────────────────
 
-    def _run_thread(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._stop_event = asyncio.Event()
-        try:
-            self._loop.run_until_complete(self._run())
-        except Exception:
-            logging.error("Coinbase feed thread crashed", exc_info=True)
-        finally:
-            self._loop.close()
+    def _on_session_start(self) -> None:
+        """Fires AFTER WS connect, BEFORE WSClient starts reading frames.
 
-    async def _run(self):
-        """Top-level coroutine: run WS listener and snapshot sampler."""
-        await asyncio.gather(
-            self._ws_loop(),
-            self._snapshot_loop(),
+        Builds the Coinbase Exchange WS subscribe payload via the public
+        ``coinbase_wire.auth.build_public_subscribe_message`` helper and
+        dispatches via the wire's public ``WSClient.send_frame`` API.
+
+        R1-M1 D2.2 RCA carried forward: NOT reaching into
+        ``self._wire._default_on_session_start()`` (a private wire-library
+        method). A wire-side rename of the private method would silently
+        strand the consumer: construction + import + start() all succeed,
+        but at first WS connect ``AttributeError`` fires inside the wire's
+        ``try: cb() except Exception: log.warning(...)`` swallower — no
+        subscribe dispatches, no price ticks reach the bot, and only the
+        90s silence-watchdog as the alert. Building via the public helper
+        keeps the consumer-side subscribe path AST-discoverable and
+        decoupled from wire-library internals.
+        """
+        if not self._channels or not self._product_ids:
+            return
+        payload = build_public_subscribe_message(
+            channels=list(self._channels),
+            product_ids=list(self._product_ids),
         )
-
-    # ── WebSocket connection with reconnect ───────────────────────────────
-
-    async def _ws_loop(self):
-        backoff = 1.0
-        max_backoff = 60.0
-
-        while not self._stop_event.is_set():
-            try:
-                async with websockets.connect(COINBASE_WS_URL) as ws:
-                    await ws.send(json.dumps({
-                        "type": "subscribe",
-                        "product_ids": list(COINBASE_PRODUCTS.values()),
-                        "channels": ["ticker"],
-                    }))
-                    self._connected = True
-                    backoff = 1.0  # reset on successful connect
-                    logging.info("Coinbase feed connected")
-
-                    async for raw in ws:
-                        if self._stop_event.is_set():
-                            break
-                        self._handle_message(raw)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self._connected = False
-                jitter = backoff * random.uniform(0, 0.25)
-                wait = backoff + jitter
-                logging.warning(
-                    f"Coinbase feed disconnected: {e} — "
-                    f"reconnecting in {wait:.1f}s"
-                )
-                try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=wait
-                    )
-                    break  # stop_event was set during wait
-                except asyncio.TimeoutError:
-                    pass  # timeout elapsed, retry
-                backoff = min(backoff * 2, max_backoff)
-
-        self._connected = False
-        logging.info("Coinbase feed stopped")
-
-    def _handle_message(self, raw: str):
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return
+            self._wire.send_frame(payload)
+        except ConnectionError:
+            logging.warning(
+                "CoinbaseFeed subscribe dispatch aborted (WS closed "
+                "between session_start fire and send_frame); reconnect "
+                "will retry.")
 
-        msg_type = data.get("type")
-        if msg_type != "ticker":
-            return
+    def _on_session_end(self) -> None:
+        """Fires AFTER WS close, BEFORE the WSClient backoff sleep.
 
+        CoinbaseFeed has no per-session state to clear: the rolling 30-min
+        buffer is INTENTIONALLY cross-session (cal_mlp momentum features
+        need continuity across WS blips — a forced clear on every
+        reconnect would defeat the persistence design). The ``_prices``
+        dict naturally re-populates on the next ticker tick; a brief
+        silent-window read returns the last-known price, which is the
+        right behavior for a momentary disconnect.
+
+        Callback wired for R3/P0-A symmetry with the wire contract
+        (mirrors ``CoinbaseArchiver._on_session_end`` and the kalshi-side
+        ``KalshiFeed._on_session_end``) + as a future-extension seam.
+        """
+        return
+
+    def _on_frame(self, frame: Frame) -> None:
+        """Fires for every incoming WS frame. Watchdog ``_last_msg_ts``
+        is already set by WSClient BEFORE this callback (Apr-24
+        silence-watchdog ordering — carried over from the kalshi side).
+
+        Filters to ``type=ticker``, extracts price for the mapped asset,
+        writes to ``self._prices`` under ``self._lock``. Pre-D2.3 this
+        was ``_handle_message`` invoked directly from ``async for raw
+        in ws:``; the wire library now owns the JSON parse so this
+        method consumes ``frame.parsed`` + ``frame.msg_type`` directly.
+
+        Frames with unmapped ``product_id`` (e.g., a future product we
+        didn't subscribe to but Coinbase echoed back) are silently
+        dropped — the reverse lookup in ``self._product_to_asset``
+        returns None and we early-exit.
+        """
+        if frame.msg_type != "ticker":
+            return
+        data = frame.parsed
+        if data is None:  # JSON parse failed in the wire
+            return
         product_id = data.get("product_id", "")
         price_str = data.get("price")
         asset = self._product_to_asset.get(product_id)
         if not asset or not price_str:
             return
-
         try:
             price = float(price_str)
         except (ValueError, TypeError):
             return
-
         with self._lock:
             self._prices[asset] = price
 
-    # ── 1-second snapshot sampler ─────────────────────────────────────────
+    # ── Sampler thread (1-second snapshot + periodic persist) ─────────────
 
-    async def _snapshot_loop(self):
-        while not self._stop_event.is_set():
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=1.0
-                )
-                break  # stop_event was set
-            except asyncio.TimeoutError:
-                pass  # 1 second elapsed
+    def _sampler_loop(self) -> None:
+        """Daemon-thread version of the pre-D2.3 asyncio ``_snapshot_loop``.
 
+        Every 1 second:
+          1. Sample current ``self._prices`` into per-asset deques.
+
+        Every SPOT_BUFFER_PERSIST_INTERVAL_S seconds:
+          2. Persist buffer to disk (best-effort; failures non-fatal,
+             retried on next pass).
+
+        Lives on its own thread because WSClient owns its own asyncio
+        loop and we cannot ``asyncio.gather`` from outside. Disk I/O
+        on the sampler thread (not the wire's asyncio thread) ensures
+        a slow disk + persist failure cannot block the WS keepalive
+        ping-pong cycle (the lesson D1.3-fu4 closed for the collector
+        side — same architectural principle applies here even though
+        the bot doesn't need a full worker-thread queue).
+        """
+        while not self._sampler_stop.is_set():
+            # Wait either 1s or until stop is set, whichever first.
+            if self._sampler_stop.wait(timeout=1.0):
+                break
             now = time.time()
             with self._lock:
                 for asset, price in self._prices.items():
                     self._buffers[asset].append((now, price))
-
-            # Persist every SPOT_BUFFER_PERSIST_INTERVAL_S (~30s).
-            # R-p7-deploy-r11 R2: offload disk I/O to a thread — JSON
-            # serialize + os.replace on a 1800×4 buffer is ~14k tuples
-            # of synchronous I/O; doing it on the event-loop thread
-            # would block WS message handling, dropping fresh price
-            # ticks (the very thing we're trying to preserve).
-            if now - self._last_persist_ts >= SPOT_BUFFER_PERSIST_INTERVAL_S:
+            if (now - self._last_persist_ts
+                    >= SPOT_BUFFER_PERSIST_INTERVAL_S):
                 self._last_persist_ts = now
-                # asyncio.to_thread (Py3.9+) drops the GIL during the
-                # blocking call so the event loop keeps processing.
-                # Don't await — fire-and-forget; if a write fails the
-                # next pass will retry. Capture exception via callback
-                # so unhandled-exception warnings don't fire.
-                fut = asyncio.ensure_future(
-                    asyncio.to_thread(self.persist_buffer)
-                )
-                fut.add_done_callback(_swallow_persist_exception)
+                try:
+                    self.persist_buffer()
+                except Exception:
+                    logging.warning(
+                        "CoinbaseFeed sampler persist failed",
+                        exc_info=True)
