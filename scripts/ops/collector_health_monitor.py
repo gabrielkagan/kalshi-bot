@@ -3,9 +3,10 @@
 Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
 + 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
 kalshi-coinbase-collector). Standalone CLI run via cron on the VPS.
-Polls 4 health surfaces × 2 collectors = 8 total alert classes; sends
-Telegram alerts via the existing ``bot.notifier.TelegramNotifier`` (no
-Telegram client re-implementation).
+Polls 4 health surfaces × 2 collectors + 1 bot check (B3-fu3,
+2026-05-18) = 9 total alert classes; sends Telegram alerts via the
+existing ``bot.notifier.TelegramNotifier`` (no Telegram client
+re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
