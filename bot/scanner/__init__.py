@@ -2804,7 +2804,8 @@ class OpportunityScanner:
                                         # so NameError/UnboundLocalError/AttributeError propagate
                                         # (L106 lesson — the original 42-day silent LPNE drop).
                                         # B3-fu7 (`86ba067mg`) sweeps the same L106 narrow to the
-                                        # ~30 other `insert_evaluated_opportunity` swallows in this file.
+                                        # ~48 other `insert_evaluated_opportunity` bare-Exception
+                                        # swallows in this file (AST-counted at B3-fu2 ship).
                                         except sqlite3.OperationalError as e:
                                             logging.warning(
                                                 "insert_evaluated_opportunity failed (lpne): %s",
