@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-04-07
+updated: 2026-05-18
 tags: [strategy, tm, 95-99c, live]
 ---
 # Terminal Momentum (TM) Strategy
@@ -65,14 +65,17 @@ TM sits inside the `insufficient_edge` rejection path in `scan()`:
 1. Scanner computes probability and edge for a contract
 2. Edge falls below `MIN_EDGE_BY_PRICE` threshold
 3. Before rejecting, check TM eligibility (price, prob, STC)
-4. If eligible and no DC overlap on same ticker, add as TM candidate
+4. If eligible AND no per-(ticker, side) Kelly-sized entry already
+   exists (see "Overlap Prevention & Stacking" below), add as TM candidate
 5. Set `_tm_intercepted = True` to skip the rejection
 
 ## Overlap Prevention & Stacking
-- **DC overlap:** Skips if ticker already claimed by a decided contract strategy
-- **Price-level stacking:** Multiple TM positions allowed on same ticker at DIFFERENT prices (e.g., 95c + 98c). Strategy encoded as `terminal_momentum_{price}`, each gets its own composite PK slot. Only blocks duplicate at same price.
+- **Same-tick decided_* overlap:** Skips if a `decided_*` candidate emits in the same scan tick (`_tm_dc_overlap` — candidate-list scan).
+- **Cross-tick decided_* overlap (B5, 86b9zudg2, 2026-05-18):** Skips if any `decided_*` IOC is in flight via the executor's `_dc_retry_queue` from a prior tick (`_tm_dc_retry_overlap`). Closes the production stack class that fired TM_98 22s after `decided_t1`'s first IOC entered retry on KXHYPE15M-26MAY180530-30.
+- **Per-(ticker, side='yes') non-TM open-position lock (B5, 86b9zudg2, 2026-05-18):** Skips if any non-TM strategy (`decided_*`, `weekend_discount`, `overnight_discount`, `low_price_near_expiry`, etc.) holds an open YES-side position on the ticker (`_tm_non_tm_position`). NO-side strategies (e.g., `bracket_no`) on the same ticker do NOT block YES-side TM (side filter).
+- **Price-level stacking (TM-on-TM):** Multiple TM positions remain allowed on same ticker at DIFFERENT prices (e.g., 95c + 98c). Strategy encoded as `terminal_momentum_{price}`, each gets its own composite PK slot. Only blocks duplicate at same price (`_tm_has_position`).
 - **Concurrent cap:** Max 8 simultaneous TM positions (raised from 4 for stacking headroom)
-- **Data:** 40/40 stackable tickers settled YES, 0/4 TM losses had stacking opportunities. Rising price across TM levels = strong confirmation signal.
+- **Data (TM-on-TM, pre-B5):** 40/40 stackable tickers settled YES, 0/4 TM losses had stacking opportunities. Rising price across TM levels = strong confirmation signal. B5's new gates do NOT touch TM-on-TM behavior — they close the orthogonal "TM-on-Kelly-sized-non-TM" stack class.
 
 ## Execution
 TM candidates route through `_execute_tm_taker` (direct taker IOC). Sizing via `tm_compute_contracts()` — no Kelly, no drawdown scaler, kelly_f logged as 0.0. Execution-time re-derivation if price drifts between scan and execution. Strategy routing uses `.startswith("terminal_momentum")` to match all price-encoded variants.

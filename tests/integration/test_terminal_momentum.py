@@ -195,8 +195,17 @@ class TestTMScanIntercept(unittest.TestCase):
         self.assertIn("get_open_positions", tm_block)
 
     def test_concurrent_cap_check(self):
-        """TM must check TM_MAX_CONCURRENT."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:4000]
+        """TM must check TM_MAX_CONCURRENT.
+
+        Window widened 4000→8000 in B5 (86b9zudg2, 2026-05-18): the
+        per-(ticker, side) entry-lock added ~1900 chars of gate code +
+        comments before the TM_MAX_CONCURRENT check, pushing the token
+        past the pre-B5 4000-char slice window. L104 brittleness —
+        the cap-check token now sits at offset ~6228 from the section
+        header. Followup ticket files end-anchor refactor for the full
+        sister-test suite.
+        """
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:8000]
         self.assertIn("TM_MAX_CONCURRENT", tm_block)
 
 
