@@ -85,7 +85,7 @@ maintainer's call.
 - [[decisions/hourly-promotion.md]] - Hourly promoted to live: sub-60c BTC+ETH, 66.3% WR on 1,474 tickers.
 - [[decisions/config-models-extraction.md]] - Extracted config.py and models.py from bot.py (Mar 21).
 - [[decisions/stc-extended-zone.md]] - 300-600s re-enabled with per-asset higher floors (BTC 93c, ETH 90c, SOL 95c, XRP 92c). 98.8% WR on n=83.
-- [[decisions/d3-0-silver-foundations-plan.md]] - D3.0 silver layer foundations (ticket 86b9zxc6t). First Bit of Phase 2 (Silver). Off-VPS DuckDB ETL on operator Mac via launchd nightly. 5 Tier-1 sources normalized to Parquet under `silver/v1/<source>/utc_date=YYYY-MM-DD/`. Direct-DuckDB ships D3.0; dbt-project layering deferred to D3.0-fu1.
+- D3.0 silver layer foundations (ticket 86b9zxc6t, plan doc local-only per kb/CLAUDE.md). First Bit of Phase 2 (Silver). Off-VPS DuckDB ETL on operator Mac via launchd nightly. 5 Tier-1 sources normalized to Parquet under `silver/v1/<source>/utc_date=YYYY-MM-DD/`. Direct-DuckDB ships D3.0; dbt-project layering deferred to D3.0-fu1. See `silver/README.md` + `agent_docs/bot_layout.md` "Silver ETL" section.
 
 ## Conceptually archived (6)
 Superseded or merged decisions kept in their active dirs for historical
