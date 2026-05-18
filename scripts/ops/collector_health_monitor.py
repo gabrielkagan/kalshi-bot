@@ -453,16 +453,30 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs all 4 checks × 2 collectors; sends Telegram
-    alerts as needed.
+    """Entry point. Runs collector checks (4) × 2 collector tiers + bot
+    checks (1) × 1 bot tier = 9 total check dispatches per tick;
+    sends Telegram alerts as needed.
 
-    D2.5 (ticket 86b9znq4w, 2026-05-18) extends the original single-
+    D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
     collector loop to poll BOTH kalshi-collector AND kalshi-coinbase-
-    collector. Per-tier dedup keys (``d1_6_<check>`` for the Kalshi
-    side / ``d2_5_<check>`` for the Coinbase side) keep alert dedup
-    independent — a Kalshi disk-pressure alert does NOT dedup-suppress
+    collector (dual-tier dispatch).
+
+    B3-fu3 (ticket 86b9zxb4c, 2026-05-18) extended to TRIPLE-TIER
+    dispatch: kalshi-bot is the 3rd tier with a single new check
+    function (``check_insert_evaluated_opportunity_failures``) that
+    alerts on `insert_evaluated_opportunity failed` WARNINGs in the
+    bot journal. Post-B3-fu2 narrow (LPNE + dc_shadow_no_side
+    `except` clauses scoped to ``sqlite3.OperationalError``) makes
+    any future WARN a real-signal — genuine DB error or
+    sister-strategy regression.
+
+    Per-tier dedup-key prefixes (``d1_6_<check>`` for Kalshi
+    collector / ``d2_5_<check>`` for Coinbase collector /
+    ``b3_fu3_<check>`` for bot tier) keep alert dedup independent
+    across tiers — a Kalshi disk-pressure alert does NOT dedup-suppress
     a Coinbase disk-pressure alert (their underlying mount points are
-    structurally separate per the Option B isolation posture).
+    structurally separate per the Option B isolation posture), and the
+    bot-tier alert never collides with either collector tier.
 
     Returns 0 always (cron convention — exit code reserved for cron's
     own error handling, NOT for application health signaling; that
