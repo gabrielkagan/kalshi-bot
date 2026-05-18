@@ -1,0 +1,36 @@
+# silver/ dbt profile (operator-facing template).
+#
+# To use this file with the dbt CLI directly:
+#   mkdir -p /tmp/silver-profiles
+#   cp silver/profiles.yml.example /tmp/silver-profiles/profiles.yml
+#   DBT_PROFILES_DIR=/tmp/silver-profiles dbt ...
+# dbt only reads a file named exactly `profiles.yml` — it does NOT
+# read `profiles.yml.example` directly even if `DBT_PROFILES_DIR`
+# points at this dir. The .example suffix is intentional so the
+# template stays committed in git while the runtime profiles.yml is
+# gitignored.
+#
+# The automated wrapper at silver/scripts/etl_run.py does NOT consult
+# DBT_PROFILES_DIR — it writes a fresh tmp profiles.yml per run and
+# passes --profiles-dir <tmp> to dbt, so concurrent runs don't race on
+# a shared profiles file.
+#
+# In-memory DuckDB is the right target for silver: every model is
+# `materialized='external'` (writes the result directly to Parquet at the
+# `location` configured per model). The DuckDB catalog stores only model
+# metadata (lineage views), not data — so persistence isn't needed.
+#
+# httpfs extension is required for S3 bronze reads / silver writes.
+# AWS creds are resolved by DuckDB from env (AWS_ACCESS_KEY_ID +
+# AWS_SECRET_ACCESS_KEY) or ~/.aws/credentials. The operator's launchd
+# plist or shell env supplies them.
+
+silver:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ":memory:"
+      threads: 1
+      extensions:
+        - httpfs

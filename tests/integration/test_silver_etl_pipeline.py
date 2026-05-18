@@ -26,6 +26,7 @@ Tests 6/7/8 are import-contract tests living at
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,11 +127,28 @@ def _import_etl_or_skip():
     During TDD-first RED phase, silver/ doesn't exist yet → all integration
     tests skip with a clear message. Once the implementation lands they
     will execute.
+
+    Post-D3.0-fu1: ALSO checks that the ``dbt`` binary is reachable
+    (either ``DBT_BIN`` env var or on PATH). The wrapper subprocess-
+    launches dbt, so a missing binary would raise RuntimeError at the
+    first ``run_for_date`` call. Skipping here gives a cleaner signal
+    in environments without ``silver/requirements.txt`` installed
+    (CI runners that haven't been extended; dev boxes that skipped
+    the silver pip-install step). The CI gate that actually exercises
+    these tests must install silver/requirements.txt — without it the
+    tests skip silently.
     """
     try:
         from silver.scripts import etl_run  # type: ignore[import-not-found]
     except ImportError as exc:
         pytest.skip(f"silver.scripts.etl_run not importable (RED phase OK): {exc}")
+
+    if not (os.environ.get("DBT_BIN") or shutil.which("dbt")):
+        pytest.skip(
+            "dbt binary not reachable (DBT_BIN unset + not on PATH). "
+            "Install via `pip install -r silver/requirements.txt` to "
+            "exercise the silver dbt-driven ETL integration tests."
+        )
     return etl_run
 
 

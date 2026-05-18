@@ -1,0 +1,56 @@
+# silver/ dbt project (D3.0-fu1, ticket 86ba0a2k8, 2026-05-18).
+#
+# Layers dbt-duckdb on top of the D3.0 direct-DuckDB ETL. The 5 Tier-1
+# silver models live under models/; each materializes as an external
+# Parquet file at `{{ var('silver_root') }}/<source>/utc_date=<target_date>/data.parquet`.
+#
+# Invocation contract — silver/scripts/etl_run.py subprocesses:
+#     dbt run --project-dir <silver_dir> --profiles-dir <silver_dir> \
+#         --vars '{"target_date": "YYYY-MM-DD",
+#                  "bronze_root": "s3://... or local path",
+#                  "silver_root": "s3://... or local path"}' \
+#         --select <model_names_with_bronze_chunks>
+#
+# The wrapper handles bronze-chunk pre-check (SKIP-on-empty per plan-doc
+# test #3) and per-source --select arg to skip sources with no bronze.
+# Each model SQL filters bronze to the target_date partition via a
+# date-aware glob (see macros/envelope_columns.sql::bronze_glob).
+#
+# Materialization story (R6-M2 verify resolved at D3.0-fu1 sandbox):
+# `materialized='external'` with `location=` parameterized via var().
+# DuckDB's `COPY ... TO '<location>' (FORMAT PARQUET)` overwrites the
+# target file atomically (delete+insert semantics per UTC-day partition
+# match plan-doc decision #5; the 5-col unique key holds within the SQL
+# projection — rerunning for the same target_date produces row-set-
+# stable output from the same bronze input — same rows, NOT necessarily
+# byte-identical Parquet, because writers may choose different row-group
+# boundaries / dict encodings / metadata across runs).
+
+name: silver
+version: '1.0.0'
+config-version: 2
+
+profile: silver
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+target-path: "target"
+log-path: "logs"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+  - "logs"
+
+# Defaults — operator MUST override target_date + bronze_root + silver_root
+# per run. Defaults exist only to allow `dbt parse` / `dbt compile`
+# without --vars; an unguarded `dbt run` with defaults would fail at the
+# bronze glob (path doesn't exist).
+vars:
+  target_date: "1970-01-01"
+  bronze_root: "/nonexistent/bronze"
+  silver_root: "/nonexistent/silver"
+
+models:
+  silver:
+    +materialized: external
+    +format: parquet

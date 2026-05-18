@@ -1,48 +1,59 @@
-"""silver.scripts.etl_run — nightly silver ETL entry point (D3.0, ticket 86b9zxc6t).
+"""silver.scripts.etl_run — nightly silver ETL entry point.
 
-Reads bronze JSONL.zst chunks for a target UTC date and writes typed Parquet
-to `silver/v1/<source>/utc_date=YYYY-MM-DD/silver-<source>-<runts>.parquet`.
+Subprocesses ``dbt run`` against the silver/ dbt project for a target UTC
+date. The 5 Tier-1 silver models live under ``silver/models/``; each
+materializes as a Parquet file at
+``{silver_root}/<silver_table>/utc_date=<target_date>/data.parquet``.
 
-CLI:
+Refactored at D3.0-fu1 (ticket 86ba0a2k8, 2026-05-18) from direct-
+DuckDB ETL to a dbt-run subprocess wrapper. The 5 SQL projections that
+previously lived inline (``_sql_silver_*`` functions) are now dbt model
+files under ``silver/models/coinbase/`` + ``silver/models/kalshi/``.
+The shared envelope projection is the ``envelope_cols`` macro at
+``silver/macros/envelope_columns.sql``. The materialization story
+resolved at D3.0-fu1 sandbox: ``materialized='external'`` with
+``location`` parameterized via ``var('target_date')`` — DuckDB ``COPY``
+overwrites the target Parquet atomically (delete+insert semantics per
+plan-doc decision #5).
+
+CLI (unchanged from D3.0):
     silver/scripts/etl_run.sh                 # processes (now_utc - 1 day)
     silver/scripts/etl_run.sh --date 2026-05-18
     silver/scripts/etl_run.sh --date 2026-05-18 --bronze-root s3://... --silver-root s3://...
 
-Programmatic:
+Programmatic (unchanged):
     from silver.scripts import etl_run
     etl_run.run_for_date("2026-05-18", bronze_root="s3://...", silver_root="s3://...")
 
-Architecture:
-- Per D0.3 §13:422-423 the stack is DuckDB + dbt. D3.0 ships the DuckDB
-  parse+write layer directly (no dbt project at first-Bit kickoff per the
-  Bit-kickoff verify list item #2: dbt-duckdb's `incremental + delete+insert
-  + partition_by` interaction is non-obvious, so D3.0 implements the
-  semantics via direct DuckDB SQL with idempotent overwrite per partition).
-  A follow-up Bit may layer dbt models on top once the verify-list item
-  resolves.
-- Per D0.3 §3 partition layout, bronze is under
-  `<source>/<channel>/year=YYYY/month=MM/day=DD/hour=HH/conn=<X>/*.jsonl.zst`.
-- Silver flattens to `<source-table>/utc_date=YYYY-MM-DD/*.parquet`
-  (decision #8 — silver chooses single-col date partition for analyst
-  query patterns).
-- 5 Tier-1 silver sources (decision #3 — `kalshi_trade` deferred to D3.3):
-  - `coinbase_ticker_v1` ← bronze `coinbase_ws/ticker/`
-  - `coinbase_matches_v1` ← bronze `coinbase_ws/matches/`
-  - `coinbase_heartbeat_v1` ← bronze `coinbase_ws/heartbeat/`
-  - `coinbase_status_v1` ← bronze `coinbase_ws/status/`
-  - `kalshi_market_lifecycle_v2_v1` ← bronze `kalshi_ws/market_lifecycle_v2/`
-- _unrouted/ partitions and non-WS sources (REST snapshots etc.) are
-  defensively SKIPPED per plan-doc tests #10 + #11.
+Bronze-chunk pre-check (SKIP-on-empty per plan-doc test #3) stays in
+this wrapper rather than in the dbt model SQL: ``dbt run`` invokes
+DuckDB which would crash on a missing local-fs glob, so for local
+paths the wrapper omits empty sources from ``--select``. For S3 paths
+the wrapper currently DEFERS to DuckDB (returns True unconditionally
+from ``_has_bronze_chunks``) — DuckDB's ``read_json_auto`` on an empty
+S3 prefix returns zero rows, and dbt then writes a zero-row Parquet to
+the silver path. The post-run rowcount loop detects this case and (on
+local-fs) deletes the zero-row file + omits it from results so the
+test #3 SKIP semantics are preserved end-to-end. On S3, the zero-row
+file persists — see followup 86ba0a323 (LOW; add boto3-based S3
+pre-check OR post-run delete to fully preserve SKIP-on-empty on S3).
+The S3 zero-row case is operator-error-only in normal nightly runs
+(silver targets `now_utc - 1` day and bronze for that day is always
+present by 02:00 local).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
-import time
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -50,183 +61,29 @@ logger = logging.getLogger(__name__)
 # ─── Source registry ────────────────────────────────────────────────────────
 
 
-# (bronze_source, bronze_channel, silver_table, schema_version)
-# Order: Coinbase first (5 channels → 4 Tier-1 + 1 Tier-2 deferred),
-# Kalshi second (4 channels → 1 Tier-1 + 3 deferred).
+# (bronze_source, bronze_channel, silver_table, dbt_model_name)
+# Order: Coinbase first (4 Tier-1; level2_batch deferred to D3.1),
+# Kalshi second (1 Tier-1; trade deferred to D3.3, orderbook_delta to D3.2).
+# dbt_model_name MUST match the filename (without .sql) under
+# silver/models/<vendor>/ — this is the string dbt's --select takes.
 TIER_1_SOURCES: tuple[tuple[str, str, str, str], ...] = (
-    ("coinbase_ws", "ticker",                "coinbase_ticker",                 "coinbase_ticker_v1"),
-    ("coinbase_ws", "matches",               "coinbase_matches",                "coinbase_matches_v1"),
-    ("coinbase_ws", "heartbeat",             "coinbase_heartbeat",              "coinbase_heartbeat_v1"),
-    ("coinbase_ws", "status",                "coinbase_status",                 "coinbase_status_v1"),
-    ("kalshi_ws",   "market_lifecycle_v2",   "kalshi_market_lifecycle_v2",      "kalshi_market_lifecycle_v2_v1"),
+    ("coinbase_ws", "ticker",                "coinbase_ticker",             "silver_coinbase_ticker"),
+    ("coinbase_ws", "matches",               "coinbase_matches",            "silver_coinbase_matches"),
+    ("coinbase_ws", "heartbeat",             "coinbase_heartbeat",          "silver_coinbase_heartbeat"),
+    ("coinbase_ws", "status",                "coinbase_status",             "silver_coinbase_status"),
+    ("kalshi_ws",   "market_lifecycle_v2",   "kalshi_market_lifecycle_v2",  "silver_kalshi_market_lifecycle_v2"),
 )
 
 
-# ─── SQL templates per source ───────────────────────────────────────────────
+# ─── Paths ──────────────────────────────────────────────────────────────────
 
 
-def _envelope_select(silver_schema_version: str) -> str:
-    """Shared envelope-col projection (decision-#7 macro inlined here).
-
-    Returns the 6 envelope cols projected from a bronze row whose JSON
-    has `_wire_recv_ts`, `_source`, `_conn`, `_channel`, `_collector_seq`,
-    `_raw`. `utc_date` is derived from `_wire_recv_ts`.
-    """
-    return (
-        f"CAST(_wire_recv_ts AS TIMESTAMP) AS wire_recv_ts,\n"
-        f"        _source AS source,\n"
-        f"        _conn   AS conn,\n"
-        f"        _channel AS channel,\n"
-        f"        CAST(_collector_seq AS BIGINT) AS collector_seq,\n"
-        f"        '{silver_schema_version}' AS silver_schema_version,\n"
-        f"        CAST(_wire_recv_ts AS DATE) AS utc_date"
-    )
-
-
-def _sql_silver_coinbase_ticker(bronze_glob: str) -> str:
-    """Project coinbase_ticker bronze → typed silver columns."""
-    return f"""
-    SELECT
-        {_envelope_select("coinbase_ticker_v1")},
-        json_extract_string(_raw, '$.product_id')       AS product_id,
-        CAST(json_extract(_raw, '$.sequence') AS BIGINT) AS sequence,
-        CAST(json_extract_string(_raw, '$.price')        AS DOUBLE) AS price,
-        CAST(json_extract_string(_raw, '$.best_bid')     AS DOUBLE) AS best_bid,
-        CAST(json_extract_string(_raw, '$.best_bid_size') AS DOUBLE) AS best_bid_size,
-        CAST(json_extract_string(_raw, '$.best_ask')     AS DOUBLE) AS best_ask,
-        CAST(json_extract_string(_raw, '$.best_ask_size') AS DOUBLE) AS best_ask_size,
-        json_extract_string(_raw, '$.side')              AS side,
-        CAST(json_extract_string(_raw, '$.time')         AS TIMESTAMP) AS exchange_time,
-        CAST(json_extract(_raw, '$.trade_id')            AS BIGINT) AS trade_id,
-        CAST(json_extract_string(_raw, '$.last_size')    AS DOUBLE) AS last_size,
-        CAST(json_extract_string(_raw, '$.open_24h')     AS DOUBLE) AS open_24h,
-        CAST(json_extract_string(_raw, '$.volume_24h')   AS DOUBLE) AS volume_24h,
-        CAST(json_extract_string(_raw, '$.low_24h')      AS DOUBLE) AS low_24h,
-        CAST(json_extract_string(_raw, '$.high_24h')     AS DOUBLE) AS high_24h,
-        CAST(json_extract_string(_raw, '$.volume_30d')   AS DOUBLE) AS volume_30d
-    FROM read_json_auto('{bronze_glob}', format='newline_delimited', compression='zstd', columns={{
-        _wire_recv_ts: 'VARCHAR',
-        _source: 'VARCHAR',
-        _conn: 'VARCHAR',
-        _channel: 'VARCHAR',
-        _collector_seq: 'BIGINT',
-        _raw: 'VARCHAR'
-    }})
-    """
-
-
-def _sql_silver_coinbase_matches(bronze_glob: str) -> str:
-    return f"""
-    SELECT
-        {_envelope_select("coinbase_matches_v1")},
-        json_extract_string(_raw, '$.product_id') AS product_id,
-        CAST(json_extract(_raw, '$.sequence') AS BIGINT) AS sequence,
-        CAST(json_extract(_raw, '$.trade_id') AS BIGINT) AS trade_id,
-        json_extract_string(_raw, '$.maker_order_id') AS maker_order_id,
-        json_extract_string(_raw, '$.taker_order_id') AS taker_order_id,
-        json_extract_string(_raw, '$.side') AS side,
-        CAST(json_extract_string(_raw, '$.size')  AS DOUBLE) AS size,
-        CAST(json_extract_string(_raw, '$.price') AS DOUBLE) AS price,
-        CAST(json_extract_string(_raw, '$.time')  AS TIMESTAMP) AS exchange_time
-    FROM read_json_auto('{bronze_glob}', format='newline_delimited', compression='zstd', columns={{
-        _wire_recv_ts: 'VARCHAR',
-        _source: 'VARCHAR',
-        _conn: 'VARCHAR',
-        _channel: 'VARCHAR',
-        _collector_seq: 'BIGINT',
-        _raw: 'VARCHAR'
-    }})
-    """
-
-
-def _sql_silver_coinbase_heartbeat(bronze_glob: str) -> str:
-    return f"""
-    SELECT
-        {_envelope_select("coinbase_heartbeat_v1")},
-        json_extract_string(_raw, '$.product_id') AS product_id,
-        CAST(json_extract(_raw, '$.sequence') AS BIGINT) AS sequence,
-        CAST(json_extract(_raw, '$.last_trade_id') AS BIGINT) AS last_trade_id,
-        CAST(json_extract_string(_raw, '$.time') AS TIMESTAMP) AS exchange_time
-    FROM read_json_auto('{bronze_glob}', format='newline_delimited', compression='zstd', columns={{
-        _wire_recv_ts: 'VARCHAR',
-        _source: 'VARCHAR',
-        _conn: 'VARCHAR',
-        _channel: 'VARCHAR',
-        _collector_seq: 'BIGINT',
-        _raw: 'VARCHAR'
-    }})
-    """
-
-
-def _sql_silver_coinbase_status(bronze_glob: str) -> str:
-    """Status preserves arrays as JSON strings; counts COALESCE-to-0 (M6)."""
-    return f"""
-    SELECT
-        {_envelope_select("coinbase_status_v1")},
-        json_extract(_raw, '$.currencies')::VARCHAR AS currencies_json,
-        json_extract(_raw, '$.products')::VARCHAR   AS products_json,
-        CAST(COALESCE(json_array_length(json_extract(_raw, '$.currencies')), 0) AS INTEGER) AS currency_count,
-        CAST(COALESCE(json_array_length(json_extract(_raw, '$.products')),   0) AS INTEGER) AS product_count
-    FROM read_json_auto('{bronze_glob}', format='newline_delimited', compression='zstd', columns={{
-        _wire_recv_ts: 'VARCHAR',
-        _source: 'VARCHAR',
-        _conn: 'VARCHAR',
-        _channel: 'VARCHAR',
-        _collector_seq: 'BIGINT',
-        _raw: 'VARCHAR'
-    }})
-    """
-
-
-def _sql_silver_kalshi_lifecycle(bronze_glob: str) -> str:
-    """Kalshi market_lifecycle_v2 wide-table; event-type cols are NULL-able."""
-    return f"""
-    SELECT
-        {_envelope_select("kalshi_market_lifecycle_v2_v1")},
-        CAST(json_extract(_raw, '$.sid') AS INTEGER) AS sid,
-        CAST(json_extract(_raw, '$.seq') AS BIGINT)  AS wire_seq,
-        json_extract_string(_raw, '$.msg.event_type')     AS event_type,
-        json_extract_string(_raw, '$.msg.market_ticker')  AS market_ticker,
-        CAST(json_extract(_raw, '$.msg.floor_strike')     AS DOUBLE) AS floor_strike,
-        json_extract_string(_raw, '$.msg.yes_sub_title')  AS yes_sub_title,
-        CAST(json_extract(_raw, '$.msg.determination_ts') AS BIGINT) AS determination_ts,
-        json_extract_string(_raw, '$.msg.result')         AS result,
-        CAST(json_extract_string(_raw, '$.msg.settlement_value') AS DOUBLE) AS settlement_value
-    FROM read_json_auto('{bronze_glob}', format='newline_delimited', compression='zstd', columns={{
-        _wire_recv_ts: 'VARCHAR',
-        _source: 'VARCHAR',
-        _conn: 'VARCHAR',
-        _channel: 'VARCHAR',
-        _collector_seq: 'BIGINT',
-        _raw: 'VARCHAR'
-    }})
-    """
-
-
-_SQL_BY_SCHEMA: dict[str, Any] = {
-    "coinbase_ticker_v1":             _sql_silver_coinbase_ticker,
-    "coinbase_matches_v1":            _sql_silver_coinbase_matches,
-    "coinbase_heartbeat_v1":          _sql_silver_coinbase_heartbeat,
-    "coinbase_status_v1":             _sql_silver_coinbase_status,
-    "kalshi_market_lifecycle_v2_v1":  _sql_silver_kalshi_lifecycle,
-}
+SILVER_DIR = Path(__file__).resolve().parent.parent
+DBT_PROJECT_DIR = SILVER_DIR
+PROFILES_EXAMPLE = SILVER_DIR / "profiles.yml.example"
 
 
 # ─── Bronze chunk discovery ─────────────────────────────────────────────────
-
-
-def _bronze_glob_for_date(bronze_root: str, source: str, channel: str, utc_date: str) -> str:
-    """Compute a glob pattern that DuckDB `read_json_auto` accepts for the
-    bronze partition holding a single UTC date.
-
-    Per D0.3 §3 partition layout, bronze is under
-    `<source>/<channel>/year=YYYY/month=MM/day=DD/hour=HH/conn=<X>/*.jsonl.zst`.
-    A glob for one date covers all 24 hours × all conns × all chunks for
-    that day.
-    """
-    y, m, d = utc_date.split("-")
-    base = bronze_root.rstrip("/")
-    return f"{base}/{source}/{channel}/year={y}/month={m}/day={d}/hour=*/conn=*/*.jsonl.zst"
 
 
 def _has_bronze_chunks(bronze_root: str, source: str, channel: str, utc_date: str) -> bool:
@@ -234,10 +91,10 @@ def _has_bronze_chunks(bronze_root: str, source: str, channel: str, utc_date: st
 
     For local fs paths: glob the directory. For S3 paths: skip the
     pre-check (DuckDB returns empty result for missing globs; test #3
-    asserts SKIP-on-empty semantics post-hoc via output check).
+    asserts SKIP-on-empty semantics via the wrapper's --select arg
+    omission).
     """
     if bronze_root.startswith("s3://"):
-        # S3 path: defer to DuckDB; empty result handled downstream.
         return True
     y, m, d = utc_date.split("-")
     base = Path(bronze_root) / source / channel
@@ -246,74 +103,119 @@ def _has_bronze_chunks(bronze_root: str, source: str, channel: str, utc_date: st
     day_dir = base / f"year={y}" / f"month={m}" / f"day={d}"
     if not day_dir.is_dir():
         return False
-    # Cheap check — at least one .jsonl.zst exists somewhere under day_dir
     return any(day_dir.rglob("*.jsonl.zst"))
 
 
-# ─── Per-source ETL ────────────────────────────────────────────────────────
+def _output_path_for_source(silver_root: str, silver_table: str, utc_date: str) -> Path:
+    """Compute the silver Parquet output path for a source + date.
+
+    Local-fs only — for S3, parent-dir pre-creation is a no-op and the
+    DuckDB COPY writes the object directly. Used by the wrapper to
+    pre-create local parent dirs before invoking dbt (DuckDB's local
+    COPY does NOT auto-create parent dirs and would fail otherwise).
+    """
+    return Path(silver_root) / silver_table / f"utc_date={utc_date}" / "data.parquet"
 
 
-def _process_source(
-    conn: Any,  # duckdb.DuckDBPyConnection
+# ─── dbt profiles.yml generation ────────────────────────────────────────────
+
+
+_PROFILES_YML = """\
+silver:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ":memory:"
+      threads: 1
+      extensions:
+        - httpfs
+"""
+
+
+def _write_profiles_dir(target_dir: Path) -> Path:
+    """Write a minimal silver dbt profiles.yml into ``target_dir``.
+
+    The operator-facing ``silver/profiles.yml.example`` is documentation;
+    every ETL run generates its own profiles.yml in a private tmp dir so
+    operator customization (e.g., ~/.dbt/profiles.yml) doesn't bleed in
+    and so concurrent runs don't race on a single profiles file. The
+    DuckDB target is in-memory because all 5 silver models are
+    ``materialized='external'`` (catalog stores model metadata only, not
+    data).
+    """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    profiles_path = target_dir / "profiles.yml"
+    profiles_path.write_text(_PROFILES_YML)
+    return profiles_path
+
+
+# ─── dbt subprocess invocation ──────────────────────────────────────────────
+
+
+def _resolve_dbt_binary() -> str:
+    """Resolve the ``dbt`` binary path. Honors ``DBT_BIN`` env override
+    (used by tests that may need to point at a sandbox venv's dbt) and
+    otherwise falls back to whatever's on PATH.
+    """
+    override = os.environ.get("DBT_BIN")
+    if override:
+        return override
+    found = shutil.which("dbt")
+    if not found:
+        raise RuntimeError(
+            "dbt binary not on PATH. Install via `pip install -r silver/requirements.txt` "
+            "(includes dbt-core + dbt-duckdb pins). For a sandbox venv, set DBT_BIN to "
+            "the absolute path of the venv's dbt binary."
+        )
+    return found
+
+
+def _run_dbt(
+    target_date: str,
     bronze_root: str,
     silver_root: str,
-    source: str,
-    channel: str,
-    silver_table: str,
-    silver_schema_version: str,
-    utc_date: str,
-) -> int:
-    """Run the silver SQL for one source/channel/date and write Parquet.
+    selects: list[str],
+) -> None:
+    """Subprocess ``dbt run`` with the given target_date + selects.
 
-    Returns the row count written. Returns 0 (and SKIPS the Parquet
-    write) if bronze has no chunks for that date — per plan-doc test #3
-    (decision: SKIP, no zero-row writes).
+    Raises CalledProcessError on non-zero exit. The wrapper's caller is
+    responsible for catching + logging.
     """
-    if not _has_bronze_chunks(bronze_root, source, channel, utc_date):
-        logger.info(
-            "silver:%s utc_date=%s — no bronze chunks; SKIP",
-            silver_table, utc_date,
+    if not selects:
+        logger.info("silver ETL: no sources with bronze chunks for %s — SKIP", target_date)
+        return
+
+    dbt_bin = _resolve_dbt_binary()
+    with tempfile.TemporaryDirectory(prefix="silver-dbt-profiles-") as profiles_dir_str:
+        profiles_dir = Path(profiles_dir_str)
+        _write_profiles_dir(profiles_dir)
+        vars_payload = json.dumps({
+            "target_date": target_date,
+            "bronze_root": bronze_root,
+            "silver_root": silver_root,
+        })
+        cmd = [
+            dbt_bin, "run",
+            "--project-dir", str(DBT_PROJECT_DIR),
+            "--profiles-dir", str(profiles_dir),
+            "--vars", vars_payload,
+            "--select", *selects,
+        ]
+        logger.info("silver ETL dbt invocation: %s", " ".join(cmd))
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
         )
-        return 0
-
-    bronze_glob = _bronze_glob_for_date(bronze_root, source, channel, utc_date)
-    sql_fn = _SQL_BY_SCHEMA[silver_schema_version]
-    select_sql = sql_fn(bronze_glob)
-
-    # Output path: <silver_root>/<silver_table>/utc_date=YYYY-MM-DD/silver-<table>-<runts>.parquet
-    out_dir = Path(silver_root) / silver_table / f"utc_date={utc_date}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Idempotent overwrite per decision #5 (delete+insert semantics
-    # implemented as partition rewrite — wipe existing Parquet for this
-    # date then write new). Per the Bit-kickoff verify list item #2,
-    # we implement this directly rather than relying on dbt-duckdb's
-    # incremental_strategy='delete+insert' + partition_by interaction
-    # which is non-obvious. The semantics (5-col unique within partition,
-    # full partition rewrite per run) match D0.3 §13:424 incremental
-    # backfill behavior.
-    for stale in out_dir.glob("*.parquet"):
-        stale.unlink()
-    for stale in out_dir.glob("*.parquet.tmp"):
-        stale.unlink()
-
-    run_ts = int(time.time())
-    out_path = out_dir / f"silver-{silver_table}-{run_ts}.parquet"
-    tmp_path = out_path.with_suffix(".parquet.tmp")
-
-    # Materialize via DuckDB COPY (atomic local-write then rename)
-    copy_sql = f"COPY ({select_sql}) TO '{tmp_path}' (FORMAT PARQUET)"
-    conn.execute(copy_sql)
-    tmp_path.rename(out_path)
-
-    rowcount = conn.execute(
-        f"SELECT COUNT(*) FROM read_parquet('{out_path}')"
-    ).fetchone()[0]
-    logger.info(
-        "silver:%s utc_date=%s rows=%d path=%s",
-        silver_table, utc_date, rowcount, out_path,
-    )
-    return rowcount
+        logger.info("dbt stdout:\n%s", result.stdout)
+        if result.stderr:
+            logger.info("dbt stderr:\n%s", result.stderr)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd, output=result.stdout, stderr=result.stderr
+            )
 
 
 # ─── Public entry points ────────────────────────────────────────────────────
@@ -326,50 +228,122 @@ def run_for_date(
 ) -> dict[str, int]:
     """Process one UTC date end-to-end for all 5 Tier-1 silver sources.
 
-    Returns a dict ``{silver_table: rowcount}`` for the run.
+    Returns a dict ``{silver_table: rowcount}`` for the run. Sources
+    without bronze chunks are omitted from the dict (per plan-doc test
+    #3 SKIP semantics) — equivalent to rowcount=0 in the prior direct
+    API but expressed as absence rather than zero.
     """
-    import duckdb
     logger.info(
         "silver ETL run start: utc_date=%s bronze_root=%s silver_root=%s",
         target_date, bronze_root, silver_root,
     )
+
+    # Per-source bronze-chunk pre-check + parent-dir pre-create.
+    selects: list[str] = []
+    expected_outputs: dict[str, Path] = {}
+    for source, channel, silver_table, dbt_model in TIER_1_SOURCES:
+        if not _has_bronze_chunks(bronze_root, source, channel, target_date):
+            logger.info(
+                "silver:%s utc_date=%s — no bronze chunks; SKIP",
+                silver_table, target_date,
+            )
+            continue
+        selects.append(dbt_model)
+        out_path = _output_path_for_source(silver_root, silver_table, target_date)
+        expected_outputs[silver_table] = out_path
+        # Pre-create the parent dir for local-fs writes; S3 paths are
+        # no-ops here (mkdir on s3:// path would fail; we skip).
+        if not silver_root.startswith("s3://"):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _run_dbt(target_date, bronze_root, silver_root, selects)
+
+    # Rowcount query per source (post-run via DuckDB on the written Parquet).
+    # Two cleanup classes here:
+    #  - dbt partial failure: dbt-run exits 0 but a specific model was
+    #    skipped → expected output file doesn't exist. On local-fs we
+    #    can detect this via `out_path.exists()`; on S3 the rowcount
+    #    query itself raises if the object is missing. Either way, log
+    #    + raise — partial-failure is a real bug to surface, not silence.
+    #  - zero-row write (S3 only, edge case): dbt wrote a zero-row Parquet
+    #    because read_json_auto returned no rows. The rowcount loop
+    #    detects rows==0 and, on local-fs, unlinks the file + omits
+    #    from results (preserves test #3 SKIP-on-empty semantics). On S3
+    #    we leave the file (no boto3 dep at D3.0-fu1; see 86ba0a323
+    #    followup).
+    import duckdb
     conn = duckdb.connect(":memory:")
-    # If bronze_root is S3, ensure httpfs + s3 extension loaded; for local
-    # paths DuckDB native file reading handles it.
-    if bronze_root.startswith("s3://") or silver_root.startswith("s3://"):
+    on_s3 = bronze_root.startswith("s3://") or silver_root.startswith("s3://")
+    if on_s3:
         conn.execute("INSTALL httpfs; LOAD httpfs;")
-        # Operator must have AWS creds configured (env or ~/.aws/credentials).
 
     results: dict[str, int] = {}
-    for source, channel, silver_table, schema_version in TIER_1_SOURCES:
-        try:
-            rows = _process_source(
-                conn=conn,
-                bronze_root=bronze_root,
-                silver_root=silver_root,
-                source=source,
-                channel=channel,
-                silver_table=silver_table,
-                silver_schema_version=schema_version,
-                utc_date=target_date,
+    for silver_table, out_path in expected_outputs.items():
+        # dbt partial-failure detection (local-fs only — S3 paths can't
+        # use pathlib.Path.exists(); fall through to the read_parquet
+        # which raises a clear DuckDB error if the S3 object is missing).
+        if not silver_root.startswith("s3://") and not out_path.exists():
+            logger.error(
+                "silver: dbt produced no output for %s utc_date=%s "
+                "(expected %s); dbt likely partially failed — check the "
+                "dbt stdout above for `ERROR`/`SKIP` lines on this model.",
+                silver_table, target_date, out_path,
             )
-            results[silver_table] = rows
+            raise RuntimeError(
+                f"silver dbt run did not produce expected output {out_path} "
+                f"for {silver_table} utc_date={target_date}"
+            )
+        try:
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{out_path}')"
+            ).fetchone()[0]
         except Exception:
             logger.exception(
-                "silver ETL FAILED for source=%s channel=%s utc_date=%s",
-                source, channel, target_date,
+                "silver: rowcount query failed for %s utc_date=%s path=%s",
+                silver_table, target_date, out_path,
             )
             raise
+
+        if count == 0:
+            # SKIP-on-empty cleanup: bronze pre-check said the partition
+            # exists but actually had zero rows (or — on S3 — the pre-check
+            # deferred and bronze was empty). Delete the zero-row file on
+            # local-fs to preserve test #3 semantics; on S3 leave it (see
+            # docstring + 86ba0a323 followup).
+            if not silver_root.startswith("s3://"):
+                try:
+                    out_path.unlink()
+                    logger.info(
+                        "silver:%s utc_date=%s rows=0 — deleted zero-row "
+                        "Parquet at %s (SKIP-on-empty)",
+                        silver_table, target_date, out_path,
+                    )
+                except OSError:
+                    logger.warning(
+                        "silver:%s utc_date=%s rows=0 — failed to unlink "
+                        "zero-row Parquet at %s (continuing)",
+                        silver_table, target_date, out_path,
+                    )
+            else:
+                logger.info(
+                    "silver:%s utc_date=%s rows=0 (S3 zero-row Parquet "
+                    "persisted at %s; see 86ba0a323 followup)",
+                    silver_table, target_date, out_path,
+                )
+            continue
+
+        results[silver_table] = int(count)
+        logger.info(
+            "silver:%s utc_date=%s rows=%d path=%s",
+            silver_table, target_date, count, out_path,
+        )
+
     logger.info("silver ETL run end: utc_date=%s totals=%s", target_date, results)
     return results
 
 
 def _target_date_default() -> str:
-    """Default target date = (now_utc - 1 day).date() per decision #2.
-
-    Schedule fires at 02:00 Mac-local; ETL computes target_date at runtime
-    so the schedule is TZ-independent.
-    """
+    """Default target date = (now_utc - 1 day).date()."""
     now = datetime.now(timezone.utc)
     return (now - timedelta(days=1)).date().isoformat()
 
