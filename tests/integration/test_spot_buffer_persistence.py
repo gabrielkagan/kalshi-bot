@@ -280,9 +280,11 @@ def test_persist_buffer_uses_uuid_tmp_filename(tmp_path: Path):
 
 def test_persist_buffer_is_thread_serialized(tmp_path: Path):
     """R-p7-deploy-r11 R5 (HIGH): two threads racing through persist_buffer
-    (e.g., stop() + a still-running asyncio to_thread persist) must NOT
-    interleave their os.replace calls. The later-finishing snapshot
-    might be older, leading to silent data loss.
+    (e.g., a future external persist_buffer() call racing with the
+    sampler thread — post-D2.3 2026-05-17 the sampler is the sole
+    in-process persist site, but the lock pins safety for future
+    callers) must NOT interleave their os.replace calls. The later-
+    finishing snapshot might be older, leading to silent data loss.
 
     Fix: persist_buffer holds a threading.Lock for the entire write,
     so concurrent calls serialize.

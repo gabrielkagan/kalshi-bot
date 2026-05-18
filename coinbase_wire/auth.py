@@ -8,12 +8,13 @@ D2.1 (PR #66, ticket 86b9zkpc6) shipped this file as an empty stub.
 **Protocol surface — Coinbase Exchange WS, NOT Coinbase Advanced Trade
 WS.** The bot already consumes ``wss://ws-feed.exchange.coinbase.com``
 via ``bot/feeds/coinbase.py`` (see ``bot.constants.COINBASE_WS_URL``);
-mirroring the same endpoint here keeps the future D2.3 refactor (point
-``bot/feeds/coinbase.py`` at ``coinbase_wire.ws_client.WSClient``) a
-*structural* refactor rather than a protocol-flip. The Coinbase
-Advanced Trade WS surface (``wss://advanced-trade-ws.coinbase.com``)
-is a DIFFERENT API with a DIFFERENT subscribe shape and DIFFERENT
-product coverage — out of scope for D2.1.5.
+mirroring the same endpoint here let D2.3 (SHIPPED 2026-05-17, ticket
+``86b9zkppt``) be a *structural* refactor — point
+``bot/feeds/coinbase.py`` at ``coinbase_wire.ws_client.WSClient`` —
+rather than a protocol-flip. The Coinbase Advanced Trade WS surface
+(``wss://advanced-trade-ws.coinbase.com``) is a DIFFERENT API with a
+DIFFERENT subscribe shape and DIFFERENT product coverage — out of scope
+for D2.1.5.
 
 D2.1.5 NARROWED the D2.1 forecast to PUBLIC channels only. The default
 subscribe set ships 4 verified-public channels (``ticker`` + ``matches``

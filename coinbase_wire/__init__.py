@@ -33,9 +33,9 @@ package.
 The wire library targets ``wss://ws-feed.exchange.coinbase.com`` — the
 same Coinbase Exchange WS endpoint the bot already consumes via
 ``bot/feeds/coinbase.py`` (see ``bot.constants.COINBASE_WS_URL``). The
-shared-endpoint choice keeps the future D2.3 refactor a *structural*
-refactor (point the existing bot feed at this WSClient) rather than a
-protocol-flip.
+shared-endpoint choice let D2.3 (SHIPPED 2026-05-17, ticket
+``86b9zkppt``) be a *structural* refactor — point the existing bot
+feed at this WSClient — rather than a protocol-flip.
 
 Coinbase Advanced Trade WS (``wss://advanced-trade-ws.coinbase.com``) is
 a separate API surface with a different subscribe shape and different

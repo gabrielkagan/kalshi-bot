@@ -216,7 +216,7 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | `INCLUDE_SUB_FLOOR` (env) | 1 | `scripts/cal_mlp/run_pipeline.sh` | Default ON. Pulls 75¢-MIN_ENTRY-1¢ shadow rows into v2/v3 training. |
 | `RAW_PROB_CLIP_EPS` | 1e-6 | `features.py` | Logit clipping for the skip term. |
 | `SPOT_BUFFER_PERSIST_PATH` | `state/spot_buffer.json` | `bot/constants.py` | 30-min spot price buffer persisted to disk every 30s. |
-| `SPOT_BUFFER_PERSIST_INTERVAL_S` | 30 | `bot/constants.py` | Flush cadence. Async via `asyncio.to_thread` so disk I/O doesn't block WS event loop. |
+| `SPOT_BUFFER_PERSIST_INTERVAL_S` | 30 | `bot/constants.py` | Flush cadence. Runs on a dedicated `CoinbaseFeed._sampler_loop` daemon thread (post-D2.3 2026-05-17, ticket `86b9zkppt`) so disk I/O doesn't block the `coinbase_wire.WSClient` asyncio event loop. |
 | `PRICE_BUFFER_SIZE` | 1800 | `bot/constants.py` | 30 min @ 1s sampling. |
 
 ## External market data poller

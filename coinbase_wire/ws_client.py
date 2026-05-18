@@ -1,8 +1,9 @@
 """Coinbase Exchange WS transport — D2.1.5 (ticket 86b9zkpny, 2026-05-17).
 
 Pure-transport leaf consumed by ``collector/coinbase_archiver.py``
-(D2.2 SHIPPED 2026-05-17, ticket 86b9zkppk) and (post-D2.3) the
-refactored ``bot/feeds/coinbase.py``. Mirrors the D1.1.5 ``kalshi_wire/ws_client.py``
+(D2.2 SHIPPED 2026-05-17, ticket 86b9zkppk) and by the D2.3-refactored
+``bot/feeds/coinbase.py`` (D2.3 SHIPPED 2026-05-17, ticket 86b9zkppt).
+Mirrors the D1.1.5 ``kalshi_wire/ws_client.py``
 shape — same "two sides of the same coin" symmetry per the 2026-05-16
 AMENDMENT to ``kb/decisions/data-corpus-architecture.md`` §5 — but
 adapted for Coinbase Exchange WS's wire shape (public-only auth at
@@ -12,12 +13,13 @@ layer; single batched subscribe message covering multiple channels).
 **Protocol surface — Coinbase Exchange WS, not Advanced Trade WS.** The
 bot already consumes ``wss://ws-feed.exchange.coinbase.com`` via
 ``bot/feeds/coinbase.py`` (see ``bot.constants.COINBASE_WS_URL``);
-mirroring the same endpoint here keeps the future D2.3 refactor a
-*structural* refactor rather than a protocol-flip. Coinbase Advanced
-Trade WS (``wss://advanced-trade-ws.coinbase.com``) is a separate API
-surface that would change the bot's existing product coverage (HYPE-USD
-is on Exchange but not currently confirmed on Advanced Trade) — out of
-scope for D2.1.5.
+mirroring the same endpoint here let D2.3 (SHIPPED 2026-05-17, ticket
+``86b9zkppt``) be a *structural* refactor — point the existing bot feed
+at this WSClient — rather than a protocol-flip. Coinbase Advanced Trade
+WS (``wss://advanced-trade-ws.coinbase.com``) is a separate API surface
+that would change the bot's existing product coverage (HYPE-USD is on
+Exchange but not currently confirmed on Advanced Trade) — out of scope
+for D2.1.5.
 
 This module owns:
 
@@ -267,8 +269,9 @@ class WSClient:
     """Coinbase Exchange WS transport client.
 
     Consumers (``collector/coinbase_archiver.py`` SHIPPED at D2.2,
-    post-D2.3 refactored ``bot/feeds/coinbase.py``) own state —
-    orderbook caches, schema probes, blacklists. This client owns transport: connect,
+    ``bot/feeds/coinbase.py`` refactored at D2.3) own state — price
+    caches, persistent buffers, schema probes, blacklists. This client
+    owns transport: connect,
     reconnect, public subscribe, silence watchdog, frame parse, thread-
     safe send queue.
 
