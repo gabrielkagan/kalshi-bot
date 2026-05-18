@@ -1,9 +1,11 @@
-"""D1.6 + D1.6 fu: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
+"""D1.6 + D1.6 fu + D2.5: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
 
-Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17).
-Standalone CLI run via cron on the VPS. Polls 4 health surfaces and
-sends Telegram alerts via the existing ``bot.notifier.TelegramNotifier``
-(no Telegram client re-implementation).
+Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
++ 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
+kalshi-coinbase-collector). Standalone CLI run via cron on the VPS.
+Polls 4 health surfaces × 2 collectors = 8 total alert classes; sends
+Telegram alerts via the existing ``bot.notifier.TelegramNotifier`` (no
+Telegram client re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -66,6 +68,18 @@ DEFAULT_COLLECTOR_UNIT = "kalshi-collector"
 DEFAULT_SIDECAR_PATH = "/var/lib/kalshi-collector/bronze_health.json"
 DEFAULT_MONITOR_STATE_PATH = "/var/lib/kalshi-collector/monitor_state.json"
 DEFAULT_DROPPED_FRAMES_THRESHOLD = 100
+
+# D2.5 Coinbase-side defaults. Mirror the Kalshi-side defaults but
+# point at the kalshi-coinbase-collector's separate process / unit /
+# bronze root / sidecar / monitor-state. Option B isolation:
+# separate disk path, separate systemd unit, separate sidecar so
+# Coinbase disk-full / WS-storm / drops don't dedup-collide with
+# Kalshi's. Same threshold values — they're per-collector signal
+# bounds, not per-source.
+COINBASE_BRONZE_ROOT = "/var/lib/kalshi-coinbase-collector"
+COINBASE_COLLECTOR_UNIT = "kalshi-coinbase-collector"
+COINBASE_SIDECAR_PATH = "/var/lib/kalshi-coinbase-collector/bronze_health.json"
+COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.json"
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
 # 2x the cron tick interval (5min = 300s) = ~610s. Use 120s as a tight
 # floor so we catch a wedged drain thread within 2 monitor ticks, not 2
@@ -366,11 +380,20 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs all 3 checks; sends Telegram alerts as needed.
+    """Entry point. Runs all 4 checks × 2 collectors; sends Telegram
+    alerts as needed.
+
+    D2.5 (ticket 86b9znq4w, 2026-05-18) extends the original single-
+    collector loop to poll BOTH kalshi-collector AND kalshi-coinbase-
+    collector. Per-tier dedup keys (``d1_6_<check>`` for the Kalshi
+    side / ``d2_5_<check>`` for the Coinbase side) keep alert dedup
+    independent — a Kalshi disk-pressure alert does NOT dedup-suppress
+    a Coinbase disk-pressure alert (their underlying mount points are
+    structurally separate per the Option B isolation posture).
 
     Returns 0 always (cron convention — exit code reserved for cron's
-    own error handling, NOT for application health signaling; that goes
-    via Telegram).
+    own error handling, NOT for application health signaling; that
+    goes via Telegram).
     """
     from bot.notifier import TelegramNotifier  # imported lazily so tests can mock
 
@@ -378,19 +401,81 @@ def main() -> int:
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
     notifier = TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
 
-    checks = [
-        ("disk", check_disk),
-        ("ws_reconnects", check_ws_reconnects),
-        ("collector_active", check_collector_active),
-        ("dropped_frames", check_dropped_frames),
+    # Per-collector check invocations. Each entry is a (check_name,
+    # callable) pair where the callable takes no args at call time
+    # (closures bind the per-collector kwargs). The Kalshi-side
+    # callables match the pre-D2.5 default behavior; the Coinbase-side
+    # callables forward unit / bronze-root / sidecar / state-path kwargs
+    # to the same check functions (which already accept these — D1.6
+    # parametrized them by default-arg, D2.5 just calls them with
+    # explicit kwargs).
+    kalshi_checks = [
+        ("disk", lambda: check_disk(
+            path=DEFAULT_BRONZE_ROOT,
+        )),
+        ("ws_reconnects", lambda: check_ws_reconnects(
+            unit=DEFAULT_COLLECTOR_UNIT,
+        )),
+        ("collector_active", lambda: check_collector_active(
+            unit=DEFAULT_COLLECTOR_UNIT,
+        )),
+        ("dropped_frames", lambda: check_dropped_frames(
+            sidecar_path=Path(DEFAULT_SIDECAR_PATH),
+            state_path=Path(DEFAULT_MONITOR_STATE_PATH),
+        )),
     ]
-    for check_name, check_fn in checks:
-        alert = check_fn()
-        if alert:
-            print(f"[{check_name}] ALERT: {alert}", file=sys.stderr)
-            notifier.send(alert, dedup_key=f"d1_6_{check_name}")
-        else:
-            print(f"[{check_name}] OK", file=sys.stderr)
+    coinbase_checks = [
+        ("disk", lambda: check_disk(
+            path=COINBASE_BRONZE_ROOT,
+        )),
+        ("ws_reconnects", lambda: check_ws_reconnects(
+            unit=COINBASE_COLLECTOR_UNIT,
+        )),
+        ("collector_active", lambda: check_collector_active(
+            unit=COINBASE_COLLECTOR_UNIT,
+        )),
+        ("dropped_frames", lambda: check_dropped_frames(
+            sidecar_path=Path(COINBASE_SIDECAR_PATH),
+            state_path=Path(COINBASE_MONITOR_STATE_PATH),
+        )),
+    ]
+
+    # Per-tier dedup-key prefix. Kalshi-side keeps the D1.6-era prefix
+    # (`d1_6_<check>`) so an in-flight alert dedup window from a pre-
+    # D2.5 deploy doesn't reset on D2.5 ship — operators see continuous
+    # dedup semantics across the upgrade. Coinbase-side uses the D2.5
+    # prefix (`d2_5_<check>`) so a Coinbase alert can fire even while
+    # the matching Kalshi alert is still within its dedup window.
+    tiers = [
+        ("kalshi-collector", "d1_6", kalshi_checks),
+        ("kalshi-coinbase-collector", "d2_5", coinbase_checks),
+    ]
+    for tier_name, dedup_prefix, checks in tiers:
+        for check_name, check_fn in checks:
+            try:
+                alert = check_fn()
+            except Exception as exc:
+                # Defensive: a check raising is itself a regression (the
+                # check functions return None on missing-tooling / missing-
+                # files). Log + continue so one broken check doesn't
+                # silence the others. Cron convention = exit 0 always;
+                # operator sees the exception in /var/log/... .
+                print(
+                    f"[{tier_name}/{check_name}] EXCEPTION: {exc!r}",
+                    file=sys.stderr,
+                )
+                continue
+            if alert:
+                print(
+                    f"[{tier_name}/{check_name}] ALERT: {alert}",
+                    file=sys.stderr,
+                )
+                notifier.send(
+                    alert,
+                    dedup_key=f"{dedup_prefix}_{check_name}",
+                )
+            else:
+                print(f"[{tier_name}/{check_name}] OK", file=sys.stderr)
     return 0
 
 

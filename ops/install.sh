@@ -1,11 +1,12 @@
 #!/bin/bash
 # One-time installer for the systemd units that live in this directory:
-#   - /etc/systemd/system/kalshi-bot.service        (Bit 2.0.5.1)
-#   - /etc/systemd/system/kalshi-collector.service  (D1.5, 86b9ypna4)
+#   - /etc/systemd/system/kalshi-bot.service              (Bit 2.0.5.1)
+#   - /etc/systemd/system/kalshi-collector.service        (D1.5, 86b9ypna4)
+#   - /etc/systemd/system/kalshi-coinbase-collector.service (D2.5, 86b9znq4w)
 #
 # Source of truth = ops/*.service in this directory. Re-run this
-# script after any edit to either unit file. The script is idempotent
-# — re-running just re-installs the same content for both.
+# script after any edit to any unit file. The script is idempotent —
+# re-running just re-installs the same content for all three.
 #
 # Bit 2.0.5.1 of repo modularization plan
 # (kb/decisions/repo-modularization-plan-may05.md). Created in
@@ -19,7 +20,13 @@
 # install kalshi-collector.service — the Data Corpus collector unit
 # (separate process, vCPU-1 pinned, 512M cap, dedicated env file).
 #
-# This script does NOT restart the bot or collector — operator decides
+# D2.5 (2026-05-18, ticket 86b9znq4w) extends the installer further
+# to install kalshi-coinbase-collector.service — the Coinbase-side
+# Data Corpus collector unit (single-conn, no CPUAffinity, 256M cap,
+# dedicated .env.coinbase-collector). Three-unit parallel-array form;
+# the length-mismatch guard now expects N=3.
+#
+# This script does NOT restart the bot or collectors — operator decides
 # when. It WILL prompt for sudo password on the cp / daemon-reload /
 # enable steps; only `sudo -n /bin/systemctl restart kalshi-bot` is
 # granted NOPASSWD on the VPS, so install.sh is interactive-only by
@@ -45,17 +52,23 @@ REPO_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
 UNIT_NAMES=(
     "kalshi-bot"
     "kalshi-collector"
+    "kalshi-coinbase-collector"
 )
 UNIT_WRAPPERS=(
     "$REPO_ROOT/start.sh"
     "$REPO_ROOT/collector-start.sh"
+    "$REPO_ROOT/coinbase-collector-start.sh"
 )
 # Env-file paths that the unit's EnvironmentFile= directive references.
-# Bot: repo-rooted .env (existing). Collector: home-rooted
+# Bot: repo-rooted .env (existing). Kalshi collector: home-rooted
 # .env.collector (D1.5 — credential isolation, see ops/CLAUDE.md).
+# Coinbase collector: home-rooted .env.coinbase-collector (D2.5 — same
+# isolation pattern as Kalshi, separate file for separate failure
+# domain + separate credential surface).
 UNIT_ENV_FILES=(
     "$REPO_ROOT/.env"
     "/home/botuser/.env.collector"
+    "/home/botuser/.env.coinbase-collector"
 )
 # Expected directive lines per unit. Each entry is the literal
 # `Key=Value` line that must appear at column 0 in the source unit.
@@ -65,14 +78,17 @@ UNIT_ENV_FILES=(
 UNIT_EXPECTED_EXECSTART=(
     "ExecStart=$REPO_ROOT/start.sh"
     "ExecStart=$REPO_ROOT/collector-start.sh"
+    "ExecStart=$REPO_ROOT/coinbase-collector-start.sh"
 )
 UNIT_EXPECTED_WORKINGDIR=(
+    "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
 )
 UNIT_EXPECTED_ENVFILE=(
     "EnvironmentFile=$REPO_ROOT/.env"
     "EnvironmentFile=/home/botuser/.env.collector"
+    "EnvironmentFile=/home/botuser/.env.coinbase-collector"
 )
 
 # Length-mismatch guard — protects against future edits adding to one
@@ -116,9 +132,10 @@ for i in "${!UNIT_NAMES[@]}"; do
 
     # EnvironmentFile target must exist — systemd's EnvironmentFile=
     # (without the `-` prefix variant) fail-starts the unit if missing.
-    # For the bot, that's $REPO_ROOT/.env; for the collector, that's
-    # /home/botuser/.env.collector (operator-provisioned; see
-    # ops/CLAUDE.md "D1.5 collector .env.collector provisioning").
+    # For the bot, that's $REPO_ROOT/.env; for the Kalshi collector,
+    # that's /home/botuser/.env.collector; for the Coinbase collector,
+    # that's /home/botuser/.env.coinbase-collector (both operator-
+    # provisioned; see ops/CLAUDE.md).
     if [ ! -f "$env_file" ]; then
         echo "FAIL: $env_file missing."
         if [ "$name" = "kalshi-collector" ]; then
@@ -126,6 +143,14 @@ for i in "${!UNIT_NAMES[@]}"; do
             echo "      with KALSHI_COLLECTOR_KEY_ID / KALSHI_COLLECTOR_KEY_PATH /"
             echo "      COLLECTOR_BRONZE_ROOT / COLLECTOR_CONN_COUNT / RCLONE_REMOTE /"
             echo "      S3_BUCKET. See ops/CLAUDE.md + kb/decisions/d1-5-pickup-prompt-may16.md."
+        elif [ "$name" = "kalshi-coinbase-collector" ]; then
+            echo "      D2.5 operator runbook: provision /home/botuser/.env.coinbase-collector"
+            echo "      with COINBASE_BRONZE_ROOT (recommended"
+            echo "      /var/lib/kalshi-coinbase-collector/bronze) / RCLONE_REMOTE /"
+            echo "      S3_BUCKET. No PEM or KEY_ID needed at D2.5 (public channels only;"
+            echo "      D2.1.5 narrowed auth scope). See ops/CLAUDE.md \"D2.5 Coinbase"
+            echo "      collector deploy\" + feedback_vps_sudoers_collector_gap_may17"
+            echo "      (sudoers NOPASSWD extension for kalshi-coinbase-collector)."
         else
             echo "      Copy from .env.example and populate credentials, then re-run install.sh."
         fi
@@ -181,6 +206,7 @@ echo "Done."
 for name in "${UNIT_NAMES[@]}"; do
     echo "  Verify ${name}: systemctl cat ${name} | head -20"
 done
-echo "Restart hints (post-D1.5.2: deploy.yml auto-restarts kalshi-collector on collector-affecting deploys; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
-echo "  Bot       : sudo -n /bin/systemctl restart kalshi-bot"
-echo "  Collector : sudo -n /bin/systemctl restart kalshi-collector  (NOPASSWD assumes operator has extended /etc/sudoers.d/botuser-systemctl-restart to include kalshi-collector; see feedback_vps_sudoers_collector_gap_may17)"
+echo "Restart hints (post-D2.5 deploy.yml auto-restarts kalshi-collector + kalshi-coinbase-collector on path-affecting deploys; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
+echo "  Bot                : sudo -n /bin/systemctl restart kalshi-bot"
+echo "  Kalshi collector   : sudo -n /bin/systemctl restart kalshi-collector  (NOPASSWD assumes operator has extended /etc/sudoers.d/botuser-systemctl-restart to include kalshi-collector; see feedback_vps_sudoers_collector_gap_may17)"
+echo "  Coinbase collector : sudo -n /bin/systemctl restart kalshi-coinbase-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-coinbase-collector; see ops/CLAUDE.md D2.5 deploy section)"

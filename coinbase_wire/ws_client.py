@@ -101,7 +101,7 @@ from coinbase_wire.auth import build_public_subscribe_message
 # WSClient(url=...).
 DEFAULT_WS_URL = "wss://ws-feed.exchange.coinbase.com"
 
-# Default public channel set — 4 Coinbase Exchange WS channels with
+# Default public channel set — 5 Coinbase Exchange WS channels with
 # in-repo verified public reachability:
 #   - ``ticker``     — production ``bot/feeds/coinbase.py:278`` already
 #                      subscribes here on the live bot, so the path is
@@ -115,19 +115,23 @@ DEFAULT_WS_URL = "wss://ws-feed.exchange.coinbase.com"
 #                      are quiet.
 #   - ``status``     — product online/offline transitions — rare frames,
 #                      useful for outage forensics.
-#
-# **``level2_batch`` deliberately omitted at D2.1.5.** Coinbase has
-# progressively gated some `level2` access since 2024; the public
-# reachability of ``level2_batch`` on ``wss://ws-feed.exchange.coinbase.com``
-# is not in-repo verified (the production bot only consumes ``ticker``).
-# An in-archiver reachability check (observing Coinbase's ``type=error``
-# response to an unauthorized subscribe before bronze goes silent on
-# that channel) is the right place to verify-then-extend the default
-# channel set. Adding ``level2_batch`` to the default set without
-# verification risks shipping a silent partial-degradation failure
-# mode that the wire library cannot detect on its own. A followup
-# ticket promotes ``level2_batch`` into ``DEFAULT_CHANNELS`` once
-# subscribe-success is verified.
+#   - ``level2_batch`` — D2.5 PROMOTED (ticket 86b9znq4w, 2026-05-18).
+#                      The R0 reachability spike at D2.5 kickoff
+#                      confirmed public access on the Exchange WS
+#                      endpoint: subscribing BTC-USD on level2_batch
+#                      returned 1 snapshot frame at 0.22s + 502 l2update
+#                      frames over 30s with NO ``type=error`` response.
+#                      Coinbase Exchange WS lists level2_batch as a
+#                      batched-update orderbook channel (a snapshot
+#                      followed by streaming batched l2updates). The
+#                      pre-D2.5 omission was defensive (a future "no
+#                      type=error" change-class could shift the
+#                      reachability surface); the bundled D2.5 promotion
+#                      lands the dispatch table + sister-doc retract in
+#                      one atomic commit. The matching dispatch entries
+#                      land in ``collector.coinbase_archiver
+#                      .DEFAULT_MSG_TYPE_TO_CHANNEL``: ``snapshot →
+#                      level2_batch`` + ``l2update → level2_batch``.
 #
 # Coinbase Exchange WS has no ``candles`` channel; OHLC is derived from
 # ``matches`` downstream.
@@ -136,6 +140,7 @@ DEFAULT_CHANNELS: Tuple[str, ...] = (
     "matches",
     "heartbeat",
     "status",
+    "level2_batch",
 )
 
 # Default Coinbase product IDs — all 7 of the bot's live + T1-shadow
@@ -170,9 +175,9 @@ class Frame:
         ``channel`` is left None at the wire layer. Consumers map
         ``msg_type`` → channel using their own dispatch table
         (``match`` → matches, ``ticker`` → ticker, ``heartbeat`` →
-        heartbeat, ``status`` → status; ``snapshot`` / ``l2update``
-        → level2_batch lands once that channel is promoted into the
-        default set per the L99 ratchet pin).
+        heartbeat, ``status`` → status, ``snapshot`` / ``l2update``
+        → level2_batch — the level2 entries landed at D2.5 alongside
+        the channel's promotion into ``DEFAULT_CHANNELS``).
       - ``sequence_num`` is populated from Coinbase's ``sequence`` field
         when present. Per-product monotonic (NOT per-connection like
         Kalshi). Wire-level gap detection is deferred to the consumer

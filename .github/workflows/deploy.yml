@@ -285,5 +285,58 @@ jobs:
                 echo "D1.5.2 path-aware restart: $COLLECTOR_RESTART_REASON — but kalshi-collector is NOT active (operator stopped); skipping restart to preserve operator intent. Run 'sudo systemctl start kalshi-collector' on VPS to resume auto-restart."
               fi
             fi
+            # D2.5 (ticket 86b9znq4w, 2026-05-18): path-aware
+            # kalshi-coinbase-collector restart. Mirror of the D1.5.2
+            # block above with the Coinbase delta path set. Same
+            # structure: null-SHA fallback + `set +e` wrapped git-diff
+            # capture + diff-failure fallback to always-restart + is-
+            # active opt-out gate + `sudo -n /bin/systemctl` posture.
+            # Independent diff capture (not reusing COLLECTOR_DIFF_OUT)
+            # so the two blocks have ZERO shared state; a future edit
+            # to either block cannot regress the other. Pinned by
+            # tests/contracts/test_deploy_yml_path_aware_coinbase_collector_restart.py.
+            #
+            # Affecting path set (mirror of D1.5.2 with Coinbase
+            # equivalents):
+            #   - coinbase_wire/                              (wire library)
+            #   - collector/coinbase_archiver.py              (consumer)
+            #   - collector/coinbase_main_loop.py             (orchestrator)
+            #   - ops/kalshi-coinbase-collector.service       (systemd unit)
+            #   - coinbase-collector-start.sh                 (wrapper)
+            #   - requirements.txt                            (shared venv)
+            #
+            # Operator action needed before the first D2.5 deploy fires
+            # this `sudo -n` form: extend /etc/sudoers.d/botuser-systemctl-
+            # restart to ALSO include `/bin/systemctl restart
+            # kalshi-coinbase-collector` (see ops/CLAUDE.md "D2.5
+            # Coinbase collector deploy"). Until that extension lands,
+            # the `sudo -n` fails LOUD with exit 1 + a recognizable
+            # message — the deploy aborts BEFORE the broken restart
+            # silently leaves the unit unrestarted.
+            COINBASE_RESTART_REASON=""
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              COINBASE_RESTART_REASON="initial-push / force-push history rewrite (null SHA)"
+            else
+              set +e
+              COINBASE_DIFF_OUT=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>&1)
+              COINBASE_DIFF_EXIT=$?
+              set -e
+              if [ $COINBASE_DIFF_EXIT -ne 0 ]; then
+                COINBASE_RESTART_REASON="git diff failed (exit=$COINBASE_DIFF_EXIT): $(echo "$COINBASE_DIFF_OUT" | head -3 | tr '\n' '|') — falling back to always-restart"
+              else
+                COINBASE_PATHS_CHANGED=$(echo "$COINBASE_DIFF_OUT" | grep -E "^(coinbase_wire/|collector/coinbase_archiver.py$|collector/coinbase_main_loop.py$|ops/kalshi-coinbase-collector.service$|coinbase-collector-start.sh$|requirements.txt$)" || true)
+                if [ -n "$COINBASE_PATHS_CHANGED" ]; then
+                  COINBASE_RESTART_REASON="affected paths: $COINBASE_PATHS_CHANGED"
+                fi
+              fi
+            fi
+            if [ -n "$COINBASE_RESTART_REASON" ]; then
+              if systemctl is-active --quiet kalshi-coinbase-collector; then
+                echo "D2.5 path-aware restart: $COINBASE_RESTART_REASON"
+                sudo -n /bin/systemctl restart kalshi-coinbase-collector
+              else
+                echo "D2.5 path-aware restart: $COINBASE_RESTART_REASON — but kalshi-coinbase-collector is NOT active (operator stopped); skipping restart to preserve operator intent. Run 'sudo systemctl start kalshi-coinbase-collector' on VPS to resume auto-restart."
+              fi
+            fi
             # Documentation drift check (warning only — never blocks deploy)
             python3 scripts/audit/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"

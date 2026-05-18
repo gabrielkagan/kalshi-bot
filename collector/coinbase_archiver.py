@@ -123,25 +123,35 @@ _SUBSCRIBE_ACK_TYPES = frozenset({"subscriptions", "error"})
 # Naming quirk: Coinbase Exchange WS sends ``match`` (singular) frames
 # on the ``matches`` (plural) channel. The dispatch table reflects this.
 #
-# ``level2_batch`` (snapshot / l2update msg types) is intentionally
-# OMITTED at D2.2 — coinbase_wire's ``DEFAULT_CHANNELS`` set does not
-# subscribe to it (D2.1.5 deferred until reachability is verified).
-# Frames with unmapped msg_type route to the ``None``-keyed _unrouted
-# writer so bronze captures the bytes for silver QA to investigate.
-# When a followup ticket promotes level2_batch into DEFAULT_CHANNELS,
-# extend this dict with ``"snapshot": "level2_batch"`` +
-# ``"l2update": "level2_batch"``.
+# ``level2_batch`` PROMOTED at D2.5 (ticket 86b9znq4w, 2026-05-18):
+# the R0 reachability spike at D2.5 kickoff confirmed public access on
+# the Exchange WS endpoint (1 snapshot + 502 l2update frames over 30s
+# for BTC-USD alone, no ``type=error``). Both ``snapshot`` (the initial
+# orderbook image dispatched on subscribe) and ``l2update`` (the
+# streaming batched bid/ask updates) route to the ``level2_batch``
+# channel. Bundled into D2.5 alongside the wire-library default-set
+# extension + the sister-doc retract.
+#
+# Frames with unmapped msg_type (e.g., a future Coinbase channel
+# Coinbase ships without a corresponding repo update) route to the
+# ``None``-keyed ``_unrouted`` writer so bronze captures the bytes for
+# silver QA to investigate.
 DEFAULT_MSG_TYPE_TO_CHANNEL: Mapping[str, str] = {
     "ticker": "ticker",
     "match": "matches",
     "heartbeat": "heartbeat",
     "status": "status",
+    "snapshot": "level2_batch",
+    "l2update": "level2_batch",
 }
 
 # D1.3-fu4 default write-queue capacity. ~10s of buffering at typical
 # Coinbase steady-state load (single-conn covering BTC/ETH/SOL/XRP/HYPE/
-# DOGE/BNB across ticker + matches + heartbeat + status is ~50-200
-# frames/sec). Tuned the same as Kalshi for cross-collector consistency.
+# DOGE/BNB across ticker + matches + heartbeat + status + level2_batch
+# is ~500-1500 frames/sec post-D2.5 — level2_batch dominates the rate;
+# R0 spike clocked 502 l2updates over 30s for BTC-USD alone, ~17/sec ×
+# 7 products ≈ 120/sec from level2 alone). Tuned the same as Kalshi
+# for cross-collector consistency.
 _DEFAULT_WRITE_QUEUE_MAXSIZE = 10_000
 
 # Sentinel posted to ``_write_queue`` by ``stop()`` to signal the worker
