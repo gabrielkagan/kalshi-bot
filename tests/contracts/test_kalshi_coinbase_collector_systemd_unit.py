@@ -211,10 +211,14 @@ def test_service_memory_max_is_256m():
 
     Half of kalshi-collector's 512M cap. Coinbase single-conn × 7
     products × 5 channels (post-D2.5 level2_batch promotion) at
-    typical Coinbase steady-state load (~50-200 frames/sec) has a
-    much smaller Python footprint than Kalshi's 7-conn × ~21K-subs
-    steady-state. 256M leaves room for the worker queue + zstd writer
-    + rclone upload buffer.
+    typical Coinbase steady-state load (~200-300 frames/sec
+    aggregate — level2_batch ~120/sec dominates, matches+ticker
+    ~50-80/sec, heartbeat+status <5/sec; see
+    collector/coinbase_archiver.py queue-capacity comment for the
+    R0-spike arithmetic) has a much smaller Python footprint than
+    Kalshi's 7-conn × ~21K-subs steady-state. 256M leaves room for
+    the worker queue (10K items × ~1KB envelope ≈ 10MB) + zstd
+    compression buffer + rclone upload overhead.
     """
     text = _read_unit()
     assert _directive(text, "MemoryMax") == "256M", (

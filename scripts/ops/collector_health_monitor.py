@@ -117,15 +117,25 @@ def check_ws_reconnects(
     window_min: int = DEFAULT_WS_WINDOW_MIN,
     threshold_count: int = DEFAULT_WS_THRESHOLD_COUNT,
     unit: str = DEFAULT_COLLECTOR_UNIT,
+    log_marker: str = "kalshi_ws_disconnected",
 ) -> Optional[str]:
     """Return alert string if `kalshi_ws_disconnected` count in last
     ``window_min`` minutes >= ``threshold_count``, else None.
 
     Includes class breakdown (1006 abnormal / 1009 message-too-big /
     1011 ping timeout) so the operator can route to the correct fix:
-    - 1006: kalshi-side outage or our network blip
-    - 1009: ws_max_size config (D1.3-fu1 should have closed this)
+    - 1006: upstream outage or our network blip
+    - 1009: ws_max_size config (D1.3-fu1 should have closed this on Kalshi)
     - 1011: asyncio loop blockage (D1.3-fu3 stopgap + D1.3-fu4 proper fix)
+
+    D2.5 R2-C1: ``log_marker`` parameterizes the per-line filter
+    substring. Kalshi-tier callers use the default
+    ``"kalshi_ws_disconnected"``; Coinbase-tier callers MUST pass
+    ``log_marker="coinbase_ws_disconnected"`` — the Coinbase wire
+    library writes a different marker (``coinbase_wire/ws_client.py``
+    line ~654) and a hardcoded Kalshi-only substring filter would
+    silently never match Coinbase logs, producing an always-OK signal
+    even during a sustained Coinbase reconnect storm.
     """
     try:
         out = subprocess.check_output(
@@ -145,7 +155,7 @@ def check_ws_reconnects(
         return None
     disconnect_lines = [
         line for line in out.splitlines()
-        if "kalshi_ws_disconnected" in line
+        if log_marker in line
     ]
     if len(disconnect_lines) < threshold_count:
         return None
@@ -430,6 +440,11 @@ def main() -> int:
         )),
         ("ws_reconnects", lambda: check_ws_reconnects(
             unit=COINBASE_COLLECTOR_UNIT,
+            # R2-C1: Coinbase wire emits coinbase_ws_disconnected
+            # (NOT the Kalshi default). Without this kwarg the filter
+            # substring would never match Coinbase logs and the
+            # reconnect-storm alert would be silently broken.
+            log_marker="coinbase_ws_disconnected",
         )),
         ("collector_active", lambda: check_collector_active(
             unit=COINBASE_COLLECTOR_UNIT,

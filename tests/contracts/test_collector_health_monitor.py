@@ -63,15 +63,31 @@ def test_check_disk_alerts_above_threshold():
 
 
 def test_check_ws_reconnects_signature():
-    """`check_ws_reconnects(window_min=..., threshold_count=..., unit=...)` exists."""
+    """`check_ws_reconnects(window_min=..., threshold_count=..., unit=..., log_marker=...)` exists.
+
+    D2.5 R2-C1 added the `log_marker` kwarg so the dual-tier dispatch
+    can target the Coinbase wire's distinct `coinbase_ws_disconnected`
+    marker. Pre-R2-C1 the substring filter was hardcoded to
+    `kalshi_ws_disconnected`, silently never-matching Coinbase logs.
+    """
     from scripts.ops.collector_health_monitor import check_ws_reconnects
     sig = inspect.signature(check_ws_reconnects)
     assert "window_min" in sig.parameters
     assert "threshold_count" in sig.parameters
     assert "unit" in sig.parameters
+    assert "log_marker" in sig.parameters, (
+        "check_ws_reconnects missing `log_marker` kwarg added at D2.5 "
+        "R2-C1. Without it, the Coinbase tier's reconnect-storm alert "
+        "is silently broken — the hardcoded substring filter would "
+        "never match Coinbase wire logs."
+    )
     # Per D1.6 plan: 10 disconnects per 5 min = ~2/min cadence trips alert.
     assert sig.parameters["window_min"].default == 5
     assert sig.parameters["threshold_count"].default == 10
+    assert sig.parameters["log_marker"].default == "kalshi_ws_disconnected", (
+        "log_marker default must be Kalshi-tier value so pre-D2.5 "
+        "callers (and tests) preserve their existing behavior."
+    )
 
 
 def test_check_ws_reconnects_silent_when_journalctl_unavailable():
@@ -200,6 +216,27 @@ def test_coinbase_tier_constants_exist():
         f"from Kalshi monitor_state.json to keep dropped-frames "
         f"accumulation independent); got "
         f"{mod.COINBASE_MONITOR_STATE_PATH!r}."
+    )
+
+
+def test_main_passes_coinbase_log_marker_to_check_ws_reconnects():
+    """R2-C1 regression pin: `main()` MUST pass
+    `log_marker="coinbase_ws_disconnected"` to the Coinbase-tier
+    `check_ws_reconnects` invocation.
+
+    Pre-R2-C1 the hardcoded `"kalshi_ws_disconnected"` substring filter
+    would silently never match Coinbase logs, producing always-OK signals
+    even during a sustained Coinbase reconnect storm. AST scan over the
+    module source confirms the kwarg is wired.
+    """
+    from scripts.ops import collector_health_monitor as mod
+    src = inspect.getsource(mod)
+    assert 'log_marker="coinbase_ws_disconnected"' in src, (
+        "main() must pass `log_marker=\"coinbase_ws_disconnected\"` to "
+        "the Coinbase-tier check_ws_reconnects call. Without it, the "
+        "Coinbase reconnect-storm alert is silently broken (the hardcoded "
+        "kalshi_ws_disconnected substring filter never matches Coinbase "
+        "wire logs)."
     )
 
 

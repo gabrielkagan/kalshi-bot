@@ -1571,6 +1571,23 @@ STALE_PATTERNS_POST_D2_5: list[str] = [
     # current-default claim.
     "the mock server emits all 4 channels regardless",
     "emits all 4 channels regardless of what the consumer subscribes",
+    # R2-M1/M2: line-wrapped docstring drift. The L99 _scan helper is
+    # LINE-BY-LINE — a multi-line phrasing like
+    #
+    #   When None, the wire library's
+    #   default (ticker + matches + heartbeat + status) is
+    #   used.
+    #
+    # would NEVER match a single-line substring pattern like
+    # "wire's default (ticker + matches + heartbeat + status)" because
+    # no single line contains the full pattern. The fix is per-line
+    # fragment patterns covering the surviving wrapped variants. Each
+    # fragment must be specific enough to NOT false-positive on
+    # post-D2.5 "default (ticker + matches + heartbeat + status +
+    # level2_batch) is" (which is a legitimate post-tense narrative).
+    "default (ticker + matches + heartbeat + status) is",
+    "Default covers the 4",
+    "public Coinbase Exchange WS channels D2.1.5 subscribes",
     # R0 was the spike result — no longer a future-looking "we should run a spike"
     # paraphrase. Retract paraphrases that frame the spike as pending.
     "R0 spike pending",

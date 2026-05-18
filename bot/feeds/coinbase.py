@@ -129,8 +129,8 @@ class CoinbaseFeed:
         self._load_persisted_buffer()
         # D2.3: WS transport delegated to coinbase_wire.WSClient.
         # ``channels`` narrows the wire default to ticker only (bot
-        # doesn't need matches/heartbeat/status — see _BOT_CHANNELS
-        # constant docstring). product_ids comes from
+        # doesn't need matches/heartbeat/status/level2_batch — see
+        # _BOT_CHANNELS constant docstring). product_ids comes from
         # bot.constants.COINBASE_PRODUCTS so a new-asset onboarding
         # flows naturally into the WS subscribe via the bot's existing
         # config surface.

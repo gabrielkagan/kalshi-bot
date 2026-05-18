@@ -158,14 +158,17 @@ def make_ws_headers(api_key: str, api_secret: str,
     """Reserved for a future Bit that adds private Coinbase channels.
 
     Analogous to ``kalshi_wire.auth.make_ws_headers`` (which IS
-    implemented — Kalshi WS auth is always required). Coinbase WS auth
-    is conditional on the subscribed channel set; D2.1.5 sticks to
-    public channels so this helper is a sentinel until a private-channel
-    Bit needs it.
+    implemented — Kalshi WS auth is always required). Coinbase WS
+    auth is conditional on the subscribed channel set; D2.1.5 + D2.5
+    ship public-only (post-D2.5 5-channel default: ticker / matches /
+    heartbeat / status / level2_batch) so this helper is a sentinel
+    until a private-channel Bit needs it.
     """
     raise NotImplementedError(
         "coinbase_wire.auth.make_ws_headers is reserved for a future "
-        "Bit that adds private Coinbase channels. D2.1.5 is public-only; "
-        "no headers required for the public WS connect. See ticket "
-        "86b9zkpny."
+        "Bit that adds private Coinbase channels. D2.1.5 + D2.5 ship "
+        "public-only (post-D2.5 5-channel default: ticker / matches / "
+        "heartbeat / status / level2_batch); no headers required for "
+        "any of those. See ticket 86b9zkpny (D2.1.5 body) + 86b9znq4w "
+        "(D2.5 level2_batch promotion)."
     )

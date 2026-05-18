@@ -259,6 +259,17 @@ jobs:
               if [ $COLLECTOR_DIFF_EXIT -ne 0 ]; then
                 COLLECTOR_RESTART_REASON="git diff failed (exit=$COLLECTOR_DIFF_EXIT): $(echo "$COLLECTOR_DIFF_OUT" | head -3 | tr '\n' '|') — falling back to always-restart"
               else
+                # D2.5 prefix-overlap NOTE: `^collector/` matches BOTH
+                # the Kalshi-side modules under `collector/` AND the
+                # Coinbase-side modules (`coinbase_archiver.py`,
+                # `coinbase_main_loop.py`). A Coinbase-only commit
+                # therefore triggers this Kalshi-collector restart too —
+                # accepted as harmless over-restart: the Kalshi collector
+                # restarts cleanly under all changes, and shared modules
+                # like `writer.py` + `uploader.py` genuinely DO affect
+                # both collectors. Tightening the regex to exclude
+                # Coinbase paths via PCRE negative-lookahead is not
+                # portable across grep -E (GNU + BSD divergence).
                 COLLECTOR_PATHS_CHANGED=$(echo "$COLLECTOR_DIFF_OUT" | grep -E "^(collector/|kalshi_wire/|ops/kalshi-collector.service$|collector-start.sh$|requirements.txt$)" || true)
                 if [ -n "$COLLECTOR_PATHS_CHANGED" ]; then
                   COLLECTOR_RESTART_REASON="affected paths: $COLLECTOR_PATHS_CHANGED"
