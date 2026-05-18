@@ -121,6 +121,8 @@ STATE_METHODS = (
     "cleanup_expired_resting_orders",
     "mark_order_status",
     "record_position_from_fill",
+    "get_local_position_count_for_ticker",
+    "get_local_position_cost_for_ticker",
     "update_garch_params",
     "update_egarch_params",
     "close",
@@ -265,8 +267,9 @@ def test_bot_impl_imports_state_from_bot_state():
 
 @pytest.mark.parametrize("method_name", STATE_METHODS)
 def test_state_method_present(method_name):
-    """All 38 StateManager methods enumerated in STATE_METHODS must survive
-    the verbatim move."""
+    """All StateManager methods enumerated in STATE_METHODS must survive
+    the verbatim move. (Count tracks the tuple length; do not hand-count —
+    the parametrize length is the ground truth.)"""
     import bot.state
 
     assert hasattr(bot.state.StateManager, method_name), (

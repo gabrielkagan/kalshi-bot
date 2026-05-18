@@ -3959,6 +3959,16 @@ class OrderExecutor:
         # ── Ghost fill detection (Layer B): positions API verification ──
         # remaining_count > 0 suggests genuinely unfilled, but verify against
         # Kalshi's positions API in case of any untracked position.
+        #
+        # B1 fix (ticket 86b9zuczz, 2026-05-18): Kalshi's positions API is
+        # ticker-level — it returns the CUMULATIVE position across all local
+        # strategy_groups. Previously this code recorded the full cumulative
+        # count, which (a) contaminated the new strategy's row with sibling-
+        # strategy fills and (b) compounded on each dc_retry pass. Now we
+        # compute the DELTA vs. the local sum across all strategy_groups for
+        # the ticker, and only record the delta as a new fill. Lesson L105
+        # (cumulative-vs-delta API semantics in fill paths) — see ClickUp
+        # ticket for the full postmortem.
         try:
             _pos_resp = self._client.get_positions()
             if _pos_resp and _pos_resp.get("market_positions"):
@@ -3971,18 +3981,40 @@ class OrderExecutor:
                             _pos_cost_d = _pos.get("market_exposure_dollars")
                             _pos_cost = dollars_str_to_cents(_pos_cost_d) if _pos_cost_d else (_pos.get("market_exposure") or 0)
                             _pos_avg = _pos_cost // _pos_abs if _pos_abs else price
+                            _local_count = self._state.get_local_position_count_for_ticker(
+                                ticker, _ghost_side)
+                            _delta = _pos_abs - _local_count
+                            if _delta <= 0:
+                                logging.info(
+                                    f"GHOST_FILL_SKIP_NO_DELTA: {ticker} side={_ghost_side} "
+                                    f"positions API shows {_pos_abs}, local already has "
+                                    f"{_local_count} — no new fills to record")
+                                # Fall through to the IOC-unfilled path below.
+                                break
+                            # Attribute cost to the delta contracts, not the
+                            # cumulative weighted-average (R1-M2). When market
+                            # moves between sibling-strategy fill and ghost-fill
+                            # detection, _pos_avg ≠ actual new-fill price; the
+                            # delta-cost reconstructs the new contracts' price.
+                            _local_cost = self._state.get_local_position_cost_for_ticker(
+                                ticker, _ghost_side)
+                            _delta_cost = _pos_cost - _local_cost
+                            _delta_avg = (_delta_cost // _delta
+                                          if _delta and _delta_cost > 0
+                                          else _pos_avg)
                             logging.error(
                                 f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} side={_ghost_side} "
                                 f"fill polling found nothing, remaining_count={remaining_count}, "
                                 f"but positions API shows {_pos_count} contracts "
-                                f"(cost={_pos_cost}¢, avg={_pos_avg}¢)")
+                                f"(cost={_pos_cost}¢, avg={_pos_avg}¢) — new_fills={_delta} "
+                                f"@ {_delta_avg}¢ (api={_pos_abs}, local_was={_local_count})")
                             self._state.record_position_from_fill(
                                 ticker=ticker,
                                 event_ticker=candidate["event_ticker"],
                                 asset=candidate["asset"],
                                 side=_ghost_side,
-                                count=_pos_abs,
-                                price_cents=_pos_avg,
+                                count=_delta,
+                                price_cents=_delta_avg,
                                 strategy=candidate.get("strategy"),
                                 seconds_to_close=order_info.get("seconds_to_close_at_submit"),
                                 fill_latency=round(time.time() - order_info["submit_time"], 3),
@@ -4001,7 +4033,7 @@ class OrderExecutor:
                             if (candidate.get("entry_path") != "confirmation_addon"
                                     and not _is_ladder_retry):
                                 self._session_ioc_fills += 1
-                            order_info["filled_count"] = _pos_abs  # Ghost fill from positions API
+                            order_info["filled_count"] = _delta
                             return order_info
         except Exception as e:
             logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")

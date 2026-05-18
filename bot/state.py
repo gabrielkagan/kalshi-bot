@@ -1430,6 +1430,38 @@ class StateManager:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_local_position_count_for_ticker(self, ticker: str, side: str) -> int:
+        """Sum open-position count for (ticker, side) across ALL strategy_groups.
+
+        Truth source for the ghost-fill delta-COUNT calculation in
+        `bot/executor.py::OrderExecutor._submit_taker` (ticket 86b9zuczz).
+        Kalshi's positions API returns one row per ticker (cumulative across
+        strategy_groups), so to compute the **new contracts** delivered by a
+        single IOC attempt we subtract this local cumulative from the API count.
+        """
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(count), 0) FROM positions "
+            "WHERE ticker=? AND side=? AND status='open'",
+            (ticker, side),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def get_local_position_cost_for_ticker(self, ticker: str, side: str) -> int:
+        """Sum open-position total_cost_cents for (ticker, side) across ALL
+        strategy_groups.
+
+        Pair to `get_local_position_count_for_ticker` for the ghost-fill
+        delta-COST calculation (ticket 86b9zuczz, R1-M2). Used by Layer B to
+        attribute the new-contracts cost to the actual delta price rather
+        than to the cumulative weighted-average across sibling strategies.
+        """
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(total_cost_cents), 0) FROM positions "
+            "WHERE ticker=? AND side=? AND status='open'",
+            (ticker, side),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
     def get_open_position_exposure_cents(self) -> int:
         # Cost-basis sum (count * avg_price_cents) across open positions.
         # Used by main_loop + settlement Telegram alerts so "Balance:"
