@@ -5,10 +5,10 @@ Adds a 5th check tier to `scripts/ops/collector_health_monitor.py`:
 `insert_evaluated_opportunity failed` WARNING fires in `kalshi-bot`
 journalctl.
 
-Why: the marker substring matches ~20 WARN sites across
+Why: the marker substring matches ~39 WARN sites across
 `bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 narrowed 2 of them
 (LPNE + dc_shadow_no_side POR) to `sqlite3.OperationalError`; the
-other ~18 still use bare `except Exception:` and will WARN for any
+other ~37 still use bare `except Exception:` and will WARN for any
 Python-level exception (B3-fu7 `86ba067mg` sweep scope). Either way
 the alert is real-signal: a hit means either a genuine DB error at
 the narrowed sites OR an exception (DB or otherwise) at the

@@ -83,9 +83,9 @@ COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.
 
 # B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
 # `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
-# The marker substring matches ~20 WARN sites across bot/scanner +
+# The marker substring matches ~39 WARN sites across bot/scanner +
 # bot/state. B3-fu2 narrowed 2 of them (LPNE + dc_shadow_no_side POR)
-# to sqlite3.OperationalError; the other ~18 still use bare
+# to sqlite3.OperationalError; the other ~37 still use bare
 # `except Exception:` and will WARN on any Python-level exception
 # (B3-fu7 `86ba067mg` sweeps them). Either way the alert is real-signal:
 # a hit means a genuine DB error at the narrowed sites OR an
@@ -198,11 +198,11 @@ def check_insert_evaluated_opportunity_failures(
     """Return alert string if `insert_evaluated_opportunity failed` WARN
     count in last ``window_min`` minutes >= ``threshold_count``, else None.
 
-    The marker substring matches ~20 WARN sites across
+    The marker substring matches ~39 WARN sites across
     `bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 (ticket
     86b9zxb02, 2026-05-18) narrowed 2 of them (LPNE +
     dc_shadow_no_side POR) to `sqlite3.OperationalError`; the other
-    ~18 still use bare `except Exception:` and will WARN for any
+    ~37 still use bare `except Exception:` and will WARN for any
     Python-level exception (NameError / UnboundLocalError /
     AttributeError) — the B3-fu7 `86ba067mg` sweep scope. Either way
     the alert is real-signal: a hit means either a genuine DB error
@@ -235,8 +235,8 @@ def check_insert_evaluated_opportunity_failures(
     return (
         f"*BOT INSERT_EVALUATED_OPPORTUNITY FAILED* — {len(hits)} hits "
         f"of `{log_marker}` in last {window_min}min (threshold {threshold_count}). "
-        f"Marker matches ~20 WARN sites (B3-fu2 narrowed 2 to "
-        f"sqlite3.OperationalError; the other ~18 still bare-except, "
+        f"Marker matches ~39 WARN sites (B3-fu2 narrowed 2 to "
+        f"sqlite3.OperationalError; the other ~37 still bare-except, "
         f"B3-fu7 sweep scope). A hit is either a genuine DB error at "
         f"the narrowed sites OR an exception (DB or otherwise) at the "
         f"bare-except sites — both worth investigating. "
