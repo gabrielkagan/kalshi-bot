@@ -22,7 +22,7 @@ At 80-87c with <2 minutes left, the underlying price is above the strike but the
 | `LPNE_MAX_STC` | 120 | Data: STC<=120s is the validated zone |
 | `LPNE_FIXED_CONTRACTS` | 50 | Fixed sizing, bypasses Kelly |
 | `LPNE_MAX_CONCURRENT` | 2 | Conservative cap |
-| Probability gate | `final_prob >= best_ask / 100.0` | Model must believe at least break-even |
+| Probability gate | `cal_prob >= best_ask / 100.0` | Model must believe at least break-even (LPNE intercepts pre-cascade, so `cal_prob` is the bound name — not `final_prob`) |
 
 ## Pipeline Position
 LPNE intercepts at the **price floor check** (bot.py ~line 7148), BEFORE the floor rejection. This is different from TM which intercepts at insufficient_edge. The signal passes all quality gates (probability, orderbook, etc.) but fails the BTC_MIN_ENTRY_PRICE floor — LPNE catches it before it's rejected.

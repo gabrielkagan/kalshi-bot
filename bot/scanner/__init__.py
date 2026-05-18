@@ -2777,7 +2777,9 @@ class OpportunityScanner:
                                                 spot_price=spot, threshold=threshold,
                                                 volatility=blended_rv, market_price=best_ask,
                                                 seconds_to_close=seconds_remaining,
-                                                calibrated_prob=final_prob,
+                                                # `cal_prob` here — LPNE intercepts BEFORE the
+                                                # per-asset floor branch so `final_prob` is unbound.
+                                                calibrated_prob=cal_prob,
                                                 edge=cal_prob - best_ask / 100.0,
                                                 z_score=prob_result.get("z_score"),
                                                 vol_regime=vol_est["regime"],
