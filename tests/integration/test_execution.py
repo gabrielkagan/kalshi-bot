@@ -1195,6 +1195,10 @@ class TestGhostFillProtection(unittest.TestCase):
     def test_layer_b_positions_api_detects_ghost(self):
         """Positions API shows contracts → ghost fill Layer B registers position."""
         ex = _make_executor()
+        # B1 fix (86b9zuczz): Layer B now computes delta vs. local sum.
+        # With no prior local position, delta == api_count.
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
         ex._client.place_order.return_value = {
             "order": {
                 "order_id": "ord-ghost-b",
@@ -1226,6 +1230,92 @@ class TestGhostFillProtection(unittest.TestCase):
         ex._state.record_position_from_fill.assert_called_once()
         call_kwargs = ex._state.record_position_from_fill.call_args.kwargs
         self.assertEqual(call_kwargs["fill_source"], "ghost_fill_positions_api")
+        # Delta = api(5) - local(0) = 5.
+        self.assertEqual(call_kwargs["count"], 5)
+
+    def test_layer_b_subtracts_local_count_for_delta_regression(self):
+        """B1 regression (86b9zuczz, 2026-05-18 HYPE incident): when local
+        already has sibling-strategy fills, Layer B must record the DELTA
+        from this attempt — NOT the cumulative positions-API count.
+
+        Pre-fix: with local=58 (TM filled) and api=59 (TM 58 + new 1),
+        record_position_from_fill was called with count=59 → over-buy.
+        Post-fix: delta = 59 - 58 = 1, only the new contract is recorded.
+        """
+        ex = _make_executor()
+        # Sibling strategy (e.g. terminal_momentum) already filled 58 locally.
+        ex._state.get_local_position_count_for_ticker.return_value = 58
+        ex._state.get_local_position_cost_for_ticker.return_value = 58 * 98
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-delta",
+                "remaining_count": 1,
+                "fill_count_fp": None,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 59,  # cumulative across strategies
+                "position_fp": None,
+                "market_exposure": 5723,  # 58*98 + 1*97 (the actual fill avg)
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=5723):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        ex._state.record_position_from_fill.assert_called_once()
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["count"], 1,
+                         "Must record delta (1), NOT cumulative API count (59)")
+        # filled_count on order_info should also be the delta for dc_retry accounting.
+        self.assertEqual(result["filled_count"], 1)
+
+    def test_layer_b_skips_when_delta_is_zero(self):
+        """B1: when positions API matches local exactly, no new fills happened —
+        ghost-fill must NOT call record_position_from_fill and must NOT mark
+        the order filled. Falls through to the IOC-unfilled path."""
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 5
+        ex._state.get_local_position_cost_for_ticker.return_value = 460
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-zero",
+                "remaining_count": 3,
+                "fill_count_fp": None,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 5,
+                "position_fp": None,
+                "market_exposure": 460,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        # No new fills → IOC-unfilled return path → None.
+        self.assertIsNone(result, "Zero-delta must fall through to IOC unfilled")
+        ex._state.record_position_from_fill.assert_not_called()
 
 
 class TestPostOnlyRejectionTiers(unittest.TestCase):
