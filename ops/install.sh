@@ -41,8 +41,9 @@
 # (validate-ALL then install-ALL) prevents half-installed state — a
 # routine post-D2.5 re-install for a bot-only systemd edit still
 # requires the Coinbase env-file present. If the operator hasn't yet
-# provisioned `.env.coinbase-collector`, the per-unit FAIL hint at
-# line ~135 in this script tells them what to populate.
+# provisioned `.env.coinbase-collector`, the per-unit FAIL hint (grep
+# for `D2.5 operator runbook` in this script's failure output) tells
+# them what to populate.
 set -euo pipefail
 
 if ! tty -s; then

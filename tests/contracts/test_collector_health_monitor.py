@@ -220,26 +220,48 @@ def test_coinbase_tier_constants_exist():
 
 
 def test_main_resolves_coinbase_sidecar_path_via_env_var():
-    """R4-M2 regression pin: `main()` MUST resolve the Coinbase sidecar
-    path via the ``COINBASE_HEALTH_SIDECAR_PATH`` env var (paired with
-    the writer in ``collector/coinbase_main_loop.py:302-310`` which
-    reads the SAME env var).
+    """R4-M2 + R5-M1 regression pin: `main()` MUST mirror the writer's
+    two-knob derivation EXACTLY when resolving the Coinbase sidecar
+    path. The writer side
+    (``collector/coinbase_main_loop.py::run``):
 
-    Pre-R4-M2 the dispatch passed the hardcoded ``COINBASE_SIDECAR_PATH``
-    constant; if an operator relocated the Coinbase sidecar via env
-    in ``/home/botuser/.env.coinbase-collector`` the writer would
-    follow the env but the monitor would still read the constant —
-    silent observability gap (STALE alert spam or no-signal-at-all).
-    AST scan over the module source confirms the env-var resolution.
+      1. ``COINBASE_HEALTH_SIDECAR_PATH`` env var when set, else
+      2. ``bronze_root.parent / "bronze_health.json"`` (where
+         ``bronze_root`` comes from ``COINBASE_BRONZE_ROOT`` env var
+         or default), else
+      3. canonical hardcoded path.
+
+    Pre-R4-M2 only step (1) was env-aware on the reader side. R5-M1
+    found step (2) still hardcoded — an operator who relocated bronze
+    via ``COINBASE_BRONZE_ROOT`` alone would silently break the
+    monitor. Post-R5-M1 both knobs are mirrored.
+
+    AST scan checks for BOTH env-var references on the reader side.
+    Accepts either ``os.environ.get`` or ``os.getenv`` (functionally
+    equivalent stdlib forms; R5-N1 broadening to avoid false-fail on
+    refactor).
     """
     from scripts.ops import collector_health_monitor as mod
     src = inspect.getsource(mod)
-    assert 'os.environ.get(' in src and '"COINBASE_HEALTH_SIDECAR_PATH"' in src, (
-        "main() must resolve the Coinbase sidecar path via "
-        "COINBASE_HEALTH_SIDECAR_PATH env var with COINBASE_SIDECAR_PATH "
-        "fallback. Without env-var resolution, the writer + monitor "
-        "would reference different paths when an operator relocates "
-        "the sidecar via .env.coinbase-collector."
+    has_env_resolver = "os.environ.get(" in src or "os.getenv(" in src
+    assert has_env_resolver, (
+        "main() must resolve env vars at runtime via os.environ.get or "
+        "os.getenv. Pure-constant resolution would re-introduce the "
+        "writer/reader path drift that R4-M2 + R5-M1 closed."
+    )
+    assert '"COINBASE_HEALTH_SIDECAR_PATH"' in src, (
+        "main() must resolve COINBASE_HEALTH_SIDECAR_PATH env var with "
+        "COINBASE_SIDECAR_PATH fallback (R4-M2). Without it, the "
+        "writer + monitor would reference different paths when an "
+        "operator relocates the sidecar."
+    )
+    assert '"COINBASE_BRONZE_ROOT"' in src, (
+        "main() must ALSO mirror the writer's bronze-root-derived "
+        "sidecar fallback (R5-M1). Without reading COINBASE_BRONZE_ROOT "
+        "on the reader side, an operator who relocates ONLY the bronze "
+        "root (no HEALTH_SIDECAR_PATH override) would silently break "
+        "the monitor — writer derives `<new-root>/bronze_health.json`, "
+        "reader keeps the hardcoded /var/lib/... path."
     )
 
 

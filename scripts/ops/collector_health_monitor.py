@@ -434,20 +434,37 @@ def main() -> int:
             state_path=Path(DEFAULT_MONITOR_STATE_PATH),
         )),
     ]
-    # R4-M2: resolve the Coinbase sidecar path at call time via the
-    # ``COINBASE_HEALTH_SIDECAR_PATH`` env var (paired with the writer
-    # in ``collector/coinbase_main_loop.py:302-310`` which writes to
-    # the same env-var-resolved path). Falls back to
-    # ``COINBASE_SIDECAR_PATH`` constant when unset. Without this
-    # env-aware resolution, an operator who relocates the Coinbase
-    # sidecar in /home/botuser/.env.coinbase-collector would have the
-    # writer + monitor referencing different paths — the monitor
-    # would either alert-spam with STALE on a missing file at the
-    # hardcoded path OR silently see no signal. Mirrors the Kalshi-
-    # side pairing of ``COLLECTOR_HEALTH_SIDECAR_PATH``.
+    # R4-M2 + R5-M1: resolve the Coinbase sidecar path at call time
+    # mirroring the writer's two-knob derivation exactly
+    # (collector/coinbase_main_loop.py:302-310).
+    #
+    # Writer logic:
+    #   if COINBASE_HEALTH_SIDECAR_PATH set: use it.
+    #   else if COINBASE_BRONZE_ROOT set: derive parent / bronze_health.json.
+    #   else (both unset): fall back to canonical path (default
+    #     /var/lib/kalshi-coinbase-collector/bronze defaults to
+    #     /var/lib/kalshi-coinbase-collector/bronze_health.json).
+    #
+    # Without symmetric reader derivation, an operator who relocates
+    # the bronze root via COINBASE_BRONZE_ROOT alone (without also
+    # setting COINBASE_HEALTH_SIDECAR_PATH) would have the writer +
+    # monitor referencing different paths — STALE alert spam or no
+    # signal at all. R4-M2 closed the explicit-knob half (HEALTH_
+    # SIDECAR_PATH); R5-M1 closes the derived-from-bronze-root half.
+    _coinbase_bronze_root_env = os.environ.get(
+        "COINBASE_BRONZE_ROOT", "",
+    ).strip()
+    if _coinbase_bronze_root_env:
+        # Writer derives sidecar as bronze_root.parent /
+        # "bronze_health.json"; mirror exactly.
+        _coinbase_default_sidecar = str(
+            Path(_coinbase_bronze_root_env).parent / "bronze_health.json"
+        )
+    else:
+        _coinbase_default_sidecar = COINBASE_SIDECAR_PATH
     _coinbase_sidecar_resolved = os.environ.get(
-        "COINBASE_HEALTH_SIDECAR_PATH", COINBASE_SIDECAR_PATH,
-    ).strip() or COINBASE_SIDECAR_PATH
+        "COINBASE_HEALTH_SIDECAR_PATH", _coinbase_default_sidecar,
+    ).strip() or _coinbase_default_sidecar
     coinbase_checks = [
         ("disk", lambda: check_disk(
             path=COINBASE_BRONZE_ROOT,
