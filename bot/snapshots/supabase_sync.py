@@ -518,6 +518,11 @@ class SupabaseSyncer:
         # Migration 019 ships first; the operator applies it to the remote
         # out-of-band BEFORE this commit merges. ClickUp 86b9vrjf2.
         "hype_spot_at_decision, doge_spot_at_decision, "
+        # BNB T1.5 followup (2026-05-17, ClickUp 86b9zn5pq). Whitelist parity
+        # with supabase migration 021 — same HTTP-400-wedge risk as Bit 2
+        # if added without the remote column. Migration 021 ships first;
+        # the operator applies it to the remote out-of-band BEFORE merge.
+        "bnb_spot_at_decision, "
         "okx_funding_rate_at_decision, deribit_funding_rate_at_decision, "
         # Phase G-6 (2026-05-03). Whitelist parity with supabase migration 012
         # — adding here without the remote column silently HTTP-400s every

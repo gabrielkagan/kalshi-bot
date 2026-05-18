@@ -566,12 +566,17 @@ def backfill_xasset_spots(
     # consumer at bot/state.py:1833-1840 silently dropped hype/doge.
     # Without this widening the post-Bit-2 backfill runbook would skip
     # the rows the Bit is designed to fix (R1 adversarial review M1).
+    # BNB followup (2026-05-17, ClickUp 86b9zn5pq): same widening for
+    # the bnb column — rows accumulated since BNB T1 ship had btc/eth/
+    # sol/xrp/hype/doge populated but bnb NULL because the consumer
+    # block above (Bit 2 site) didn't read the bnb key.
     rng = conn.execute(
         "SELECT MIN(evaluation_time), MAX(evaluation_time) "
         "FROM evaluated_opportunities "
         "WHERE (btc_spot_at_decision IS NULL "
         "       OR hype_spot_at_decision IS NULL "
-        "       OR doge_spot_at_decision IS NULL) "
+        "       OR doge_spot_at_decision IS NULL "
+        "       OR bnb_spot_at_decision IS NULL) "
         "AND evaluation_time IS NOT NULL"
     ).fetchone()
     if not rng or rng[0] is None:
@@ -634,10 +639,13 @@ def backfill_xasset_spots(
             # widening above — catches the post-T1 cohort where btc was
             # populated but hype/doge stayed NULL due to the pre-Bit-2
             # silent-drop bug.
+            # BNB followup (2026-05-17, ClickUp 86b9zn5pq): same
+            # widening for bnb — see discovery-range comment above.
             "SELECT id, evaluation_time FROM evaluated_opportunities "
             "WHERE id > ? AND (btc_spot_at_decision IS NULL "
             "                  OR hype_spot_at_decision IS NULL "
-            "                  OR doge_spot_at_decision IS NULL) "
+            "                  OR doge_spot_at_decision IS NULL "
+            "                  OR bnb_spot_at_decision IS NULL) "
             "AND evaluation_time IS NOT NULL "
             "ORDER BY id LIMIT ?",
             (last_id, batch_size),
@@ -655,11 +663,17 @@ def backfill_xasset_spots(
                 # iterates COINBASE_PRODUCTS keys, which already includes
                 # HYPE/DOGE since T1.5 (bf8b9a3, 2026-05-10) — so `spots`
                 # already has the keys, they just weren't being written.
-                "hype_spot_at_decision = ?, doge_spot_at_decision = ? "
+                # BNB followup (2026-05-17, ClickUp 86b9zn5pq): UPDATE
+                # extended to 7 columns. COINBASE_PRODUCTS already
+                # includes BNB since BNB T1.5 (efad35a, 2026-05-17), so
+                # `spots` already has the bnb key.
+                "hype_spot_at_decision = ?, doge_spot_at_decision = ?, "
+                "bnb_spot_at_decision = ? "
                 "WHERE id = ?",
                 (spots["btc_spot_at_decision"], spots["eth_spot_at_decision"],
                  spots["sol_spot_at_decision"], spots["xrp_spot_at_decision"],
                  spots["hype_spot_at_decision"], spots["doge_spot_at_decision"],
+                 spots["bnb_spot_at_decision"],
                  r["id"]),
             )
             total += 1

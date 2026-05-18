@@ -1,0 +1,52 @@
+-- Migration 021: BNB T1.5 followup — bnb_spot_at_decision
+--
+-- Background:
+--   BNB T1 (2026-05-17) added BNB to ASSETS as a shadow observation asset.
+--   The scanner producer at bot/scanner/__init__.py:1011
+--   (_compute_cross_asset_spot_snapshot) is ASSETS-driven and ALREADY
+--   emits the bnb_spot_at_decision key today — but the consumer chain in
+--   bot/state.py + bot/snapshots/supabase_sync.py + the G-2 backfill harness
+--   in scripts/backfill/shadow_coverage_backfill.py still only knew about
+--   btc/eth/sol/xrp/hype/doge post-Bit-2. The producer's bnb key was
+--   silently dropped on the floor (consumer block at bot/state.py around
+--   line 2244-2247, the post-Bit-2 site).
+--
+--   This Bit closes the gap: bot/state.py adds 1 ALTER TABLE ADD COLUMN
+--   entry + extends signature, consumer, INSERT, VALUES, ON CONFLICT, and
+--   parameter tuple. supabase_sync._EVAL_COLUMNS gains the bnb field.
+--   scripts/backfill/shadow_coverage_backfill.py UPDATE statement extends
+--   to 7. This migration ships the matching bnb column on the remote.
+--
+--   Per supabase_sync._validate_schema_parity (and the 2026-04-04 incident
+--   postmortem in kb/failures/dashboard-drift.md), adding columns to the
+--   whitelist WITHOUT the remote columns existing silently HTTP-400s every
+--   batch and freezes sync. Ship this migration FIRST, then the merge.
+--
+--   Schema lockstep precedent:
+--     T1 5dca85a (2026-05-10): ASSETS = [BTC, ETH, SOL, XRP, HYPE, DOGE]
+--     T1.5 bf8b9a3 (2026-05-10): external feeds + COINBASE_PRODUCTS extended
+--     Bit 2 ede10ba (2026-05-11): hype/doge schema gap closed (migration 019)
+--     BNB T1 (2026-05-17): ASSETS extended to include BNB
+--     BNB T1.5 efad35a (2026-05-17): external feeds extended
+--     BNB followup (2026-05-17): bnb schema gap closed (this migration)
+--
+-- Types: REAL on SQLite side, `double precision` on Postgres — matches
+--   the existing btc/eth/sol/xrp/hype/doge_spot_at_decision precedent
+--   in migrations 011 and 019. High-precision spot prices need >= 7
+--   significant digits (BTC at $67432.50 = 7 sig figs).
+--
+-- Apply:
+--   Supabase dashboard → SQL Editor → paste this block → Run
+--   OR via MCP: mcp__claude_ai_Supabase__apply_migration
+--
+-- Idempotent: ADD COLUMN IF NOT EXISTS.
+--
+-- ClickUp: 86b9zn5pq
+-- Pickup doc: kb/decisions/bnb-t1-5-followups-pickup-prompt-may17.md
+
+ALTER TABLE public.evaluations
+  -- BNB T1.5 followup (absolute spot price at decision tick)
+  ADD COLUMN IF NOT EXISTS bnb_spot_at_decision         double precision;
+
+-- Reload PostgREST schema cache so the new column is visible to POSTs.
+NOTIFY pgrst, 'reload schema';
