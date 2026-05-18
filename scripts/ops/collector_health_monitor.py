@@ -434,6 +434,20 @@ def main() -> int:
             state_path=Path(DEFAULT_MONITOR_STATE_PATH),
         )),
     ]
+    # R4-M2: resolve the Coinbase sidecar path at call time via the
+    # ``COINBASE_HEALTH_SIDECAR_PATH`` env var (paired with the writer
+    # in ``collector/coinbase_main_loop.py:302-310`` which writes to
+    # the same env-var-resolved path). Falls back to
+    # ``COINBASE_SIDECAR_PATH`` constant when unset. Without this
+    # env-aware resolution, an operator who relocates the Coinbase
+    # sidecar in /home/botuser/.env.coinbase-collector would have the
+    # writer + monitor referencing different paths — the monitor
+    # would either alert-spam with STALE on a missing file at the
+    # hardcoded path OR silently see no signal. Mirrors the Kalshi-
+    # side pairing of ``COLLECTOR_HEALTH_SIDECAR_PATH``.
+    _coinbase_sidecar_resolved = os.environ.get(
+        "COINBASE_HEALTH_SIDECAR_PATH", COINBASE_SIDECAR_PATH,
+    ).strip() or COINBASE_SIDECAR_PATH
     coinbase_checks = [
         ("disk", lambda: check_disk(
             path=COINBASE_BRONZE_ROOT,
@@ -450,7 +464,7 @@ def main() -> int:
             unit=COINBASE_COLLECTOR_UNIT,
         )),
         ("dropped_frames", lambda: check_dropped_frames(
-            sidecar_path=Path(COINBASE_SIDECAR_PATH),
+            sidecar_path=Path(_coinbase_sidecar_resolved),
             state_path=Path(COINBASE_MONITOR_STATE_PATH),
         )),
     ]

@@ -219,6 +219,30 @@ def test_coinbase_tier_constants_exist():
     )
 
 
+def test_main_resolves_coinbase_sidecar_path_via_env_var():
+    """R4-M2 regression pin: `main()` MUST resolve the Coinbase sidecar
+    path via the ``COINBASE_HEALTH_SIDECAR_PATH`` env var (paired with
+    the writer in ``collector/coinbase_main_loop.py:302-310`` which
+    reads the SAME env var).
+
+    Pre-R4-M2 the dispatch passed the hardcoded ``COINBASE_SIDECAR_PATH``
+    constant; if an operator relocated the Coinbase sidecar via env
+    in ``/home/botuser/.env.coinbase-collector`` the writer would
+    follow the env but the monitor would still read the constant —
+    silent observability gap (STALE alert spam or no-signal-at-all).
+    AST scan over the module source confirms the env-var resolution.
+    """
+    from scripts.ops import collector_health_monitor as mod
+    src = inspect.getsource(mod)
+    assert 'os.environ.get(' in src and '"COINBASE_HEALTH_SIDECAR_PATH"' in src, (
+        "main() must resolve the Coinbase sidecar path via "
+        "COINBASE_HEALTH_SIDECAR_PATH env var with COINBASE_SIDECAR_PATH "
+        "fallback. Without env-var resolution, the writer + monitor "
+        "would reference different paths when an operator relocates "
+        "the sidecar via .env.coinbase-collector."
+    )
+
+
 def test_main_passes_coinbase_log_marker_to_check_ws_reconnects():
     """R2-C1 regression pin: `main()` MUST pass
     `log_marker="coinbase_ws_disconnected"` to the Coinbase-tier

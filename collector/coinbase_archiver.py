@@ -227,8 +227,11 @@ class CoinbaseArchiver:
                 l2update → level2_batch). Override if extending coverage.
             write_queue_maxsize: bound on the queue between
                 ``_on_frame`` (asyncio thread) and the bronze writer
-                worker thread. D1.3-fu4 default 10_000 ≈ ~10s
-                buffering at typical load. Set to ``0`` is NOT
+                worker thread. D1.3-fu4 default 10_000 gives ~30-50s
+                buffering at the post-D2.5 reconciled ~200-300
+                frames/sec aggregate load (per the R0 reachability
+                spike — see the module-level constant comment above
+                for the canonical arithmetic). Set to ``0`` is NOT
                 supported — Python's ``queue.Queue(maxsize=0)`` means
                 UNBOUNDED, which defeats the bounded-backpressure
                 invariant.

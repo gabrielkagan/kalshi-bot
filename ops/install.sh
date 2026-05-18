@@ -32,6 +32,17 @@
 # granted NOPASSWD on the VPS, so install.sh is interactive-only by
 # design. A `tty -s` guard fails loudly if invoked via non-interactive
 # ssh instead of hanging on the password prompt forever.
+#
+# D2.5 PREREQUISITE NOTE: post-D2.5 the script validates ALL THREE
+# units (incl. their env-files) BEFORE any `sudo cp` lands. First-time
+# D2.5 install therefore requires `/home/botuser/.env.coinbase-collector`
+# to be provisioned per the ops/CLAUDE.md "D2.5 Coinbase collector
+# deploy" runbook BEFORE running this script. The two-pass design
+# (validate-ALL then install-ALL) prevents half-installed state — a
+# routine post-D2.5 re-install for a bot-only systemd edit still
+# requires the Coinbase env-file present. If the operator hasn't yet
+# provisioned `.env.coinbase-collector`, the per-unit FAIL hint at
+# line ~135 in this script tells them what to populate.
 set -euo pipefail
 
 if ! tty -s; then
