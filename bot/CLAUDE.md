@@ -134,7 +134,24 @@ Decision doc: `kb/decisions/bleed-cell-blocks-2026-04-30.md`.
 
 ## SQLite (WAL, pragmas, batch sizes)
 
-Multi-thread access shares `state.db`. Single-writer is the design.
+Multi-thread access shares `state.db`. Single-writer at the SQLite WAL
+file level is the design. **Python-level**, `StateManager.conn` (opened
+in `bot/state.py::__init__` with `check_same_thread=False`) is SHARED
+across MainThread + the `settlement_tracker` daemon thread (spawned at
+`bot/settlement.py:212`). Python's sqlite3 module serializes individual
+C-level calls via an internal mutex, but **not** multi-statement Python
+sequences (BEGIN/INSERT/COMMIT). Cross-thread `conn.commit()` from
+settlement_tracker can land inside MainThread's explicit BEGIN
+IMMEDIATE / INSERT / COMMIT window and commit the tx out from under
+MainThread, causing MainThread's COMMIT to raise
+`OperationalError: cannot commit - no transaction is active`.
+B3-fu1 (`86b9zxawt`, 2026-05-18) added narrow defensive guards at
+`StateManager.insert_evaluated_opportunity` (the explicit-BEGIN COMMIT
+site) and `StateManager.mark_rejection_settled` (the
+settlement_tracker-thread UPDATE+commit site). Full cross-thread
+refactor (process-wide write lock or dedicated conn for settlement)
+is OUT OF SCOPE for B3-fu1 — deferred for a future Bit if the
+race surface widens.
 
 - New `sqlite3.connect()`: set `PRAGMA journal_mode=WAL` +
   `PRAGMA busy_timeout=10000`. Catch the contention bugs early.

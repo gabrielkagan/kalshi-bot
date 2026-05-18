@@ -2090,7 +2090,43 @@ class StateManager:
                WHERE ticker=?""",
             (market_result, counterfactual, ticker)
         )
-        self.conn.commit()
+        try:
+            self.conn.commit()
+        except sqlite3.OperationalError as _ce:
+            # B3-fu1 cross-thread commit-race tolerance (2026-05-18):
+            # `state.conn` is shared with MainThread; if MainThread
+            # commits between our UPDATE and our commit, our commit
+            # finds no active tx and raises "cannot commit - no
+            # transaction is active". The race window is narrow —
+            # between Python's autocommit check inside conn.commit()
+            # and SQLite's actual COMMIT step — so synthetic single-
+            # threaded repros do NOT trigger it; the production
+            # traceback at journalctl 2026-05-18 12:03:56 UTC
+            # confirms `self.conn.commit()` is the raising frame.
+            # Data is USUALLY preserved (the racer's commit captured
+            # our UPDATE) — but a cross-thread racer rollback() on the
+            # shared state.conn would silently lose our UPDATE. The
+            # only candidate cross-thread rollback site for this
+            # method (which itself runs on settlement_tracker thread)
+            # is MainThread's rollback at bot/state.py:2939 inside
+            # `insert_evaluated_opportunity`'s outer try/except —
+            # rare, only fires when that path itself errors out.
+            # (`bot/settlement.py:1015` is sequentially same-thread
+            # — _poll_rejections completes BEFORE
+            # _poll_evaluated_opportunities in the worker function
+            # — so it cannot race with us.) Tolerated because (a)
+            # the common case preserves the row via the racer's commit
+            # and (b) the rare racer-rollback loss is single-row-
+            # bounded: the settlement-status flag is rebuildable on
+            # the next pending-rejection sweep after the in-memory
+            # `_settled_rejection_tickers` dedup set resets at process
+            # restart, vs. an exception-storm at this site (no
+            # surrounding try/except in state.py — propagates to
+            # settlement.py:715-717 outer catch). Re-raise anything
+            # else (disk-full, corruption) so the caller-side WARNING
+            # still fires.
+            if "no transaction is active" not in str(_ce).lower():
+                raise
 
     # ── Evaluated Opportunities ────────────────────────────────────────
 
@@ -2867,10 +2903,37 @@ class StateManager:
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.
-            if _began_explicitly:
-                self.conn.execute("COMMIT")
-            else:
-                self.conn.commit()
+            #
+            # B3-fu1 cross-thread commit-race tolerance (2026-05-18):
+            # `state.conn` is shared with the settlement_tracker daemon
+            # thread (bot/settlement.py:212). If settlement_tracker
+            # issues `conn.commit()` between our BEGIN IMMEDIATE/INSERT
+            # and the COMMIT here, it commits our still-open tx for
+            # us — our INSERT is usually captured and persisted — and
+            # SQLite then reports "cannot commit - no transaction is
+            # active" on our COMMIT. Swallow that specific error;
+            # re-raise any other OperationalError (disk-full,
+            # corruption, etc.) so the outer try/except still WARNs
+            # and rolls back. Data is USUALLY preserved (racer's
+            # commit captured our INSERT before our COMMIT fired);
+            # a racer rollback() at bot/settlement.py:1015 — rare,
+            # only fires inside the chunked-batch commit-failure
+            # handler — would silently lose our INSERT row. That row
+            # is the load-bearing candidate-audit / cohort-rollup
+            # source (filter_stage='candidate' joins downstream), but
+            # the single-row-bounded rare loss is preferable to an
+            # exception-storm at 10-20 inserts/sec masking real
+            # failures from the outer-try WARNING channel. See
+            # tests/integration/test_cannot_commit_no_transaction_regression.py
+            # for the persistence pin.
+            try:
+                if _began_explicitly:
+                    self.conn.execute("COMMIT")
+                else:
+                    self.conn.commit()
+            except sqlite3.OperationalError as _ce:
+                if "no transaction is active" not in str(_ce).lower():
+                    raise
         except Exception as e:
             try:
                 self.conn.rollback()
