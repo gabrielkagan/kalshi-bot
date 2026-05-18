@@ -72,6 +72,23 @@ These FOUR gates run before the TM concurrent-cap check. Note that gates 1 + 3 p
 
 **Postmortem:** `kb/failures/tm-stack-decided-may18.md` (local-only) carries the full B5 RCA and L99/L104 lessons. The B5 commit hash on `main` is `76f1d54c`.
 
+### Weekend Discount + Overnight Discount — B5-fu4 gates (2026-05-18, ticket `86ba05k5q`)
+
+L107 sister of B5. The `weekend_discount` and `overnight_discount` live paths in `bot/scanner/__init__.py` (anchors: search for `# ── Weekend Edge Discount` and `# ── Overnight Edge Discount`) previously had only the `_wknd_dc_overlap` / `_ovn_dc_overlap` z/price/STC heuristic — that predicate does NOT scan open positions or per-tick candidates, so a Kelly-sized non-DC entry from a prior tick (TM, decided_*, main candidate, etc.) could be stacked-on by a same-ticker WKND/OVN candidate when the discount band opened up. Enumerated as UNGUARDED in B5-fu3 and tracked under ticket `86ba05k5q` until B5-fu4 closed the gap.
+
+B5-fu4 adds the SAME pair of B5 gates to each of the two paths:
+
+1. **`_wknd_dc_retry_overlap` / `_ovn_dc_retry_overlap`** — cross-tick: skip if any `decided_*` IOC is in flight via `self._ml.executor._dc_retry_queue` from a prior tick. Parallel of B5's `_tm_dc_retry_overlap`. Defensive `if self._ml is not None and getattr(self._ml, "executor", None) is not None:` guard preserves test-injection / boot-order safety.
+2. **`_wknd_non_wknd_position` / `_ovn_non_ovn_position`** — per-(ticker, side='yes') entry-lock: skip if any open YES-side position whose `strategy` does NOT start with the protected prefix (`"weekend_discount"` / `"overnight_discount"` respectively) is open on the ticker. Mirrors B5's `_tm_non_tm_position` shape including the `(p.get("side") or "yes") == "yes"` legacy-row default and the NO-side carve-out (so `bracket_no` on the same ticker does NOT block YES-side WKND/OVN). Sourced from `self._state.get_open_positions()`.
+
+Both predicates wire into `_wknd_live_eligible` / `_ovn_live_eligible` as `and not _wknd_dc_retry_overlap and not _wknd_non_wknd_position` (parallel for OVN), so shadow logging continues to receive the rejected signal — only the live `candidates.append` path is gated.
+
+**Cross-strategy symmetry post-B5-fu4:** B5 closed TM-stacks-on-{decided,WKND,OVN,LPNE} from the TM side; B5-fu4 closes WKND/OVN-stacks-on-{TM,decided,LPNE} from the WKND/OVN side. TM-WKND/OVN cross-stacking is now mutually blocked.
+
+**Regression pin (B5-fu4):** `tests/integration/test_b5_fu4_wknd_ovn_gate_regression.py` — mirrors B5-fu1's pattern: 4 structural AST guards (one per new predicate) + 24 behavioral pins (AST-extract each RHS, eval against synthetic state) covering same-ticker fire, different-ticker no-fire, non-decided/non-{wknd,ovn} carve-outs, NO-side carve-out, legacy missing-`side` default, empty-queue/empty-positions no-fire, defensive missing-`candidate` handling. RED pre-fix (4/4 structural fail, behavioral classes skip via `setUpClass`); GREEN post-fix (28/28).
+
+**L104 promotion:** `tests/contracts/test_l104_single_decision_per_window.py` promoted both strategies from `EXEMPT_STRATEGIES` to `GUARDED_STRATEGIES` in the same atomic Bit so the L104 ratchet now catches any future regression that removes the B5-fu4 guards. `EXEMPT_STRATEGIES` is empty post-B5-fu4.
+
 ## Related
 - [[concepts/dc-strategy.md]]
 - [[strategies/terminal-momentum.md]]
