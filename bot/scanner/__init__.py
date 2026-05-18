@@ -626,7 +626,7 @@ class OpportunityScanner:
                 product_type="hourly",
                 shadow_cal_temperature=_v2_data.get("temperature"),
                 config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-        except Exception:
+        except sqlite3.OperationalError:
             logging.warning("insert_evaluated_opportunity failed (hourly_observation_v2)", exc_info=True)
 
     # ── Phase 2: Extended Feature Computation ─────────────────────────────
@@ -1601,7 +1601,7 @@ class OpportunityScanner:
                         rejection_reason="asset in cooldown_assets",
                         seconds_to_close=window.get("seconds_to_close"),
                         product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
-                except Exception:
+                except sqlite3.OperationalError:
                     logging.debug(
                         "silent_loss_cooldown trace insert failed",
                         exc_info=True)
@@ -1637,7 +1637,7 @@ class OpportunityScanner:
                             spot_price=spot if spot is not None else None,
                             seconds_to_close=window.get("seconds_to_close"),
                             product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
-                    except Exception:
+                    except sqlite3.OperationalError:
                         logging.debug(
                             "silent_spot_none trace insert failed",
                             exc_info=True)
@@ -1810,7 +1810,7 @@ class OpportunityScanner:
                                 None, spot, None, blended_rv, None,
                                 seconds_remaining, None,
                                 product_type=window.get("product_type"), config_snapshot_id=self._ml.config_snapshot_id)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "threshold_unparsable insert_rejection failed",
                                 exc_info=True)
@@ -1849,7 +1849,7 @@ class OpportunityScanner:
                                     spot_price=spot, threshold=threshold,
                                     config_snapshot_id=self._ml.config_snapshot_id,
                                 )
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.debug("threshold_implausible log failed", exc_info=True)
                         continue
 
@@ -1889,7 +1889,7 @@ class OpportunityScanner:
                                         # price_out_of_range_early reach here with
                                         # vol_est populated).
                                         vol_regime=vol_est["regime"], config_snapshot_id=self._ml.config_snapshot_id)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning(
                                         "price_out_of_range_early insert_rejection failed",
                                         exc_info=True)
@@ -1929,7 +1929,7 @@ class OpportunityScanner:
                                     blended_rv, None,
                                     seconds_remaining, None,
                                     product_type=_pt, config_snapshot_id=self._ml.config_snapshot_id)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning(
                                     "weather_prob_none insert_rejection failed",
                                     exc_info=True)
@@ -2027,7 +2027,7 @@ class OpportunityScanner:
                                 raw_prob=raw_prob_pre,
                                 product_type=window.get("product_type"),
                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "tradeable_false insert_rejection failed",
                                 exc_info=True)
@@ -2100,7 +2100,7 @@ class OpportunityScanner:
                                 # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                                 vol_regime=vol_est["regime"],
                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "low_probability_15m insert_rejection failed",
                                 exc_info=True)
@@ -2179,7 +2179,7 @@ class OpportunityScanner:
                                 # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                                 vol_regime=vol_est["regime"],
                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.debug(
                                 "insert_rejection no_orderbook failed",
                                 exc_info=True)
@@ -2251,7 +2251,7 @@ class OpportunityScanner:
                             # Sprint B Bit B.1a (2026-05-12): training-data enrichment
                             vol_regime=vol_est["regime"],
                             config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                    except Exception:
+                    except sqlite3.OperationalError:
                         logging.debug(
                             "insert_rejection no_best_ask failed",
                             exc_info=True)
@@ -2889,7 +2889,7 @@ class OpportunityScanner:
                                 **_oft_db,
                                 **{k: v for k, v in _shadow_diag.items()
                                    if not k.startswith("cal_mlp_")}, config_snapshot_id=self._ml.config_snapshot_id)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "tradeable_false (with_market) insert_rejection failed",
                                 exc_info=True)
@@ -3300,7 +3300,7 @@ class OpportunityScanner:
                                     product_type=window.get("product_type"),
                                     side=kwargs.get("side"),
                                     config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
 
                     # T1B at 93-94c (live T1B fires at 95c+, this captures 93-94c)
@@ -3480,7 +3480,7 @@ class OpportunityScanner:
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     best_ask_source=best_ask_source,
                                                     product_type="15m", config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                            except Exception:
+                                            except sqlite3.OperationalError:
                                                 logging.warning("insert_evaluated_opportunity failed (tm_nbbo_buffer)", exc_info=True)
                                     else:
                                         _tm_intercepted = True
@@ -3646,7 +3646,7 @@ class OpportunityScanner:
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     product_type=window.get("product_type"),
                                                     config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                            except Exception:
+                                            except sqlite3.OperationalError:
                                                 logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
 
                     if _tm_intercepted:
@@ -4001,7 +4001,7 @@ class OpportunityScanner:
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _wknd_stage, exc_info=True)
 
                             # Live path: append to candidates for execution
@@ -4191,7 +4191,7 @@ class OpportunityScanner:
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _ovn_stage, exc_info=True)
 
                             # Live path: append to candidates for execution
@@ -4344,7 +4344,7 @@ class OpportunityScanner:
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", _dc_tier, exc_info=True)
 
                             # ── Phase 1 re-promotion shadow (T2-Z2 BTC+ETH @ 10%) ──
@@ -4383,7 +4383,7 @@ class OpportunityScanner:
                                             fee_adjusted_edge=fee_adjusted_edge,
                                             product_type=window.get("product_type"),
                                             config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                    except Exception:
+                                    except sqlite3.OperationalError:
                                         logging.warning("insert_evaluated_opportunity failed (dc_t2_z2_phase1_shadow)", exc_info=True)
 
                             # ── Live overlay: queue as candidate if tier enabled ──
@@ -4431,7 +4431,7 @@ class OpportunityScanner:
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     product_type=window.get("product_type"),
                                                     config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                            except Exception:
+                                            except sqlite3.OperationalError:
                                                 logging.warning("insert_evaluated_opportunity failed (decided_window_cap_skip)", exc_info=True)
                                         self._dc_window_cap_skips += 1
                                         logging.info("DC_WINDOW_CAP: %s %s skipped (existing=%.0fc max=%.0fc)",
@@ -4542,7 +4542,7 @@ class OpportunityScanner:
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (%s)", stage, exc_info=True)
 
                         # T2 z≤-2.5 at 93-96c (loosening from z≤-3)
@@ -4588,7 +4588,7 @@ class OpportunityScanner:
                                         position_size=HOURLY_DC_CONTRACTS,
                                         product_type="hourly",
                                         config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc)", exc_info=True)
 
                                 # Shadow only — 87% WR at 93-96c is below breakeven.
@@ -4635,7 +4635,7 @@ class OpportunityScanner:
                                         product_type="hourly",
                                         egarch_sigma=_hdc2_sigma,
                                         config_snapshot_id=self._ml.config_snapshot_id, **_oft_db)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc_97c_stc600)", exc_info=True)
 
                     # ── HOURLY DC SHADOW TIER 2: 93-96c z≤-3 STC≤300s ────────
@@ -4678,7 +4678,7 @@ class OpportunityScanner:
                                         product_type="hourly",
                                         egarch_sigma=_hdc3_sigma,
                                         config_snapshot_id=self._ml.config_snapshot_id, **_oft_db)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_dc_93c_stc300)", exc_info=True)
 
                     # ── SPX DECIDED CONTRACTS SHADOW ──────────────────────────
@@ -4782,7 +4782,7 @@ class OpportunityScanner:
                                         fee_adjusted_edge=fee_adjusted_edge,
                                         product_type=window.get("product_type"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (relaxed_edge_shadow)", exc_info=True)
 
                     continue
@@ -5404,7 +5404,7 @@ class OpportunityScanner:
                                 calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
                                 breakeven_wr=best_ask / 100.0,
                                 product_type="hourly", config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning("insert_evaluated_opportunity failed (hourly_edge_cap)", exc_info=True)
                     continue
 
@@ -5552,7 +5552,7 @@ class OpportunityScanner:
                                         product_type="spx_hourly",
                                         side="no",
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.debug("spx_no_side_observation insert failed", exc_info=True)
                     # ── Weather Shadow Variants (capped30, short_stc) ──
                     if _obs_pt == "weather":
@@ -5598,7 +5598,7 @@ class OpportunityScanner:
                                     wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                     wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                     config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _wsname, exc_info=True)
                         # ── Bracket NO intercept ──────────────────────────
                         # Buy NO on bracket contracts when YES is 88-96c. Computes NO cost
@@ -5695,7 +5695,7 @@ class OpportunityScanner:
                                                 wx_hrrr_temp=_shadow_extra.get("wx_hrrr_temp"),
                                                 wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                                        except Exception:
+                                        except sqlite3.OperationalError:
                                             logging.warning("insert_evaluated_opportunity failed (bracket_no)", exc_info=True)
 
                         # ── Weather NO-side (shadow + live candidate) ──
@@ -5752,7 +5752,7 @@ class OpportunityScanner:
                                         wx_corrected_mean=_shadow_extra.get("wx_corrected_mean"),
                                         wx_no_side_edge=_shadow_extra.get("wx_no_side_edge"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (weather_no_shadow)", exc_info=True)
                             # Note: the weather NO LIVE CANDIDATE was previously here, nested
                             # inside the YES-side observation gate. That location was dead code
@@ -5799,7 +5799,7 @@ class OpportunityScanner:
                                     strategy=strategy, old_system_prob=_old_system_prob,
                                     product_type="hourly",
                                     config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning("insert_evaluated_opportunity failed (hourly_config_a)", exc_info=True)
                     # ── Config B: BTC 70-89c wl2 (promotion candidate) ──
                     # Tracks the high-alpha low-price tier for BTC hourly.
@@ -5840,7 +5840,7 @@ class OpportunityScanner:
                                         strategy=strategy, old_system_prob=_old_system_prob,
                                         product_type="hourly",
                                         config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning("insert_evaluated_opportunity failed (hourly_config_b)", exc_info=True)
                     # ── Configs C–G: data-driven shadow variants ──
                     if _obs_pt == "hourly":
@@ -5901,7 +5901,7 @@ class OpportunityScanner:
                                     strategy=strategy, old_system_prob=_old_system_prob,
                                     product_type="hourly",
                                     config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _sname, exc_info=True)
                     # Increment per-window counters even in observation mode so Layer 3b/3c
                     # limits work for counterfactual analysis (without this, counter stays 0
@@ -6233,7 +6233,7 @@ class OpportunityScanner:
                                 old_system_prob=_old_system_prob,
                                 product_type=window.get("product_type"),
                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning("insert_evaluated_opportunity failed (sol_low_entry_high_stc)", exc_info=True)
                     continue
 
@@ -6303,7 +6303,7 @@ class OpportunityScanner:
                             fee_adjusted_edge=fee_adjusted_edge,
                             product_type=window.get("product_type"),
                             config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                    except Exception:
+                    except sqlite3.OperationalError:
                         logging.debug("sol_high_edge_shadow insert failed", exc_info=True)
 
                 candidates.append({
@@ -6410,7 +6410,7 @@ class OpportunityScanner:
                                     fee_adjusted_edge=fee_adjusted_edge,
                                     product_type=window.get("product_type"),
                                     config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning("insert_evaluated_opportunity failed (%s)", _tod_stage, exc_info=True)
 
                 # ── Forward observation tags: collect data under current config ──
@@ -6435,7 +6435,7 @@ class OpportunityScanner:
                                 position_size=sizing.get("contracts"),
                                 product_type=window.get("product_type"),
                                 config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.debug("sol_usmorn_sub88 insert failed", exc_info=True)
 
                 # Tag 2: Sub-2-min STC during US afternoon (UTC 18-23), non-DC only
@@ -6461,7 +6461,7 @@ class OpportunityScanner:
                                 position_size=sizing.get("contracts"),
                                 product_type=window.get("product_type"),
                                 config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.debug("usaft_short_stc insert failed", exc_info=True)
 
                 # Respect per-tick orderbook fetch cap
@@ -6781,7 +6781,7 @@ class OpportunityScanner:
                                 cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
                                 cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
                                 cal_mlp_train_id=_drop.get("cal_mlp_train_id"), config_snapshot_id=self._ml.config_snapshot_id)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
                                 HIGH_PRICE_STC_BLOCK_FILTER_STAGE, exc_info=True)
@@ -6891,7 +6891,7 @@ class OpportunityScanner:
                                 cal_mlp_final_lo=_drop.get("cal_mlp_final_lo"),
                                 cal_mlp_final_hi=_drop.get("cal_mlp_final_hi"),
                                 cal_mlp_train_id=_drop.get("cal_mlp_train_id"), config_snapshot_id=self._ml.config_snapshot_id)
-                        except Exception:
+                        except sqlite3.OperationalError:
                             logging.warning(
                                 "insert_evaluated_opportunity failed (%s)",
                                 _bleed_stage, exc_info=True)
@@ -7349,7 +7349,7 @@ class OpportunityScanner:
                         calibration_method=calibration_method,
                         product_type=_pt,
                         config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
-                except Exception:
+                except sqlite3.OperationalError:
                     logging.warning("insert_evaluated_opportunity failed (overnight_lp_shadow)", exc_info=True)
         except Exception:
             logging.warning("overnight_lp_shadow processing error", exc_info=True)
@@ -7551,7 +7551,7 @@ class OpportunityScanner:
                         calibration_method=calibration_method,
                         product_type=_pt,
                         config_snapshot_id=self._ml.config_snapshot_id, **item["_oft_db"], **item["_shadow_diag"])
-                except Exception:
+                except sqlite3.OperationalError:
                     logging.warning("insert_evaluated_opportunity failed (low_price_shadow)", exc_info=True)
 
                 # ── Insert to dedicated table (for correlation & dual-sizing analysis) ──
@@ -7742,7 +7742,7 @@ class OpportunityScanner:
                                         wx_no_side_edge=_wnl_sx.get("wx_no_side_edge"),
                                         config_snapshot_id=self._ml.config_snapshot_id, **item.get("_oft_db", {}),
                                         **item.get("_shadow_diag", {}))
-                                except Exception:
+                                except sqlite3.OperationalError:
                                     logging.warning(
                                         "insert_evaluated_opportunity failed (weather_no_live)",
                                         exc_info=True)
@@ -7835,7 +7835,7 @@ class OpportunityScanner:
                                     hourly_post_temp_prob=item.get("hourly_post_temp_prob"),
                                     config_snapshot_id=self._ml.config_snapshot_id, **item.get("_oft_db", {}),
                                     **item.get("_shadow_diag", {}))
-                            except Exception:
+                            except sqlite3.OperationalError:
                                 logging.warning(
                                     "insert_evaluated_opportunity failed (hourly_no_live)",
                                     exc_info=True)

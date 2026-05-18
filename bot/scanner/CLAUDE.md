@@ -120,6 +120,42 @@ the staticmethod's home is OrderExecutor. Locked by
 `tests/integration/test_scanner_extraction.py::test_opportunity_scanner_does_not_define_best_ask_depth`
 + `tests/integration/test_executor_extraction.py::test_best_ask_depth_lives_on_executor_not_scanner`.
 
+## Narrow-`except` discipline around insert sites (B3-fu7, 2026-05-18)
+
+Every `try:` block in this file whose body contains a call to
+`self._state.insert_evaluated_opportunity(...)` or
+`self._state.insert_rejection(...)` and whose body is "simple"
+(zero non-trivial statements beyond the insert/log/append/add calls
+AND body span < 50 lines) MUST use
+`except sqlite3.OperationalError:` — NOT `except Exception:`.
+
+**Why:** B3 (`86b9zud6t`, 2026-05-18) was a 42-day silent LPNE row
+drop driven by an `UnboundLocalError` at the LPNE insert site,
+hidden behind a bare `except Exception:` that downgraded the crash
+to a WARNING. Narrowing to `sqlite3.OperationalError` keeps the
+transient DB-class errors (`database is locked`, disk-full,
+busy_timeout) as WARNINGs while NameError / UnboundLocalError /
+AttributeError / KeyError propagate to the WS-thread top level so
+the silent-bug class can't recur.
+
+**Locked by:**
+`tests/contracts/test_b3_fu7_narrow_except_insert_sites.py::TestB3Fu7AllSimpleInsertSitesAreNarrowed::test_no_simple_insert_site_uses_bare_exception`
+— AST contract that walks every `Try` node in this file. Reports all
+offending sites in one shot for easy triage. The B3-fu2/fu6 strategy-
+literal-targeted regression at
+`tests/integration/test_b3_fu2_fu6_lpne_narrow_except_regression.py`
+still pins the LPNE + dc_shadow_no_side POR specifics; B3-fu7
+generalizes to ALL simple-body sites.
+
+**Out of scope:** 12 COMPLEX try-wraps (try-body contains compute
+that could throw non-DB exceptions — `_sizer.compute()`,
+`evaluate_execution_strategy`, dict-shape-sensitive reads) remain
+bare-`except Exception:` pending per-site judgment in a future Bit.
+The classifier conservatively under-includes (safe direction);
+extend `TRIVIAL_METHOD_ATTRS` in the contract test when a new safe
+method attr (e.g., `discard`, `update`, `extend`) starts appearing
+in simple insert-site try-bodies.
+
 ## `filter_stage` string literals (cell-block discipline)
 
 The scanner emits many distinct `filter_stage` values into

@@ -84,15 +84,16 @@ COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.
 
 # B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
 # `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
-# The marker substring matches ~39 WARN sites across bot/scanner +
-# bot/state. B3-fu2 narrowed 2 of them (LPNE + dc_shadow_no_side POR)
-# to sqlite3.OperationalError; the other ~37 still use bare
-# `except Exception:` and will WARN on any Python-level exception
-# (B3-fu7 `86ba067mg` sweeps them). Either way the alert is real-signal:
-# a hit means a genuine DB error at the narrowed sites OR an
-# exception (DB or otherwise) at the bare-except sister sites — both
-# warrant operator attention. Threshold defaults to 1 — these WARNs
-# should be 0/day under healthy operation, so even one hit fires.
+# Post-B3-fu7 (`86ba067mg`, 2026-05-18) the marker substring matches WARN
+# sites across bot/scanner + bot/state, of which 46 are narrowed to
+# `sqlite3.OperationalError` (2 B3-fu2/fu6 + 44 B3-fu7) and 12 COMPLEX
+# sites still use bare `except Exception:` (deferred per-site review).
+# Either way the alert is real-signal: a hit at a narrowed site is a
+# genuine DB error; a hit at one of the 12 bare-except sister sites is
+# an exception (DB or otherwise — NameError / UnboundLocalError /
+# AttributeError / KeyError class) — both warrant operator attention.
+# Threshold defaults to 1 — these WARNs should be 0/day under healthy
+# operation, so even one hit fires.
 BOT_UNIT = "kalshi-bot"
 DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
 DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
@@ -199,18 +200,18 @@ def check_insert_evaluated_opportunity_failures(
     """Return alert string if `insert_evaluated_opportunity failed` WARN
     count in last ``window_min`` minutes >= ``threshold_count``, else None.
 
-    The marker substring matches ~39 WARN sites across
-    `bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 (ticket
-    86b9zxb02, 2026-05-18) narrowed 2 of them (LPNE +
-    dc_shadow_no_side POR) to `sqlite3.OperationalError`; the other
-    ~37 still use bare `except Exception:` and will WARN for any
-    Python-level exception (NameError / UnboundLocalError /
-    AttributeError) — the B3-fu7 `86ba067mg` sweep scope. Either way
-    the alert is real-signal: a hit means either a genuine DB error
-    at the narrowed sites OR an exception (DB or otherwise) at the
-    bare-`except` sister sites. Both warrant operator attention within
-    minutes (B3 itself was 42 days of silent LPNE row drops behind
-    the pre-narrow bare-`except Exception:` swallow at the LPNE site).
+    Post-B3-fu7 (`86ba067mg`, 2026-05-18) the marker substring matches
+    WARN sites across `bot/scanner/__init__.py` + `bot/state.py`, of
+    which 46 are narrowed to `sqlite3.OperationalError` (2 B3-fu2/fu6
+    + 44 B3-fu7) and 12 COMPLEX sites still use bare `except Exception:`
+    (deferred per-site review — try-bodies contain non-DB compute that
+    needs case-by-case judgment). A hit at a narrowed site is a genuine
+    DB error; a hit at one of the 12 bare-except sister sites is an
+    exception (DB or otherwise — NameError / UnboundLocalError /
+    AttributeError / KeyError class). Both warrant operator attention
+    within minutes (B3 itself was 42 days of silent LPNE row drops
+    behind the pre-narrow bare-`except Exception:` swallow at the
+    LPNE site).
 
     Fail-quiet posture mirrors `check_ws_reconnects`: journalctl
     absent (test env), timeout, or non-zero exit returns None rather
@@ -236,11 +237,12 @@ def check_insert_evaluated_opportunity_failures(
     return (
         f"*BOT INSERT_EVALUATED_OPPORTUNITY FAILED* — {len(hits)} hits "
         f"of `{log_marker}` in last {window_min}min (threshold {threshold_count}). "
-        f"Marker matches ~39 WARN sites (B3-fu2 narrowed 2 to "
-        f"sqlite3.OperationalError; the other ~37 still bare-except, "
-        f"B3-fu7 sweep scope). A hit is either a genuine DB error at "
-        f"the narrowed sites OR an exception (DB or otherwise) at the "
-        f"bare-except sites — both worth investigating. "
+        f"Post-B3-fu7 the marker matches 46 narrowed sites + 12 COMPLEX "
+        f"bare-except sites (deferred per-site review). A hit at a "
+        f"narrowed site is a genuine DB error; a hit at one of the 12 "
+        f"bare-except sites is an exception (DB or otherwise — "
+        f"NameError / UnboundLocalError / AttributeError / KeyError "
+        f"class) — both worth investigating. "
         f"Check: `journalctl -u {unit} --since '{window_min} min ago' | "
         f"grep -i 'insert_evaluated_opportunity failed' | tail`. "
         f"Then trace to `bot/state.py::insert_evaluated_opportunity` + "
