@@ -80,6 +80,18 @@ COINBASE_BRONZE_ROOT = "/var/lib/kalshi-coinbase-collector"
 COINBASE_COLLECTOR_UNIT = "kalshi-coinbase-collector"
 COINBASE_SIDECAR_PATH = "/var/lib/kalshi-coinbase-collector/bronze_health.json"
 COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.json"
+
+# B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
+# `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
+# Post-B3-fu2 the LPNE + dc_shadow_no_side except clauses are narrowed
+# to sqlite3.OperationalError; any future hit of this WARNING is a
+# real DB-class signal (or a regression worth investigating quickly).
+# Threshold defaults to 1 — these WARNs should be 0/day under healthy
+# operation, so even one hit warrants operator attention.
+BOT_UNIT = "kalshi-bot"
+DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
+DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
+DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
 # 2x the cron tick interval (5min = 300s) = ~610s. Use 120s as a tight
 # floor so we catch a wedged drain thread within 2 monitor ticks, not 2
@@ -170,6 +182,57 @@ def check_ws_reconnects(
         f"disconnects in last {window_min}min (threshold {threshold_count}). "
         f"Breakdown: 1006={n_1006} 1009={n_1009} 1011={n_1011}. "
         f"Check: `journalctl -u {unit} --since '{window_min} min ago' | grep disconnect | tail`"
+    )
+
+
+def check_insert_evaluated_opportunity_failures(
+    window_min: int = DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN,
+    threshold_count: int = DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD,
+    unit: str = BOT_UNIT,
+    log_marker: str = DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER,
+) -> Optional[str]:
+    """Return alert string if `insert_evaluated_opportunity failed` WARN
+    count in last ``window_min`` minutes >= ``threshold_count``, else None.
+
+    Post-B3-fu2 (ticket 86b9zxb02, 2026-05-18) the LPNE +
+    dc_shadow_no_side `except` clauses in `bot/scanner/__init__.py` are
+    narrowed to `sqlite3.OperationalError`. The remaining
+    WARN-on-DB-failure path is now a real-signal alert surface — any
+    future hit is either a genuine DB error (disk full / corruption /
+    busy timeout) or a sibling-strategy regression worth investigating
+    within minutes (B3 itself was 42 days of silent LPNE row drops
+    behind the pre-narrow bare-`except Exception:` swallow).
+
+    Fail-quiet posture mirrors `check_ws_reconnects`: journalctl
+    absent (test env), timeout, or non-zero exit returns None rather
+    than alert-spamming.
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "journalctl",
+                "-u", unit,
+                "--since", f"{window_min} minutes ago",
+                "-q", "--no-pager",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    hits = [line for line in out.splitlines() if log_marker in line]
+    if len(hits) < threshold_count:
+        return None
+    return (
+        f"*BOT INSERT_EVALUATED_OPPORTUNITY FAILED* — {len(hits)} hits "
+        f"of `{log_marker}` in last {window_min}min (threshold {threshold_count}). "
+        f"Post-B3-fu2 narrow makes this a real DB-class signal — disk full, "
+        f"corruption, busy timeout, or regression. "
+        f"Check: `journalctl -u {unit} --since '{window_min} min ago' | "
+        f"grep -i 'insert_evaluated_opportunity failed' | tail`. "
+        f"If recurrence: investigate `bot/state.py::insert_evaluated_opportunity` + "
+        f"`bot/scanner/__init__.py` LPNE / dc_shadow_no_side narrow handlers."
     )
 
 
@@ -492,9 +555,23 @@ def main() -> int:
     # dedup semantics across the upgrade. Coinbase-side uses the D2.5
     # prefix (`d2_5_<check>`) so a Coinbase alert can fire even while
     # the matching Kalshi alert is still within its dedup window.
+    # B3-fu3 (ticket 86b9zxb4c, 2026-05-18): bot-tier alert on
+    # `insert_evaluated_opportunity failed` WARNINGs. Dedup prefix
+    # `b3_fu3` keeps it independent of d1_6 (Kalshi collector) and
+    # d2_5 (Coinbase collector) dedup windows. Only one check today —
+    # disk + ws_reconnects + collector_active are NOT useful for the
+    # bot tier (bot disk pressure is structurally different; bot
+    # restarts are operator-initiated; bot uses Kalshi WS reconnect
+    # logic through a different code path with its own observability).
+    bot_checks = [
+        ("insert_eval_failures", lambda: check_insert_evaluated_opportunity_failures(
+            unit=BOT_UNIT,
+        )),
+    ]
     tiers = [
         ("kalshi-collector", "d1_6", kalshi_checks),
         ("kalshi-coinbase-collector", "d2_5", coinbase_checks),
+        ("kalshi-bot", "b3_fu3", bot_checks),
     ]
     for tier_name, dedup_prefix, checks in tiers:
         for check_name, check_fn in checks:
