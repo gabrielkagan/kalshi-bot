@@ -3371,11 +3371,30 @@ class OpportunityScanner:
                         # Check DC overlap: skip if ticker already claimed by DC
                         _tm_dc_overlap = any(c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
                                              for c in candidates)
-                        if not _tm_dc_overlap:
+                        # B5 (86b9zudg2): also block TM if a decided_* IOC is
+                        # in flight via the executor's _dc_retry_queue from a
+                        # prior tick. The same-tick candidate-list check above
+                        # misses decided_t1 candidates that emitted earlier and
+                        # queued for retry (no immediate fill) — production
+                        # case 2026-05-18 KXHYPE15M-26MAY180530-30 fired TM_98
+                        # 22s after decided_t1's first IOC, while
+                        # decided_t1 sat in _dc_retry_queue at attempt=2/11.
+                        _tm_dc_retry_overlap = False
+                        if self._ml is not None and getattr(self._ml, "executor", None) is not None:
+                            _tm_dc_retry_overlap = any(
+                                (entry.get("candidate") or {}).get("ticker") == ticker
+                                and (entry.get("strategy") or "").startswith("decided_")
+                                for entry in self._ml.executor._dc_retry_queue
+                            )
+                        if not _tm_dc_overlap and not _tm_dc_retry_overlap:
                             # Check position overlap: skip if we already hold TM at THIS price
                             # Stacking at different prices is allowed — rising prices = confirmation signal.
                             # Data: 40/40 stackable tickers settled YES, 0/4 losses had stacking opportunities.
                             _tm_target_group = f"terminal_momentum_{best_ask}"
+                            # Fetch open positions ONCE — both the same-price-TM
+                            # stack check (existing) and the B5 non-TM same-side
+                            # entry-lock check (below) derive from the same view.
+                            _tm_open_positions = self._state.get_open_positions()
                             if STACKING_ENABLED:
                                 from bot.models import strategy_to_group
                                 _tm_has_position = any(
@@ -3383,12 +3402,29 @@ class OpportunityScanner:
                                     and p.get("strategy_group",
                                         strategy_to_group(p.get("strategy", "")))
                                         == _tm_target_group
-                                    for p in self._state.get_open_positions())
+                                    for p in _tm_open_positions)
                             else:
                                 _tm_has_position = any(
                                     p["ticker"] == ticker
-                                    for p in self._state.get_open_positions())
-                            if not _tm_has_position:
+                                    for p in _tm_open_positions)
+                            # B5 (86b9zudg2): per-(ticker, side='yes') entry-lock.
+                            # Refuse TM if any non-TM Kelly-sized position is
+                            # already open on the same (ticker, side). Different-
+                            # price TM-on-TM stacks remain allowed (the existing
+                            # _tm_has_position check above narrows that to same-
+                            # price-group only — backed by 40/40 stackable-ticker
+                            # YES-settlement data). Side-filtering required so
+                            # NO-side strategies (e.g., bracket_no) on the same
+                            # ticker do NOT block YES-side TM. Legacy rows with
+                            # missing `side` default to "yes" (matches the
+                            # historical pre-NO-side schema default).
+                            _tm_non_tm_position = any(
+                                p["ticker"] == ticker
+                                and (p.get("side") or "yes") == "yes"
+                                and not (p.get("strategy") or "").startswith("terminal_momentum")
+                                for p in _tm_open_positions
+                            )
+                            if not _tm_has_position and not _tm_non_tm_position:
                                 # Check concurrent TM position cap
                                 _tm_count = sum(1 for c in candidates if c.get("strategy", "").startswith("terminal_momentum"))
                                 if _tm_count < TM_MAX_CONCURRENT:
