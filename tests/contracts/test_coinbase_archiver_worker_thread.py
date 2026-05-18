@@ -101,8 +101,12 @@ def test_coinbase_archiver_accepts_write_queue_maxsize_kwarg():
     assert "write_queue_maxsize" in sig.parameters
     default = sig.parameters["write_queue_maxsize"].default
     assert isinstance(default, int) and default >= 1000, (
-        f"write_queue_maxsize default must be ≥ 1000 (≥ 10s buffering at "
-        f"~100 frames/sec); got default={default!r}."
+        f"write_queue_maxsize default must be ≥ 1000 (a defensive floor; "
+        f"the production default is 10K which gives ~30-50s buffering "
+        f"at the post-D2.5 reconciled ~200-300 frames/sec aggregate load "
+        f"per the R0 reachability spike — see "
+        f"collector/coinbase_archiver.py queue-capacity comment); got "
+        f"default={default!r}."
     )
 
 

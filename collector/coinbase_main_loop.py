@@ -78,10 +78,14 @@ from coinbase_wire.ws_client import (
 
 logger = logging.getLogger(__name__)
 
-# Drain-thread polling cadence. Coinbase steady-state load is ~50-200
-# frames/sec across all 5 channels × 7 products; 1s polling gives
-# bounded uploader latency without burning CPU. Same cadence as the
-# Kalshi side for cross-collector consistency.
+# Drain-thread polling cadence. Coinbase steady-state load is ~200-300
+# frames/sec aggregate across all 5 channels × 7 products (per the R0
+# reachability spike at D2.5 kickoff — level2_batch ~120/sec dominates,
+# matches + ticker ~50-80/sec, heartbeat + status <5/sec; see
+# collector/coinbase_archiver.py queue-capacity comment for the
+# arithmetic). 1s polling gives bounded uploader latency without
+# burning CPU. Same cadence as the Kalshi side for cross-collector
+# consistency.
 _DRAIN_POLL_SECONDS: float = 1.0
 
 # Single-conn identifier — Coinbase Exchange WS does not shard
