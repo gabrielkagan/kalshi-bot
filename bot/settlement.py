@@ -84,6 +84,7 @@ from bot.constants import (
     LOG_RAW_SETTLEMENTS,
     SERIES_TICKERS,
     SETTLEMENT_CHECK_SECONDS,
+    SETTLEMENT_PNL_DIVERGENCE_THRESHOLD_CENTS,
     TM_SWEEP_SHADOW_ENABLED,
     WEATHER_MIN_ENTRY_PRICE,
 )
@@ -372,6 +373,23 @@ class SettlementTracker:
                 f"SettlementTracker: no position found for {ticker}"
             )
             return
+
+        # B4 (86b9zudcc): capture pre-settlement Kalshi cash balance for
+        # the post-settlement WIN-side divergence cross-check (see the
+        # SETTLEMENT_PNL_DIVERGENCE block in the Telegram-alert path
+        # below). The post-balance fetch in that block, paired with this
+        # pre-balance snapshot, gives us the cash motion attributable to
+        # this settlement — which on a WIN should equal `aggregate_count
+        # × 100¢` and on a LOSS should equal `0`. Failure here is
+        # harmless: the cross-check short-circuits on `None` and the
+        # alert fires unchanged (per ticket: don't suppress the report).
+        _pre_balance_cents: Optional[int] = None
+        try:
+            _pre_bal_resp = self._client.get_balance()
+            if _pre_bal_resp:
+                _pre_balance_cents = _pre_bal_resp.get("balance")
+        except Exception:
+            logging.debug("B4 pre-settlement get_balance failed", exc_info=True)
         positions = [dict(r) for r in pos_rows]
         is_stacked = len(positions) > 1
 
@@ -598,9 +616,12 @@ class SettlementTracker:
             sign = "+" if combined_pnl >= 0 else ""
             pnl_dollars = combined_pnl / 100
             bal_str = ""
+            divergence_tag = ""
+            _post_balance_cents: Optional[int] = None
             try:
                 bal_resp = self._client.get_balance()
                 if bal_resp:
+                    _post_balance_cents = bal_resp.get("balance")
                     # Cash + open-position cost-basis matches Kalshi UI's
                     # Portfolio total. Cash alone undercounts when other
                     # positions are still pending settlement.
@@ -608,14 +629,58 @@ class SettlementTracker:
                         _exposure_cents = self._state.get_open_position_exposure_cents()
                     except Exception:
                         _exposure_cents = 0
-                    _total_cents = bal_resp.get("balance", 0) + _exposure_cents
+                    _total_cents = (_post_balance_cents or 0) + _exposure_cents
                     bal_str = f" | Balance: ${_total_cents / 100:.2f}"
             except Exception:
                 pass
+
+            # B4 (86b9zudcc): cross-check the cash actually credited at
+            # settle against what local books expected. Only `revenue`
+            # moves cash at the settle event itself (`cost` + `fee` were
+            # debited at fill time, hours/days earlier \u2014 comparing against
+            # `combined_pnl \u2212 combined_fee` would diverge by ~cost+fee on
+            # every real settlement, defeating the goal). The right
+            # comparison is therefore:
+            #   - WIN: `aggregate_count \u00d7 100` (yes-side and no-side both
+            #     pay 100\u00a2/contract at WIN settlement); LOSS: 0\u00a2 credited.
+            # Phantom-inflated local count \u2192 expected_credit overstates the
+            # actual balance delta \u2192 divergence > threshold \u2192 log + tag.
+            # B4 defense-in-depth note: this surface catches WIN-side
+            # phantoms only \u2014 LOSS cash motion is structurally 0 so a LOSS
+            # over-count goes undetected here. `scripts/audit/phantom_pnl_audit.py`
+            # is the retroactive fills-based complement that covers LOSSes.
+            if (_pre_balance_cents is not None
+                    and _post_balance_cents is not None):
+                _balance_delta_cents = _post_balance_cents - _pre_balance_cents
+                _expected_credit_cents = (aggregate_count * 100
+                                          if outcome == "WIN" else 0)
+                _divergence_cents = _expected_credit_cents - _balance_delta_cents
+                if abs(_divergence_cents) > SETTLEMENT_PNL_DIVERGENCE_THRESHOLD_CENTS:
+                    logging.warning(
+                        "SETTLEMENT_PNL_DIVERGENCE %s: "
+                        "expected_credit=%d\u00a2 balance_delta=%d\u00a2 "
+                        "divergence=%+d\u00a2 (pre=%d\u00a2 post=%d\u00a2 "
+                        "outcome=%s count=%d cost=%d\u00a2 revenue=%d\u00a2 "
+                        "fee=%d\u00a2 threshold=%d\u00a2)",
+                        ticker, _expected_credit_cents, _balance_delta_cents,
+                        _divergence_cents, _pre_balance_cents,
+                        _post_balance_cents, outcome, aggregate_count,
+                        aggregate_cost, revenue, combined_fee,
+                        SETTLEMENT_PNL_DIVERGENCE_THRESHOLD_CENTS,
+                    )
+                    _delta_sign = "-" if _balance_delta_cents < 0 else "+"
+                    _expected_sign = "-" if _expected_credit_cents < 0 else "+"
+                    divergence_tag = (
+                        f" \u26a0\ufe0fKALSHI_DELTA="
+                        f"{_delta_sign}${abs(_balance_delta_cents) / 100:.2f} "
+                        f"(expected "
+                        f"{_expected_sign}${abs(_expected_credit_cents) / 100:.2f})"
+                    )
+
             _telegram_state._TELEGRAM.send(
                 f"{emoji} {outcome} {positions[0]['asset']} {aggregate_count}ct "
                 f"@{positions[0]['avg_price_cents']}c {sign}${abs(pnl_dollars):.2f}"
-                f"{stacked_tag}{bal_str}"
+                f"{stacked_tag}{divergence_tag}{bal_str}"
             )
 
     # ── Rejection Settlement ─────────────────────────────────────────────

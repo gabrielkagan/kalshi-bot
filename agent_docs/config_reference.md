@@ -96,6 +96,7 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | IOC_TICKER_COOLDOWN | 15 | Seconds cooldown per ticker after IOC attempt (was 60) |
 | IOC_RETRY_OFFSET | 1 | Cents above ask for taker-first IOC + retry offset |
 | DIP_ADDON_ENABLED | False | Killed — 55.2% WR, no edge |
+| SETTLEMENT_PNL_DIVERGENCE_THRESHOLD_CENTS | 50 | B4 (ticket `86b9zudcc`, 2026-05-18). At settlement Telegram alert time, `SettlementTracker._process_settlement` compares `balance_delta` (post − pre `client.get_balance()`) against the locally-expected credit (`aggregate_count × 100` on WIN, `0` on LOSS — only `revenue` moves cash at settle; cost/fee were debited at fill). When `abs(expected_credit − balance_delta) > 50¢`, logs `SETTLEMENT_PNL_DIVERGENCE` + appends ⚠️ `KALSHI_DELTA=` tag to the alert. Catches WIN-side phantom-count bugs the existing single-row count-mismatch check inside `_process_settlement` (the `if revenue > 0 and outcome == "WIN" and side == "yes":` block) doesn't auto-correct — multi-row stacked positions land in the `else:` arm that emits `SETTLEMENT_MULTI_MISMATCH: %s — NOT auto-correcting stacked positions` and falls through with the inflated `aggregate_count` intact. LOSS-side phantoms are structurally invisible here — cash moves $0 at LOSS settle — and are caught by `scripts/audit/phantom_pnl_audit.py` retroactively. |
 
 ## Decided contracts
 
