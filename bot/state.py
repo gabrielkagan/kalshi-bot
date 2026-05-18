@@ -800,6 +800,12 @@ class StateManager:
             # ASSETS-driven (T1 5dca85a) and emits all 6 keys.
             ("hype_spot_at_decision", "REAL"),
             ("doge_spot_at_decision", "REAL"),
+            # BNB T1.5 followup (2026-05-17, ticket 86b9zn5pq). Supabase
+            # migration 021 mirrors this to the remote evaluations table.
+            # Scanner producer at bot/scanner/__init__.py:1011 is
+            # ASSETS-driven (BNB T1 2026-05-17) and emits all 7 keys; the
+            # consumer block below was the silent-drop site this Bit closes.
+            ("bnb_spot_at_decision", "REAL"),
             ("okx_funding_rate_at_decision", "REAL"),
             ("deribit_funding_rate_at_decision", "REAL"),
             # Phase G-6 (2026-05-02): provenance flag for v2 calibrator
@@ -2054,6 +2060,7 @@ class StateManager:
                                      xrp_spot_at_decision: Optional[float] = None,
                                      hype_spot_at_decision: Optional[float] = None,
                                      doge_spot_at_decision: Optional[float] = None,
+                                     bnb_spot_at_decision: Optional[float] = None,
                                      okx_funding_rate_at_decision: Optional[float] = None,
                                      deribit_funding_rate_at_decision: Optional[float] = None,
                                      # Phase G-6 (2026-05-02): provenance flag.
@@ -2238,6 +2245,12 @@ class StateManager:
                     hype_spot_at_decision = _ext.get("hype_spot_at_decision")
                 if doge_spot_at_decision is None:
                     doge_spot_at_decision = _ext.get("doge_spot_at_decision")
+                # BNB T1.5 followup (2026-05-17, ticket 86b9zn5pq):
+                # producer at bot/scanner/__init__.py:1011 is ASSETS-driven
+                # and emits 7 keys post-BNB-T1. Pre-fix the bnb key was
+                # silently dropped on the floor here.
+                if bnb_spot_at_decision is None:
+                    bnb_spot_at_decision = _ext.get("bnb_spot_at_decision")
                 if max_excursion_from_strike is None:
                     max_excursion_from_strike = _ext.get("max_excursion_from_strike")
                 if time_above_strike_seconds is None:
@@ -2433,10 +2446,11 @@ class StateManager:
                      btc_spot_at_decision, eth_spot_at_decision,
                      sol_spot_at_decision, xrp_spot_at_decision,
                      hype_spot_at_decision, doge_spot_at_decision,
+                     bnb_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                      data_provenance, bot_state_snapshot_json,
                      config_snapshot_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2558,6 +2572,7 @@ class StateManager:
                     xrp_spot_at_decision=excluded.xrp_spot_at_decision,
                     hype_spot_at_decision=excluded.hype_spot_at_decision,
                     doge_spot_at_decision=excluded.doge_spot_at_decision,
+                    bnb_spot_at_decision=excluded.bnb_spot_at_decision,
                     okx_funding_rate_at_decision=excluded.okx_funding_rate_at_decision,
                     deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision,
                     -- Phase G-6: COALESCE so an existing non-default value
@@ -2656,6 +2671,7 @@ class StateManager:
                   btc_spot_at_decision, eth_spot_at_decision,
                   sol_spot_at_decision, xrp_spot_at_decision,
                   hype_spot_at_decision, doge_spot_at_decision,
+                  bnb_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                   data_provenance, bot_state_snapshot_json,
                   config_snapshot_id))
