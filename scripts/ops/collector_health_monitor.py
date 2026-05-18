@@ -3,9 +3,10 @@
 Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
 + 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
 kalshi-coinbase-collector). Standalone CLI run via cron on the VPS.
-Polls 4 health surfaces × 2 collectors = 8 total alert classes; sends
-Telegram alerts via the existing ``bot.notifier.TelegramNotifier`` (no
-Telegram client re-implementation).
+Polls 4 health surfaces × 2 collectors + 1 bot check (B3-fu3,
+2026-05-18) = 9 total alert classes; sends Telegram alerts via the
+existing ``bot.notifier.TelegramNotifier`` (no Telegram client
+re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -80,6 +81,22 @@ COINBASE_BRONZE_ROOT = "/var/lib/kalshi-coinbase-collector"
 COINBASE_COLLECTOR_UNIT = "kalshi-coinbase-collector"
 COINBASE_SIDECAR_PATH = "/var/lib/kalshi-coinbase-collector/bronze_health.json"
 COINBASE_MONITOR_STATE_PATH = "/var/lib/kalshi-coinbase-collector/monitor_state.json"
+
+# B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
+# `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
+# The marker substring matches ~39 WARN sites across bot/scanner +
+# bot/state. B3-fu2 narrowed 2 of them (LPNE + dc_shadow_no_side POR)
+# to sqlite3.OperationalError; the other ~37 still use bare
+# `except Exception:` and will WARN on any Python-level exception
+# (B3-fu7 `86ba067mg` sweeps them). Either way the alert is real-signal:
+# a hit means a genuine DB error at the narrowed sites OR an
+# exception (DB or otherwise) at the bare-except sister sites — both
+# warrant operator attention. Threshold defaults to 1 — these WARNs
+# should be 0/day under healthy operation, so even one hit fires.
+BOT_UNIT = "kalshi-bot"
+DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
+DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
+DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
 # 2x the cron tick interval (5min = 300s) = ~610s. Use 120s as a tight
 # floor so we catch a wedged drain thread within 2 monitor ticks, not 2
@@ -170,6 +187,64 @@ def check_ws_reconnects(
         f"disconnects in last {window_min}min (threshold {threshold_count}). "
         f"Breakdown: 1006={n_1006} 1009={n_1009} 1011={n_1011}. "
         f"Check: `journalctl -u {unit} --since '{window_min} min ago' | grep disconnect | tail`"
+    )
+
+
+def check_insert_evaluated_opportunity_failures(
+    window_min: int = DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN,
+    threshold_count: int = DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD,
+    unit: str = BOT_UNIT,
+    log_marker: str = DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER,
+) -> Optional[str]:
+    """Return alert string if `insert_evaluated_opportunity failed` WARN
+    count in last ``window_min`` minutes >= ``threshold_count``, else None.
+
+    The marker substring matches ~39 WARN sites across
+    `bot/scanner/__init__.py` + `bot/state.py`. B3-fu2 (ticket
+    86b9zxb02, 2026-05-18) narrowed 2 of them (LPNE +
+    dc_shadow_no_side POR) to `sqlite3.OperationalError`; the other
+    ~37 still use bare `except Exception:` and will WARN for any
+    Python-level exception (NameError / UnboundLocalError /
+    AttributeError) — the B3-fu7 `86ba067mg` sweep scope. Either way
+    the alert is real-signal: a hit means either a genuine DB error
+    at the narrowed sites OR an exception (DB or otherwise) at the
+    bare-`except` sister sites. Both warrant operator attention within
+    minutes (B3 itself was 42 days of silent LPNE row drops behind
+    the pre-narrow bare-`except Exception:` swallow at the LPNE site).
+
+    Fail-quiet posture mirrors `check_ws_reconnects`: journalctl
+    absent (test env), timeout, or non-zero exit returns None rather
+    than alert-spamming.
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "journalctl",
+                "-u", unit,
+                "--since", f"{window_min} minutes ago",
+                "-q", "--no-pager",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    hits = [line for line in out.splitlines() if log_marker in line]
+    if len(hits) < threshold_count:
+        return None
+    return (
+        f"*BOT INSERT_EVALUATED_OPPORTUNITY FAILED* — {len(hits)} hits "
+        f"of `{log_marker}` in last {window_min}min (threshold {threshold_count}). "
+        f"Marker matches ~39 WARN sites (B3-fu2 narrowed 2 to "
+        f"sqlite3.OperationalError; the other ~37 still bare-except, "
+        f"B3-fu7 sweep scope). A hit is either a genuine DB error at "
+        f"the narrowed sites OR an exception (DB or otherwise) at the "
+        f"bare-except sites — both worth investigating. "
+        f"Check: `journalctl -u {unit} --since '{window_min} min ago' | "
+        f"grep -i 'insert_evaluated_opportunity failed' | tail`. "
+        f"Then trace to `bot/state.py::insert_evaluated_opportunity` + "
+        f"the emitting `bot/scanner/__init__.py` strategy block."
     )
 
 
@@ -390,16 +465,30 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs all 4 checks × 2 collectors; sends Telegram
-    alerts as needed.
+    """Entry point. Runs collector checks (4) × 2 collector tiers + bot
+    checks (1) × 1 bot tier = 9 total check dispatches per tick;
+    sends Telegram alerts as needed.
 
-    D2.5 (ticket 86b9znq4w, 2026-05-18) extends the original single-
+    D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
     collector loop to poll BOTH kalshi-collector AND kalshi-coinbase-
-    collector. Per-tier dedup keys (``d1_6_<check>`` for the Kalshi
-    side / ``d2_5_<check>`` for the Coinbase side) keep alert dedup
-    independent — a Kalshi disk-pressure alert does NOT dedup-suppress
+    collector (dual-tier dispatch).
+
+    B3-fu3 (ticket 86b9zxb4c, 2026-05-18) extended to TRIPLE-TIER
+    dispatch: kalshi-bot is the 3rd tier with a single new check
+    function (``check_insert_evaluated_opportunity_failures``) that
+    alerts on `insert_evaluated_opportunity failed` WARNINGs in the
+    bot journal. Post-B3-fu2 narrow (LPNE + dc_shadow_no_side
+    `except` clauses scoped to ``sqlite3.OperationalError``) makes
+    any future WARN a real-signal — genuine DB error or
+    sister-strategy regression.
+
+    Per-tier dedup-key prefixes (``d1_6_<check>`` for Kalshi
+    collector / ``d2_5_<check>`` for Coinbase collector /
+    ``b3_fu3_<check>`` for bot tier) keep alert dedup independent
+    across tiers — a Kalshi disk-pressure alert does NOT dedup-suppress
     a Coinbase disk-pressure alert (their underlying mount points are
-    structurally separate per the Option B isolation posture).
+    structurally separate per the Option B isolation posture), and the
+    bot-tier alert never collides with either collector tier.
 
     Returns 0 always (cron convention — exit code reserved for cron's
     own error handling, NOT for application health signaling; that
@@ -492,9 +581,23 @@ def main() -> int:
     # dedup semantics across the upgrade. Coinbase-side uses the D2.5
     # prefix (`d2_5_<check>`) so a Coinbase alert can fire even while
     # the matching Kalshi alert is still within its dedup window.
+    # B3-fu3 (ticket 86b9zxb4c, 2026-05-18): bot-tier alert on
+    # `insert_evaluated_opportunity failed` WARNINGs. Dedup prefix
+    # `b3_fu3` keeps it independent of d1_6 (Kalshi collector) and
+    # d2_5 (Coinbase collector) dedup windows. Only one check today —
+    # disk + ws_reconnects + collector_active are NOT useful for the
+    # bot tier (bot disk pressure is structurally different; bot
+    # restarts are operator-initiated; bot uses Kalshi WS reconnect
+    # logic through a different code path with its own observability).
+    bot_checks = [
+        ("insert_eval_failures", lambda: check_insert_evaluated_opportunity_failures(
+            unit=BOT_UNIT,
+        )),
+    ]
     tiers = [
         ("kalshi-collector", "d1_6", kalshi_checks),
         ("kalshi-coinbase-collector", "d2_5", coinbase_checks),
+        ("kalshi-bot", "b3_fu3", bot_checks),
     ]
     for tier_name, dedup_prefix, checks in tiers:
         for check_name, check_fn in checks:
