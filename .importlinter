@@ -43,11 +43,22 @@
 # `coinbase_wire-no-*` forbidden contracts would silently no-op. Pinned by
 # tests/contracts/test_coinbase_wire_no_bot_imports.py
 # ::test_importlinter_root_packages_includes_coinbase_wire.
+#
+# D3.0 (ticket 86b9zxc6t, 2026-05-18) — extended with `silver` for the
+# off-VPS silver ETL layer (dbt-style DuckDB normalization reading bronze
+# JSONL.zst chunks from S3 and writing partitioned Parquet to
+# `silver/v1/<source>/utc_date=...`). First Bit of Phase 2 (Silver).
+# Same plural-list requirement: without listing `silver`, grimp wouldn't
+# walk it and the two new `silver-no-*` forbidden contracts would
+# silently no-op. Pinned by
+# tests/contracts/test_silver_no_bot_imports.py
+# ::test_importlinter_root_packages_includes_silver.
 root_packages =
     bot
     collector
     kalshi_wire
     coinbase_wire
+    silver
 # Bit 12.3 (Sprint 12, 2026-05-11): required for the bot-no-torch
 # and bot-no-pandas contracts, which name EXTERNAL packages (torch,
 # pandas) as forbidden_modules. Without this flag, import-linter
@@ -429,5 +440,54 @@ name = coinbase_wire.* must not import collector.* (pure-transport leaf)
 type = forbidden
 source_modules =
     coinbase_wire
+forbidden_modules =
+    collector
+
+# ---------------------------------------------------------------------------
+# Contract 13 — silver must not import bot (pure off-VPS ETL surface)
+# ---------------------------------------------------------------------------
+# D3.0 (ticket 86b9zxc6t, 2026-05-18) — First Bit of Phase 2 (Silver).
+# Plan doc: `kb/decisions/d3-0-silver-foundations-plan.md`.
+#
+# `silver/` is the dbt-style normalization layer that reads bronze JSONL.zst
+# chunks from S3 (via DuckDB's S3 connector + `read_json`) and writes typed
+# Parquet to `silver/v1/<source>/utc_date=YYYY-MM-DD/`. It runs OFF the bot
+# VPS (operator Mac via launchd nightly @ 02:00 local, per the D0.3 §13
+# off-VPS-compute decision) and consumes ONLY bronze + silver state.
+#
+# A `silver → bot` edge would (a) require Python paths from the bot VPS
+# to be reachable on the ETL host, (b) couple analyst-tier queries to
+# trading-state internals, (c) break the same isolation discipline that
+# kalshi_wire / coinbase_wire / collector enforce in the bronze tier.
+#
+# Pinned by tests/contracts/test_silver_no_bot_imports.py.
+[importlinter:contract:silver-no-bot]
+name = silver.* must not import bot.* (pure off-VPS ETL surface)
+type = forbidden
+source_modules =
+    silver
+forbidden_modules =
+    bot
+
+# ---------------------------------------------------------------------------
+# Contract 14 — silver must not import collector (pure off-VPS ETL surface)
+# ---------------------------------------------------------------------------
+# D3.0 (ticket 86b9zxc6t, 2026-05-18) — sister contract to `silver-no-bot`.
+#
+# Silver reads bronze via DuckDB's S3 connector (`read_json('s3://...')`),
+# NOT via collector's writer/uploader code. The two have parallel views of
+# bronze format (D0.3 §2 envelope is the shared contract), but neither
+# imports the other. A `silver → collector` edge would couple the ETL
+# layer to the bronze-archival pipeline and invert the medallion
+# direction-of-flow (bronze produces; silver consumes; silver does not
+# loop back to the producer).
+#
+# Peer-pinned by tests/contracts/test_silver_no_bot_imports.py
+# ::test_importlinter_declares_silver_no_collector_contract.
+[importlinter:contract:silver-no-collector]
+name = silver.* must not import collector.* (pure off-VPS ETL surface)
+type = forbidden
+source_modules =
+    silver
 forbidden_modules =
     collector

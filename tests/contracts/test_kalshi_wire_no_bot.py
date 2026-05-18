@@ -267,6 +267,8 @@ def test_lint_imports_fails_when_kalshi_wire_imports_bot(tmp_path: Path):
     # enforcement. Same defect class the D1.1.5 add did for
     # kalshi_wire in tests/contracts/test_collector_no_bot_imports.py.
     shutil.copytree(REPO_ROOT / "coinbase_wire", fixture_root / "coinbase_wire")
+    # D3.0 (86b9zxc6t, 2026-05-18) — silver joined .importlinter root_packages.
+    shutil.copytree(REPO_ROOT / "silver", fixture_root / "silver")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     mutated_path = fixture_root / "kalshi_wire" / "ws_client.py"

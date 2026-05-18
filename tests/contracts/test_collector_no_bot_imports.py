@@ -398,6 +398,9 @@ def test_lint_imports_fails_when_collector_imports_bot(tmp_path: Path):
     # 'coinbase_wire' in your Python path" before evaluating the
     # collector-no-bot contract.
     shutil.copytree(REPO_ROOT / "coinbase_wire", fixture_root / "coinbase_wire")
+    # D3.0 (86b9zxc6t, 2026-05-18) — silver joined .importlinter root_packages;
+    # mirror the same fixture-extension pattern as D2.1 above.
+    shutil.copytree(REPO_ROOT / "silver", fixture_root / "silver")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     # Inject a real collector→bot import edge into main_loop.py.

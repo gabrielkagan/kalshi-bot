@@ -1,0 +1,10 @@
+# silver/ local-only artifacts (D3.0)
+venv/
+*.pyc
+__pycache__/
+profiles.yml
+.dbt/
+target/
+dbt_packages/
+logs/
+.user.yml

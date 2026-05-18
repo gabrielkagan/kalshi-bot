@@ -192,6 +192,8 @@ def test_lint_imports_fails_when_kalshi_wire_imports_collector(tmp_path: Path):
     # lint-imports from erroring "Could not find package
     # 'coinbase_wire' in your Python path".
     shutil.copytree(REPO_ROOT / "coinbase_wire", fixture_root / "coinbase_wire")
+    # D3.0 (86b9zxc6t, 2026-05-18) — silver joined .importlinter root_packages.
+    shutil.copytree(REPO_ROOT / "silver", fixture_root / "silver")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     mutated_path = fixture_root / "kalshi_wire" / "ws_client.py"
