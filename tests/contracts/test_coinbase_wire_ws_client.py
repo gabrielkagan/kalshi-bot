@@ -89,9 +89,11 @@ def test_ws_client_init_signature():
 
     Unlike Kalshi the constructor takes NO ``api_key`` / ``private_key``
     because the operator scoped D2.1.5 to public Coinbase Exchange WS
-    channels — default subscribe set is the 4 verified-public channels
-    (ticker / matches / heartbeat / status; ``level2_batch`` deferred
-    to D2.2). No HMAC handshake required. A future Bit that adds
+    channels. Post-D2.5 default subscribe set is 5 verified-public
+    channels (ticker / matches / heartbeat / status / level2_batch);
+    D2.1.5 originally shipped with the 4-channel subset and D2.5
+    promoted level2_batch after the R0 reachability spike. No HMAC
+    handshake required for any of these. A future Bit that adds
     private channels can extend the signature without breaking this
     surface.
     """
@@ -113,8 +115,10 @@ def test_ws_client_init_signature():
         )
     # Default channels + product_ids are constructor kwargs so the
     # consumer can override per-Bit (the CoinbaseArchiver D2.2 default
-    # accepts the wire library's 4-channel set; the D2.3 bot feed
-    # refactor may pick a narrower subset).
+    # accepts the wire library's published default channel set —
+    # post-D2.5 5 channels including level2_batch; D2.3 bot feed
+    # refactor picks the narrower `("ticker",)` subset for the bot's
+    # spot-price-only consumer path).
     assert "channels" in params, (
         "WSClient.__init__ missing `channels` kwarg — Coinbase WS "
         "subscribe is per-channel; this list controls the default "

@@ -1525,13 +1525,52 @@ STALE_PATTERNS_POST_D2_5: list[str] = [
     "level2_batch deferred pending in-archiver reachability",
     "level2_batch deferred pending",
     "level2_batch is intentionally OMITTED at D2.1.5",
+    "intentionally OMITTED from D2.1.5 defaults",  # R1-M1 paraphrase variant
     "level2_batch ... pending in-archiver reachability verification",
     "pending coinbase_wire's reachability promotion",
     "A followup ticket promotes level2_batch",
     "A followup ticket promotes `level2_batch`",
+    "A followup ticket adds ``level2_batch`` to defaults",  # R1-M1 paraphrase
     "extend the dispatch dict + coinbase_wire.DEFAULT_CHANNELS together when that lands",
     "level2_batch lands once that channel is promoted",
     "level2_batch lands once",
+    "lands in a followup once subscribe-success",  # R1-M2 paraphrase
+    "is reserved for an in-archiver",  # R1-M2 paraphrase
+    "verified-public subset at D2.1.5",  # R1-M2 paraphrase
+    # R1-M8 ("is deferred" verb-be form — present-tense, forward-
+    # looking, false post-D2.5). The PAST-tense form "was deferred
+    # pending in-archiver reachability" is HISTORICAL legitimate
+    # narrative (D2.1.5's actual state) and is NOT a stale claim — do
+    # NOT add the "was deferred" variant here or it will false-positive
+    # on legitimate "D2.1.5 originally deferred / was deferred at
+    # D2.1.5 / D2.5 promoted what D2.1.5 had deferred" history sentences.
+    "is deferred pending in-archiver reachability",
+    # R1-M3 — pre-D2.5 NotImplementedError narrative listing the
+    # 4-channel subscribe set as the current state.
+    "D2.1.5 is public-only (default subscribe set: ticker / matches / heartbeat / status)",
+    # R1 4-channel-default arithmetic class (8 surfaces — see R1 report).
+    # Pure-substring patterns covering the phrasing variants found in
+    # production source + sister docs + contract tests + error strings.
+    # NOTE: keep these narrow — broad patterns like "4-channel" alone
+    # would false-positive against legitimate HISTORICAL paragraphs
+    # ("D2.1.5 originally shipped 4-channel"). Each pattern below names
+    # the wire's CURRENT default as 4-channel, which post-D2.5 is wrong.
+    "wire's 4-channel default",
+    "wire's 4-channel ``DEFAULT_CHANNELS``",
+    "wire's 4-channel DEFAULT_CHANNELS",
+    "wider 4-channel set for bronze",
+    "wider 4-channel ``DEFAULT_CHANNELS``",
+    "defaults to a 4-channel set (ticker",
+    "DEFAULT_CHANNELS (ticker + matches + heartbeat + status)",
+    "wire library's 4-channel set",
+    "(4 public Coinbase Exchange WS channels",
+    "ships 4 verified-public channels (",
+    "the verified-public subset at D2.1.5",
+    "default subscribe set is the 4",
+    # The mock-server enumeration "all 4 channels" tied to a
+    # current-default claim.
+    "the mock server emits all 4 channels regardless",
+    "emits all 4 channels regardless of what the consumer subscribes",
     # R0 was the spike result — no longer a future-looking "we should run a spike"
     # paraphrase. Retract paraphrases that frame the spike as pending.
     "R0 spike pending",
