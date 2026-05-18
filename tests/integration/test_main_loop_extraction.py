@@ -782,14 +782,15 @@ def test_no_main_loop_no_impl_toplevel_contract_added():
     # library, 2026-05-16 AMENDMENT to D0.3 §5) plus D2.1's two new contracts
     # (ticket 86b9zkpc6): `coinbase_wire-no-bot` + `coinbase_wire-no-collector`
     # (Coinbase wire scaffolding, sub-Bit of the 86b9zkkv4 D2.x umbrella).
-    # This test's intent — "no main-loop-no-impl-toplevel carve-out was
-    # added" — is unchanged; only the unrelated 9th + 10th contracts bump
-    # the count.
-    assert len(contracts) == 10, (
-        f"Expected 10 .importlinter contracts post-D2.1 (5 bot-side + "
+    # D3.0 (ticket 86b9zxc6t, 2026-05-18) bumped to 12 with the silver
+    # ETL layer: `silver-no-bot` + `silver-no-collector`. This test's
+    # intent — "no main-loop-no-impl-toplevel carve-out was added" — is
+    # unchanged; only the unrelated 11th + 12th contracts bump the count.
+    assert len(contracts) == 12, (
+        f"Expected 12 .importlinter contracts post-D3.0 (5 bot-side + "
         f"collector-no-bot + kalshi_wire-no-bot + kalshi_wire-no-collector + "
-        f"coinbase_wire-no-bot + coinbase_wire-no-collector); "
-        f"found {len(contracts)}: {sorted(contract_names)}"
+        f"coinbase_wire-no-bot + coinbase_wire-no-collector + silver-no-bot + "
+        f"silver-no-collector); found {len(contracts)}: {sorted(contract_names)}"
     )
 
 
