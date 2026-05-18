@@ -3895,6 +3895,35 @@ class OpportunityScanner:
                                                 and z_score <= DECIDED_CONTRACT_Z_T2
                                                 and best_ask >= DECIDED_CONTRACT_MIN_PRICE
                                                 and seconds_remaining < DECIDED_CONTRACT_MAX_STC)
+                            # B5-fu4 (86ba05k5q, 2026-05-18): cross-tick decided_*
+                            # retry-queue check. Sister of B5's `_tm_dc_retry_overlap`
+                            # — catches decided_t1 IOCs sitting in
+                            # executor._dc_retry_queue when WKND fires in a later
+                            # tick. `_wknd_dc_overlap` is a z/price/STC heuristic
+                            # only — it does NOT scan in-flight or queued
+                            # candidates, so a decided_t1 IOC queued in a prior
+                            # tick is invisible to it.
+                            _wknd_dc_retry_overlap = False
+                            if self._ml is not None and getattr(self._ml, "executor", None) is not None:
+                                _wknd_dc_retry_overlap = any(
+                                    (entry.get("candidate") or {}).get("ticker") == ticker
+                                    and (entry.get("strategy") or "").startswith("decided_")
+                                    for entry in self._ml.executor._dc_retry_queue
+                                )
+                            # B5-fu4: per-(ticker, side='yes') entry-lock. Refuse
+                            # WKND if any non-WKND YES-side position is already
+                            # open on this ticker. Mirrors B5's
+                            # `_tm_non_tm_position`. Same-strategy stacking
+                            # (weekend_discount on weekend_discount) is governed
+                            # by settlement-side accumulate logic and is outside
+                            # this predicate's scope.
+                            _wknd_open_positions = self._state.get_open_positions()
+                            _wknd_non_wknd_position = any(
+                                p["ticker"] == ticker
+                                and (p.get("side") or "yes") == "yes"
+                                and not (p.get("strategy") or "").startswith("weekend_discount")
+                                for p in _wknd_open_positions
+                            )
                             _wknd_live_eligible = (
                                 WEEKEND_DISCOUNT_LIVE
                                 and not OBSERVATION_MODE
@@ -3905,6 +3934,8 @@ class OpportunityScanner:
                                 and best_ask >= WEEKEND_DISCOUNT_MIN_PRICE
                                 and seconds_remaining <= WEEKEND_DISCOUNT_MAX_STC
                                 and not _wknd_dc_overlap
+                                and not _wknd_dc_retry_overlap
+                                and not _wknd_non_wknd_position
                                 and _wknd_balance and _wknd_balance > 0
                                 and _wknd_position and _wknd_position > 0)
 
@@ -4063,6 +4094,27 @@ class OpportunityScanner:
                                                and z_score <= DECIDED_CONTRACT_Z_T2_Z2
                                                and best_ask >= DECIDED_CONTRACT_MIN_PRICE
                                                and seconds_remaining < DECIDED_CONTRACT_MAX_STC)
+                            # B5-fu4 (86ba05k5q, 2026-05-18): cross-tick decided_*
+                            # retry-queue check. Parallel of `_wknd_dc_retry_overlap`
+                            # in the weekend_discount path immediately above.
+                            _ovn_dc_retry_overlap = False
+                            if self._ml is not None and getattr(self._ml, "executor", None) is not None:
+                                _ovn_dc_retry_overlap = any(
+                                    (entry.get("candidate") or {}).get("ticker") == ticker
+                                    and (entry.get("strategy") or "").startswith("decided_")
+                                    for entry in self._ml.executor._dc_retry_queue
+                                )
+                            # B5-fu4: per-(ticker, side='yes') entry-lock. Refuse
+                            # OVN if any non-OVN YES-side position is already
+                            # open on this ticker. Parallel of
+                            # `_wknd_non_wknd_position`.
+                            _ovn_open_positions = self._state.get_open_positions()
+                            _ovn_non_ovn_position = any(
+                                p["ticker"] == ticker
+                                and (p.get("side") or "yes") == "yes"
+                                and not (p.get("strategy") or "").startswith("overnight_discount")
+                                for p in _ovn_open_positions
+                            )
                             _ovn_live_eligible = (
                                 OVERNIGHT_DISCOUNT_LIVE
                                 and not OBSERVATION_MODE
@@ -4073,6 +4125,8 @@ class OpportunityScanner:
                                 and best_ask >= OVERNIGHT_DISCOUNT_MIN_PRICE
                                 and seconds_remaining <= OVERNIGHT_DISCOUNT_MAX_STC
                                 and not _ovn_dc_overlap
+                                and not _ovn_dc_retry_overlap
+                                and not _ovn_non_ovn_position
                                 and _ovn_balance and _ovn_balance > 0
                                 and _ovn_position and _ovn_position > 0)
 

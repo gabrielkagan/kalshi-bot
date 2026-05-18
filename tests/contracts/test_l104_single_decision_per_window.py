@@ -145,6 +145,29 @@ GUARDED_STRATEGIES = {
             "_bn_has_pos",  # per-ticker open-position guard
         ],
     },
+    # Weekend Discount (post-B5-fu4, ticket 86ba05k5q, 2026-05-18) —
+    # parallel of TM's four-gate stack-protection. `_wknd_dc_overlap`
+    # remains the z/price/STC heuristic; B5-fu4 adds the cross-tick
+    # `_dc_retry_queue` overlap + the per-(ticker, side) non-WKND
+    # entry-lock via `get_open_positions()`.
+    "weekend_discount": {
+        "guard_tokens": [
+            "_wknd_dc_retry_overlap",  # cross-tick decided_* retry scan
+            "_dc_retry_queue",  # executor retry-queue read
+            "get_open_positions",  # open-positions query
+            "_wknd_non_wknd_position",  # per-(ticker, side='yes') non-WKND lock
+        ],
+    },
+    # Overnight Discount (post-B5-fu4, ticket 86ba05k5q, 2026-05-18) —
+    # parallel of weekend_discount, scoped to weekday 04-11 UTC.
+    "overnight_discount": {
+        "guard_tokens": [
+            "_ovn_dc_retry_overlap",  # cross-tick decided_* retry scan
+            "_dc_retry_queue",  # executor retry-queue read
+            "get_open_positions",  # open-positions query
+            "_ovn_non_ovn_position",  # per-(ticker, side='yes') non-OVN lock
+        ],
+    },
     # Weather NO live — open-positions guard on ticker
     "weather_no_live": {
         "guard_tokens": ["get_open_positions", "_wnl_has_pos"],
@@ -169,38 +192,10 @@ GUARDED_STRATEGIES = {
 
 # Strategies known to lack an open-position / candidates-scan stack-
 # protection guard. Each MUST be paired with a tracked followup ticket.
-# B5-fu3 surfaced these as part of the L104 sister-test cascade:
-EXEMPT_STRATEGIES = {
-    # weekend_discount: the `_wknd_dc_overlap` check is a z_score/price/STC
-    # heuristic — it doesn't query open positions or scan the candidates
-    # list, so a previously-filled non-DC position on the same ticker
-    # (e.g., a Kelly-sized main candidate from an earlier tick) could in
-    # principle be stacked-on by a subsequent weekend_discount candidate
-    # at the next tick when the weekend discount band opens up. Same L104
-    # class as the B5 TM incident but on the wknd intercept path. Filed
-    # at B5-fu3 ship time as a tracked followup, NOT fixed in B5-fu3 (per
-    # the pickup-prompt scope-limit discipline: "If any path is currently
-    # stacking, that's a NEW BUG. Do NOT fix in this Bit. File a NEW
-    # ticket and document the finding").
-    "weekend_discount": {
-        "ticket": "86ba05k5q",
-        "reason": (
-            "_wknd_dc_overlap is z/price/STC heuristic only — does NOT "
-            "scan open positions or per-tick candidates for non-DC "
-            "Kelly-sized entries on same (ticker, side). Same L104 "
-            "class as B5 TM-stacks-on-decided. Followup filed."
-        ),
-    },
-    "overnight_discount": {
-        "ticket": "86ba05k5q",
-        "reason": (
-            "_ovn_dc_overlap is z/price/STC heuristic only — does NOT "
-            "scan open positions or per-tick candidates for non-DC "
-            "Kelly-sized entries on same (ticker, side). Same L104 "
-            "class as B5 TM-stacks-on-decided. Followup filed."
-        ),
-    },
-}
+# B5-fu3 surfaced these as part of the L104 sister-test cascade.
+# B5-fu4 (`86ba05k5q`, 2026-05-18) promoted weekend_discount + overnight_discount
+# from EXEMPT to GUARDED — see those entries above.
+EXEMPT_STRATEGIES = {}
 
 # How many lines BEFORE each `candidates.append(` call to scan for
 # guard tokens. Chosen large enough to span the typical strategy gate
