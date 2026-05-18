@@ -67,11 +67,14 @@ class TelegramNotifier:
         threading.Thread(target=self._post, args=(text, silent), daemon=True).start()
 
     def _post(self, text: str, silent: bool):
+        # No parse_mode: Telegram's Markdown parser 400s on unbalanced
+        # `_` / `*` / `` ` `` in alert payloads. B4's `KALSHI_DELTA=…`
+        # tag has a single underscore and was dropping every WIN
+        # settlement alert (2026-05-18). No call site formats markdown.
         try:
             requests.post(self._url, json={
                 "chat_id": self._chat_id,
                 "text": text,
-                "parse_mode": "Markdown",
                 "disable_notification": silent,
             }, timeout=5)
         except Exception as e:

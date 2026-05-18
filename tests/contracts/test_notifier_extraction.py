@@ -240,9 +240,15 @@ def test_send_passes_silent_flag_to_post():
 # ─── 7. _post() HTTP contract ───────────────────────────────────────────────
 
 
-def test_post_uses_markdown_and_timeout():
-    """_post issues requests.post with parse_mode=Markdown, timeout=5,
-    chat_id from constructor, and disable_notification=silent.
+def test_post_uses_no_parse_mode_and_timeout():
+    """_post issues requests.post with timeout=5, chat_id from constructor,
+    disable_notification=silent, and NO parse_mode.
+
+    parse_mode was removed 2026-05-18 (B4 regression): Telegram's Markdown
+    parser 400s on unbalanced `_`/`*`/`` ` `` and was dropping every
+    WIN settlement alert with the `KALSHI_DELTA=...` divergence tag.
+    Regression pin lives at
+    tests/integration/test_telegram_no_parse_mode_regression.py.
     """
     from bot.notifier import TelegramNotifier
     n = TelegramNotifier("tok-z", "chat-z")
@@ -254,7 +260,7 @@ def test_post_uses_markdown_and_timeout():
     payload = call_args.kwargs["json"]
     assert payload["chat_id"] == "chat-z"
     assert payload["text"] == "body text"
-    assert payload["parse_mode"] == "Markdown"
+    assert "parse_mode" not in payload
     assert payload["disable_notification"] is True
     assert call_args.kwargs["timeout"] == 5
 
