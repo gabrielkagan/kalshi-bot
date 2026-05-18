@@ -54,6 +54,7 @@ import math
 import os
 import random
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -2673,7 +2674,7 @@ class OpportunityScanner:
                                         seconds_to_close=seconds_remaining,
                                         calibrated_prob=1.0 - (best_ask / 100.0),
                                         edge=round((1.0 - best_ask / 100.0) - _no_ask_dc / 100.0, 6),
-                                        ofa_adjustment=ofa_adjustment,
+                                        ofa_adjustment=0.0,
                                         z_score=_por_z, vol_regime=vol_est["regime"],
                                         raw_prob=raw_prob_pre,
                                         fee_adjusted_edge=round(
@@ -2681,8 +2682,12 @@ class OpportunityScanner:
                                         product_type=window.get("product_type"),
                                         side="no",
                                         config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
-                                except Exception:
-                                    logging.warning("insert_evaluated_opportunity failed (dc_shadow_no_side POR)", exc_info=True)
+                                except sqlite3.OperationalError as e:
+                                    logging.warning(
+                                        "insert_evaluated_opportunity failed (dc_shadow_no_side POR): %s",
+                                        e,
+                                        exc_info=True,
+                                    )
 
                     continue
 
@@ -2795,8 +2800,18 @@ class OpportunityScanner:
                                                 strategy="low_price_near_expiry",
                                                 product_type=window.get("product_type"),
                                                 config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
-                                        except Exception:
-                                            logging.warning("insert_evaluated_opportunity failed (lpne)", exc_info=True)
+                                        # B3-fu2 (2026-05-18): narrowed from bare `except Exception:`
+                                        # so NameError/UnboundLocalError/AttributeError propagate
+                                        # (L106 lesson — the original 42-day silent LPNE drop).
+                                        # B3-fu7 (`86ba067mg`) sweeps the same L106 narrow to the
+                                        # ~48 other `insert_evaluated_opportunity` bare-Exception
+                                        # swallows in this file (AST-counted at B3-fu2 ship).
+                                        except sqlite3.OperationalError as e:
+                                            logging.warning(
+                                                "insert_evaluated_opportunity failed (lpne): %s",
+                                                e,
+                                                exc_info=True,
+                                            )
                                     continue  # Skip floor rejection — this is now an LPNE candidate
 
                     _frs_edge = cal_prob - best_ask / 100.0
