@@ -1291,9 +1291,8 @@ class StateManager:
             else:
                 local_total = sum(dict(r)["count"] for r in local_rows)
                 if local_total != count:
-                    logging.warning(
-                        "RECONCILE_MULTI_MISMATCH: %s local=%d api=%d — NOT auto-fixing",
-                        ticker, local_total, count)
+                    self._reconcile_multi_mismatch(
+                        ticker, side, count, now)
 
         # Remove local positions not on API
         local_rows = self.conn.execute(
@@ -1305,6 +1304,164 @@ class StateManager:
                     UPDATE positions SET status='closed', updated_at=?
                     WHERE ticker=?
                 """, (now, row["ticker"]))
+
+    def _reconcile_multi_mismatch(self, ticker: str, side: str,
+                                  api_total: int, now: str) -> None:
+        """B2 (86b9zud1p): handle a multi-row local-vs-API divergence.
+
+        Phase 1 — always emit a per-row evidence log (strategy_group, count,
+        fill_source, delta = side_local_total - api_total) so retroactive
+        cleanup can reconstruct the ambiguity from logs alone.
+
+        Phase 2 — when delta > 0 AND ≥1 same-side open row has
+        `fill_source` starting with 'ghost_fill', deflate the ghost-fill
+        row(s) until sum(count) == api_total. Non-ghost-fill rows are
+        left untouched. With multiple ghost-fill rows, deflate
+        proportionally by count share (largest-remainder rounding so the
+        sum lands exactly on the target). When a ghost-fill row reaches
+        count=0 it is DELETED (mirrors the existing reconcile DELETE at
+        the ticker-level zero-position path; avoids polluting
+        `settled_trades` with a zero-row entry when settlement later
+        iterates `WHERE ticker=?` without a status filter — the per-row
+        AUTOFIXED log line is the audit trail).
+
+        **Narrow fill_source gate (L100 caveat)**: `record_position_from_fill`
+        sets `fill_source` only on the FIRST INSERT for a
+        (ticker, strategy_group) pair, NOT on subsequent UPDATEs. If a
+        ghost-fill landed via UPDATE on a row that an earlier IOC fill
+        stamped 'ioc', this auto-fix CANNOT identify the contaminated row;
+        the ticker falls through to the no-fix warning branch. B1
+        (`b3fe7546`, 2026-05-18) prevents the upstream class in
+        `bot/executor.py`; B2 is defense-in-depth for the narrower subset
+        where the ghost-fill row was the FIRST INSERT on its
+        (ticker, strategy_group). See
+        `kb/failures/ghost-fill-retry-overcount-may18.md` for the HYPE
+        incident shape.
+
+        **Side-filter rationale**: helper SELECTs `WHERE side=?` because
+        per-side is the only sensible auto-fix scope (a side flip is
+        itself a bug class). `_reconcile_positions`'s mismatch-detection
+        sum is unfiltered by side; if those values diverge, both will
+        appear in the side_local_total vs the caller's pre-call logging.
+
+        **Cost-preservation limitation**: when deflating, `total_cost_cents`
+        is rescaled as `new_count * avg_price_cents` — the row's original
+        avg may itself be distorted (it was computed when the row was
+        inflated). Settlement will see the rescaled cost. For full fidelity,
+        operator should manually verify post-incident via the per-row
+        evidence log (pre_count/pre_avg/post_count/post_cost in the
+        AUTOFIXED log line).
+
+        Under-count (delta < 0) is a separate bug class (possibly missed
+        maker fill); keep the warning, no mutation.
+        """
+        rows = self.conn.execute(
+            "SELECT strategy_group, count, avg_price_cents, "
+            "total_cost_cents, fill_source FROM positions "
+            "WHERE ticker=? AND side=? AND status='open'",
+            (ticker, side),
+        ).fetchall()
+        side_local_total = sum(dict(r)["count"] for r in rows)
+        delta = side_local_total - api_total
+        if delta == 0:
+            # Caller's mismatch was a cross-side artefact (caller sums all
+            # sides; helper is side-scoped per Kalshi's one-row-per-ticker
+            # positions API). On the side that matters, local matches API
+            # — return silently. Mixed-side rows are a separate bug class
+            # outside B2 scope.
+            return
+        evidence = ", ".join(
+            f"{dict(r)['strategy_group']}=(count={dict(r)['count']},"
+            f"avg={dict(r)['avg_price_cents']},"
+            f"fill_source={dict(r)['fill_source']})"
+            for r in rows
+        )
+        ghost_rows = [dict(r) for r in rows
+                      if (dict(r).get("fill_source") or "").startswith("ghost_fill")]
+
+        if delta > 0 and ghost_rows:
+            excess = delta
+            ghost_sum = sum(g["count"] for g in ghost_rows)
+            if ghost_sum < excess:
+                logging.warning(
+                    "RECONCILE_MULTI_MISMATCH: %s local=%d api=%d delta=%d "
+                    "ghost_sum=%d — NOT auto-fixing (excess > ghost-fill capacity); "
+                    "rows=[%s]",
+                    ticker, side_local_total, api_total, delta,
+                    ghost_sum, evidence)
+                return
+
+            if len(ghost_rows) == 1:
+                takes = {ghost_rows[0]["strategy_group"]: excess}
+            else:
+                # Largest-remainder rounding so the sum lands exactly on excess.
+                raw = [(g["strategy_group"],
+                        excess * g["count"] / ghost_sum,
+                        g["count"]) for g in ghost_rows]
+                floors = [(sg, int(r), cap) for sg, r, cap in raw]
+                assigned = sum(f for _, f, _ in floors)
+                remainder = excess - assigned
+                # Distribute leftover units to the largest fractional parts.
+                ranked = sorted(
+                    range(len(raw)),
+                    key=lambda i: (raw[i][1] - floors[i][1]),
+                    reverse=True,
+                )
+                takes_list = [list(f) for f in floors]
+                for i in ranked:
+                    if remainder <= 0:
+                        break
+                    if takes_list[i][1] < takes_list[i][2]:
+                        takes_list[i][1] += 1
+                        remainder -= 1
+                takes = {sg: take for sg, take, _ in takes_list}
+
+            per_row_post = []
+            for g in ghost_rows:
+                take = takes.get(g["strategy_group"], 0)
+                if take <= 0:
+                    continue
+                new_count = g["count"] - take
+                # See "Cost-preservation limitation" in docstring — rescale
+                # at the row's stored avg_price; operator audit is the
+                # backstop for distorted-avg fidelity.
+                new_cost = new_count * g["avg_price_cents"]
+                if new_count <= 0:
+                    # DELETE (not status='closed') so settlement's
+                    # status-unfiltered `WHERE ticker=?` does NOT iterate a
+                    # zero-count phantom row into `settled_trades`.
+                    self.conn.execute(
+                        "DELETE FROM positions WHERE ticker=? AND strategy_group=?",
+                        (ticker, g["strategy_group"]))
+                    per_row_post.append(
+                        f"{g['strategy_group']}=(pre_count={g['count']},"
+                        f"pre_avg={g['avg_price_cents']},post=DELETED)")
+                else:
+                    self.conn.execute(
+                        "UPDATE positions SET count=?, total_cost_cents=?, "
+                        "updated_at=? WHERE ticker=? AND strategy_group=?",
+                        (new_count, new_cost, now, ticker, g["strategy_group"]))
+                    per_row_post.append(
+                        f"{g['strategy_group']}=(pre_count={g['count']},"
+                        f"pre_avg={g['avg_price_cents']},"
+                        f"post_count={new_count},post_cost={new_cost},"
+                        f"post_avg={g['avg_price_cents']})")
+            # Distinct event tag so operator alerts can grep auto-fixed
+            # vs un-fixed separately (L100 — don't share a wire-protocol
+            # string for two semantics).
+            logging.warning(
+                "RECONCILE_MULTI_MISMATCH_AUTOFIXED: %s local=%d api=%d delta=%d "
+                "— deflated ghost-fill rows; pre=[%s] post=[%s]; "
+                "note: remaining open rows may still trigger the post-reconcile "
+                "STACKING_DISABLED check by design",
+                ticker, side_local_total, api_total, delta,
+                evidence, ", ".join(per_row_post))
+            return
+
+        logging.warning(
+            "RECONCILE_MULTI_MISMATCH: %s local=%d api=%d delta=%d — "
+            "NOT auto-fixing (no ghost-fill row); rows=[%s]",
+            ticker, side_local_total, api_total, delta, evidence)
 
     def _reconcile_orders(self, client: KalshiClient, now: str):
         api_resp = client.get_orders(status="resting")
