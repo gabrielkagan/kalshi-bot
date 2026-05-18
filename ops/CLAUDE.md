@@ -2,6 +2,8 @@
 
 Production infrastructure (systemd units, install scripts, deploy hooks). Tracked in git so changes are reviewable + drift-detectable.
 
+**Off-VPS surfaces (NOT this directory):** `silver/` (D3.0 SHIPPED 2026-05-18, ticket `86b9zxc6t`) — silver ETL runs on the operator's Mac via launchd nightly @ 02:00 local; lifecycle owned by `silver/launchd/com.kalshi.silver-etl.plist` + `silver/scripts/etl_run.sh`. No bot-VPS systemd unit (off-VPS by D0.3 §13:422 — silver ETL is CPU-bound and must not contend with the bot's 2vCPU/2GB-RAM VPS). See `silver/README.md` for the operator runbook.
+
 ## Conventions
 - **Source of truth.** `ops/kalshi-bot.service` IS the bot systemd unit; `ops/kalshi-collector.service` (D1.5 SHIPPED 2026-05-16, ticket `86b9ypna4`) IS the Kalshi-side Data Corpus collector systemd unit; `ops/kalshi-coinbase-collector.service` (D2.5 SHIPPED 2026-05-18, ticket `86b9znq4w`) IS the Coinbase-side Data Corpus collector systemd unit. Do NOT edit `/etc/systemd/system/kalshi-*.service` directly. Editing this directory triggers a drift check on the next deploy for the bot unit — see "Editing the unit" below. (Neither collector unit has an equivalent CI drift check yet — file a followup if drift becomes a problem in practice; the `make test-unit` + `make test-contract` invariants pin shape but not on-VPS divergence.)
 - **Install:** one-time per VPS via `bash ops/install.sh`. Re-run after any change in this directory.

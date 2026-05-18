@@ -191,6 +191,8 @@ def test_lint_imports_fails_when_coinbase_wire_imports_collector(tmp_path: Path)
     shutil.copytree(COLLECTOR_DIR, fixture_root / "collector")
     shutil.copytree(KALSHI_WIRE_DIR, fixture_root / "kalshi_wire")
     shutil.copytree(WIRE_DIR, fixture_root / "coinbase_wire")
+    # D3.0 (86b9zxc6t, 2026-05-18) — silver added to .importlinter root_packages.
+    shutil.copytree(REPO_ROOT / "silver", fixture_root / "silver")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     mutated_path = fixture_root / "coinbase_wire" / "ws_client.py"

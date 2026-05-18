@@ -303,6 +303,10 @@ def test_lint_imports_fails_when_coinbase_wire_imports_bot(tmp_path: Path):
     shutil.copytree(REPO_ROOT / "collector", fixture_root / "collector")
     shutil.copytree(REPO_ROOT / "kalshi_wire", fixture_root / "kalshi_wire")
     shutil.copytree(WIRE_DIR, fixture_root / "coinbase_wire")
+    # D3.0 (86b9zxc6t, 2026-05-18) — silver added to .importlinter root_packages;
+    # must be copied into the fixture or lint-imports errors "Could not find
+    # package 'silver' in your Python path" before evaluating the contract.
+    shutil.copytree(REPO_ROOT / "silver", fixture_root / "silver")
     shutil.copy(IMPORTLINTER_PATH, fixture_root / ".importlinter")
 
     mutated_path = fixture_root / "coinbase_wire" / "ws_client.py"

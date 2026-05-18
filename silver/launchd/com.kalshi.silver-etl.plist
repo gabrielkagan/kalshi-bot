@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  silver ETL nightly launchd unit (D3.0, ticket 86b9zxc6t).
+
+  Operator install (one-time):
+    cp silver/launchd/com.kalshi.silver-etl.plist ~/Library/LaunchAgents/
+    # Edit the plist to point ProgramArguments at the actual repo path on this Mac
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kalshi.silver-etl.plist
+    launchctl enable gui/$(id -u)/com.kalshi.silver-etl
+
+  Inspect:
+    launchctl print gui/$(id -u)/com.kalshi.silver-etl
+    tail -f /tmp/silver-etl.log
+    tail -f /tmp/silver-etl.err
+
+  Unload (e.g. for maintenance):
+    launchctl bootout gui/$(id -u)/com.kalshi.silver-etl
+
+  Schedule: 02:00 Mac-local nightly per plan-doc decision #2. The ETL
+  itself computes target_date = (now_utc - 1 day).date() at runtime, so
+  the schedule is timezone-independent.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kalshi.silver-etl</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- REPLACE WITH THE ACTUAL REPO PATH ON THIS MAC -->
+        <string>/Users/CHANGEME/path/to/kalshi-bot/silver/scripts/etl_run.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>2</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/silver-etl.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/silver-etl.err</string>
+
+    <!-- AWS creds for DuckDB's httpfs/s3 extension. The operator can
+         alternatively set AWS_PROFILE here and rely on ~/.aws/credentials. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AWS_DEFAULT_REGION</key>
+        <string>us-east-1</string>
+        <!-- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY:
+             Either set them here, or use AWS_PROFILE + ~/.aws/credentials. -->
+    </dict>
+</dict>
+</plist>
