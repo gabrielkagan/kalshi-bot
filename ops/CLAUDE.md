@@ -3,7 +3,7 @@
 Production infrastructure (systemd units, install scripts, deploy hooks). Tracked in git so changes are reviewable + drift-detectable.
 
 ## Conventions
-- **Source of truth.** `ops/kalshi-bot.service` IS the bot systemd unit; `ops/kalshi-collector.service` (D1.5 SHIPPED 2026-05-16, ticket `86b9ypna4`) IS the Data Corpus collector systemd unit. Do NOT edit `/etc/systemd/system/kalshi-*.service` directly. Editing this directory triggers a drift check on the next deploy for the bot unit — see "Editing the unit" below. (The collector unit has no equivalent CI drift check yet — file a followup if drift becomes a problem in practice; the `make test-unit` invariants pin shape but not on-VPS divergence.)
+- **Source of truth.** `ops/kalshi-bot.service` IS the bot systemd unit; `ops/kalshi-collector.service` (D1.5 SHIPPED 2026-05-16, ticket `86b9ypna4`) IS the Kalshi-side Data Corpus collector systemd unit; `ops/kalshi-coinbase-collector.service` (D2.5 SHIPPED 2026-05-18, ticket `86b9znq4w`) IS the Coinbase-side Data Corpus collector systemd unit. Do NOT edit `/etc/systemd/system/kalshi-*.service` directly. Editing this directory triggers a drift check on the next deploy for the bot unit — see "Editing the unit" below. (Neither collector unit has an equivalent CI drift check yet — file a followup if drift becomes a problem in practice; the `make test-unit` + `make test-contract` invariants pin shape but not on-VPS divergence.)
 - **Install:** one-time per VPS via `bash ops/install.sh`. Re-run after any change in this directory.
 - **Drift detection:** `.github/workflows/deploy.yml` diffs `systemctl cat kalshi-bot` against `git show <deploy-sha>:ops/kalshi-bot.service` before `git reset --hard`. If the on-VPS unit differs, the deploy aborts and the operator must re-sync via the recovery one-liner below, then re-trigger the deploy. Local invariant: `tests/unit/test_ops_systemd_unit_matches_repo.py` (6 tests, wired into `make test-unit`). Bit 2.0.5.2 of repo modularization plan.
 - **Post-deploy startup-pattern gate:** `.github/workflows/post_deploy_verify.yml` step `[6/6]` invokes `venv/bin/python3 scripts/audit/post_deploy_scan_gate.py --db state.db --window-seconds 300 --max-events 2` after the existing 5 checks. The script queries `SELECT COUNT(*) FROM bot_startup_log WHERE julianday(ts) > julianday('now', ?)` via Python's stdlib sqlite3 module (the VPS has no sqlite3 CLI installed, so the gate must be Python — also matches the `postdeploy_verify.py` / `audit_cron.py` separate-script convention). Cal_mlp integration writes ONE row UNCONDITIONALLY at startup (`scripts/cal_mlp/integration.py:457`) — after WAL verify + cal_mlp imports, before parity assertion. Threshold: `0 in 5 min` → FAIL (Bit 2.1a class — deploy didn't restart, OR bot crashed before init); `1-2 in 5 min` → OK (healthy deploy + at most 1 auto-restart from `bot.py:28053` (pre-Bit-2.1a; file is now `bot/_impl.py`)); `≥ 3 in 5 min` → FAIL (post-init crash loop). Empirical: 92 historical startup pairs over 8d (cal_mlp integration shipped 2026-04-29 — older rows do not exist in `bot_startup_log` by construction), max 2 events in any 5-min window — ≥3 has zero historical false-positives. Catalog gaps + market quietude don't cause restarts → no false positives from those classes. Catches crash-loop deploys (`systemctl is-active` returns "activating", not "failed", during the loop) — fires the existing Telegram failure alert ~5 min into the next deploy. Local invariant: `tests/unit/test_post_deploy_scan_gate.py` (18 tests — 4 invariant pins on workflow + 14 behavioral fixtures covering all threshold branches, both ISO-8601 timestamp quirks, the schema-error-not-misclassified-as-crash-loop case from R3 MAJOR #2, and the argparse-validation-rejects-nonsense-args case from R4 MAJOR #2; wired into `make test-unit`). Bit 2.0.5.3 of repo modularization plan; full 2-pivot journey across 3 candidate signals (`evaluated_opportunities` → `market_observations_continuous` → `bot_startup_log`) documented at `kb/decisions/bit-2.0.5.3-spec-correction-may07.md`.
@@ -149,6 +149,81 @@ On a fresh bucket: run §1-§5 verbatim from the runbook (templates are now at t
 
 The one residual shared failure surface is root filesystem disk-full — D1.6 (`86b9zk4we`) ships a passive `shutil.disk_usage` ≥ 80% used Telegram alert (via `scripts/ops/collector_health_monitor.py`, operator-installed cron every 5 min) that closes this gap.
 
+## D2.5 Coinbase collector deploy (REQUIRES-APPROVAL discipline)
+
+`ops/kalshi-coinbase-collector.service` (SHIPPED 2026-05-18, ticket `86b9znq4w`) deploys the Coinbase-side Data Corpus collector as a THIRD parallel systemd unit on the bot VPS, alongside `kalshi-bot.service` + `kalshi-collector.service`. Option B isolation posture (operator-decided at kickoff): separate process / separate cgroup / separate env file / separate bronze root / separate health sidecar. Key isolation knobs (pinned by `tests/contracts/test_kalshi_coinbase_collector_systemd_unit.py`):
+
+- **NO `CPUAffinity`** — the 2-vCPU VPS has the bot implicitly on vCPU-0 and kalshi-collector pinned to vCPU-1 (D1.5); pinning a third tenant over-constrains the kernel scheduler. Coinbase single-conn light load is fine on either vCPU; `Nice=10` + `MemoryMax` floor is the structural bound.
+- `Nice=10` — same I/O-bound polite-background posture as kalshi-collector.
+- `MemoryMax=256M` + `MemorySwapMax=0` — half of kalshi-collector's 512M cap. Coinbase single-conn × 7 products × 5 channels (post-D2.5 level2_batch promotion) is structurally lighter than Kalshi 7-conn × ~21K-subs. 256M leaves room for worker queue (10K items) + zstd buffer + rclone overhead.
+- `LimitNOFILE=512` — 1 conn × 5 channels × rotation + rclone needs ~30 fd typical; 512 gives ~10× headroom (tighter than Kalshi's 4096 to surface fd-leak regressions early).
+- `Restart=on-failure` + `RestartSec=10s` — same lifecycle posture as kalshi-collector. A clean `systemctl stop` halts the unit deliberately (for env-file rotation); non-zero exits restart after 10s.
+- `EnvironmentFile=/home/botuser/.env.coinbase-collector` — DEDICATED home-rooted env file (NOT the bot's repo-rooted `.env` AND NOT the Kalshi collector's `.env.collector`). Lives OUTSIDE the cloned repo so `git reset --hard origin/main` deploys cannot wipe Coinbase-side knobs.
+
+### Operator runbook: provision `/home/botuser/.env.coinbase-collector`
+
+D2.5 ships the systemd unit + installer extension; the env file is operator-provisioned (NOT in git, never written by deploys). On the VPS:
+
+```bash
+cat > /home/botuser/.env.coinbase-collector <<'ENV'
+COINBASE_BRONZE_ROOT=/var/lib/kalshi-coinbase-collector/bronze
+RCLONE_REMOTE=s3prod
+S3_BUCKET=kalshi-bot-archive
+ENV
+chmod 600 /home/botuser/.env.coinbase-collector
+chown botuser:botuser /home/botuser/.env.coinbase-collector
+
+# No PEM / no KEY_ID — D2.5 ships public channels only (D2.1.5 narrowed
+# the auth scope; HMAC private-channel support is deferred to a future
+# Bit with corresponding auth.py body landing).
+
+# Bronze root preparation
+sudo mkdir -p /var/lib/kalshi-coinbase-collector/bronze
+sudo chown -R botuser:botuser /var/lib/kalshi-coinbase-collector
+sudo chmod 750 /var/lib/kalshi-coinbase-collector
+
+# Install all THREE systemd units (kalshi-bot + kalshi-collector +
+# kalshi-coinbase-collector) — ops/install.sh extends to a 3-unit
+# parallel-array installer at D2.5.
+bash ops/install.sh
+# install.sh validates each unit: source file exists, wrapper
+# executable, env-file present, ExecStart/WorkingDirectory/
+# EnvironmentFile match expected paths, `systemd-analyze verify`
+# accepts the unit. Failures abort BEFORE sudo cp.
+
+# Start the Coinbase collector (operator-decided timing; NOT auto-
+# started by deploy.yml).
+sudo systemctl start kalshi-coinbase-collector
+journalctl -u kalshi-coinbase-collector -n 50  # boot logs clean?
+ls -lh /var/lib/kalshi-coinbase-collector/bronze/  # outbox/ + in_flight/?
+
+# Within ~5 minutes (one rotation interval at low Coinbase load,
+# faster with level2_batch on) the first chunk should land in S3.
+rclone lsf s3prod:kalshi-bot-archive/bronze/coinbase_ws/ticker/ | head
+rclone lsf s3prod:kalshi-bot-archive/bronze/coinbase_ws/level2_batch/ | head
+```
+
+### Sudoers NOPASSWD extension (pre-deploy-first prerequisite)
+
+The D2.5 deploy.yml path-aware restart block uses `sudo -n /bin/systemctl restart kalshi-coinbase-collector`. The VPS's existing `/etc/sudoers.d/botuser-systemctl-restart` was extended at D1.5 to include `kalshi-collector` (see `feedback_vps_sudoers_collector_gap_may17`); D2.5 requires an ADDITIONAL extension for `kalshi-coinbase-collector`:
+
+```bash
+# As root on the VPS (one-time, before the first D2.5 deploy fires):
+sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
+# Add a line:
+#   botuser ALL=(root) NOPASSWD: /bin/systemctl restart kalshi-coinbase-collector
+```
+
+Without this extension, the first D2.5-affecting deploy fires `sudo -n /bin/systemctl restart kalshi-coinbase-collector`, which fails immediately with exit 1 + a recognizable error — the deploy aborts BEFORE the broken restart silently leaves the unit un-restarted. The fail-loud posture matches the D1.5.2 R3-C1 lesson.
+
+### Off-switch
+
+`sudo systemctl stop kalshi-coinbase-collector` → bot + Kalshi collector unaffected. `sudo systemctl stop kalshi-collector` → Coinbase collector unaffected. `sudo systemctl stop kalshi-bot` → both collectors unaffected. Verified structurally: separate process groups, separate WS conns (different upstream hosts: Coinbase `ws-feed.exchange.coinbase.com` vs Kalshi WS), no shared `state.db`, no shared API keys, separate disk paths (`COINBASE_BRONZE_ROOT` vs `COLLECTOR_BRONZE_ROOT`), separate bronze_health.json sidecar files.
+
+### D2.5 health monitoring
+
+`scripts/ops/collector_health_monitor.py` extends to DUAL-TIER dispatch at D2.5 — the same 4 check functions (`check_disk`, `check_ws_reconnects`, `check_collector_active`, `check_dropped_frames`) now run per-cron-tick for BOTH kalshi-collector AND kalshi-coinbase-collector. Per-tier dedup-key prefixes (`d1_6_<check>` for the Kalshi side / `d2_5_<check>` for the Coinbase side) keep alert dedup independent — a Kalshi disk-pressure alert does NOT dedup-suppress a Coinbase disk-pressure alert (their underlying mount points are structurally separate).
+
 ## watchdog.py (2-min health monitor, Sprint 14-A Bit X.5 relocation)
 
 `ops/watchdog.py` is the standalone cron-driven bot health monitor (relocated from repo root to `ops/` by Sprint 14-A Bit X.5, 2026-05-17; umbrella ticket `86b9zfbt8`). Operator-installed via VPS crontab; runs every 2 minutes; sends Telegram alerts on bot-down, log-stall, loss streaks, low balance, high memory, and Layer 3.5 orphan-DB holders (`scripts/backfill/*` PIDs mid-session). Not a systemd unit — `bot/orphan_db_watchdog.py` and `ops/kalshi-bot.service` are separate concerns.
@@ -178,7 +253,8 @@ The `git reset --hard origin/main` deploy step moves the file but does NOT touch
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
 - `kalshi-collector.service` — D1.5 collector systemd unit, source of truth
-- `install.sh` — multi-unit install + reload (validates + enables BOTH)
+- `kalshi-coinbase-collector.service` — D2.5 Coinbase collector systemd unit, source of truth (ticket `86b9znq4w`, 2026-05-18)
+- `install.sh` — 3-unit install + reload (validates + enables ALL THREE — kalshi-bot + kalshi-collector + kalshi-coinbase-collector)
 - `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
 - `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 

@@ -89,9 +89,11 @@ def test_ws_client_init_signature():
 
     Unlike Kalshi the constructor takes NO ``api_key`` / ``private_key``
     because the operator scoped D2.1.5 to public Coinbase Exchange WS
-    channels — default subscribe set is the 4 verified-public channels
-    (ticker / matches / heartbeat / status; ``level2_batch`` deferred
-    to D2.2). No HMAC handshake required. A future Bit that adds
+    channels. Post-D2.5 default subscribe set is 5 verified-public
+    channels (ticker / matches / heartbeat / status / level2_batch);
+    D2.1.5 originally shipped with the 4-channel subset and D2.5
+    promoted level2_batch after the R0 reachability spike. No HMAC
+    handshake required for any of these. A future Bit that adds
     private channels can extend the signature without breaking this
     surface.
     """
@@ -113,8 +115,10 @@ def test_ws_client_init_signature():
         )
     # Default channels + product_ids are constructor kwargs so the
     # consumer can override per-Bit (the CoinbaseArchiver D2.2 default
-    # accepts the wire library's 4-channel set; the D2.3 bot feed
-    # refactor may pick a narrower subset).
+    # accepts the wire library's published default channel set —
+    # post-D2.5 5 channels including level2_batch; D2.3 bot feed
+    # refactor picks the narrower `("ticker",)` subset for the bot's
+    # spot-price-only consumer path).
     assert "channels" in params, (
         "WSClient.__init__ missing `channels` kwarg — Coinbase WS "
         "subscribe is per-channel; this list controls the default "
@@ -362,30 +366,37 @@ def test_ws_client_constructs_with_default_kwargs():
 # ─── 9. DEFAULT_CHANNELS scope pin (R4 Mn2 — code-side regression catch) ────
 
 
-def test_default_channels_match_post_r2_scope():
-    """``DEFAULT_CHANNELS`` is exactly the 4 verified-public Coinbase
-    Exchange WS channels at the post-R2 scope: ``ticker`` + ``matches``
-    + ``heartbeat`` + ``status``.
+def test_default_channels_match_post_d2_5_scope():
+    """``DEFAULT_CHANNELS`` is exactly the 5 verified-public Coinbase
+    Exchange WS channels at the post-D2.5 scope: ``ticker`` +
+    ``matches`` + ``heartbeat`` + ``status`` + ``level2_batch``.
 
-    R2 fix M4 deferred ``level2_batch`` pending in-archiver
-    reachability verification. Without this structural pin, a future
-    Bit could quietly re-add ``level2_batch`` to ``DEFAULT_CHANNELS``
-    without any sister-doc drift firing (L99 catches doc paraphrases,
-    not code-side mutation). This test is the code-test parity guard.
+    D2.5 (ticket 86b9znq4w, 2026-05-18) PROMOTED ``level2_batch`` into
+    DEFAULT_CHANNELS after the R0 reachability spike at D2.5 kickoff
+    confirmed public access: 1 snapshot + 502 l2update frames over 30s
+    for BTC-USD alone, NO ``type=error`` response. The D2.2
+    ``CoinbaseArchiver`` dispatch table
+    (``DEFAULT_MSG_TYPE_TO_CHANNEL``) extends in the SAME Bit (adds
+    ``"snapshot": "level2_batch"`` + ``"l2update": "level2_batch"``).
 
-    When a followup Bit promotes ``level2_batch`` into the default set,
-    update BOTH this assertion AND the L99 STALE_PATTERNS entries that
-    retract the post-R2 4-channel scope. The D2.2 ``CoinbaseArchiver``
-    dispatch table (``DEFAULT_MSG_TYPE_TO_CHANNEL``) must extend
-    in the SAME Bit (add ``"snapshot": "level2_batch"`` +
-    ``"l2update": "level2_batch"``).
+    Pre-D2.5 (R2 M4 retract) this test pinned the 4-channel scope as
+    defensive — a future Bit could have quietly re-added
+    ``level2_batch`` to ``DEFAULT_CHANNELS`` without any sister-doc
+    drift firing (L99 catches doc paraphrases, not code-side
+    mutation). D2.5 promotes via the BUNDLED retract: this test +
+    L99 STALE patterns + sister docs update atomically.
+
+    If a future Bit re-narrows the default set (e.g., Coinbase gates
+    one of these channels), update BOTH this assertion AND the L99
+    STALE_PATTERNS in the same Bit.
     """
     from coinbase_wire.ws_client import DEFAULT_CHANNELS
     assert DEFAULT_CHANNELS == (
-        "ticker", "matches", "heartbeat", "status",
+        "ticker", "matches", "heartbeat", "status", "level2_batch",
     ), (
-        f"DEFAULT_CHANNELS = {DEFAULT_CHANNELS!r}; expected the 4 "
-        f"verified-public Exchange WS channels per the R2 M4 trim. "
-        f"If level2_batch was added back, verify reachability first + "
-        f"update the L99 ratchet + the D2.2 dispatch table."
+        f"DEFAULT_CHANNELS = {DEFAULT_CHANNELS!r}; expected the 5 "
+        f"verified-public Exchange WS channels per the D2.5 "
+        f"level2_batch promotion. If level2_batch was removed back, "
+        f"document the reason + update the L99 ratchet + the D2.2 "
+        f"dispatch table in the same Bit."
     )

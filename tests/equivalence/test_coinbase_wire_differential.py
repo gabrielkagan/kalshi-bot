@@ -32,7 +32,7 @@ What this test DOES NOT pin (out of scope for D2.3):
   - Reconnect/cleanup timing — covered by the dedicated R3/P0-A sister
     test below (``test_session_end_callback_fires_before_backoff_sleep``)
   - **Bot-side subscribe-payload SHAPE (narrow ``channels=("ticker",)``
-    vs the wire's wider 4-channel ``DEFAULT_CHANNELS``)** — the mock
+    vs the wire's wider post-D2.5 5-channel ``DEFAULT_CHANNELS``)** — the mock
     server emits ``RECORDED_FRAME_SEQUENCE`` to every connection
     regardless of what the consumer subscribes to, so this differential
     cannot detect a future widening of the bot's narrow subscribe set.

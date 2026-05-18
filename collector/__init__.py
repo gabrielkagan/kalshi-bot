@@ -57,17 +57,20 @@ Canonical Bit ⇄ submodule mapping (single source of truth):
   D2.2 — coinbase_archiver.py body (SHIPPED 2026-05-17, ticket
          ``86b9zkppk``). Coinbase-side mirror of ``BronzeArchiver``:
          single-conn, static ``msg_type → channel`` dispatch
-         (``ticker → ticker``, ``match → matches``, ``heartbeat →
-         heartbeat``, ``status → status``; unmapped → ``_unrouted``),
-         ``source="coinbase_ws"`` on every envelope. Consumes
-         ``coinbase_wire.ws_client.WSClient`` (D2.1.5). Applies
-         D1.3-fu4 worker-thread decouple + D1.3-fu5 skip-ack-enqueue
-         FROM DAY 1 (ack types: ``subscriptions`` + ``error``). NO
-         ``bot.*`` imports (pinned by ``collector-no-bot`` contract +
-         the AST defense-in-depth in
+         (post-D2.5: ``ticker → ticker``, ``match → matches``,
+         ``heartbeat → heartbeat``, ``status → status``, ``snapshot
+         → level2_batch``, ``l2update → level2_batch``; unmapped →
+         ``_unrouted``), ``source="coinbase_ws"`` on every envelope.
+         Consumes ``coinbase_wire.ws_client.WSClient`` (D2.1.5).
+         Applies D1.3-fu4 worker-thread decouple + D1.3-fu5
+         skip-ack-enqueue FROM DAY 1 (ack types: ``subscriptions`` +
+         ``error``). NO ``bot.*`` imports (pinned by
+         ``collector-no-bot`` contract + the AST defense-in-depth in
          ``tests/contracts/test_collector_no_bot_imports.py``). D2.3
-         refactors ``bot/feeds/coinbase.py`` to consume the same
-         WSClient; D2.5 ships the systemd unit.
+         refactored ``bot/feeds/coinbase.py`` to consume the same
+         WSClient; D2.5 SHIPPED the systemd unit + orchestrator
+         (``collector/coinbase_main_loop.py``) + bundled the
+         level2_batch promotion after the R0 reachability spike.
 
 See ``agent_docs/bot_layout.md`` "Data Corpus collector" section + the
 ``kb/decisions/d1-1-pickup-prompt-may16.md`` "Pickup chain" for the

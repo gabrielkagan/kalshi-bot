@@ -63,15 +63,31 @@ def test_check_disk_alerts_above_threshold():
 
 
 def test_check_ws_reconnects_signature():
-    """`check_ws_reconnects(window_min=..., threshold_count=..., unit=...)` exists."""
+    """`check_ws_reconnects(window_min=..., threshold_count=..., unit=..., log_marker=...)` exists.
+
+    D2.5 R2-C1 added the `log_marker` kwarg so the dual-tier dispatch
+    can target the Coinbase wire's distinct `coinbase_ws_disconnected`
+    marker. Pre-R2-C1 the substring filter was hardcoded to
+    `kalshi_ws_disconnected`, silently never-matching Coinbase logs.
+    """
     from scripts.ops.collector_health_monitor import check_ws_reconnects
     sig = inspect.signature(check_ws_reconnects)
     assert "window_min" in sig.parameters
     assert "threshold_count" in sig.parameters
     assert "unit" in sig.parameters
+    assert "log_marker" in sig.parameters, (
+        "check_ws_reconnects missing `log_marker` kwarg added at D2.5 "
+        "R2-C1. Without it, the Coinbase tier's reconnect-storm alert "
+        "is silently broken — the hardcoded substring filter would "
+        "never match Coinbase wire logs."
+    )
     # Per D1.6 plan: 10 disconnects per 5 min = ~2/min cadence trips alert.
     assert sig.parameters["window_min"].default == 5
     assert sig.parameters["threshold_count"].default == 10
+    assert sig.parameters["log_marker"].default == "kalshi_ws_disconnected", (
+        "log_marker default must be Kalshi-tier value so pre-D2.5 "
+        "callers (and tests) preserve their existing behavior."
+    )
 
 
 def test_check_ws_reconnects_silent_when_journalctl_unavailable():
@@ -164,3 +180,175 @@ def test_main_returns_zero_per_cron_convention():
             MockNotifier.return_value = MagicMock()
             rc = mod.main()
     assert rc == 0, f"main() must return 0 per cron convention; got {rc}"
+
+
+# ─── D2.5 dual-tier dispatch (ticket 86b9znq4w, 2026-05-18) ─────────────
+
+
+def test_coinbase_tier_constants_exist():
+    """D2.5 extends the monitor to poll kalshi-coinbase-collector as a
+    SECOND tier alongside kalshi-collector. The 4 Coinbase-side
+    constants must be defined at module scope so a future refactor
+    cannot silently lose Coinbase coverage by renaming + leaving the
+    kalshi side stranded.
+    """
+    from scripts.ops import collector_health_monitor as mod
+    assert mod.COINBASE_BRONZE_ROOT == "/var/lib/kalshi-coinbase-collector", (
+        f"COINBASE_BRONZE_ROOT must point at the Coinbase-side bronze "
+        f"mount per D2.5 Option B isolation; got "
+        f"{mod.COINBASE_BRONZE_ROOT!r}."
+    )
+    assert mod.COINBASE_COLLECTOR_UNIT == "kalshi-coinbase-collector", (
+        f"COINBASE_COLLECTOR_UNIT must match the systemd unit name; "
+        f"got {mod.COINBASE_COLLECTOR_UNIT!r}."
+    )
+    assert mod.COINBASE_SIDECAR_PATH == (
+        "/var/lib/kalshi-coinbase-collector/bronze_health.json"
+    ), (
+        f"COINBASE_SIDECAR_PATH must point at the Coinbase-side "
+        f"bronze_health.json written by collector.coinbase_main_loop; "
+        f"got {mod.COINBASE_SIDECAR_PATH!r}."
+    )
+    assert mod.COINBASE_MONITOR_STATE_PATH == (
+        "/var/lib/kalshi-coinbase-collector/monitor_state.json"
+    ), (
+        f"COINBASE_MONITOR_STATE_PATH must be Coinbase-side (separate "
+        f"from Kalshi monitor_state.json to keep dropped-frames "
+        f"accumulation independent); got "
+        f"{mod.COINBASE_MONITOR_STATE_PATH!r}."
+    )
+
+
+def test_main_resolves_coinbase_sidecar_path_via_env_var():
+    """R4-M2 + R5-M1 regression pin: `main()` MUST mirror the writer's
+    two-knob derivation EXACTLY when resolving the Coinbase sidecar
+    path. The writer side
+    (``collector/coinbase_main_loop.py::run``):
+
+      1. ``COINBASE_HEALTH_SIDECAR_PATH`` env var when set, else
+      2. ``bronze_root.parent / "bronze_health.json"`` (where
+         ``bronze_root`` comes from ``COINBASE_BRONZE_ROOT`` env var
+         or default), else
+      3. canonical hardcoded path.
+
+    Pre-R4-M2 only step (1) was env-aware on the reader side. R5-M1
+    found step (2) still hardcoded — an operator who relocated bronze
+    via ``COINBASE_BRONZE_ROOT`` alone would silently break the
+    monitor. Post-R5-M1 both knobs are mirrored.
+
+    AST scan checks for BOTH env-var references on the reader side.
+    Accepts either ``os.environ.get`` or ``os.getenv`` (functionally
+    equivalent stdlib forms; R5-N1 broadening to avoid false-fail on
+    refactor).
+    """
+    from scripts.ops import collector_health_monitor as mod
+    src = inspect.getsource(mod)
+    has_env_resolver = "os.environ.get(" in src or "os.getenv(" in src
+    assert has_env_resolver, (
+        "main() must resolve env vars at runtime via os.environ.get or "
+        "os.getenv. Pure-constant resolution would re-introduce the "
+        "writer/reader path drift that R4-M2 + R5-M1 closed."
+    )
+    assert '"COINBASE_HEALTH_SIDECAR_PATH"' in src, (
+        "main() must resolve COINBASE_HEALTH_SIDECAR_PATH env var with "
+        "COINBASE_SIDECAR_PATH fallback (R4-M2). Without it, the "
+        "writer + monitor would reference different paths when an "
+        "operator relocates the sidecar."
+    )
+    assert '"COINBASE_BRONZE_ROOT"' in src, (
+        "main() must ALSO mirror the writer's bronze-root-derived "
+        "sidecar fallback (R5-M1). Without reading COINBASE_BRONZE_ROOT "
+        "on the reader side, an operator who relocates ONLY the bronze "
+        "root (no HEALTH_SIDECAR_PATH override) would silently break "
+        "the monitor — writer derives `<new-root>/bronze_health.json`, "
+        "reader keeps the hardcoded /var/lib/... path."
+    )
+
+
+def test_main_passes_coinbase_log_marker_to_check_ws_reconnects():
+    """R2-C1 regression pin: `main()` MUST pass
+    `log_marker="coinbase_ws_disconnected"` to the Coinbase-tier
+    `check_ws_reconnects` invocation.
+
+    Pre-R2-C1 the hardcoded `"kalshi_ws_disconnected"` substring filter
+    would silently never match Coinbase logs, producing always-OK signals
+    even during a sustained Coinbase reconnect storm. AST scan over the
+    module source confirms the kwarg is wired.
+    """
+    from scripts.ops import collector_health_monitor as mod
+    src = inspect.getsource(mod)
+    assert 'log_marker="coinbase_ws_disconnected"' in src, (
+        "main() must pass `log_marker=\"coinbase_ws_disconnected\"` to "
+        "the Coinbase-tier check_ws_reconnects call. Without it, the "
+        "Coinbase reconnect-storm alert is silently broken (the hardcoded "
+        "kalshi_ws_disconnected substring filter never matches Coinbase "
+        "wire logs)."
+    )
+
+
+def test_main_polls_both_collectors_with_distinct_dedup_keys():
+    """`main()` MUST dispatch checks for BOTH kalshi-collector AND
+    kalshi-coinbase-collector, with DIFFERENT dedup-key prefixes so
+    a Kalshi alert does NOT dedup-suppress an in-flight Coinbase alert
+    (their underlying mount points are structurally separate per the
+    Option B isolation posture).
+
+    Captures notifier.send() invocations to assert the per-tier dedup
+    prefix is correctly applied. The check functions return None in
+    the test env (no journalctl / no sidecar / no real disk pressure),
+    so we force one alert per tier via patches and inspect the dedup
+    keys.
+    """
+    from scripts.ops import collector_health_monitor as mod
+
+    mock_notifier = MagicMock()
+    sent_calls: list[tuple] = []
+
+    def _capture_send(message, dedup_key=None):
+        sent_calls.append((message, dedup_key))
+
+    mock_notifier.send.side_effect = _capture_send
+
+    # Force one alert per check by stubbing the 4 check functions to
+    # return a fixed alert string. We do this at module level so BOTH
+    # tier dispatches see the alert (the lambdas in main() call the
+    # module-level functions).
+    def _alert(*args, **kwargs):
+        return "FORCED-ALERT-FOR-TEST"
+
+    with patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
+        with patch.object(mod, "check_disk", _alert), \
+             patch.object(mod, "check_ws_reconnects", _alert), \
+             patch.object(mod, "check_collector_active", _alert), \
+             patch.object(mod, "check_dropped_frames", _alert):
+            mod.main()
+
+    # 4 checks × 2 tiers = 8 alerts.
+    assert len(sent_calls) == 8, (
+        f"Expected 8 alert dispatches (4 checks × 2 tiers); got "
+        f"{len(sent_calls)}. Dispatch loop may have lost a tier."
+    )
+
+    # Inspect the dedup keys. 4 must start with `d1_6_` (Kalshi side),
+    # 4 must start with `d2_5_` (Coinbase side).
+    dedup_keys = [k for _, k in sent_calls]
+    kalshi_keys = [k for k in dedup_keys if k and k.startswith("d1_6_")]
+    coinbase_keys = [k for k in dedup_keys if k and k.startswith("d2_5_")]
+    assert len(kalshi_keys) == 4, (
+        f"Expected 4 dedup keys with `d1_6_` prefix (Kalshi side); got "
+        f"{len(kalshi_keys)}: {kalshi_keys}"
+    )
+    assert len(coinbase_keys) == 4, (
+        f"Expected 4 dedup keys with `d2_5_` prefix (Coinbase side); "
+        f"got {len(coinbase_keys)}: {coinbase_keys}. The D2.5 dual-tier "
+        f"dispatch was lost or its dedup-key prefix regressed."
+    )
+
+    # Per-check parity: every check_name appears under BOTH prefixes.
+    kalshi_check_names = {k.removeprefix("d1_6_") for k in kalshi_keys}
+    coinbase_check_names = {k.removeprefix("d2_5_") for k in coinbase_keys}
+    assert kalshi_check_names == coinbase_check_names, (
+        f"Per-check name parity broken across tiers. Kalshi side: "
+        f"{kalshi_check_names}; Coinbase side: {coinbase_check_names}. "
+        f"Every check_name must be present under BOTH dedup prefixes."
+    )

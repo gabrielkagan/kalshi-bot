@@ -222,18 +222,21 @@ def test_bot_feeds_coinbase_no_inline_asyncio_event_loop_construction():
 
 def test_bot_feeds_coinbase_narrow_subscribe_scope_is_ticker_only():
     """The bot MUST subscribe to ``channels=("ticker",)`` only — NOT the
-    wire's 4-channel ``DEFAULT_CHANNELS`` set (ticker + matches +
-    heartbeat + status) that the collector uses for bronze archiving.
+    wire's post-D2.5 5-channel ``DEFAULT_CHANNELS`` set (ticker +
+    matches + heartbeat + status + level2_batch) that the collector
+    uses for bronze archiving.
 
     Why pin this here (not just via the equivalence differential): the
     differential test in ``tests/equivalence/test_coinbase_wire_differential.py``
     pins that two WSClient consumers see byte-identical frames from a
     given wire connection — but it does NOT pin the bot-side
-    subscribe-payload SHAPE (the mock server emits all 4 channels
-    regardless of what the consumer subscribes to). Without this pin,
-    a future maintainer could widen ``_BOT_CHANNELS`` to the wire's
-    default set without tripping any contract test, adding CPU + GIL
-    noise to the bot's spot-feed path while everything still "works".
+    subscribe-payload SHAPE (the mock server emits all subscribed
+    channels regardless of what the consumer requests). Without this
+    pin, a future maintainer could widen ``_BOT_CHANNELS`` to the
+    wire's default set without tripping any contract test, adding CPU
+    + GIL noise to the bot's spot-feed path (and after D2.5 level2_batch
+    promotion, the high-volume orderbook firehose) while everything
+    still "works".
 
     AST guard: walk the module for the literal tuple assignment
     ``_BOT_CHANNELS = (...)`` and assert the only element is
@@ -280,12 +283,14 @@ def test_bot_feeds_coinbase_narrow_subscribe_scope_is_ticker_only():
     lineno, elements = found_assignments[0]
     assert elements == ["ticker"], (
         f"bot/feeds/coinbase.py:{lineno} `_BOT_CHANNELS = {elements!r}` "
-        f"— expected exactly `('ticker',)`. The bot intentionally subscribes "
-        "to ticker channel ONLY (narrower than the wire's 4-channel "
-        "DEFAULT_CHANNELS = ticker + matches + heartbeat + status that the "
-        "collector uses for bronze archiving). Widening this set adds CPU "
-        "+ GIL noise to the bot's spot-feed path with no consumer for the "
-        "extra channels. The collector keeps the wider set in "
+        f"— expected exactly `('ticker',)`. The bot intentionally "
+        "subscribes to ticker channel ONLY (narrower than the wire's "
+        "post-D2.5 5-channel DEFAULT_CHANNELS = ticker + matches + "
+        "heartbeat + status + level2_batch that the collector uses for "
+        "bronze archiving). Widening this set adds CPU + GIL noise to "
+        "the bot's spot-feed path with no consumer for the extra "
+        "channels (and after D2.5 level2_batch promotion, a high-volume "
+        "orderbook firehose). The collector keeps the wider set in "
         "collector/coinbase_archiver.py via DEFAULT_CHANNELS."
     )
 

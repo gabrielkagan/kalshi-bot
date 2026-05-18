@@ -16,15 +16,18 @@ rather than a protocol-flip. The Coinbase Advanced Trade WS surface
 DIFFERENT subscribe shape and DIFFERENT product coverage — out of scope
 for D2.1.5.
 
-D2.1.5 NARROWED the D2.1 forecast to PUBLIC channels only. The default
-subscribe set ships 4 verified-public channels (``ticker`` + ``matches``
-+ ``heartbeat`` + ``status``); ``level2_batch`` is reserved for an
-in-archiver reachability check to verify-then-extend (observing
-``type=error`` subscribe-rejection before bronze goes silent). Public-only Exchange WS
-connects need no signature, api_key, timestamp, or passphrase. The HMAC
-stubs at ``sign`` + ``make_ws_headers`` below preserve the D2.1 forecast
-surface for a future Bit that adds private channels (full ``user``
-channel, authenticated ``level2`` for high-rate-limit access, etc.).
+D2.1.5 NARROWED the D2.1 forecast to PUBLIC channels only. At D2.1.5
+ship-time the default subscribe set was 4 verified-public channels
+(``ticker`` + ``matches`` + ``heartbeat`` + ``status``); ``level2_batch``
+was deferred pending in-archiver reachability verification. D2.5
+(ticket ``86b9znq4w``, 2026-05-18) PROMOTED ``level2_batch`` after
+the R0 reachability spike confirmed public access — post-D2.5 the
+default subscribe set is 5 verified-public channels. Public-only
+Exchange WS connects need no signature, api_key, timestamp, or
+passphrase. The HMAC stubs at ``sign`` + ``make_ws_headers`` below
+preserve the D2.1 forecast surface for a future Bit that adds private
+channels (full ``user`` channel, authenticated ``level2`` for high-
+rate-limit access, etc.).
 
 NO imports from ``bot.*`` or ``collector.*`` (pinned by import-linter
 contracts ``coinbase_wire-no-bot`` + ``coinbase_wire-no-collector`` and
@@ -54,10 +57,14 @@ def build_public_subscribe_message(
           "channels": [<any subset of supported public channels>]
         }
 
-    The default ``WSClient`` constructor dispatches one subscribe with
-    ``channels=("ticker", "matches", "heartbeat", "status")`` — the
-    verified-public subset at D2.1.5. ``level2_batch`` lands in a
-    followup once subscribe-success is verified in the archiver.
+    The default ``WSClient`` constructor dispatches one subscribe
+    with the post-D2.5 5-channel set: ``channels=("ticker", "matches",
+    "heartbeat", "status", "level2_batch")``. D2.5 (ticket
+    ``86b9znq4w``, 2026-05-18) promoted ``level2_batch`` after the
+    R0 reachability spike at D2.5 kickoff confirmed public access on
+    the Exchange WS endpoint. D2.1.5 originally shipped with the
+    4-channel subset (level2_batch deferred); D2.5 extended same-Bit
+    after the R0 verification.
 
     Coinbase Exchange WS lets a SINGLE subscribe message cover multiple
     channels (the field name is ``channels`` plural, accepting an array
@@ -138,9 +145,11 @@ def sign(secret: str, timestamp: str, method: str, path: str,
     """
     raise NotImplementedError(
         "coinbase_wire.auth.sign is reserved for a future Bit that adds "
-        "private Coinbase channels. D2.1.5 is public-only (default subscribe "
-        "set: ticker / matches / heartbeat / status); no HMAC handshake is "
-        "required for those. See ticket 86b9zkpny."
+        "private Coinbase channels. D2.1.5 + D2.5 ship public-only "
+        "(post-D2.5 default subscribe set is 5 verified-public channels: "
+        "ticker / matches / heartbeat / status / level2_batch); no HMAC "
+        "handshake is required for any of those. See ticket 86b9zkpny "
+        "(D2.1.5 body) + 86b9znq4w (D2.5 level2_batch promotion)."
     )
 
 
@@ -149,14 +158,17 @@ def make_ws_headers(api_key: str, api_secret: str,
     """Reserved for a future Bit that adds private Coinbase channels.
 
     Analogous to ``kalshi_wire.auth.make_ws_headers`` (which IS
-    implemented — Kalshi WS auth is always required). Coinbase WS auth
-    is conditional on the subscribed channel set; D2.1.5 sticks to
-    public channels so this helper is a sentinel until a private-channel
-    Bit needs it.
+    implemented — Kalshi WS auth is always required). Coinbase WS
+    auth is conditional on the subscribed channel set; D2.1.5 + D2.5
+    ship public-only (post-D2.5 5-channel default: ticker / matches /
+    heartbeat / status / level2_batch) so this helper is a sentinel
+    until a private-channel Bit needs it.
     """
     raise NotImplementedError(
         "coinbase_wire.auth.make_ws_headers is reserved for a future "
-        "Bit that adds private Coinbase channels. D2.1.5 is public-only; "
-        "no headers required for the public WS connect. See ticket "
-        "86b9zkpny."
+        "Bit that adds private Coinbase channels. D2.1.5 + D2.5 ship "
+        "public-only (post-D2.5 5-channel default: ticker / matches / "
+        "heartbeat / status / level2_batch); no headers required for "
+        "any of those. See ticket 86b9zkpny (D2.1.5 body) + 86b9znq4w "
+        "(D2.5 level2_batch promotion)."
     )

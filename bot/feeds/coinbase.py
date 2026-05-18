@@ -28,11 +28,13 @@ shape so both feeds + both collector archivers route through the
 parallel wire libraries.
 
 Subscribe scope: bot subscribes to ``channels=("ticker",)`` only — the
-wire library's ``DEFAULT_CHANNELS`` defaults to a 4-channel set (ticker
-+ matches + heartbeat + status) that the collector uses for bronze
-archiving. The bot only needs spot price; matches/heartbeat/status
-frames would be CPU + GIL noise on the bot side. Narrowing here keeps
-the bot path lean while the collector keeps the wide set.
+wire library's post-D2.5 ``DEFAULT_CHANNELS`` defaults to a 5-channel
+set (ticker + matches + heartbeat + status + level2_batch) that the
+collector uses for bronze archiving. The bot only needs spot price;
+matches/heartbeat/status frames would be CPU + GIL noise on the bot
+side, and the post-D2.5 level2_batch firehose (~17 l2update/sec per
+product × 7 products) would dwarf the ticker rate. Narrowing here
+keeps the bot path lean while the collector keeps the wide set.
 
 Threading model (post-D2.3):
 
@@ -80,9 +82,12 @@ from coinbase_wire.ws_client import Frame, WSClient
 
 
 # Bot subscribes to ticker channel only — narrower than the wire's
-# DEFAULT_CHANNELS (ticker + matches + heartbeat + status). The bot
-# only consumes spot price; the other 3 channels would be CPU/GIL
-# noise. The collector (D2.2) uses the wider set for bronze archiving.
+# post-D2.5 DEFAULT_CHANNELS (ticker + matches + heartbeat + status +
+# level2_batch). The bot only consumes spot price; the other 4
+# channels would be CPU/GIL noise (level2_batch in particular is high-
+# volume orderbook updates that aren't part of any bot decision path).
+# The collector (D2.2 + D2.5 level2_batch promotion) uses the wider
+# set for bronze archiving.
 _BOT_CHANNELS: Tuple[str, ...] = ("ticker",)
 
 
@@ -124,8 +129,8 @@ class CoinbaseFeed:
         self._load_persisted_buffer()
         # D2.3: WS transport delegated to coinbase_wire.WSClient.
         # ``channels`` narrows the wire default to ticker only (bot
-        # doesn't need matches/heartbeat/status — see _BOT_CHANNELS
-        # constant docstring). product_ids comes from
+        # doesn't need matches/heartbeat/status/level2_batch — see
+        # _BOT_CHANNELS constant docstring). product_ids comes from
         # bot.constants.COINBASE_PRODUCTS so a new-asset onboarding
         # flows naturally into the WS subscribe via the bot's existing
         # config surface.

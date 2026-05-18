@@ -1,0 +1,42 @@
+[Unit]
+Description=Kalshi Coinbase Bronze Collector (D2.5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/.env.coinbase-collector
+ExecStart=/home/botuser/kalshi-bot-repo/coinbase-collector-start.sh
+Restart=on-failure
+RestartSec=10s
+
+# D2.5 isolation knobs — load-bearing structural bounds on the
+# Coinbase collector blast radius (NOT documentation suggestions).
+# Pinned by tests/contracts/test_kalshi_coinbase_collector_systemd_unit.py;
+# a future edit that loosens any of these must update the test in the
+# same commit (and update kb/decisions/data-corpus-architecture.md §6).
+#
+# Deltas vs kalshi-collector.service (D1.5):
+#   - NO CPUAffinity. The 2-vCPU VPS already has the bot implicitly on
+#     vCPU-0 and kalshi-collector pinned to vCPU-1 (D1.5); adding a
+#     third pinned tenant would over-constrain the kernel scheduler.
+#     Coinbase single-conn light load is fine on either vCPU.
+#   - MemoryMax=256M (Kalshi: 512M). Coinbase single-conn × 7 products
+#     × 5 channels (post-D2.5 level2_batch promotion) is structurally
+#     lighter than Kalshi 7-conn × ~21K-subs. Halve the cap.
+#   - LimitNOFILE=512 (Kalshi: 4096). 1 conn × 5 channels × rotation +
+#     rclone needs ~30 fd typical; 512 is ~10× headroom.
+#
+# Same as kalshi-collector.service:
+Nice=10
+MemoryMax=256M
+MemorySwapMax=0
+LimitNOFILE=512
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

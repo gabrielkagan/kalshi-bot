@@ -52,16 +52,18 @@ credential surface. The sentinel stubs at ``auth.sign`` +
 message pointing to the future private-channel Bit; HMAC will land
 there.
 
-Default channel set: ``ticker`` + ``matches`` + ``heartbeat`` +
-``status`` (4 public Coinbase Exchange WS channels with confirmed
-reachability via the production ``bot/feeds/coinbase.py`` + Coinbase
-public docs). ``level2_batch`` is intentionally OMITTED from D2.1.5
-defaults — its reachability on the public WS endpoint without auth is
-not in-repo verified, and an in-archiver reachability check (observing
-``type=error`` subscribe-rejection frames before bronze goes silent on
-that channel) is the right place to verify-then-extend the channel
-set. A followup ticket adds ``level2_batch`` to defaults once that
-verification lands.
+Default channel set (post-D2.5): ``ticker`` + ``matches`` +
+``heartbeat`` + ``status`` + ``level2_batch`` — 5 public Coinbase
+Exchange WS channels with in-repo verified reachability. D2.1.5
+originally shipped with the 4-channel subset (``level2_batch``
+deferred pending in-archiver reachability verification); D2.5
+(ticket ``86b9znq4w``, 2026-05-18) PROMOTED ``level2_batch`` after
+the R0 reachability spike at D2.5 kickoff confirmed public access on
+the Exchange WS endpoint (1 snapshot + 502 l2update frames over 30s
+for BTC-USD alone, no ``type=error``). The matching dispatch entries
+landed same-Bit in ``collector.coinbase_archiver
+.DEFAULT_MSG_TYPE_TO_CHANNEL`` (``snapshot → level2_batch`` +
+``l2update → level2_batch``).
 
 Default product set: 7 entries — BTC / ETH / SOL / XRP / HYPE / DOGE /
 BNB — mirroring ``bot.constants.COINBASE_PRODUCTS``. HYPE-USD verified

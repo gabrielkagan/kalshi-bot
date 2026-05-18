@@ -123,25 +123,37 @@ _SUBSCRIBE_ACK_TYPES = frozenset({"subscriptions", "error"})
 # Naming quirk: Coinbase Exchange WS sends ``match`` (singular) frames
 # on the ``matches`` (plural) channel. The dispatch table reflects this.
 #
-# ``level2_batch`` (snapshot / l2update msg types) is intentionally
-# OMITTED at D2.2 — coinbase_wire's ``DEFAULT_CHANNELS`` set does not
-# subscribe to it (D2.1.5 deferred until reachability is verified).
-# Frames with unmapped msg_type route to the ``None``-keyed _unrouted
-# writer so bronze captures the bytes for silver QA to investigate.
-# When a followup ticket promotes level2_batch into DEFAULT_CHANNELS,
-# extend this dict with ``"snapshot": "level2_batch"`` +
-# ``"l2update": "level2_batch"``.
+# ``level2_batch`` PROMOTED at D2.5 (ticket 86b9znq4w, 2026-05-18):
+# the R0 reachability spike at D2.5 kickoff confirmed public access on
+# the Exchange WS endpoint (1 snapshot + 502 l2update frames over 30s
+# for BTC-USD alone, no ``type=error``). Both ``snapshot`` (the initial
+# orderbook image dispatched on subscribe) and ``l2update`` (the
+# streaming batched bid/ask updates) route to the ``level2_batch``
+# channel. Bundled into D2.5 alongside the wire-library default-set
+# extension + the sister-doc retract.
+#
+# Frames with unmapped msg_type (e.g., a future Coinbase channel
+# Coinbase ships without a corresponding repo update) route to the
+# ``None``-keyed ``_unrouted`` writer so bronze captures the bytes for
+# silver QA to investigate.
 DEFAULT_MSG_TYPE_TO_CHANNEL: Mapping[str, str] = {
     "ticker": "ticker",
     "match": "matches",
     "heartbeat": "heartbeat",
     "status": "status",
+    "snapshot": "level2_batch",
+    "l2update": "level2_batch",
 }
 
-# D1.3-fu4 default write-queue capacity. ~10s of buffering at typical
-# Coinbase steady-state load (single-conn covering BTC/ETH/SOL/XRP/HYPE/
-# DOGE/BNB across ticker + matches + heartbeat + status is ~50-200
-# frames/sec). Tuned the same as Kalshi for cross-collector consistency.
+# D1.3-fu4 default write-queue capacity. Per the R0 reachability spike
+# at D2.5 kickoff (BTC-USD, 30s, level2_batch only): 502 l2update
+# frames → ~17 frames/sec per product. Extrapolated to 7 products × 5
+# channels: level2_batch ~120 frames/sec dominates the post-D2.5 rate;
+# matches + ticker contribute ~50-80 frames/sec aggregate (more in
+# volatile windows); heartbeat + status are <5 frames/sec combined.
+# Steady-state total ≈ 200-300 frames/sec; the 10K queue gives
+# ~30-50s buffering at that rate. Tuned the same as Kalshi
+# for cross-collector consistency.
 _DEFAULT_WRITE_QUEUE_MAXSIZE = 10_000
 
 # Sentinel posted to ``_write_queue`` by ``stop()`` to signal the worker
@@ -201,18 +213,25 @@ class CoinbaseArchiver:
                 at a localhost mock.
             channels: optional override for the WSClient's
                 ``DEFAULT_CHANNELS``. When None, the wire library's
-                default (ticker + matches + heartbeat + status) is
-                used.
+                post-D2.5 5-channel default (ticker + matches +
+                heartbeat + status + level2_batch) is used; D2.1.5
+                originally shipped with the 4-channel subset and D2.5
+                promoted level2_batch.
             product_ids: optional override for the WSClient's
                 ``DEFAULT_PRODUCT_IDS``. When None, the wire library's
                 default (BTC/ETH/SOL/XRP/HYPE/DOGE/BNB) is used.
-            msg_type_to_channel: dispatch table. Default covers the 4
-                public Coinbase Exchange WS channels D2.1.5 subscribes
-                to. Override if extending coverage.
+            msg_type_to_channel: dispatch table. Default covers the
+                post-D2.5 6 msg-type entries dispatched across 5
+                channels (ticker → ticker; match → matches; heartbeat
+                → heartbeat; status → status; snapshot → level2_batch;
+                l2update → level2_batch). Override if extending coverage.
             write_queue_maxsize: bound on the queue between
                 ``_on_frame`` (asyncio thread) and the bronze writer
-                worker thread. D1.3-fu4 default 10_000 ≈ ~10s
-                buffering at typical load. Set to ``0`` is NOT
+                worker thread. D1.3-fu4 default 10_000 gives ~30-50s
+                buffering at the post-D2.5 reconciled ~200-300
+                frames/sec aggregate load (per the R0 reachability
+                spike — see the module-level constant comment above
+                for the canonical arithmetic). Set to ``0`` is NOT
                 supported — Python's ``queue.Queue(maxsize=0)`` means
                 UNBOUNDED, which defeats the bounded-backpressure
                 invariant.

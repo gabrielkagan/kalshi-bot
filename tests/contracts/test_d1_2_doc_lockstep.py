@@ -180,6 +180,24 @@ TRACKED_DOCS: list[Path] = [
     # ratchet catches any future drift on the persist-mechanism
     # narrative.
     REPO_ROOT / "agent_docs" / "config_reference.md",
+    # D2.5 (ticket 86b9znq4w, 2026-05-18): the Coinbase-collector
+    # systemd surface — NEW unit + wrapper + orchestrator + contract
+    # tests + deploy.yml path-aware restart block. Adding to
+    # TRACKED_DOCS so any future Bit that touches the Coinbase
+    # deploy posture fires the L99 ratchet on sister-doc drift.
+    REPO_ROOT / "ops" / "kalshi-coinbase-collector.service",
+    REPO_ROOT / "coinbase-collector-start.sh",
+    REPO_ROOT / "collector" / "coinbase_main_loop.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_kalshi_coinbase_collector_systemd_unit.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_collector_coinbase_main_loop.py",
+    REPO_ROOT / "tests" / "contracts"
+        / "test_deploy_yml_path_aware_coinbase_collector_restart.py",
+    # D2.5 deploy.yml block landed in this file too — already tracked
+    # by sister D1.5.x lockstep, but the explicit add here documents
+    # the D2.5 dependency.
+    REPO_ROOT / ".github" / "workflows" / "deploy.yml",
 ]
 
 # Patterns that are FALSE post-D1.2 SHIPPED. If any tracked doc above
@@ -1079,11 +1097,18 @@ STALE_PATTERNS_POST_D2_1_5: list[str] = [
     '["level2_batch", "matches", "ticker", "heartbeat", "status"]',
     '"channels": ["level2_batch", "matches", "ticker", "heartbeat"',  # multi-line
     # R3 reaffirms the L99 meta-ratchet: every paraphrase encoded above
-    # was a R-N reviewer find — slash, parens-comma, JSON-literal,
-    # dispatch-table snapshot/l2update→level2_batch. Future paraphrases
-    # (XML-attr style, comma-separated bare list, etc.) join here.
-    "snapshot / l2update → level2_batch",
-    "snapshot/l2update → level2_batch",
+    # was a R-N reviewer find — slash, parens-comma, JSON-literal.
+    # Future paraphrases (XML-attr style, comma-separated bare list,
+    # etc.) join here.
+    #
+    # NOTE on the `snapshot / l2update → level2_batch` patterns: those
+    # pre-D2.5 entries retracted the FORWARD-LOOKING claim that the
+    # dispatch table WOULD add those mappings "when reachability lands."
+    # Post-D2.5 (ticket 86b9znq4w, 2026-05-18) the mappings DID land
+    # (R0 spike confirmed reachability; bundle shipped same-Bit), so
+    # the patterns are no longer false claims. Removed from this list
+    # at D2.5 ship; sister-doc paraphrases in arrow-form now describe
+    # the legitimate post-D2.5 dispatch shape.
     # R1 C1: candles channel claims. Coinbase Exchange WS has no
     # candles channel (Advanced Trade does, with a default 5-minute
     # granularity that's not consumer-configurable per the R1 RCA).
@@ -1438,6 +1463,196 @@ def test_d2_3_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D2.3 SHIPPED — staleness ratchets "
+        "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D2.5 (ticket 86b9znq4w, 2026-05-18) ─────────────────────────────────
+#
+# D2.5 SHIPPED the Coinbase-collector systemd surface (NEW
+# ops/kalshi-coinbase-collector.service + coinbase-collector-start.sh +
+# collector/coinbase_main_loop.py + ops/install.sh N=2→N=3 extension +
+# deploy.yml path-aware kalshi-coinbase-collector restart block +
+# scripts/ops/collector_health_monitor.py dual-tier dispatch). Same
+# L99 PARANOID-at-day-1 ratchet pattern: every pre-D2.5 forward-looking
+# phrase about the systemd unit / installer / deploy.yml restart goes
+# stale at ship time. Retracts ride same-Bit to prevent paraphrase
+# drift from a git blame.
+#
+# D2.5 ALSO bundled the `level2_batch` promotion (R0 reachability spike
+# at D2.5 kickoff confirmed public access). Some patterns previously in
+# STALE_PATTERNS_POST_D2_1_5 specifically retracted the "D2.1.5
+# deferred level2_batch to a followup" framing — those CONTINUE to be
+# stale (D2.1.5 DID defer; that fact didn't change). New post-D2.5
+# patterns retract a DIFFERENT class: the forward-looking phrasing
+# about WHEN the promotion would land + "deferred pending in-archiver
+# reachability verification" status framing that's no longer accurate
+# post-D2.5.
+
+STALE_PATTERNS_POST_D2_5: list[str] = [
+    # Pre-D2.5 forward-looking framing for the systemd unit.
+    "D2.5 target",
+    "D2.5 will",
+    "D2.5 will add",
+    "D2.5 will ship",
+    "D2.5 will deploy",
+    "D2.5 will install",
+    "D2.5 will write",
+    "D2.5 will wire",
+    "until D2.5 lands",
+    "until D2.5 ships",
+    "after D2.5 lands",
+    "future D2.5",
+    "D2.5 (next Bit)",
+    "D2.5 (the systemd unit)",
+    "D2.5 implementation target",
+    # NOTE: "D2.5 ships the systemd unit" is grammatically ambiguous
+    # (present-tense could read either as forward-looking "will ship"
+    # OR as completed-action narrative "now-ships post-merge"). Pre-
+    # ship sister docs used it in the forward-looking sense; post-
+    # ship narrative uses it in the completed-action sense. The
+    # ambiguity made this pattern unsafe as an L99 retract — it would
+    # fire on legitimate post-ship descriptions. Removed from the
+    # pattern list at D2.5 ship; pre-ship surfaces were retracted via
+    # explicit "D2.5 SHIPPED ..." past-tense rewrite (see
+    # collector/__init__.py docstring + ops/CLAUDE.md "D2.5 Coinbase
+    # collector deploy" section).
+    # Pre-D2.5 level2_batch-deferral framing (forward-looking status
+    # claims that are FALSE post-D2.5 promotion). The HISTORICAL
+    # "D2.1.5 deferred level2_batch" framing is still true and is
+    # NOT retracted here — only the forward-looking pieces.
+    "level2_batch deferred pending in-archiver reachability",
+    "level2_batch deferred pending",
+    "level2_batch is intentionally OMITTED at D2.1.5",
+    "intentionally OMITTED from D2.1.5 defaults",  # R1-M1 paraphrase variant
+    "level2_batch ... pending in-archiver reachability verification",
+    "pending coinbase_wire's reachability promotion",
+    "A followup ticket promotes level2_batch",
+    "A followup ticket promotes `level2_batch`",
+    "A followup ticket adds ``level2_batch`` to defaults",  # R1-M1 paraphrase
+    "extend the dispatch dict + coinbase_wire.DEFAULT_CHANNELS together when that lands",
+    "level2_batch lands once that channel is promoted",
+    "level2_batch lands once",
+    "lands in a followup once subscribe-success",  # R1-M2 paraphrase
+    "is reserved for an in-archiver",  # R1-M2 paraphrase
+    "verified-public subset at D2.1.5",  # R1-M2 paraphrase
+    # R1-M8 ("is deferred" verb-be form — present-tense, forward-
+    # looking, false post-D2.5). The PAST-tense form "was deferred
+    # pending in-archiver reachability" is HISTORICAL legitimate
+    # narrative (D2.1.5's actual state) and is NOT a stale claim — do
+    # NOT add the "was deferred" variant here or it will false-positive
+    # on legitimate "D2.1.5 originally deferred / was deferred at
+    # D2.1.5 / D2.5 promoted what D2.1.5 had deferred" history sentences.
+    "is deferred pending in-archiver reachability",
+    # R1-M3 — pre-D2.5 NotImplementedError narrative listing the
+    # 4-channel subscribe set as the current state.
+    "D2.1.5 is public-only (default subscribe set: ticker / matches / heartbeat / status)",
+    # R1 4-channel-default arithmetic class (8 surfaces — see R1 report).
+    # Pure-substring patterns covering the phrasing variants found in
+    # production source + sister docs + contract tests + error strings.
+    # NOTE: keep these narrow — broad patterns like "4-channel" alone
+    # would false-positive against legitimate HISTORICAL paragraphs
+    # ("D2.1.5 originally shipped 4-channel"). Each pattern below names
+    # the wire's CURRENT default as 4-channel, which post-D2.5 is wrong.
+    "wire's 4-channel default",
+    "wire's 4-channel ``DEFAULT_CHANNELS``",
+    "wire's 4-channel DEFAULT_CHANNELS",
+    "wider 4-channel set for bronze",
+    "wider 4-channel ``DEFAULT_CHANNELS``",
+    "defaults to a 4-channel set (ticker",
+    "DEFAULT_CHANNELS (ticker + matches + heartbeat + status)",
+    "wire library's 4-channel set",
+    "(4 public Coinbase Exchange WS channels",
+    "ships 4 verified-public channels (",
+    "the verified-public subset at D2.1.5",
+    "default subscribe set is the 4",
+    # The mock-server enumeration "all 4 channels" tied to a
+    # current-default claim.
+    "the mock server emits all 4 channels regardless",
+    "emits all 4 channels regardless of what the consumer subscribes",
+    # R2-M1/M2: line-wrapped docstring drift. The L99 _scan helper is
+    # LINE-BY-LINE — a multi-line phrasing like
+    #
+    #   When None, the wire library's
+    #   default (ticker + matches + heartbeat + status) is
+    #   used.
+    #
+    # would NEVER match a single-line substring pattern like
+    # "wire's default (ticker + matches + heartbeat + status)" because
+    # no single line contains the full pattern. The fix is per-line
+    # fragment patterns covering the surviving wrapped variants. Each
+    # fragment must be specific enough to NOT false-positive on
+    # post-D2.5 "default (ticker + matches + heartbeat + status +
+    # level2_batch) is" (which is a legitimate post-tense narrative).
+    "default (ticker + matches + heartbeat + status) is",
+    "Default covers the 4",
+    "public Coinbase Exchange WS channels D2.1.5 subscribes",
+    # R0 was the spike result — no longer a future-looking "we should run a spike"
+    # paraphrase. Retract paraphrases that frame the spike as pending.
+    "R0 spike pending",
+    "R0 reachability spike pending",
+    # Pre-D2.5 systemd-shape forward-looking framing.
+    "Coinbase collector systemd unit deferred",
+    "Coinbase collector systemd unit (deferred)",
+    "kalshi-coinbase-collector unit (next Bit)",
+    "kalshi-coinbase-collector unit (future Bit)",
+    # Pre-D2.5 install.sh / health-monitor framing.
+    "ops/install.sh will extend",
+    "collector_health_monitor.py will extend",
+    "dual-tier dispatch deferred",
+    "dual-tier dispatch (future Bit)",
+    # Pre-D2.5 sudoers-extension framing.
+    "sudoers extension for kalshi-coinbase-collector deferred",
+]
+
+
+@pytest.mark.parametrize("pattern", STALE_PATTERNS_POST_D2_5)
+def test_no_post_d2_5_stale_forward_looking_phrase(pattern: str):
+    """No tracked doc should still say a D2.5-pending phrase after D2.5
+    shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D2.5 (Coinbase-collector
+    systemd unit + path-aware deploy.yml restart + health-monitor dual-
+    tier dispatch + level2_batch promotion bundle). Same lesson as D1.4
+    / D1.5 / D1.3-fu4 / D1.3-fu5 / D2.1.5 / D2.2 / D2.3 — when a Bit
+    fulfills a forecast, sister-doc retracts of the original forecast
+    MUST ship same-Bit to prevent paraphrase drift.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D2.5-pending phrasing detected (pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nPer L99 + L106: when a Bit fulfills a forecast (D2.5 "
+        "ships the Coinbase-collector systemd unit + promotes "
+        "level2_batch + extends deploy.yml + extends "
+        "collector_health_monitor.py to dual-tier), sister-doc retracts "
+        "of the OLD forecast MUST ship same-Bit to prevent paraphrase "
+        "drift."
+    )
+
+
+def test_d2_5_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D2.5 as SHIPPED. Catches the inverse failure mode where staleness
+    patterns pass (no D2.5 mention at all) but the docs haven't been
+    updated.
+    """
+    shipped_re = re.compile(
+        r"D2\.5\s+SHIPPED|D2\.5.*shipped|shipped.*D2\.5",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D2.5 SHIPPED — staleness ratchets "
         "clean but nothing affirms the ship. Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )
