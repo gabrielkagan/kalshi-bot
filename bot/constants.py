@@ -622,6 +622,20 @@ ACTIVE_WINDOWS_STALENESS_BUDGET_S = MARKET_REFRESH_SECONDS * 4
 
 SETTLEMENT_CHECK_SECONDS = 30.0
 
+# B4 (ticket 86b9zudcc, 2026-05-18): defense-in-depth threshold for the
+# settlement Telegram alert's WIN-side balance-delta cross-check. When
+# the cash delta observed across `client.get_balance()` pre/post the
+# settlement diverges from the locally-expected credit (= `aggregate_count
+# × 100¢` on WIN, `0` on LOSS — only `revenue` actually moves cash at
+# settle time; cost/fee were debited at fill) by more than this many
+# cents, SettlementTracker._process_settlement logs a
+# SETTLEMENT_PNL_DIVERGENCE WARNING and appends a ⚠️ KALSHI_DELTA tag
+# to the alert. 50¢ tolerates per-row rounding while still catching the
+# HYPE-scale ($114) overcount class (B1). LOSS-side phantoms are
+# structurally invisible to this surface (cash moves $0 at LOSS settle)
+# and are caught by `scripts/audit/phantom_pnl_audit.py` instead.
+SETTLEMENT_PNL_DIVERGENCE_THRESHOLD_CENTS = 50
+
 # ─── WS Cache Reconciliation (Phase 2 of silent-scan fix, Apr 25 2026) ──
 # WS orderbook cache accumulates phantom state over time (5-10x REST
 # divergence observed; flips direction within 1 min). H3 (seq-tracked
