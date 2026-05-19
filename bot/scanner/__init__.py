@@ -483,9 +483,13 @@ class OpportunityScanner:
         # scalar at startup; no duplicate scanner check needed.
         # P2.3 live promotion (2026-05-14, 86b9xv66a) extended this to 6
         # keys: HYPE 0.80 + DOGE 0.60 from B.1 Brier sweep on shadow data.
+        # P2.4 live promotion (2026-05-19, 86b9zmj37) extended this to 7
+        # keys: + BNB 0.20 from B.1-equivalent Brier sweep on n=721 shadow
+        # data (interior argmin matches ETH pattern; raw model beats market
+        # by ~10% Brier).
         _expected_per_asset_blend = {
             "BTC": 0.10, "ETH": 0.20, "SOL": 0.80, "XRP": 0.90,
-            "HYPE": 0.80, "DOGE": 0.60,
+            "HYPE": 0.80, "DOGE": 0.60, "BNB": 0.20,
         }
         assert MARKET_BLEND_W_BY_ASSET == _expected_per_asset_blend, (
             f"MARKET_BLEND_W_BY_ASSET misconfigured: {MARKET_BLEND_W_BY_ASSET} "

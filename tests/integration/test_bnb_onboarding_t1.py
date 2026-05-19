@@ -498,5 +498,52 @@ class TestBnbP24ExecutorLockstep(unittest.TestCase):
         self.assertIn("BNB_MIN_ENTRY_PRICE", window)
 
 
+class TestBnbP24ScannerStartupAssert(unittest.TestCase):
+    """Pin the scanner-construction startup-assert literal dict matches
+    bot.constants.MARKET_BLEND_W_BY_ASSET.
+
+    R5 adv review discovered: `OpportunityScanner.__init__` at line ~486
+    hardcodes a 6-key `_expected_per_asset_blend` literal and asserts it
+    equals MARKET_BLEND_W_BY_ASSET. With BNB added (7 keys), the assert
+    fires on scanner construction → bot crashes on systemd boot.
+
+    Closes the lockstep-test coverage gap that allowed R5-C1 through
+    R1-R4 undetected — future asset additions to MARKET_BLEND_W_BY_ASSET
+    will fail this test unless the scanner literal is updated in lockstep."""
+
+    def test_scanner_startup_assert_dict_matches_market_blend_w_by_asset(self):
+        # Verify the scanner-internal literal dict has BNB:0.20
+        import bot.scanner
+        import inspect
+        source = inspect.getsource(bot.scanner)
+        anchor = source.find("_expected_per_asset_blend = {")
+        self.assertGreater(anchor, 0,
+            "Scanner startup-assert dict anchor not found — file shape changed")
+        window = source[anchor:anchor + 400]
+        self.assertIn('"BNB": 0.20', window,
+            "Scanner _expected_per_asset_blend literal missing BNB: 0.20 — "
+            "scanner constructor will assert-fail at bot boot (CRITICAL — "
+            "bot crashloops on systemd start, no live trading occurs)")
+
+    def test_scanner_assert_dict_matches_constants_at_runtime(self):
+        # Runtime equality — the load-bearing invariant the scanner enforces
+        # via assert at __init__. If they ever diverge, this test catches
+        # it before scanner construction fails on the operator's VPS.
+        import ast
+        import inspect
+        import bot.scanner
+        from bot.constants import MARKET_BLEND_W_BY_ASSET
+        source = inspect.getsource(bot.scanner)
+        anchor = source.find("_expected_per_asset_blend = {")
+        end = source.find("}", anchor) + 1
+        literal_text = source[anchor + len("_expected_per_asset_blend = "):end]
+        literal_dict = ast.literal_eval(literal_text)
+        self.assertEqual(
+            literal_dict, MARKET_BLEND_W_BY_ASSET,
+            f"Scanner startup-assert dict drift vs MARKET_BLEND_W_BY_ASSET. "
+            f"literal: {literal_dict}, constants: {MARKET_BLEND_W_BY_ASSET}. "
+            f"OpportunityScanner.__init__ assertion will fail on bot boot.")
+
+
 if __name__ == "__main__":
     unittest.main()
