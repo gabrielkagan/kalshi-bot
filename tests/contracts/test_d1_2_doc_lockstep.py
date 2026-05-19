@@ -103,6 +103,15 @@ TRACKED_DOCS: list[Path] = [
     # split. Adding to TRACKED_DOCS so the L99 ratchet covers it
     # (closes the asymmetric-coverage gap the R2 reviewer flagged).
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_worker_thread.py",
+    # D1.3-fu4-oom-closure R2-MN3 (2026-05-19): the staggered-reconnect
+    # contract test file is the canonical pin for the
+    # `_replan_for_archivers` stagger surface (5 tests covering
+    # constant invariants + dispatch preservation + wall-clock stagger
+    # + no-trailing-stagger + cancellability). Same pattern as the
+    # D1.3-fu4 worker-thread test file inclusion above — adding the
+    # test file to TRACKED_DOCS so the L99 ratchet covers any future
+    # drift on the file's docstring + comments.
+    REPO_ROOT / "tests" / "contracts" / "test_collector_replan_stagger.py",
     # D1.6 fu R1-M5: monitor + sidecar narrative surfaces. The 144 LOC
     # added to collector_health_monitor.py + the new contract test file
     # carry the dropped-frames/STALE/SCHEMA alert documentation; close
@@ -1705,6 +1714,31 @@ STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE: list[str] = [
     # D1.3-fu4-oom-closure (2026-05-19) closes the OOM-restart loop.
     "D1.3-fu4 worker-thread decouple closes the OOM",
     "D1.3-fu4 closes the OOM-restart loop",
+    # R2-M1 paraphrase coverage: "propagates to every archiver" was
+    # the pre-Bit CLAUDE.md:28 phrasing for `_replan_for_archivers`'s
+    # dispatch shape — implies simultaneous fan-out without the
+    # stagger. Post-Bit narrative must add the stagger semantics.
+    # Adding the trailing-`)` substring so the pattern matches the
+    # narrowed-quote form without firing on legitimate prose like
+    # "propagates to every archiver, staggered ...".
+    "propagates to every archiver).",
+    # R2-M2 paraphrase coverage: fu5's bullet originally claimed
+    # "fu4's bounded queue accidentally opened an OOM-via-large-ack
+    # class" — the qualified-SUBCLASS amendment ("fu4 ... opened an
+    # OOM-via-large-ack SUBCLASS") is the post-Bit phrasing. A bare
+    # "OOM-via-large-ack class" without the SUBCLASS qualifier
+    # implies fu5 closed the whole cgroup-OOM class; retract that
+    # framing.
+    "opened an OOM-via-large-ack class:",
+    # R2-M2 cross-ref coverage: any post-Bit fu5 narrative that ends
+    # at "_unrouted/ bronze partition no longer receives ack frames"
+    # without the D1.3-fu4-oom-closure cross-ref leaves the reader
+    # believing the OOM-restart loop is closed. The amendment
+    # appends an IMPORTANT note + a 6th bullet; the pre-amendment
+    # tail-of-fu5 phrasing is encoded here so the ratchet fires on
+    # any sister doc that copy-pastes the pre-amendment block.
+    "operator can still observe ack activity via the new\n    "
+    "``_ack_frames_processed`` counter.\n\nNO ``bot.*`` imports",
 ]
 
 
