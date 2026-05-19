@@ -1,4 +1,5 @@
 """Bit 3.2: Terminal-momentum sweep helpers, extracted from bot/_impl.py."""
+import math
 from typing import Dict, List, Optional, Tuple
 
 from bot.constants import *  # noqa: F401,F403 — TM_*, MIN_/MAX_ENTRY_PRICE, etc.
@@ -136,6 +137,12 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
     pass the WORST-CASE fill price (e.g. MAX_ENTRY_PRICE=99 when sweeping)
     so dollars-at-risk respects the actual capital deployed at the highest
     swept tier, not the scan-time entry price. Defaults to price_cents.
+
+    buf_pct semantics (ticket 86ba0vpfd, 2026-05-19): None preserves the legacy
+    "no buffer info — caller predates buf_pct kwarg" bypass of the thin-buffer
+    cap; NaN is treated as a conservative-unknown numeric value and triggers
+    the cap (IEEE-754 `NaN < 0.20` is False, which would otherwise silently
+    bypass).
     """
     margin = 100 - price_cents
     if margin <= 0:
@@ -170,8 +177,14 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
         ct = min(ct, max_by_risk)
 
     # Thin-buffer cap: bounds the fat tail when spot is close to threshold
-    # (BACKSTOP — preserved alongside the new buf_multiplier per Sim B)
-    if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
-        ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
+    # (BACKSTOP — preserved alongside the new buf_multiplier per Sim B).
+    # NaN defense (ticket 86ba0vpfd, 2026-05-19): IEEE-754 `NaN < 0.20` is False,
+    # which would silently bypass the cap on a NaN buf_pct. Treat NaN as a
+    # conservative-unknown numeric value and apply the cap. `None` (legacy
+    # "no buffer info — caller predates buf_pct kwarg") intentionally still
+    # bypasses; only NaN is the new defense surface.
+    if buf_pct is not None:
+        if math.isnan(buf_pct) or buf_pct < TM_THIN_BUFFER_PCT:
+            ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
 
     return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
