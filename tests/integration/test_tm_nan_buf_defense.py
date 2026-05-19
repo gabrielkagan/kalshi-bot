@@ -62,7 +62,21 @@ class TestTMNaNBufPctDefense(unittest.TestCase):
         """Lockstep with sim_pnl mirror: same NaN defense applies.
 
         sys.path setup is module-level (matches sibling
-        tests/integration/test_sim_pnl_strategy_sizing.py convention)."""
+        tests/integration/test_sim_pnl_strategy_sizing.py convention).
+
+        Skips when torch is missing — ``scripts/cal_mlp/sim_pnl.py:40``
+        does ``import torch`` at module level (cal_mlp model loading), so
+        importing ``sim_pnl`` raises ``ModuleNotFoundError`` in torch-less
+        environments (e.g., deploy.yml integration tier as of 2026-05-19).
+        The pure-bot mirror test above
+        (``test_nan_buf_pct_still_hits_thin_buffer_cap``) covers the
+        production-path defense — this one is the sister-script lockstep
+        guard, which still has value when torch IS installed (Mac dev
+        loop, mutation-tier CI). Skipping here preserves the deploy gate
+        without losing the defense; the sister production test enforces
+        the cap on every run."""
+        import pytest
+        pytest.importorskip("torch")
         import sim_pnl
 
         ct = sim_pnl._tm_size(
