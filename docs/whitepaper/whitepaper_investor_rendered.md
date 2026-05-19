@@ -56,9 +56,9 @@ The third structural fact is that the entire platform is **operated by one perso
 
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
-> **Live trading snapshot (auto-updated, last refresh 2026-05-17T21:41:30Z):**
+> **Live trading snapshot (auto-updated, last refresh 2026-05-19T15:41:05Z):**
 >
-> - **4,388** settled trades since 2026-02-22 — 4,059W / 327L / 2 BE; win rate 92.5\%
+> - **4,506** settled trades since 2026-02-22 — 4,171W / 333L / 2 BE; win rate 92.6\%
 > - Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
 > - Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
 > - 19 weather cities, 28 sports leagues, and S&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
@@ -100,7 +100,7 @@ The microstructure properties that make these contracts attractive for systemati
 
 ## 1.2 What the bot actually does
 
-For every active 15-minute contract — across six cryptocurrencies, multiple strike prices per asset, every fifteen minutes, 24/7 — the bot performs the following sequence:
+For every active 15-minute contract — across six live-trading cryptocurrencies plus BNB in T1 shadow observation (2026-05-17, ticket 86b9zmj0c — full evaluation pipeline writes diagnostic rows, zero live orders until T4 promotion), multiple strike prices per asset, every fifteen minutes, 24/7 — the bot performs the following sequence:
 
 1. **Observe**. Real-time spot-price feeds from Coinbase and Kraken via WebSocket; cross-exchange feeds for lead-lag detection from Bybit (Binance is geo-blocked from the production VPS); implied volatility from Deribit (DVOL index for BTC and ETH every 60 seconds); orderbook state from Kalshi via WebSocket (real-time fills, orderbook deltas, market lifecycle events).
 2. **Estimate**. Per-asset volatility computed from a Realized Kernel estimator with adaptive bandwidth (Barndorff-Nielsen, Hansen, Lunde, Shephard 2008[^bnhls]), conditioned by an EGARCH(1,1) model (Nelson 1991[^nelson-egarch]) fit by maximum likelihood with Student-t innovations, blended dynamically using forecast-quality-weighted Bates-Granger combination weights (Bates & Granger 1969[^bates-granger]). Per-asset Normal Inverse Gaussian (NIG) distribution (Barndorff-Nielsen 1997[^bn-nig]) fit by MLE on seven days of returns produces a raw probability that the asset stays above the contract threshold. The KS-test fit improvement over Student-t is large (BTC NIG p-value ≈ 0.11 vs. Student-t effectively 0; ETH ≈ 0.42 vs. effectively 0).
@@ -130,7 +130,7 @@ This section is more interesting than it looks. The single most important qualit
 
 **Live (real capital at risk):**
 
-- **15-minute crypto, six assets.** BTC (min entry 88¢), ETH (90¢ main tier, 75–79¢ sub-tier capped at 50 contracts), SOL (86¢, taker-first due to thin orderbooks), XRP (92¢), HYPE (90¢), DOGE (85¢). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14).
+- **15-minute crypto, six assets.** BTC (min entry 88¢), ETH (90¢ main tier, 75–79¢ sub-tier capped at 50 contracts), SOL (86¢, taker-first due to thin orderbooks), XRP (92¢), HYPE (90¢), DOGE (85¢). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14). BNB is the 7th asset, currently in T1 shadow observation (2026-05-17, ticket 86b9zmj0c) — full evaluation pipeline writes diagnostic rows but submits zero live BNB orders until T4 promotion (earliest 2026-06-10 after ~3-4 weeks of T3 calibration data).
 - **Six conditional overlays.** Decided contracts (four live tiers identifying near-certain outcomes via extreme z-scores), terminal momentum (96/98/99¢ trades in the final 1–5 minutes), low-price near-expiry (BTC 80–87¢ in the final 10–120 seconds), weekend discount (Sat/Sun 90¢+ at STC ≤ 600s), overnight discount (weekday 04–11 UTC 89¢+ at STC ≤ 600s), loss-burst cooldown (per-asset 2-hour lockout after any 15M loss; +$441/30d counterfactual at last measurement).
 - **P4.1 band-calibrated sizing.** Promoted 2026-05-17. Kelly sizing on 15M trades now receives a band-stratified calibrated probability (42-cell hierarchical-shrunk empirical lookup) rather than the raw model probability — this only changes Kelly magnitudes, not trade selection. Soak through 2026-05-31.
 
@@ -506,4 +506,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-17T21:41:30Z*
+*Last updated: 2026-05-19T15:41:05Z*
