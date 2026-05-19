@@ -266,6 +266,202 @@ class TestPhantomPnlAudit(unittest.TestCase):
         self.assertEqual(cnt, 1,
                          "re-runs with same audit_run_id must not duplicate")
 
+    # ── T6-T9 — B.0a fills-purge guard (Data-Integrity Bit, ticket 86ba0zjqg) ─
+    #
+    # B.0 investigation (86ba0xpum) found that Kalshi's /portfolio/fills
+    # endpoint purges history after ~60d retention while /portfolio/settlements
+    # retains long-term. Pre-B.0a, audit_ticker() treated `fills=0 +
+    # revenue>0` as a phantom-win divergence and "corrected" PnL by dropping
+    # the cost basis (corrected = revenue - 0*price), inflating apparent wins
+    # ~25×. 90d dry-run reported +$7,079 of delta — mostly fake recoveries.
+    #
+    # The fix adds a guard that returns ("unverified") when fills is empty
+    # but settlements has revenue. T6 is the regression-RED test (fails on
+    # master before fix). T7-T9 pin sibling failure modes that the fix must
+    # NOT break.
+
+    def _mock_client_fills_purged(self, ticker, *, revenue_cents,
+                                  market_result="yes"):
+        """Mock client for the fills-purge artifact: /fills returns empty
+        but /settlements returns revenue (the bug pattern). Used for
+        B.0a fills-purge guard tests. Side is implicitly determined by
+        the local row seeded by the caller — the mock's /fills is empty
+        regardless of side filter."""
+        client = MagicMock()
+        client.get_settlements.return_value = {
+            "settlements": [
+                {"ticker": ticker, "revenue": revenue_cents,
+                 "market_result": market_result}
+            ],
+        }
+        # Empty fills page — the canonical fills-purge shape (NOT None,
+        # which would trigger the pagination-interrupted unverified path).
+        client.get_fills.return_value = {"fills": []}
+        return client
+
+    def test_fills_zero_revenue_positive_returns_unverified_new_guard(self):
+        """B.0a TDD-RED: legitimately-won old ticker where /fills purged
+        but /settlements has revenue. Audit must mark unverified, NOT
+        fabricate a phantom-win correction that drops cost basis.
+
+        Pre-fix: this test FAILS — audit returns divergent with
+        corrected_pnl = revenue (cost basis dropped), inflating the
+        win. Post-fix: GREEN.
+
+        Real-world fixture: KXSOL15M-26MAR041215-15 (B.0 investigation
+        2026-05-19). Local says 150ct @ 96c won = +$6. Kalshi
+        /settlements confirms revenue=$150. Kalshi /fills returns
+        empty. Pre-fix audit would "correct" to +$150 (25× inflation).
+        """
+        # Local row matches real ticker shape: 150 @ 96c, WON, +$6 PnL.
+        self._seed_row(
+            ticker="KXSOL15M-PURGED",
+            strategy_group="MAKER_PATIENT",
+            count=150,
+            entry=96,
+            side="yes",
+            market_result="yes",
+            revenue_cents=15000,
+            pnl_cents=15000 - (150 * 96),  # +600c = +$6
+        )
+        client = self._mock_client_fills_purged(
+            "KXSOL15M-PURGED", revenue_cents=15000, market_result="yes")
+
+        summary = self.audit.run_audit(
+            self.conn, client, audit_run_id="test-b0a-r1", days=14,
+            apply=True, limit=None)
+
+        self.assertEqual(summary["n_audited"], 1)
+        self.assertEqual(
+            summary["n_divergent"], 0,
+            "fills-purge artifact must NOT be reported as divergent "
+            "(pre-B.0a this was 1; the corrected_pnl would drop the cost "
+            "basis and inflate the win ~25×)")
+        self.assertEqual(
+            summary["n_unverified"], 1,
+            "fills-purge artifact must be classified as unverified")
+
+        # No phantom_corrections row written.
+        tbl = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='phantom_corrections'").fetchone()
+        if tbl:
+            rows = self.conn.execute(
+                "SELECT COUNT(*) FROM phantom_corrections WHERE ticker=?",
+                ("KXSOL15M-PURGED",)).fetchone()
+            self.assertEqual(
+                rows[0], 0,
+                "fills-purge artifact must not write a phantom_corrections "
+                "row (would inflate apparent win)")
+
+    def test_fills_zero_revenue_zero_returns_unverified_unchanged(self):
+        """B.0a anti-regression: existing 'both zero' unverified path
+        unchanged. Transient API failure where /fills AND /settlements
+        both return empty should still be unverified (not divergent),
+        same as before B.0a.
+        """
+        self._seed_row(
+            ticker="KXBTC15M-BOTH-ZERO",
+            strategy_group="main",
+            count=20,
+            entry=90,
+            side="yes",
+            market_result="yes",
+            revenue_cents=2000,
+            pnl_cents=2000 - (20 * 90),  # +200c
+        )
+        client = MagicMock()
+        # Both endpoints return data with zero-equivalent content.
+        client.get_settlements.return_value = {
+            "settlements": [
+                {"ticker": "KXBTC15M-BOTH-ZERO", "revenue": 0,
+                 "market_result": "yes"}
+            ],
+        }
+        client.get_fills.return_value = {"fills": []}
+
+        summary = self.audit.run_audit(
+            self.conn, client, audit_run_id="test-b0a-r2", days=14,
+            apply=True, limit=None)
+
+        self.assertEqual(summary["n_audited"], 1)
+        self.assertEqual(summary["n_divergent"], 0)
+        self.assertEqual(
+            summary["n_unverified"], 1,
+            "both-zero case still classified as unverified")
+
+    def test_fills_present_returns_divergent_or_matched_unchanged(self):
+        """B.0a anti-regression: when /fills returns non-zero counts,
+        the existing divergent/matched paths must work unchanged. Fix
+        must NOT short-circuit when fills are present.
+        """
+        # Local has 100ct, Kalshi has 60ct (real divergence).
+        self._seed_row(
+            ticker="KXETH15M-REAL-DIV",
+            strategy_group="main",
+            count=100,
+            entry=97,
+            side="yes",
+            market_result="no",
+            revenue_cents=0,
+            pnl_cents=0 - (100 * 97),
+        )
+        client = self._mock_client(
+            "KXETH15M-REAL-DIV", kalshi_count=60, kalshi_revenue_cents=0)
+
+        summary = self.audit.run_audit(
+            self.conn, client, audit_run_id="test-b0a-r3", days=14,
+            apply=True, limit=None)
+
+        self.assertEqual(summary["n_audited"], 1)
+        self.assertEqual(
+            summary["n_divergent"], 1,
+            "real divergence (fills present, count mismatch) still detected")
+        self.assertEqual(
+            summary["sum_delta_count"], 40,
+            "delta_count = local - kalshi = 100 - 60 = +40")
+
+    def test_fills_zero_revenue_positive_no_side_only_classification(self):
+        """B.0a anti-regression sister: the unverified classification
+        must be INDEPENDENT of market_result direction. A NO-side
+        settlement where /fills is purged should also be unverified —
+        the fix's guard must not accidentally only fire for YES wins.
+
+        Defends against a potential over-narrow fix that classifies
+        only `revenue>0 AND market_result='yes'` as unverified, which
+        would leave NO-side fills-purge artifacts in the divergent
+        path (where they'd write a different bogus correction shape).
+        """
+        # Local: bought 50ct YES @ 80c, market settled NO (loss),
+        # revenue=0 locally — but suppose /settlements happens to
+        # return revenue>0 for some bookkeeping reason; the guard
+        # should still mark unverified rather than fabricate a
+        # contradictory correction.
+        self._seed_row(
+            ticker="KXXRP15M-PURGED-NO",
+            strategy_group="main",
+            count=50,
+            entry=80,
+            side="yes",
+            market_result="no",
+            revenue_cents=0,
+            pnl_cents=-(50 * 80),
+        )
+        # Mock: /fills empty, /settlements returns revenue>0 with
+        # market_result="no".
+        client = self._mock_client_fills_purged(
+            "KXXRP15M-PURGED-NO", revenue_cents=5000, market_result="no")
+
+        summary = self.audit.run_audit(
+            self.conn, client, audit_run_id="test-b0a-r4", days=14,
+            apply=True, limit=None)
+
+        self.assertEqual(summary["n_audited"], 1)
+        self.assertEqual(
+            summary["n_divergent"], 0,
+            "fills-purge guard must fire regardless of market_result")
+        self.assertEqual(summary["n_unverified"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

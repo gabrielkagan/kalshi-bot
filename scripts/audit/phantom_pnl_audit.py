@@ -24,6 +24,23 @@ For each unique ticker with a ``settled_trades`` row in the lookback window:
    (``kalshi_revenue_cents - kalshi_count * avg_price_cents``) and write a
    ``phantom_corrections`` row capturing the delta.
 
+The auditor classifies each (ticker, side) row as one of three states:
+
+- ``matched``: kalshi_count == local_count; no correction written.
+- ``divergent``: kalshi_count != local_count AND both endpoints returned
+  usable data; correction written (if ``--apply``).
+- ``unverified``: any of three failure modes:
+  (a) /fills pagination interrupted by a transient API failure (partial
+      counts unsafe to compare);
+  (b) /fills returns empty AND /settlements returns revenue>0 — the
+      fills-purge artifact for old tickers, per B.0a (ticket 86ba0zjqg,
+      2026-05-19). Kalshi's /portfolio/fills endpoint purges history after
+      ~60d retention while /portfolio/settlements retains long-term. Without
+      this guard the audit would fabricate a phantom-win correction by
+      dropping the cost basis (inflating apparent wins ~25×);
+  (c) /fills returns empty AND /settlements returns revenue=0 — could not
+      verify either side.
+
 The audit is restartable: rows are inserted with ``INSERT OR REPLACE`` on
 ``(audit_run_id, ticker, side)`` — re-running with a fresh ``--run-id``
 will append a new batch without colliding with prior batches. The
@@ -218,9 +235,10 @@ def audit_ticker(client: KalshiClient,
     Returns ``(correction_dict_or_None, status)`` where ``status`` is one
     of: ``"divergent"`` (correction returned), ``"matched"`` (counts agree,
     no correction), ``"unverified"`` (Kalshi returned no usable truth —
-    pagination interrupted, zero count + zero revenue, etc.). The
-    tri-state status is what ``run_audit`` uses to populate the summary
-    counters honestly (R1-N1: previously `n_unverified` was always 0).
+    pagination interrupted, zero count + revenue>0 fills-purge artifact
+    [B.0a 2026-05-19], zero count + zero revenue, etc.). The tri-state
+    status is what ``run_audit`` uses to populate the summary counters
+    honestly (R1-N1: previously `n_unverified` was always 0).
     """
     ticker = ticker_row["ticker"]
     side = ticker_row["side"] or "yes"
@@ -234,6 +252,17 @@ def audit_ticker(client: KalshiClient,
 
     # Pagination interrupted → fills_count is partial; not safe to compare.
     if not pagination_complete:
+        return None, "unverified"
+
+    # B.0a (ticket 86ba0zjqg, 2026-05-19): Kalshi's /portfolio/fills endpoint
+    # purges history after ~60d retention while /portfolio/settlements retains
+    # long-term. When /fills is empty but /settlements has revenue, we have
+    # authoritative revenue but cannot authoritate count — falling into the
+    # divergent path would fabricate a phantom-win correction by dropping the
+    # cost basis (corrected = revenue - 0*price), inflating apparent wins
+    # ~25×. B.0 investigation (86ba0xpum) found this drove +$7,079 of fake
+    # recoveries in the 90d dry-run. Mark unverified instead.
+    if kalshi_count == 0 and kalshi_revenue_cents > 0:
         return None, "unverified"
 
     # If Kalshi returned zero count AND zero revenue, the audit could not
