@@ -30,7 +30,7 @@ SERIES_TICKERS = {
     "XRP": "KXXRP15M",
     "HYPE": "KXHYPE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
     "DOGE": "KXDOGE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
-    "BNB": "KXBNB15M",        # T1 onboarding 2026-05-17 (86b9zmj0c) — shadow observation
+    "BNB": "KXBNB15M",        # T4 LIVE 2026-05-19 (P2.4, 86b9zmj37)
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
