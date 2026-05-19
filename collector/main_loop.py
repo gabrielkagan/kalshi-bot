@@ -42,8 +42,10 @@ D1.4 (`86b9ypn8r`) added the periodic REST catalog refresh: when no
 ``COLLECTOR_TICKERS_FILE`` is configured, the collector pulls the open-
 market universe from Kalshi's REST ``/markets`` endpoint at boot and
 re-polls hourly. On ticker-set changes the refresher invokes a callback
-that rebuilds per-conn subscribe frames + force-reconnects each WS conn
-so the new subscriptions take effect (Kalshi has no in-session
+that rebuilds per-conn subscribe frames + force-reconnects each WS conn —
+STAGGERED in wall-clock time by ``_RECONNECT_STAGGER_SECONDS`` (20s
+default) per D1.3-fu4-oom-closure 2026-05-19, ticket ``86b9zk4hz``
+REUSED — so the new subscriptions take effect (Kalshi has no in-session
 add/remove; reconnect-and-resubscribe is the protocol-level mechanism).
 D1.5 (SHIPPED 2026-05-16, ticket ``86b9ypna4``, requires-approval)
 deploys this loop via the ``ops/kalshi-collector.service`` systemd

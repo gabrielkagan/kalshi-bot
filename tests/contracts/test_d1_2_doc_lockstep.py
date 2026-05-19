@@ -1762,6 +1762,21 @@ STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE: list[str] = [
     # introduce the N×S = 140s framing.
     "~140s during graceful shutdown",
     "pinning the refresher thread for ~140s",
+    # R5-M1 paraphrase coverage: three sister TRACKED_DOC surfaces
+    # described the REST-refresh callback as "force-reconnects ..."
+    # without the stagger semantics:
+    #   - CONTRIBUTING.md:95 "force-reconnects WS sessions when the"
+    #   - collector/main_loop.py:45 "force-reconnects each WS conn so"
+    #   - collector/rest_snapshot.py:77 "force-reconnects WS conns when"
+    # Post-Bit phrasing must integrate the stagger semantics inline
+    # (the R5 fix amends all three with the
+    # `_RECONNECT_STAGGER_SECONDS` note). Patterns are narrowed to
+    # the trailing keyword (`so` / `when`) so legitimate post-Bit
+    # phrasing like "force-reconnects each WS conn — STAGGERED ..."
+    # doesn't fire.
+    "force-reconnects WS sessions when the",
+    "force-reconnects each WS conn so the",
+    "force-reconnects WS conns when the ticker set changes",
 ]
 
 
