@@ -368,8 +368,26 @@ class StateManager:
                 market_result TEXT,
                 counterfactual_pnl INTEGER
             );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_opp_ticker_stage
-                ON evaluated_opportunities(ticker, filter_stage);
+            -- Bit 86ba0jvka-fu / hotfix 2026-05-19: the unique index
+            -- on evaluated_opportunities was REMOVED from this
+            -- executescript block. It MUST include `side` (per the
+            -- dual-side YES+NO evaluation pattern from
+            -- bot/scanner/__init__.py NO-side queue +
+            -- bot/shadows/hourly_alt_shadow.py::_evaluate_no_side),
+            -- but the `side` column doesn't exist at this point —
+            -- it's added by the ALTER TABLE loop further down in
+            -- _create_tables. The DROP+CREATE migration at the same
+            -- function (search anchor: "update unique index to
+            -- include side") creates the 3-col UNIQUE INDEX AFTER
+            -- the ALTER TABLE runs, which is the correct ordering.
+            -- The pre-hotfix 2-col form `(ticker, filter_stage)`
+            -- crashed _create_tables on any DB seeded with dual-side
+            -- data (incident 2026-05-19 10:46 UTC: bot crash-looped
+            -- because legitimate YES+NO complement rows violated
+            -- the 2-col uniqueness — see post-incident operator
+            -- recovery via manual `CREATE UNIQUE INDEX ...
+            -- (ticker, filter_stage, side)` on production state.db
+            -- at 10:55:25 UTC).
             CREATE INDEX IF NOT EXISTS idx_eval_opp_status
                 ON evaluated_opportunities(status);
             CREATE INDEX IF NOT EXISTS idx_eval_opp_ticker
