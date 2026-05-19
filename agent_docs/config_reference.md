@@ -66,6 +66,17 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
 
+## Terminal Momentum sizing
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| TM_BASE_CONTRACTS | 100 | Base multiplier for margin-proportional sizing (ct = BASE × margin × stc_mult × buf_mult) |
+| TM_MIN_CONTRACTS | 25 | Floor — always collect data |
+| TM_MAX_CONTRACTS | 500 | Hard ceiling — caps the buf-multiplier upside |
+| TM_THIN_BUFFER_PCT | 0.20 | Below this buf_pct%, apply TM_THIN_BUFFER_CONTRACT_CAP (BACKSTOP) |
+| TM_THIN_BUFFER_CONTRACT_CAP | 50 | 50ct cap at buf<0.20% — bounds catastrophic-tail (Apr 23 ETH -$178 motivating loss) |
+| TM_BUFFER_SIZE_MULTIPLIER | ((0.00,1.0),(0.20,1.0),(0.40,2.0),(0.80,3.0)) | Sim B (2026-05-19, ticket 86ba0v6z1). Wide-buffer scale-up: 0.40-0.80% → 2× ($+1.40/ct realized); ≥0.80% → 3× ($+1.67/ct realized). Thin band kept 1× (cap binds). Per-asset risk caps + TM_MAX_CONTRACTS still bound upside |
+
 ## Per-asset risk
 
 | Config | Value | Notes |

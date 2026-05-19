@@ -1292,6 +1292,24 @@ TM_THIN_BUFFER_CONTRACT_CAP = 50         # Contract cap when buf_pct < TM_THIN_B
 
                                          # (-$578) had buf_pct<0.20% avg 114ct; capping bounds each to ~-$50.
                                          # Kelly-sized backtest: Strategy B (cap) +$638 vs baseline, beats hard gate (+$577).
+
+# Buffer-size multiplier (Sim B, ticket 86ba0v6z1, 2026-05-19). Wide-buffer TM trades
+# are systematically under-sized: 30d phantom-corrected data shows $/contract is
+# 30-50× higher at buf_pct≥0.40% than in the thin-buffer band, but sizing is roughly
+# flat (~60 ct avg). The multiplier scales the BASE × margin × stc_mult formula:
+# thin buffer keeps 1.0× (TM_THIN_BUFFER_CONTRACT_CAP=50 still binds as backstop);
+# 0.40-0.80% scales 2× ($+1.40/ct realized); ≥0.80% scales 3× ($+1.67/ct realized).
+# Per-asset risk caps and TM_MAX_CONTRACTS still bound the upside. Sorted ascending
+# by buf_pct floor — last entry whose floor ≤ buf_pct wins.
+# Sister mirror: scripts/cal_mlp/sim_pnl.py (lockstep — see test_tm_buffer_multiplier.py).
+TM_BUFFER_SIZE_MULTIPLIER = (
+    # (buf_pct_floor, multiplier)
+    (0.00, 1.0),   # thin buffer — preserved; 50-ct cap is the bound
+    (0.20, 1.0),   # already-profitable middle band; no change
+    (0.40, 2.0),   # +1.40¢/ct realized → 2× scale
+    (0.80, 3.0),   # +1.67¢/ct realized → 3× scale
+)
+
 # Per-asset risk caps for TM (same as main pipeline — TM no longer bypasses these)
 TM_ASSET_RISK_CAPS = {
     "BTC": BTC_MAX_RISK_PER_TRADE,        # 0.15

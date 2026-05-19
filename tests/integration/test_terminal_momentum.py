@@ -364,12 +364,21 @@ class TestTMThinBufferCap(unittest.TestCase):
                           self.source, re.MULTILINE)
             if m:
                 ns[name] = eval(m.group(1).strip(), ns)
+        # Multi-line tuple constant — pull via direct import (Sim B 2026-05-19).
+        from bot.constants import TM_BUFFER_SIZE_MULTIPLIER
+        ns["TM_BUFFER_SIZE_MULTIPLIER"] = TM_BUFFER_SIZE_MULTIPLIER
         ns["TM_ASSET_RISK_CAPS"] = {
             "BTC": ns["BTC_MAX_RISK_PER_TRADE"],
             "ETH": ns["ETH_MAX_RISK_PER_TRADE"],
             "SOL": ns["SOL_MAX_RISK_PER_TRADE"],
             "XRP": ns["XRP_MAX_RISK_PER_TRADE"],
         }
+        # _resolve_buf_multiplier helper (Sim B) must be defined before
+        # tm_compute_contracts is exec'd, since the function body calls it.
+        helper_start = self.source.find("def _resolve_buf_multiplier")
+        if helper_start != -1:
+            helper_end = self.source.find("\ndef ", helper_start + 1)
+            exec(self.source[helper_start:helper_end], ns)
         fn_start = self.source.find("def tm_compute_contracts")
         fn_end = self.source.find("\ndef ", fn_start + 1)
         exec(self.source[fn_start:fn_end], ns)
@@ -407,11 +416,14 @@ class TestTMThinBufferCap(unittest.TestCase):
             "At buf=0.20% (threshold), sizing must allow > cap")
 
     def test_buf_pct_none_preserves_legacy_behavior(self):
-        """When buf_pct=None (unknown), cap does not apply — backward compat."""
+        """When buf_pct=None (unknown), thin-buffer cap does not apply AND
+        Sim B's buf_multiplier defaults to 1.0× (conservative path —
+        an unknown buffer must not silently scale 2-3×). Compare against
+        buf=0.30% which is in the 1.0× band by design (2026-05-19, Sim B)."""
         ct_none = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=None)
-        ct_thick = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=1.0)
-        self.assertEqual(ct_none, ct_thick,
-            "buf_pct=None should behave as if buffer is fat (legacy)")
+        ct_one_x_band = self.tm_compute_contracts(98, 100, 100000_00, "ETH", buf_pct=0.30)
+        self.assertEqual(ct_none, ct_one_x_band,
+            "buf_pct=None must mirror the 1.0× band (Sim B conservative default)")
 
     def test_cap_does_not_push_below_min(self):
         """Floor (TM_MIN_CONTRACTS) still applies even with cap active."""

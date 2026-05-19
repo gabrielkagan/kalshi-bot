@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-05-18
+updated: 2026-05-19
 tags: [strategy, tm, 95-99c, live]
 ---
 # Terminal Momentum (TM) Strategy
@@ -22,10 +22,17 @@ At very high prices (95-99c) near expiry, the model's probability is extremely h
 | `TM_NEGATIVE_EV_TIERS` | {95} | Minimum sizing only — 88.9% WR vs 95.3% breakeven on 27 trades |
 | `TM_ASSET_RISK_CAPS` | per-asset | BTC/SOL/XRP 15%, ETH 20% — matches main pipeline (was 25% flat) |
 
-## Sizing: `tm_compute_contracts(price, stc, bankroll, asset)`
+## Sizing: `tm_compute_contracts(price, stc, bankroll, asset, buf_pct=None, risk_cap_price=None)`
 
-**Formula:** `TM_BASE_CONTRACTS × (100 - price) × stc_multiplier`, capped by per-asset risk.
+**Formula:** `TM_BASE_CONTRACTS × (100 - price) × stc_multiplier × buf_multiplier`,
+capped by per-asset risk, then by the thin-buffer 50-ct cap when `buf_pct < 0.20%`,
+then floored at `TM_MIN_CONTRACTS` and clamped to `TM_MAX_CONTRACTS`.
 Negative-EV tiers (95c) get TM_MIN_CONTRACTS (25ct) until WR proves above breakeven.
+
+The `buf_multiplier` was added 2026-05-19 (Sim B, ticket `86ba0v6z1`) — pre-Sim-B
+the formula omitted the term. Caveat: the +$108/30d sim figure motivating Sim B
+assumes fixed-outcome counterfactual (win/loss doesn't change with size); post-deploy
+soak must validate fill quality at the larger sizes.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -33,17 +40,24 @@ Negative-EV tiers (95c) get TM_MIN_CONTRACTS (25ct) until WR proves above breake
 | `TM_STC_SAFE_MULT` | 1.5 | STC < 180s (100% WR on 77 trades) |
 | `TM_STC_DANGER_MULT` | 0.5 | STC 180-240s (94.7% WR, all 4 losses here) |
 | `TM_STC_NORMAL_MULT` | 1.0 | STC 240+s (99.3% WR, fattest buffers) |
+| `TM_BUFFER_SIZE_MULTIPLIER` | ((0.00,1.0),(0.20,1.0),(0.40,2.0),(0.80,3.0)) | Sim B: wide-buffer scale-up (1.0×/1.0×/2.0×/3.0× by buf_pct band). Thin band keeps 1× — cap is the bound |
+| `TM_THIN_BUFFER_PCT` | 0.20 | Below this buf_pct %, apply the thin-buffer cap (backstop preserved alongside Sim B) |
+| `TM_THIN_BUFFER_CONTRACT_CAP` | 50 | 50-ct cap when buf_pct < 0.20% — bounds catastrophic-tail (Apr 23 ETH -$178 motivating loss) |
 | `TM_ASSET_RISK_CAPS` | per-asset | BTC/SOL/XRP 15%, ETH 20% (replaced flat 25%) |
 | `TM_MIN_CONTRACTS` | 25 | Floor |
-| `TM_MAX_CONTRACTS` | 500 | Hard cap |
+| `TM_MAX_CONTRACTS` | 500 | Hard cap — bounds Sim B multiplier upside |
 
-**Example sizing on $1000 bankroll:**
+**Example sizing on $1000 bankroll (pre-Sim-B; buf_multiplier=1.0 across all rows):**
 
 | Price | STC < 3min | STC 3-4min | STC 4-5min |
 |-------|-----------|-----------|-----------|
 | 96c | 260ct | 200ct | 260ct |
 | 98c | 255ct | 100ct | 200ct |
 | 99c | 150ct | 50ct | 100ct |
+
+Post-Sim-B (2026-05-19), the same rows at `buf_pct ≥ 0.40%` scale 2× (0.40-0.80%)
+or 3× (≥0.80%) until per-asset risk cap or TM_MAX_CONTRACTS clamps. The 50-ct cap
+at `buf_pct < 0.20%` is unchanged.
 
 ### Why STC 240-300s is NOT reduced
 Data shows 240-300s is the safest zone by risk-adjusted metrics:
