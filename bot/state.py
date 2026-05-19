@@ -846,6 +846,17 @@ class StateManager:
             # See bot/helpers/config_snapshot.py + bot/CLAUDE.md
             # "config_snapshot_id schema chain".
             ("config_snapshot_id", "INTEGER"),
+            # TM half-Kelly cal_mlp shadow (Sim C, ticket 86ba0v7fc, 2026-05-19).
+            # 4-column lockstep with insert_evaluated_opportunity + the
+            # tm_shadow_kelly_contracts_with_bound helper. SHADOW-ONLY — these
+            # cols log the counterfactual Kelly size + which constraint bound
+            # it; NEVER consumed by production sizing. See
+            # kb/decisions/tm-half-kelly-shadow-plan.md + bot/CLAUDE.md
+            # "_shadow_diag schema chain".
+            ("tm_shadow_kelly_ct", "INTEGER"),
+            ("tm_shadow_kelly_prob", "REAL"),
+            ("tm_shadow_kelly_fraction", "REAL"),
+            ("tm_shadow_kelly_bound_hit", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2433,7 +2444,20 @@ class StateManager:
                                      # See bot/helpers/config_snapshot.py +
                                      # bot/CLAUDE.md "config_snapshot_id
                                      # schema chain".
-                                     config_snapshot_id: Optional[int] = None):
+                                     config_snapshot_id: Optional[int] = None,
+                                     # TM half-Kelly cal_mlp shadow (Sim C,
+                                     # ticket 86ba0v7fc, 2026-05-19). Logged
+                                     # counterfactual Kelly contracts + the
+                                     # constraint that bound the size. SHADOW-
+                                     # ONLY — NEVER consumed by production
+                                     # sizing. bound_hit ∈ {kelly, abs_loss,
+                                     # asset_cap, null_prob, raw_fallback}. See
+                                     # bot/helpers/tm_sweep.py +
+                                     # kb/decisions/tm-half-kelly-shadow-plan.md.
+                                     tm_shadow_kelly_ct: Optional[int] = None,
+                                     tm_shadow_kelly_prob: Optional[float] = None,
+                                     tm_shadow_kelly_fraction: Optional[float] = None,
+                                     tm_shadow_kelly_bound_hit: Optional[str] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2797,8 +2821,10 @@ class StateManager:
                      bnb_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                      data_provenance, bot_state_snapshot_json,
-                     config_snapshot_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     config_snapshot_id,
+                     tm_shadow_kelly_ct, tm_shadow_kelly_prob,
+                     tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -2961,7 +2987,20 @@ class StateManager:
                     -- happens to be current at the next tick). Mirrors the
                     -- data_provenance COALESCE pattern immediately above
                     -- (round-2 review of the H-2 Phase G-6 ship).
-                    config_snapshot_id=COALESCE(evaluated_opportunities.config_snapshot_id, excluded.config_snapshot_id)
+                    config_snapshot_id=COALESCE(evaluated_opportunities.config_snapshot_id, excluded.config_snapshot_id),
+                    -- TM half-Kelly cal_mlp shadow (Sim C, ticket 86ba0v7fc,
+                    -- 2026-05-19). COALESCE so the FIRST shadow stamp on a
+                    -- re-emitted row survives subsequent UPSERTs — Sim C
+                    -- analysis joins on decision-time prob signal, not on
+                    -- whichever cal_mlp prediction completes last. Mirrors
+                    -- the config_snapshot_id COALESCE pattern immediately
+                    -- above. The 4 keys ship as a lockstep group; partial
+                    -- updates (e.g. only ct present) preserve their other
+                    -- non-NULL siblings via COALESCE per-column.
+                    tm_shadow_kelly_ct=COALESCE(evaluated_opportunities.tm_shadow_kelly_ct, excluded.tm_shadow_kelly_ct),
+                    tm_shadow_kelly_prob=COALESCE(evaluated_opportunities.tm_shadow_kelly_prob, excluded.tm_shadow_kelly_prob),
+                    tm_shadow_kelly_fraction=COALESCE(evaluated_opportunities.tm_shadow_kelly_fraction, excluded.tm_shadow_kelly_fraction),
+                    tm_shadow_kelly_bound_hit=COALESCE(evaluated_opportunities.tm_shadow_kelly_bound_hit, excluded.tm_shadow_kelly_bound_hit)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3022,7 +3061,9 @@ class StateManager:
                   bnb_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                   data_provenance, bot_state_snapshot_json,
-                  config_snapshot_id))
+                  config_snapshot_id,
+                  tm_shadow_kelly_ct, tm_shadow_kelly_prob,
+                  tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.

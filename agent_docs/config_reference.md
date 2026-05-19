@@ -76,6 +76,8 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | TM_THIN_BUFFER_PCT | 0.20 | Below this buf_pct%, apply TM_THIN_BUFFER_CONTRACT_CAP (BACKSTOP) |
 | TM_THIN_BUFFER_CONTRACT_CAP | 50 | 50ct cap at buf<0.20% — bounds catastrophic-tail (Apr 23 ETH -$178 motivating loss) |
 | TM_BUFFER_SIZE_MULTIPLIER | ((0.00,1.0),(0.20,1.0),(0.40,2.0),(0.80,3.0)) | Sim B (2026-05-19, ticket 86ba0v6z1). Wide-buffer scale-up: 0.40-0.80% → 2× ($+1.40/ct realized); ≥0.80% → 3× ($+1.67/ct realized). Thin band kept 1× (cap binds). Per-asset risk caps + TM_MAX_CONTRACTS still bound upside |
+| TM_SHADOW_KELLY_FRACTION | 0.50 | Sim C (2026-05-19, ticket 86ba0v7fc). Half-Kelly multiplier applied to `cal_mlp_p_mean`-derived raw Kelly when computing the SHADOW-ONLY counterfactual Kelly size logged to `evaluated_opportunities.tm_shadow_kelly_*`. Quarter-Kelly was over-conservative in 30d counterfactual ($-49 vs actual $+125); half-Kelly was the data-justified choice ($+183 vs actual $+125, +$57 delta). NEVER consumed by production sizing. See `kb/decisions/tm-half-kelly-shadow-plan.md`. |
+| TM_SHADOW_KELLY_ABS_LOSS_BOUND_CENTS | 10000 | Sim C (2026-05-19, ticket 86ba0v7fc). $100 absolute-loss bound on the shadow Kelly size — caps catastrophic-tail. At 99c entry, 10000/99 ≈ 101 ct. Mirrors the empirical loss-distribution constraint motivating `TM_THIN_BUFFER_CONTRACT_CAP=50` (Apr 1-23: 8/14 TM losses ≥100ct at sub-0.20% buffer; the abs-bound caps each at ~$100). NEVER consumed by production sizing. |
 
 ## Per-asset risk
 

@@ -263,6 +263,7 @@ from bot.constants import (
     TM_MAX_STC,
     TM_MIN_PROB,
     TM_MIN_STC,
+    TM_SHADOW_KELLY_FRACTION,  # Sim C, ticket 86ba0v7fc, 2026-05-19
     TM_NBBO_BLOCKED_PRICES,
     TM_NBBO_MIN_BUFFER_PCT,
     TM_PRICE_SET,
@@ -312,6 +313,7 @@ from bot.helpers import (
     should_block_tm98_highprice_bleed_candidate,
     should_exclude_weather_no_ticker,
     tm_compute_contracts,
+    tm_shadow_kelly_contracts_with_bound,  # Sim C, ticket 86ba0v7fc, 2026-05-19
 )
 from bot.helpers.band_calibration import calibrated_prob_for_sizing  # P4.1 (86b9zjrp7) — band-calibrated probability for 15M Kelly sizing only
 from bot.kalshi_client import KalshiClient
@@ -3566,6 +3568,16 @@ class OpportunityScanner:
                                         _tm_size = tm_compute_contracts(
                                             best_ask, seconds_remaining, _tm_balance, asset,
                                             buf_pct=_tm_buf_pct, risk_cap_price=_tm_risk_price)
+                                        # Sim C (86ba0v7fc) Kelly shadow — log-only; HYPE_15M_SHADOW+DOGE_15M_SHADOW gated above.
+                                        _tm_shadow_ct, _tm_shadow_bound, _tm_shadow_prob = None, None, None
+                                        try:
+                                            _tm_cal_p = _shadow_diag.get("cal_mlp_p_mean")
+                                            _tm_shadow_ct, _tm_shadow_bound = tm_shadow_kelly_contracts_with_bound(
+                                                price_cents=best_ask, bankroll_cents=_tm_balance, asset=asset,
+                                                cal_mlp_p_mean=_tm_cal_p, raw_prob_fallback=raw_prob)
+                                            _tm_shadow_prob = _tm_cal_p if _tm_cal_p is not None else raw_prob
+                                        except Exception:
+                                            logging.warning("tm_shadow_kelly raised", exc_info=True)
                                         logging.info(
                                             "TM_CANDIDATE: %s %s %dx@%dc prob=%.3f stc=%.0fs edge=%.4f margin=%dc stc_zone=%s buf=%.3f%% src=%s",
                                             asset, ticker, _tm_size, best_ask,
@@ -3645,6 +3657,10 @@ class OpportunityScanner:
                                                     calibration_method=calibration_method,
                                                     fee_adjusted_edge=fee_adjusted_edge,
                                                     product_type=window.get("product_type"),
+                                                    tm_shadow_kelly_ct=_tm_shadow_ct,
+                                                    tm_shadow_kelly_prob=_tm_shadow_prob,
+                                                    tm_shadow_kelly_fraction=TM_SHADOW_KELLY_FRACTION,
+                                                    tm_shadow_kelly_bound_hit=_tm_shadow_bound,
                                                     config_snapshot_id=self._ml.config_snapshot_id, **_shadow_diag)
                                             except sqlite3.OperationalError:
                                                 logging.warning("insert_evaluated_opportunity failed (terminal_momentum)", exc_info=True)
