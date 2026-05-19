@@ -816,7 +816,7 @@ The six-field envelope is the **minimum viable bronze schema**:
 | Field | Type | Why |
 |---|---|---|
 | `_wire_recv_ts` | ISO-8601 UTC microsecond | Captured AT INGRESS, pre-parse — cannot be reconstructed from `_raw` (server timestamp inside payload lacks receipt latency) |
-| `_source` | string | `kalshi_ws`, `coinbase_ws`, `nws_hrrr` etc. — silver ETL dispatch key |
+| `_source` | string | `kalshi_ws`, `coinbase_ws`, `open_meteo` etc. — silver ETL dispatch key (the original D0.3 §1 slot reservation was `nws_hrrr`; D1.8 retracted that name because the bot polls Open-Meteo's aggregated HRRR, not NWS direct) |
 | `_conn` | string \| null | WS connection (A/B/C/D/E/F) for multi-conn Kalshi; null for REST snapshots. Lets silver QA detect single-conn outages without joining health logs |
 | `_channel` | string \| null | `orderbook_delta`, `trade`, `market_lifecycle_v2`, or REST endpoint stub |
 | `_collector_seq` | int | Monotone-increasing sequence number from collector boot — detects gaps independent of `_wire_recv_ts`. Resets on restart |

@@ -252,11 +252,85 @@ ssh -t botuser@$VPS_HOST 'crontab -e'
 
 The `git reset --hard origin/main` deploy step moves the file but does NOT touch the crontab. Until the operator edits it, the cron line invokes the (now-missing) repo-root `watchdog.py` and the 2-min monitor silently no-ops — the bot itself continues running but Layer-3.5-orphan + service-down + log-stall + loss-streak alerts go dark. Verify post-edit with `crontab -l | grep watchdog` and watch for the next scheduled Telegram heartbeat / silence pattern.
 
+## D1.8 weather collector deploy (REQUIRES-APPROVAL discipline)
+
+`ops/kalshi-weather-collector.service` (SHIPPED 2026-05-18, ticket `86ba0duck`) deploys the weather bronze collector as a FOURTH parallel systemd unit on the bot VPS, alongside `kalshi-bot.service` + `kalshi-collector.service` + `kalshi-coinbase-collector.service`. First non-WS bronze source. Key isolation knobs (pinned by `tests/contracts/test_weather_collector_systemd_unit.py`):
+
+- **NO `CPUAffinity`** — with 4 tenants on a 2-vCPU box (bot implicit vCPU-0, Kalshi pinned vCPU-1, Coinbase + Weather both unpinned), additional pins would over-constrain the scheduler. Weather is the LIGHTEST tier — HTTP-poll at 60-min cadence × 19 cities × ≤4 channels per cycle (57 envelopes typical = 3 forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).
+- `Nice=10` — same I/O-bound polite-background posture as the WS collectors.
+- `MemoryMax=128M` + `MemorySwapMax=0` — HALF of Coinbase's 256M (and a quarter of Kalshi's 512M). Measured working set ~0.4 MB; 128M provides ~300× headroom for retry buffers + zstd compression.
+- `LimitNOFILE=512` — same as Coinbase. 4 writers × 2 rotation files + rclone subprocess + HTTP keep-alive sockets ≈ 30 fd typical; 512 gives ~15× headroom.
+- `Restart=on-failure` + `RestartSec=10s` — same lifecycle posture as the other 2 collector units.
+- `EnvironmentFile=/home/botuser/.env.weather-collector` — DEDICATED home-rooted env file (NOT shared with bot/Kalshi/Coinbase env files).
+
+### Operator runbook: provision `/home/botuser/.env.weather-collector`
+
+D1.8 ships the systemd unit + installer extension; the env file is operator-provisioned. On the VPS:
+
+```bash
+cat > /home/botuser/.env.weather-collector <<'ENV'
+WEATHER_BRONZE_ROOT=/var/lib/kalshi-weather-collector/bronze
+RCLONE_REMOTE=s3prod
+S3_BUCKET=kalshi-bot-archive
+WEATHER_POLL_INTERVAL_SECONDS=3600
+ENV
+chmod 600 /home/botuser/.env.weather-collector
+chown botuser:botuser /home/botuser/.env.weather-collector
+
+# No PEM / no KEY_ID — Open-Meteo is free + keyless (10K req/day quota,
+# per kb-research/bot/weather-nwp-analysis.md). Combined burn from bot
+# (~5,472/day) + collector at 60-min (~1,387/day incl. archive_observed) ≈ 6,859/day — well
+# under the 10K quota.
+
+# Bronze root preparation
+sudo mkdir -p /var/lib/kalshi-weather-collector/bronze
+sudo chown -R botuser:botuser /var/lib/kalshi-weather-collector
+sudo chmod 750 /var/lib/kalshi-weather-collector
+
+# Install all FOUR systemd units — ops/install.sh extends to N=4 at D1.8.
+bash ops/install.sh
+
+# Start the weather collector (operator-decided timing; NOT auto-started
+# by deploy.yml — D1.8 ships REQUIRES-APPROVAL).
+sudo systemctl start kalshi-weather-collector
+journalctl -u kalshi-weather-collector -n 50  # boot logs clean?
+ls -lh /var/lib/kalshi-weather-collector/bronze/  # outbox/ + in_flight/?
+
+# Within ~60 minutes (one rotation interval at 60-min cadence) the first
+# chunk lands in S3. Weather day-zero.
+rclone lsf s3prod:kalshi-bot-archive/bronze/open_meteo/ensemble_gfs/ | head
+rclone lsf s3prod:kalshi-bot-archive/bronze/open_meteo/forecast_hrrr/ | head
+```
+
+### Sudoers NOPASSWD extension (pre-deploy prerequisite)
+
+Mirrors the D1.5 + D2.5 sudoers extension pattern:
+
+```bash
+# As root on the VPS (one-time, before manual restart works without sudo prompt):
+sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
+# Add a line:
+#   botuser ALL=(root) NOPASSWD: /bin/systemctl restart kalshi-weather-collector
+```
+
+### Off-switch
+
+`sudo systemctl stop kalshi-weather-collector` → bot + Kalshi collector + Coinbase collector all unaffected. Inverse holds: stopping any other unit leaves the weather collector running. Verified structurally: separate process group, separate HTTP keep-alive sockets, no shared `state.db`, no API keys, separate disk path (`WEATHER_BRONZE_ROOT`).
+
+### D1.8 health monitoring
+
+`scripts/ops/collector_health_monitor.py` extends to FOUR-TIER dispatch at D1.8 (post-B3-fu3 triple-tier shape adds a fourth `kalshi-weather-collector` tier with dedup-key prefix `d1_8_*`). Weather subset of 3 checks:
+- `check_disk` — bronze accumulates on `/var/lib/kalshi-weather-collector`
+- `check_collector_active` — `systemctl is-active` gate
+- `check_dropped_frames` — schema-parity with Kalshi+Coinbase sidecars (weather has no worker-queue drops by design; sidecar emits `total_dropped_frames=0` unconditionally)
+- NOT `check_ws_reconnects` — HTTP polling has no persistent WS connection; a log-marker filter would never match (always-OK false negative).
+
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
 - `kalshi-collector.service` — D1.5 collector systemd unit, source of truth
 - `kalshi-coinbase-collector.service` — D2.5 Coinbase collector systemd unit, source of truth (ticket `86b9znq4w`, 2026-05-18)
-- `install.sh` — 3-unit install + reload (validates + enables ALL THREE — kalshi-bot + kalshi-collector + kalshi-coinbase-collector)
+- `kalshi-weather-collector.service` — D1.8 weather collector systemd unit, source of truth (ticket `86ba0duck`, 2026-05-18)
+- `install.sh` — 4-unit install + reload (validates + enables ALL FOUR — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector)
 - `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
 - `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 

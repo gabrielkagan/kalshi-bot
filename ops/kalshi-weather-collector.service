@@ -1,0 +1,46 @@
+[Unit]
+Description=Kalshi Weather Bronze Collector (D1.8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/.env.weather-collector
+ExecStart=/home/botuser/kalshi-bot-repo/weather-collector-start.sh
+Restart=on-failure
+RestartSec=10s
+
+# D1.8 isolation knobs — load-bearing structural bounds on the
+# weather collector blast radius (NOT documentation suggestions).
+# Pinned by tests/contracts/test_weather_collector_systemd_unit.py;
+# a future edit that loosens any of these must update the test in the
+# same commit (and update kb/decisions/d1-8-weather-bronze-plan.md §New decisions #8).
+#
+# Deltas vs kalshi-coinbase-collector.service (D2.5):
+#   - MemoryMax=128M (Coinbase: 256M, Kalshi: 512M). Weather is the
+#     LIGHTEST tier of all 4 collector units — HTTP-poll at 60-min
+#     cadence × 19 cities × ≤4 channels per cycle (57 typical = 3
+#     forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).
+#     Measured working set ~0.4 MB; 128M provides ~300× headroom for
+#     retry buffers + zstd compression.
+#   - NO CPUAffinity (same posture as D2.5). With 4 tenants on a 2-vCPU
+#     box (bot implicit vCPU-0, Kalshi pinned vCPU-1, Coinbase + Weather
+#     both unpinned), additional pins would over-constrain the scheduler.
+#     Weather's HTTP-poll load is the lightest of all 4; floats safely.
+#   - LimitNOFILE=512 (same as Coinbase). 4 writers × 2 rotation files +
+#     rclone subprocess + HTTP keep-alive sockets ≈ 30 fd typical; 512
+#     gives ~15× headroom.
+#
+# Same as kalshi-coinbase-collector.service:
+Nice=10
+MemoryMax=128M
+MemorySwapMax=0
+LimitNOFILE=512
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

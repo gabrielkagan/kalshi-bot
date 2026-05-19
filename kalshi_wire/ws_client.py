@@ -118,8 +118,11 @@ def build_envelope(
         raw: The full raw wire payload as a string. NOT JSON-parsed —
             bronze captures bytes verbatim per the D0.3 §0 operator
             principle ("store all raw data, transform downstream with dbt").
-        source: e.g. ``kalshi_ws``, ``coinbase_ws``, ``nws_hrrr``. Used by
-            silver ETL dispatch.
+        source: e.g. ``kalshi_ws``, ``coinbase_ws``, ``open_meteo``. Used by
+            silver ETL dispatch. (The original D0.3 §1 slot reservation was
+            ``nws_hrrr``; D1.8 retracted that name because the bot polls
+            Open-Meteo's aggregated HRRR via ``OPEN_METEO_FORECAST_URL`` —
+            NOT NWS direct — so the actual provider is Open-Meteo.)
         channel: WS channel name (``orderbook_delta`` / ``trade`` /
             ``market_lifecycle_v2``) or None for REST snapshots.
         conn: WS connection id (A/B/C/D/E/F for Kalshi multi-conn) or None

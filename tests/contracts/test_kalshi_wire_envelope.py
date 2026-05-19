@@ -7,7 +7,7 @@ line is a JSONL record with EXACTLY 6 reserved fields:
 | Field | Type | Source |
 |---|---|---|
 | ``_wire_recv_ts`` | ISO-8601 UTC w/ μs precision | Captured at frame ingress, BEFORE deserialization |
-| ``_source`` | string | e.g. ``kalshi_ws``, ``coinbase_ws``, ``nws_hrrr`` |
+| ``_source`` | string | e.g. ``kalshi_ws``, ``coinbase_ws``, ``open_meteo`` (the original D0.3 §1 slot reservation was ``nws_hrrr``; D1.8 retracted that name) |
 | ``_conn`` | string \\| null | WS connection id (A/B/...); null for REST snapshots |
 | ``_channel`` | string \\| null | WS channel (``orderbook_delta`` / ``trade`` / ...) |
 | ``_collector_seq`` | int | Monotone-increasing per-collector-process sequence |
