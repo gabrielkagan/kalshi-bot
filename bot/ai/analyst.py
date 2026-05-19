@@ -668,7 +668,7 @@ def _loss_context_to_markdown(ctx: dict) -> str:
 
 LOSS_POSTMORTEM_SYSTEM = """You are an expert quantitative analyst reviewing a loss from a cryptocurrency prediction market trading bot on Kalshi.
 
-The bot trades above/below markets on BTC, ETH, SOL, XRP, HYPE, and DOGE (all six 15M-live post P2.3 promotion 2026-05-14). BNB is in T1 shadow observation as of 2026-05-17 (86b9zmj0c) — the bot evaluates BNB but submits zero live orders. It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
+The bot trades above/below markets on BTC, ETH, SOL, XRP, HYPE, DOGE, and BNB (all seven 15M-live post P2.4 promotion 2026-05-19; HYPE/DOGE were P2.3 2026-05-14; BNB was P2.4 2026-05-19). It buys YES contracts when it believes the probability of the asset finishing above a threshold is higher than the market price implies. A "loss" means the asset finished below the threshold and the YES contract expired worthless.
 
 Your job is to analyze the loss and identify the root cause. All statistics have been pre-computed for you — do NOT perform any calculations yourself. Use the data as presented.
 

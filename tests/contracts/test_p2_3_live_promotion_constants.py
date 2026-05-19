@@ -167,6 +167,10 @@ def test_market_blend_w_by_asset_includes_hype_doge():
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Anchor 4b: MARKET_BLEND_W_BY_ASSET total key count (extends to 7 post-P2.4)
+# ─────────────────────────────────────────────────────────────────────
+
 def test_market_blend_w_by_asset_has_seven_keys():
     """MARKET_BLEND_W_BY_ASSET MUST have exactly 7 keys after P2.4 ship:
     the 4 P2.1.d assets + HYPE + DOGE (P2.3) + BNB (P2.4 2026-05-19,

@@ -3259,9 +3259,9 @@ class OpportunityScanner:
                     try:
                         _cp = _cf["cal_pipeline"]
                         if now - self._shadow_cal_last_log.get(asset, 0) >= 300:
-                            # P2.1.d + P2.3: log the per-asset effective blend
-                            # weight for all 6 production 15M assets; unknown
-                            # assets fall back via dict.get.
+                            # P2.1.d + P2.3 + P2.4: log the per-asset effective
+                            # blend weight for all 7 production 15M assets;
+                            # unknown assets fall back via dict.get.
                             _log_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                             logging.info(
                                 "shadow_cal_pipeline %s: prob=%.4f edge=%.4f fee_edge=%.4f "
