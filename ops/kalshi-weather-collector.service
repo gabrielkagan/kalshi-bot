@@ -25,10 +25,12 @@ RestartSec=10s
 #     forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).
 #     Measured working set ~0.4 MB; 128M provides ~300× headroom for
 #     retry buffers + zstd compression.
-#   - NO CPUAffinity (same posture as D2.5). With 4 tenants on a 2-vCPU
-#     box (bot implicit vCPU-0, Kalshi pinned vCPU-1, Coinbase + Weather
-#     both unpinned), additional pins would over-constrain the scheduler.
-#     Weather's HTTP-poll load is the lightest of all 4; floats safely.
+#   - NO CPUAffinity (same posture as D2.5 + Kalshi post-retirement
+#     2026-05-19 ticket 86ba12rv6). With 4 tenants on a 2-vCPU box (bot
+#     + Kalshi + Coinbase + Weather all unpinned), the kernel scheduler
+#     floats them across both vCPUs; Nice=10 (collectors) vs Nice=0
+#     (bot) gates priority. Weather's HTTP-poll load is the lightest
+#     of all 4; floats safely.
 #   - LimitNOFILE=512 (same as Coinbase). 4 writers × 2 rotation files +
 #     rclone subprocess + HTTP keep-alive sockets ≈ 30 fd typical; 512
 #     gives ~15× headroom.

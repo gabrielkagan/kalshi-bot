@@ -19,7 +19,8 @@
 #
 # D1.5 (2026-05-16, ticket 86b9ypna4) extends the installer to also
 # install kalshi-collector.service — the Data Corpus collector unit
-# (separate process, vCPU-1 pinned, 512M cap, dedicated env file).
+# (separate process, Nice=10 polite-background, 512M cap, dedicated env
+# file). CPUAffinity=1 vCPU-1 pin retired 2026-05-19 (ticket 86ba12rv6).
 #
 # D2.5 (2026-05-18, ticket 86b9znq4w) extends the installer further
 # to install kalshi-coinbase-collector.service — the Coinbase-side

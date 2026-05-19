@@ -17,7 +17,14 @@ RestartSec=10s
 # tests/contracts/test_kalshi_collector_systemd_unit.py; a future
 # edit that loosens any of these must update the test in the same
 # commit (and update kb/decisions/data-corpus-architecture.md §6).
-CPUAffinity=1
+#
+# CPUAffinity RETIRED 2026-05-19 (ticket 86ba12rv6, umbrella 86ba12rf0):
+# at 754K+ tickers the single-vCPU pin saturated at 90% CPU on 1 core
+# while vCPU-0 sat idle, driving ~33% sustained frame drop. The Nice=10
+# polite-background posture remains the load-bearing guarantee that bot
+# scan latency cannot be starved by the collector; the kernel scheduler
+# now floats both processes across both vCPUs. See
+# kb/decisions/collector-queue-saturation-fix-plan.md for RCA.
 Nice=10
 MemoryMax=512M
 MemorySwapMax=0

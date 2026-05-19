@@ -99,10 +99,11 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   now the default ticker source; `COLLECTOR_TICKERS_FILE` retained as
   the offline/test boot seam. **D1.5 SHIPPED 2026-05-16, ticket
   `86b9ypna4`** (REQUIRES-APPROVAL discipline tier) — wrote
-  `ops/kalshi-collector.service` (CPUAffinity=1, Nice=10,
+  `ops/kalshi-collector.service` (Nice=10,
   MemoryMax=512M, MemorySwapMax=0, LimitNOFILE=4096,
   `Restart=on-failure`+`RestartSec=10s`, `EnvironmentFile=/home/botuser/.env.collector`,
-  `ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh`),
+  `ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh`;
+  CPUAffinity=1 at ship — retired 2026-05-19 ticket `86ba12rv6`),
   extended `ops/install.sh` to a multi-unit installer (parallel-array
   form; per-unit env-file check distinguishes the bot's repo-rooted
   `.env` from the collector's home-rooted `.env.collector`), refreshed

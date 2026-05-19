@@ -75,7 +75,7 @@ Install with `bash scripts/ops/setup_journal_archives_sync_timer.sh` on the VPS.
 
 `ops/kalshi-collector.service` (SHIPPED 2026-05-16, ticket `86b9ypna4`) deploys the Data Corpus collector as a parallel systemd unit on the bot VPS. Key isolation knobs (pinned by `tests/contracts/test_kalshi_collector_systemd_unit.py`):
 
-- `CPUAffinity=1` — pins collector to vCPU-1 (bot keeps vCPU-0 uncontended; 2-vCPU VPS, sustained CPU contention is real even at Nice=10).
+- **`CPUAffinity` — RETIRED 2026-05-19** (ticket `86ba12rv6`, umbrella `86ba12rf0`). At 754K+ tickers the single-vCPU pin saturated at 90% CPU on 1 core while vCPU-0 sat idle, driving ~33% sustained frame drop. The collector now floats across both vCPUs; the `Nice=10` polite-background posture below remains the load-bearing guarantee that bot scan latency cannot be starved. See `kb/decisions/collector-queue-saturation-fix-plan.md`.
 - `Nice=10` — I/O-bound polite background (NOT -19; collector is not real-time).
 - `MemoryMax=512M` + `MemorySwapMax=0` — kernel-kill the collector before it OOMs the 2GB box; 0 swap is the failure mode (D0.2 §3.2 measured 47 MB/conn × 7-8 conns = ~376 MB; 512 MB cap leaves writer/uploader headroom).
 - `LimitNOFILE=4096` — 6 conns × 3 channels × rotation + rclone need; default 1024 is tight.
@@ -155,7 +155,7 @@ The one residual shared failure surface is root filesystem disk-full — D1.6 (`
 
 `ops/kalshi-coinbase-collector.service` (SHIPPED 2026-05-18, ticket `86b9znq4w`) deploys the Coinbase-side Data Corpus collector as a THIRD parallel systemd unit on the bot VPS, alongside `kalshi-bot.service` + `kalshi-collector.service`. Option B isolation posture (operator-decided at kickoff): separate process / separate cgroup / separate env file / separate bronze root / separate health sidecar. Key isolation knobs (pinned by `tests/contracts/test_kalshi_coinbase_collector_systemd_unit.py`):
 
-- **NO `CPUAffinity`** — the 2-vCPU VPS has the bot implicitly on vCPU-0 and kalshi-collector pinned to vCPU-1 (D1.5); pinning a third tenant over-constrains the kernel scheduler. Coinbase single-conn light load is fine on either vCPU; `Nice=10` + `MemoryMax` floor is the structural bound.
+- **NO `CPUAffinity`** — the 2-vCPU VPS lets the kernel scheduler float all tenants (bot + kalshi-collector + this unit) freely across both vCPUs. `Nice=10` (collector-tier polite background) vs `Nice=0` (bot) gates priority when CPU is contended; `MemoryMax` floor + tight `LimitNOFILE` cap the resource blast radius. (Pre-2026-05-19 ops/kalshi-collector.service had `CPUAffinity=1` pinning Kalshi to vCPU-1; retired under ticket `86ba12rv6` when the single-vCPU pin saturated at 90% CPU under 754K+ tickers.)
 - `Nice=10` — same I/O-bound polite-background posture as kalshi-collector.
 - `MemoryMax=256M` + `MemorySwapMax=0` — half of kalshi-collector's 512M cap. Coinbase single-conn × 7 products × 5 channels (post-D2.5 level2_batch promotion) is structurally lighter than Kalshi 7-conn × ~21K-subs. 256M leaves room for worker queue (10K items) + zstd buffer + rclone overhead.
 - `LimitNOFILE=512` — 1 conn × 5 channels × rotation + rclone needs ~30 fd typical; 512 gives ~10× headroom (tighter than Kalshi's 4096 to surface fd-leak regressions early).
@@ -256,7 +256,7 @@ The `git reset --hard origin/main` deploy step moves the file but does NOT touch
 
 `ops/kalshi-weather-collector.service` (SHIPPED 2026-05-18, ticket `86ba0duck`) deploys the weather bronze collector as a FOURTH parallel systemd unit on the bot VPS, alongside `kalshi-bot.service` + `kalshi-collector.service` + `kalshi-coinbase-collector.service`. First non-WS bronze source. Key isolation knobs (pinned by `tests/contracts/test_weather_collector_systemd_unit.py`):
 
-- **NO `CPUAffinity`** — with 4 tenants on a 2-vCPU box (bot implicit vCPU-0, Kalshi pinned vCPU-1, Coinbase + Weather both unpinned), additional pins would over-constrain the scheduler. Weather is the LIGHTEST tier — HTTP-poll at 60-min cadence × 19 cities × ≤4 channels per cycle (57 envelopes typical = 3 forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).
+- **NO `CPUAffinity`** — with 4 tenants on a 2-vCPU box (bot + Kalshi + Coinbase + Weather), the kernel scheduler floats them all across both vCPUs; `Nice=10` (collectors) vs `Nice=0` (bot) gates priority. Weather is the LIGHTEST tier — HTTP-poll at 60-min cadence × 19 cities × ≤4 channels per cycle (57 envelopes typical = 3 forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).
 - `Nice=10` — same I/O-bound polite-background posture as the WS collectors.
 - `MemoryMax=128M` + `MemorySwapMax=0` — HALF of Coinbase's 256M (and a quarter of Kalshi's 512M). Measured working set ~0.4 MB; 128M provides ~300× headroom for retry buffers + zstd compression.
 - `LimitNOFILE=512` — same as Coinbase. 4 writers × 2 rotation files + rclone subprocess + HTTP keep-alive sockets ≈ 30 fd typical; 512 gives ~15× headroom.

@@ -111,12 +111,13 @@ def test_service_restart_on_failure_with_10s_backoff():
 
 
 def test_service_has_no_cpu_affinity_directive():
-    """No ``CPUAffinity=`` — mirrors D2.5 posture.
+    """No ``CPUAffinity=`` — mirrors D2.5 + Kalshi post-2026-05-19 posture.
 
-    With 4 tenants on a 2-vCPU box (bot implicit vCPU-0, Kalshi
-    pinned vCPU-1, Coinbase + Weather both unpinned), additional
-    pins would over-constrain the kernel scheduler. Weather's
-    HTTP-poll load is the lightest of all 4; floats safely.
+    With 4 tenants on a 2-vCPU box (bot + Kalshi + Coinbase + Weather
+    all unpinned), the kernel scheduler floats them across both vCPUs;
+    Nice=10 (collectors) vs Nice=0 (bot) gates priority when CPU is
+    contended. Weather's HTTP-poll load is the lightest of all 4;
+    floats safely.
     """
     text = _read_unit()
     cpu_affinity = _directive(text, "CPUAffinity")
