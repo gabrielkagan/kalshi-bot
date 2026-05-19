@@ -2064,32 +2064,137 @@ class StateManager:
                     _t5["spot_distance_to_strike_sigma"]
                 )
 
-        self.conn.execute("""
-            INSERT OR IGNORE INTO rejected_opportunities
-                (ticker, event_ticker, asset, rejection_reason, rejection_time,
-                 z_score, spot_price, threshold, volatility, market_price,
-                 seconds_to_close, calibrated_prob, raw_prob, status,
-                 egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-                 shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-                 counterfactual, product_type,
-                 oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-                 no_ask_cents,
-                 sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
-                 vol_regime, data_provenance, orderbook_levels_json,
-                 config_snapshot_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (ticker, event_ticker, asset, rejection_reason, now,
-              z_score, spot_price, threshold, volatility, market_price,
-              seconds_to_close, calibrated_prob, raw_prob, "pending",
-              egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
-              shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
-              counterfactual, product_type,
-              oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
-              no_ask_cents,
-              sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
-              vol_regime, data_provenance, orderbook_levels_json,
-              config_snapshot_id))
-        self.conn.commit()
+        # Ticket 86ba0jvgw (2026-05-19) — defensive guard mirroring the
+        # sister `StateManager.insert_evaluated_opportunity` (its BEGIN
+        # IMMEDIATE retry loop + outer-try WARNING envelope are the
+        # structural sister) and `StateManager.insert_bot_order` (its
+        # `_log_insert_bot_order_failure` envelope mirrors the
+        # diagnostic envelope here). 4-site coverage of the StateManager
+        # hot-path writers completes here:
+        #
+        #   insert_evaluated_opportunity → SWALLOW (telemetry)
+        #   mark_rejection_settled       → B3-fu1 swallow (telemetry)
+        #   insert_bot_order             → RAISE (crash safety)
+        #   insert_rejection             → SWALLOW (telemetry) ◀ this site
+        #
+        # Pattern: BEGIN IMMEDIATE retry-on-busy (3 attempts, 25-75ms
+        # jittered backoff — same SCAN_BODY_SLOW budget as the
+        # `insert_evaluated_opportunity` retry loop) + B3-fu1
+        # commit-race swallow on the COMMIT step + broad telemetry
+        # swallow with structured WARNING on any other OperationalError
+        # (including the 2026-05-19 incident's `another row available`
+        # signature from disk-full cursor corruption). Rejection rows
+        # are telemetry; losing one is preferable to crashing the scan
+        # tick (same divergence as `insert_evaluated_opportunity`).
+        #
+        # Pinned by tests/integration/test_insert_rejection_defensive_guard_regression.py.
+        # NOTE: this comment uses SYMBOLIC anchors (function names) for
+        # cross-references rather than line numbers — line refs drift
+        # with every shift in the file, per R1-M1 ratchet of this Bit.
+        _be_err_repr: Optional[str] = None
+        _be_duration_ms: Optional[float] = None
+        _be_retries: int = 0
+        _began_explicitly = False
+        _t0_lock = time.perf_counter()
+        try:
+            for _attempt in range(3):
+                try:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                    _began_explicitly = True
+                    _be_retries = _attempt
+                    break
+                except sqlite3.OperationalError as _be_err:
+                    _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                    _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
+                    _be_retries = _attempt + 1
+                    _err_msg = str(_be_err).lower()
+                    _is_transient = ("locked" in _err_msg) or ("busy" in _err_msg)
+                    if not _is_transient:
+                        break
+                    if _attempt < 2:
+                        time.sleep(0.025 + random.random() * 0.050)
+            self.conn.execute("""
+                INSERT OR IGNORE INTO rejected_opportunities
+                    (ticker, event_ticker, asset, rejection_reason, rejection_time,
+                     z_score, spot_price, threshold, volatility, market_price,
+                     seconds_to_close, calibrated_prob, raw_prob, status,
+                     egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+                     shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+                     counterfactual, product_type,
+                     oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+                     no_ask_cents,
+                     sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
+                     vol_regime, data_provenance, orderbook_levels_json,
+                     config_snapshot_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (ticker, event_ticker, asset, rejection_reason, now,
+                  z_score, spot_price, threshold, volatility, market_price,
+                  seconds_to_close, calibrated_prob, raw_prob, "pending",
+                  egarch_sigma, egarch_blend_sigma, egarch_blend_weight, mz_r_squared,
+                  shadow_tv_blend_rv, mz_shadow_sigmoid_w, mz_baseline_qlike, mz_qlike,
+                  counterfactual, product_type,
+                  oft_prob_adjustment, oft_imbalance_ratio, oft_n_snapshots,
+                  no_ask_cents,
+                  sigma_winsorize, hour_sin, hour_cos, prob_breakeven_gap,
+                  vol_regime, data_provenance, orderbook_levels_json,
+                  config_snapshot_id))
+            # B3-fu1 cross-thread commit-race tolerance: if
+            # settlement_tracker's mark_rejection_settled issues a
+            # commit() on the shared conn between our BEGIN IMMEDIATE
+            # and our COMMIT here, SQLite reports "cannot commit - no
+            # transaction is active" — the racer's commit captured
+            # our INSERT, so the row is preserved. Swallow that
+            # specific signature; propagate other errors to the outer
+            # broad-telemetry catch below.
+            try:
+                if _began_explicitly:
+                    self.conn.execute("COMMIT")
+                else:
+                    self.conn.commit()
+            except sqlite3.OperationalError as _ce:
+                if "no transaction is active" not in str(_ce).lower():
+                    raise
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            _diag_thread = threading.current_thread().name
+            _diag_in_tx = getattr(self.conn, "in_transaction", "?")
+            _diag_begin = "OK" if _began_explicitly else _be_err_repr
+            try:
+                _diag_active = [
+                    f"{tok.split('#', 1)[0]}/{kind}/{th}"
+                    f"@{(time.time() - started) * 1000:.0f}ms"
+                    for (tok, started, kind, th) in snapshot_active()
+                ]
+            except Exception:
+                _diag_active = ["<snapshot_failed>"]
+            try:
+                _now = time.time()
+                _diag_recent = [
+                    f"{name}/{kind}/{th}"
+                    f"@{(_now - finished_ts) * 1000:.0f}ms_ago/{dur:.1f}ms"
+                    for (name, kind, dur, finished_ts, th) in recent_writes(2.0)
+                ]
+            except Exception:
+                _diag_recent = ["<recent_failed>"]
+            _diag_be_dur = (
+                f"{_be_duration_ms:.1f}" if _be_duration_ms is not None else "?"
+            )
+            logging.warning(
+                f"insert_rejection failed: {e} "
+                f"ticker={ticker!r} "
+                f"begin_immediate={_diag_begin!r} "
+                f"begin_immediate_duration_ms={_diag_be_dur} "
+                f"begin_immediate_retries={_be_retries} "
+                f"thread={_diag_thread!r} "
+                f"in_tx={_diag_in_tx!s} "
+                f"active_writers={_diag_active!r} "
+                f"recent_writes={_diag_recent!r}",
+                exc_info=True,
+            )
 
     def get_unsettled_rejections(self) -> List[Dict]:
         """Return all rejected opportunities with status='pending'."""

@@ -162,6 +162,19 @@ must not, per `tests/integration/test_execution.py
 ::test_maker_persists_to_db_before_api` ("DB persist must happen
 before API call"). Pinned by
 `tests/integration/test_insert_bot_order_defensive_guard_regression.py`.**
+**86ba0jvgw (2026-05-19) completed the 4-site coverage chain by
+applying the same retry-on-busy + B3-fu1 commit-race swallow to
+`StateManager.insert_rejection` after a `Tick error at
+state.py:2049:insert_rejection: another row available` production
+trace during the 2026-05-19 disk-full incident. Telemetry-class
+divergence: matches insert_evaluated_opportunity (SWALLOW on
+retry exhaustion with structured WARNING) — losing a rejection
+row is preferable to crashing the scan tick. The 4 StateManager
+hot-path writers now have consistent defensive surfaces:
+insert_evaluated_opportunity → swallow / mark_rejection_settled
+→ B3-fu1 swallow / insert_bot_order → raise (crash safety) /
+insert_rejection → swallow. Pinned by
+`tests/integration/test_insert_rejection_defensive_guard_regression.py`.**
 
 - New `sqlite3.connect()`: set `PRAGMA journal_mode=WAL` +
   `PRAGMA busy_timeout=10000`. Catch the contention bugs early.
