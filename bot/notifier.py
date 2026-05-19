@@ -66,6 +66,45 @@ class TelegramNotifier:
         text = message[:4096]
         threading.Thread(target=self._post, args=(text, silent), daemon=True).start()
 
+    def send_sync(self, message: str, silent: bool = False,
+                  dedup_key: Optional[str] = None) -> bool:
+        """Synchronous variant of `send` — performs the HTTP POST inline
+        and returns True iff Telegram returned 2xx.
+
+        Added 2026-05-19 for ``scripts/ops/phantom_reconcile_monitor.py``
+        to close R2-N1: the fire-and-forget ``send()`` spawns a daemon
+        thread and returns immediately; the cron wrapper then records
+        "sent" in its on-disk dedup sidecar. If the daemon dies before
+        the HTTP POST completes (SIGTERM during shutdown, network
+        failure post-record), the sidecar suppresses the next retry
+        and the alert is silently lost. ``send_sync`` lets the caller
+        gate sidecar record on actual 2xx delivery.
+
+        Hot-path callers (bot/scanner, bot/executor, bot/settlement,
+        bot/main_loop) MUST keep ``send`` — they cannot block on a 5s
+        HTTP timeout inside the scan tick. ``send_sync`` is for
+        cron-tier scripts where the process exits anyway after one
+        round.
+        """
+        if not self.enabled:
+            return False
+        if dedup_key:
+            now = time.time()
+            if dedup_key in self._dedup and now - self._dedup[dedup_key] < 60:
+                return False
+            self._dedup[dedup_key] = now
+        text = message[:4096]
+        try:
+            resp = requests.post(self._url, json={
+                "chat_id": self._chat_id,
+                "text": text,
+                "disable_notification": silent,
+            }, timeout=5)
+            return 200 <= getattr(resp, "status_code", 0) < 300
+        except Exception as e:
+            logging.warning(f"Telegram send_sync failed: {e}")
+            return False
+
     def _post(self, text: str, silent: bool):
         # No parse_mode: Telegram's Markdown parser 400s on unbalanced
         # `_` / `*` / `` ` `` in alert payloads. B4's `KALSHI_DELTA=…`

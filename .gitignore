@@ -10,7 +10,7 @@ logs/
 *.db-wal
 calibration_state.json
 weather_ensemble_cache.json
-phantom_reconcile_dedup.json
+phantom_reconcile_dedup.json*
 backfill_data/
 DOC_DRIFT_REPORT.txt
 # Local snapshot dump dir (state_snapshot_*.db files for Mac-side cal_mlp drain).

@@ -55,9 +55,16 @@ get AT MOST one row per (ticker, side) per day — no row
 multiplication.
 
 Operator install (cron):
-    # `crontab -e` (botuser); ~/.env must export KALSHI_API_KEY{,_ID},
-    # KALSHI_PRIVATE_KEY_PATH, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
-    7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> /var/log/phantom_reconcile.log 2>&1
+    # `crontab -e` (botuser); source whichever env files export
+    # KALSHI_API_KEY (or KALSHI_API_KEY_ID), KALSHI_PRIVATE_KEY_PATH,
+    # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID. These may be split — on the
+    # production VPS, TELEGRAM_* live in ~/.env while KALSHI_* live in
+    # ~/kalshi-bot-repo/.env (a deliberate isolation: bot service
+    # sources the repo-rooted .env via systemd EnvironmentFile; user
+    # cron jobs source ~/.env for Telegram/Anthropic/Supabase). Source
+    # ALL files that export the 4 required keys; later-sourced wins on
+    # duplicate keys.
+    7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
 
 Exit code: always 0 (cron health-script convention; alerts go via
 Telegram, not exit code).
@@ -65,14 +72,16 @@ Telegram, not exit code).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import logging
 import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -211,7 +220,7 @@ def build_unverified_rate_alert(
         f"({rate * 100:.0f}%) (ticker, side) pairs unverified "
         f"(threshold {rate_threshold * 100:.0f}%). Phantom drift may "
         f"be accumulating silently. Check Kalshi API status + "
-        f"`/var/log/phantom_reconcile.log` for the latest run."
+        f"`~/phantom_reconcile.log` for the latest run."
     )
 
 
@@ -242,6 +251,32 @@ def _save_dedup_state(sidecar_path: Path, state: Dict[str, str]) -> None:
     tmp.replace(sidecar_path)
 
 
+@contextlib.contextmanager
+def _sidecar_lock(sidecar_path: Path) -> Iterator[None]:
+    """fcntl-exclusive lock around sidecar read-modify-write (R2-N6).
+
+    Without this, two overlapping cron firings on `_record_sent` would
+    race on _load_dedup_state → mutate → _save_dedup_state and the
+    later writer's atomic-replace would clobber the earlier writer's
+    new key. Lock file is a sibling ``<sidecar>.lock`` so the dedup
+    JSON itself stays clean (atomic-replace would replace the locked
+    inode otherwise).
+    """
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = sidecar_path.with_suffix(sidecar_path.suffix + ".lock")
+    # `O_CREAT|O_RDWR` so concurrent processes share the same lock-
+    # target inode. `0o600` keeps it operator-private.
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _should_send_today(
     sidecar_path: Path, dedup_key: str, today_iso_date: str,
 ) -> bool:
@@ -260,9 +295,13 @@ def _should_send_today(
 def _record_sent(
     sidecar_path: Path, dedup_key: str, today_iso_date: str,
 ) -> None:
-    state = _load_dedup_state(sidecar_path)
-    state[dedup_key] = today_iso_date
-    _save_dedup_state(sidecar_path, state)
+    """R2-N6: serialize read-modify-write via fcntl.flock so overlapping
+    cron firings don't drop each other's writes.
+    """
+    with _sidecar_lock(sidecar_path):
+        state = _load_dedup_state(sidecar_path)
+        state[dedup_key] = today_iso_date
+        _save_dedup_state(sidecar_path, state)
 
 
 def _summary_fingerprint(material: List[Dict], bucket_cents: int = 1000) -> str:
@@ -325,15 +364,17 @@ def _maybe_send(
     today_iso_date: str,
     sidecar_path: Path,
 ) -> None:
-    """Send via notifier respecting the (date, fingerprint) on-disk dedup.
+    """Send synchronously via notifier respecting the (date, fingerprint)
+    on-disk dedup.
 
-    Wraps `notifier.send(...)` (60s in-process window) with the
-    sidecar check so cron-invocation dedup actually works. The
+    Uses ``notifier.send_sync(...)`` (R2-N1) so the sidecar record only
+    lands when Telegram returned 2xx — a transient HTTP failure leaves
+    the sidecar untouched and the next cron tick retries. The
     fingerprint defeats dedup when material state changes (R2-M1).
 
-    R2-N2: when ``notifier.enabled`` is False (missing tokens),
-    SKIP both the send and the sidecar record — otherwise a
-    mid-day env fix would still be suppressed until tomorrow.
+    R2-N2: when ``notifier.enabled`` is False (missing tokens), SKIP
+    both the send and the sidecar record — otherwise a mid-day env fix
+    would still be suppressed until tomorrow.
     """
     if message is None:
         return
@@ -342,8 +383,9 @@ def _maybe_send(
     dedup_key = f"{dedup_prefix}_{today_iso_date}_{fingerprint}"
     if not _should_send_today(sidecar_path, dedup_key, today_iso_date):
         return
-    notifier.send(message, dedup_key=dedup_key)
-    _record_sent(sidecar_path, dedup_key, today_iso_date)
+    delivered = notifier.send_sync(message, dedup_key=dedup_key)
+    if delivered:
+        _record_sent(sidecar_path, dedup_key, today_iso_date)
 
 
 def _run_audit_safely(
@@ -445,7 +487,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"*PHANTOM RECONCILE CRASHED* — auditor raised "
                 f"`{type(exc).__name__}: {exc}` (run_id={run_id}). "
                 f"Phantom corrections are NOT being written. Check "
-                f"`/var/log/phantom_reconcile.log` for full traceback."
+                f"`~/phantom_reconcile.log` for full traceback."
             ),
             dedup_prefix=DEDUP_PREFIX_CRASH,
             fingerprint=_crash_fingerprint(exc),

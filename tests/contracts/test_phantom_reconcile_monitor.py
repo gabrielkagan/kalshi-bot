@@ -346,7 +346,7 @@ def test_main_returns_zero_on_clean_run(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         rc = prm.main(argv=["--dedup-sidecar", str(sidecar)])
     assert rc == 0
-    mock_notifier.send.assert_not_called()
+    mock_notifier.send_sync.assert_not_called()
 
 
 def test_main_returns_zero_on_auditor_crash(tmp_path):
@@ -363,10 +363,10 @@ def test_main_returns_zero_on_auditor_crash(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         rc = prm.main(argv=["--dedup-sidecar", str(sidecar)])
     assert rc == 0
-    assert mock_notifier.send.called, (
+    assert mock_notifier.send_sync.called, (
         "Auditor crash without Telegram alert is C2 — operator blind."
     )
-    args, kwargs = mock_notifier.send.call_args
+    args, kwargs = mock_notifier.send_sync.call_args
     msg = args[0] if args else kwargs.get("message", "")
     assert "auditor" in msg.lower() or "crashed" in msg.lower()
 
@@ -387,7 +387,7 @@ def test_main_crash_alert_uses_crash_dedup_prefix(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
-    _, kwargs = mock_notifier.send.call_args
+    _, kwargs = mock_notifier.send_sync.call_args
     dedup_key = kwargs.get("dedup_key", "")
     assert dedup_key.startswith(prm.DEDUP_PREFIX_CRASH), (
         f"crash dedup_key must start with {prm.DEDUP_PREFIX_CRASH!r}; "
@@ -455,11 +455,11 @@ def test_main_alerts_on_material_phantoms(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         rc = prm.main(argv=["--dedup-sidecar", str(sidecar)])
     assert rc == 0
-    assert mock_notifier.send.call_count == 1, (
+    assert mock_notifier.send_sync.call_count == 1, (
         "Expected 1 aggregated summary alert (M1 alert-storm regression)"
     )
     # Pin summary dedup_key prefix (R1-M6).
-    _, kwargs = mock_notifier.send.call_args
+    _, kwargs = mock_notifier.send_sync.call_args
     assert kwargs.get("dedup_key", "").startswith(prm.DEDUP_PREFIX_SUMMARY)
 
 
@@ -481,11 +481,11 @@ def test_main_fires_unverified_rate_alert_when_visibility_degraded(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
-    assert mock_notifier.send.call_count == 1, (
+    assert mock_notifier.send_sync.call_count == 1, (
         "C1 visibility-degraded alert must fire when n_unverified/n_audited "
         "exceeds threshold even if n_divergent=0"
     )
-    _, kwargs = mock_notifier.send.call_args
+    _, kwargs = mock_notifier.send_sync.call_args
     assert kwargs.get("dedup_key", "").startswith(prm.DEDUP_PREFIX_UNVERIFIED)
 
 
@@ -518,16 +518,16 @@ def test_main_dedup_sidecar_suppresses_repeat_alerts_within_day(tmp_path):
     with patch.object(prm, "_run_audit_safely", return_value=mock_summary), \
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
-    first_count = mock_notifier.send.call_count
+    first_count = mock_notifier.send_sync.call_count
     assert first_count == 1
 
     # Second invocation — same UTC day, same dedup_key → suppressed.
     with patch.object(prm, "_run_audit_safely", return_value=mock_summary), \
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
-    assert mock_notifier.send.call_count == first_count, (
+    assert mock_notifier.send_sync.call_count == first_count, (
         "Same-day repeat invocation must be suppressed by sidecar dedup; "
-        f"got {mock_notifier.send.call_count} sends (expected {first_count})"
+        f"got {mock_notifier.send_sync.call_count} sends (expected {first_count})"
     )
 
 
@@ -553,7 +553,7 @@ def test_main_alerts_dedup_key_includes_ymd_date(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
-    _, kwargs = mock_notifier.send.call_args
+    _, kwargs = mock_notifier.send_sync.call_args
     dedup_key = kwargs.get("dedup_key", "")
     assert re.search(r"\d{4}-\d{2}-\d{2}", dedup_key), (
         f"dedup_key must include YYYY-MM-DD. Got: {dedup_key!r}"
@@ -679,9 +679,9 @@ def test_main_summary_dedup_breaks_when_new_material_phantom_appears(tmp_path):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
     # Must have fired TWICE — second time defeats dedup via fingerprint.
-    assert mock_notifier.send.call_count == 2, (
+    assert mock_notifier.send_sync.call_count == 2, (
         f"R2-M1 regression: fresh material phantom must defeat same-day "
-        f"dedup. Got {mock_notifier.send.call_count} sends (expected 2)."
+        f"dedup. Got {mock_notifier.send_sync.call_count} sends (expected 2)."
     )
 
 
@@ -702,9 +702,9 @@ def test_main_summary_dedup_holds_when_state_unchanged(tmp_path):
              patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
             prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
-    assert mock_notifier.send.call_count == 1, (
+    assert mock_notifier.send_sync.call_count == 1, (
         "Unchanged state across two runs must dedup; "
-        f"got {mock_notifier.send.call_count} sends"
+        f"got {mock_notifier.send_sync.call_count} sends"
     )
 
 
@@ -729,13 +729,267 @@ def test_main_skips_send_and_record_when_notifier_disabled(tmp_path):
          patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         prm.main(argv=["--dedup-sidecar", str(sidecar)])
 
-    mock_notifier.send.assert_not_called()
+    mock_notifier.send_sync.assert_not_called()
     # Sidecar must NOT have a stale "sent" record.
     if sidecar.exists():
         state = _json.loads(sidecar.read_text())
         assert state == {}, (
             f"sidecar must not record sends when notifier disabled; got {state}"
         )
+
+
+# ---------------------------------------------------------------------
+# Followup F2 / R2-N1: TelegramNotifier.send_sync closes the
+# SIGTERM/daemon-thread race in _maybe_send.
+# ---------------------------------------------------------------------
+
+def test_telegram_notifier_send_sync_exists_and_returns_bool():
+    """`TelegramNotifier.send_sync(message, silent=False, dedup_key=None) -> bool`.
+
+    Returns True iff the HTTP POST succeeded so callers (phantom
+    reconcile monitor) can gate sidecar-record-on-send-success and
+    avoid the fire-and-forget daemon-thread race the existing `send()`
+    method has.
+    """
+    from bot.notifier import TelegramNotifier
+    sig = inspect.signature(TelegramNotifier.send_sync)
+    assert "message" in sig.parameters
+    assert "silent" in sig.parameters
+    assert "dedup_key" in sig.parameters
+    assert sig.parameters["silent"].default is False
+    assert sig.parameters["dedup_key"].default is None
+
+
+def test_telegram_notifier_send_sync_returns_true_on_post_success():
+    """200 from `requests.post` → True."""
+    from bot.notifier import TelegramNotifier
+    n = TelegramNotifier("tok", "chat")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("bot.notifier.requests.post", return_value=mock_resp) as p:
+        assert n.send_sync("hi") is True
+    assert p.call_count == 1
+
+
+def test_telegram_notifier_send_sync_returns_false_on_post_exception():
+    """`requests.post` raising → False (not propagated)."""
+    from bot.notifier import TelegramNotifier
+    n = TelegramNotifier("tok", "chat")
+    with patch("bot.notifier.requests.post", side_effect=Exception("net down")):
+        assert n.send_sync("hi") is False
+
+
+def test_telegram_notifier_send_sync_returns_false_when_disabled():
+    """`enabled=False` (missing tokens) → False without attempting POST."""
+    from bot.notifier import TelegramNotifier
+    n = TelegramNotifier("", "")  # disabled
+    with patch("bot.notifier.requests.post") as p:
+        assert n.send_sync("hi") is False
+    p.assert_not_called()
+
+
+def test_telegram_notifier_send_sync_respects_internal_dedup():
+    """Second call same dedup_key within 60s → False, no POST.
+
+    Matches the existing `send()` semantics so the new method is a
+    drop-in. Internal dedup is independent of the cron-wrapper's
+    sidecar dedup.
+    """
+    from bot.notifier import TelegramNotifier
+    n = TelegramNotifier("tok", "chat")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    with patch("bot.notifier.requests.post", return_value=mock_resp) as p:
+        assert n.send_sync("hi", dedup_key="k") is True
+        assert n.send_sync("hi", dedup_key="k") is False
+    assert p.call_count == 1
+
+
+def test_maybe_send_records_sidecar_only_on_send_success(tmp_path):
+    """R2-N1 fix: when `send_sync` returns False (HTTP failed),
+    `_maybe_send` must NOT record the sidecar — otherwise a transient
+    network failure would suppress retries for the rest of the UTC day.
+    """
+    from scripts.ops.phantom_reconcile_monitor import _maybe_send
+
+    sidecar = tmp_path / "dedup.json"
+    notifier = MagicMock()
+    notifier.enabled = True
+    notifier.send_sync.return_value = False
+
+    _maybe_send(
+        notifier, "test msg",
+        dedup_prefix="phantom_reconcile_summary",
+        fingerprint="n1_tKX_yes_b0",
+        today_iso_date="2026-05-19",
+        sidecar_path=sidecar,
+    )
+
+    notifier.send_sync.assert_called_once()
+    assert not sidecar.exists() or json.loads(sidecar.read_text()) == {}, (
+        "sidecar must NOT record when send_sync returns False"
+    )
+
+
+def test_maybe_send_records_sidecar_on_send_success(tmp_path):
+    """Complement: True return → sidecar records the (date, dedup_key)."""
+    from scripts.ops.phantom_reconcile_monitor import _maybe_send
+
+    sidecar = tmp_path / "dedup.json"
+    notifier = MagicMock()
+    notifier.enabled = True
+    notifier.send_sync.return_value = True
+
+    _maybe_send(
+        notifier, "test msg",
+        dedup_prefix="phantom_reconcile_summary",
+        fingerprint="n1_tKX_yes_b0",
+        today_iso_date="2026-05-19",
+        sidecar_path=sidecar,
+    )
+
+    state = json.loads(sidecar.read_text())
+    assert state, "sidecar must record on send_sync=True"
+    assert any("phantom_reconcile_summary" in k for k in state.keys())
+
+
+def test_maybe_send_uses_send_sync_not_fire_and_forget():
+    """R2-N1 AST pin: `_maybe_send` must call `send_sync(...)`, NOT
+    `send(...)`. A regression to `.send(...)` would silently reopen
+    the SIGTERM/daemon-thread race class.
+    """
+    src_path = Path(__file__).resolve().parent.parent.parent / (
+        "scripts/ops/phantom_reconcile_monitor.py"
+    )
+    tree = ast.parse(src_path.read_text())
+
+    fn_node = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.FunctionDef) and n.name == "_maybe_send"),
+        None,
+    )
+    assert fn_node is not None, "_maybe_send function missing"
+
+    method_names = [
+        node.func.attr
+        for node in ast.walk(fn_node)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    ]
+    assert "send_sync" in method_names, (
+        "_maybe_send must call notifier.send_sync(...) for the "
+        "synchronous-send-with-bool-return contract (R2-N1 fix)"
+    )
+    assert "send" not in method_names, (
+        "_maybe_send must NOT call notifier.send(...) — that's "
+        "fire-and-forget and reopens the R2-N1 race class"
+    )
+
+
+# ---------------------------------------------------------------------
+# Followup F3 / R2-N6: fcntl.flock on sidecar read-modify-write
+# ---------------------------------------------------------------------
+
+def test_phantom_reconcile_monitor_imports_fcntl():
+    """`phantom_reconcile_monitor.py` must import fcntl for sidecar locking.
+
+    R2-N6 fix: without an exclusive flock, two overlapping cron firings
+    would race on read-modify-write.
+    """
+    src_path = Path(__file__).resolve().parent.parent.parent / (
+        "scripts/ops/phantom_reconcile_monitor.py"
+    )
+    src = src_path.read_text()
+    assert "import fcntl" in src or "from fcntl" in src, (
+        "phantom_reconcile_monitor must import fcntl for sidecar locking"
+    )
+    assert "fcntl.flock" in src or "fcntl.LOCK_EX" in src, (
+        "phantom_reconcile_monitor must call fcntl.flock(LOCK_EX) on "
+        "the sidecar file to serialize concurrent writes (R2-N6 fix)"
+    )
+
+
+def test_sidecar_concurrent_record_does_not_corrupt(tmp_path):
+    """Behavioral pin for R2-N6: spawn N threads each writing a unique
+    key to the same sidecar via `_record_sent`; final state must
+    contain every key.
+
+    Without the lock, last-writer-wins races would drop keys (verified
+    empirically pre-fix).
+    """
+    import threading
+    from scripts.ops.phantom_reconcile_monitor import _record_sent
+
+    sidecar = tmp_path / "dedup.json"
+    n_workers = 16
+    barrier = threading.Barrier(n_workers)
+
+    def worker(i):
+        barrier.wait()
+        _record_sent(sidecar, f"k_{i}", "2026-05-19")
+
+    threads = [threading.Thread(target=worker, args=(i,))
+               for i in range(n_workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    state = json.loads(sidecar.read_text())
+    assert len(state) == n_workers, (
+        f"Expected all {n_workers} keys recorded under concurrent "
+        f"writes; got {len(state)}: {sorted(state.keys())}"
+    )
+
+
+# ---------------------------------------------------------------------
+# Followup F4 / R2-N5: negative delta_pnl_cents test coverage
+# ---------------------------------------------------------------------
+
+def test_build_summary_alert_includes_negative_delta_pnl():
+    """A negative `delta_pnl_cents` (Kalshi > local — local UNDER-
+    counted) is also material drift. Code uses `abs(...)` for the
+    threshold check; this test pins that.
+    """
+    from scripts.ops.phantom_reconcile_monitor import build_summary_alert
+    findings = [_make_finding("KX-UNDER", -1500)]
+    summary = {
+        "n_audited": 1, "n_divergent": 1, "n_unverified": 0, "n_matched": 0,
+        "sum_delta_count": -5, "sum_delta_pnl_cents": -1500,
+        "findings": findings,
+    }
+    alert = build_summary_alert(summary, threshold_cents=500)
+    assert alert is not None, (
+        "Negative-Δpnl material drift must fire alert (|abs| >= threshold)"
+    )
+    assert "KX-UNDER" in alert
+    assert "-$15.00" in alert
+
+
+def test_summary_fingerprint_negative_delta_pnl_uses_abs():
+    """`_summary_fingerprint` uses |Δpnl| so a fresh -$50 phantom and a
+    fresh +$50 phantom on the SAME ticker produce the same fingerprint.
+    """
+    from scripts.ops.phantom_reconcile_monitor import _summary_fingerprint
+    pos = [_make_finding("KX-A", 5000)]
+    neg = [_make_finding("KX-A", -5000)]
+    assert _summary_fingerprint(pos) == _summary_fingerprint(neg)
+
+
+def test_summary_fingerprint_mixed_sign_findings_sum_abs():
+    """When findings have mixed signs, the bucket reflects total
+    |Δpnl| (NOT the cancelled-out net). Otherwise +$100 and -$100
+    on different tickers would silently dedup against empty state.
+    """
+    from scripts.ops.phantom_reconcile_monitor import _summary_fingerprint
+    findings = [_make_finding("KX-A", 10_000),
+                _make_finding("KX-B", -10_000)]
+    fp = _summary_fingerprint(findings)
+    # |Δpnl| sum = 20,000 cents, bucket = 20.
+    assert "_b20" in fp, (
+        f"Mixed-sign findings must sum |Δpnl| (not signed net) into "
+        f"the bucket; got {fp!r}"
+    )
 
 
 # ---------------------------------------------------------------------
