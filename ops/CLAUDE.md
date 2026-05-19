@@ -332,14 +332,18 @@ sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
 Operator install:
 ```
 crontab -e
-# Add (offset 7 min past the hour to avoid auditor.py at :00):
-7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> /var/log/phantom_reconcile.log 2>&1
+# Add (offset 7 min past the hour to avoid auditor.py at :00).
+# Sources BOTH env files: TELEGRAM_* live in ~/.env (user-scope cron
+# convention shared by auditor.py / analyst.py / watchdog.py); KALSHI_*
+# live in ~/kalshi-bot-repo/.env (systemd EnvironmentFile= for kalshi-bot.service).
+7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
 ```
 
 Pre-install operator checks:
-- `~/.env` exports `KALSHI_API_KEY` (or `KALSHI_API_KEY_ID`) + `KALSHI_PRIVATE_KEY_PATH` + `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
-- `botuser` can write `/var/log/phantom_reconcile.log` (touch + chown if needed).
-- `~/kalshi-bot-repo/phantom_reconcile_dedup.json` writable (auto-created on first run).
+- `~/.env` exports `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (production VPS layout; same file the existing cron jobs source).
+- `~/kalshi-bot-repo/.env` exports `KALSHI_API_KEY` (or `KALSHI_API_KEY_ID`) + `KALSHI_PRIVATE_KEY_PATH` (same file the kalshi-bot systemd unit sources via `EnvironmentFile=`).
+- The exact split may differ on a fresh setup — what matters is that ALL four keys reach the cron process after the `set -a && source ... && set +a` block. Verify with `crontab -l` + a manual dry-run (`cd ~/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && python3 -c 'import os; [print(k, "=<set>" if os.environ.get(k) else "=MISSING") for k in ("KALSHI_API_KEY","KALSHI_API_KEY_ID","KALSHI_PRIVATE_KEY_PATH","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID")]'`).
+- `~/kalshi-bot-repo/phantom_reconcile_dedup.json` + `.lock` siblings writable (auto-created on first run; gitignored).
 
 Three alert classes with day-stable cross-process dedup via JSON sidecar at `./phantom_reconcile_dedup.json` (configurable via `PHANTOM_RECONCILE_DEDUP_PATH` env or `--dedup-sidecar`):
 - **SUMMARY** (prefix `phantom_reconcile_summary`) — aggregated material drift `|delta_pnl_cents| >= $5`, top 5 by |Δpnl|.
