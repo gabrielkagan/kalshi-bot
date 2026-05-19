@@ -6204,12 +6204,12 @@ class OpportunityScanner:
                             config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
-                # ── BNB KILL-SWITCH GATE (15M only — T1 shadow 2026-05-17, ticket 86b9zmj0c) ──
-                # ACTIVE (BNB_15M_SHADOW=True): every BNB 15M candidate gets logged with
-                # filter_stage='bnb_shadow' for T3 data accumulation, then skipped from
-                # live routing. At T4 promotion (ticket 86b9zmj37), flip
-                # BNB_15M_SHADOW=False in bot/constants.py to unblock live routing; this
-                # gate becomes DEAD but is preserved as the revert kill-switch.
+                # ── BNB KILL-SWITCH GATE (15M only — POST-PROMOTE P2.4 2026-05-19, ticket 86b9zmj37) ──
+                # POST-PROMOTE (P2.4, 86b9zmj37): this gate is DEAD when BNB_15M_SHADOW=False
+                # (current state). Preserved as the kill-switch — flip BNB_15M_SHADOW=True
+                # in bot/constants.py to revert to shadow observation. When the gate fires,
+                # every BNB 15M candidate gets logged with filter_stage='bnb_shadow' and
+                # skipped from live routing. (Original T1 onboarding: 2026-05-17, 86b9zmj0c.)
                 if BNB_15M_SHADOW and asset == "BNB" and window.get("product_type") in (None, "15m"):
                     _dedup_key = (ticker, "bnb_shadow")
                     if _dedup_key not in self._eval_opp_seen:

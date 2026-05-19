@@ -4,7 +4,7 @@
 2. Beta calibration (`CalibrationEngine` — trained on 15M data only, hourly excluded)
 3. **Hourly temperature scaling** (Layer 1): T=1.45 softens overconfident probs (95%→88.4%). Applied before OFA/dynamic cap. 15M unaffected.
 4. Dynamic cap: **bypassed** when learned calibration is active (`is_learned_method_active()` → uses 0.999 safety ceiling). Cap schedule only applies during startup before training.
-5. Market blend: per-asset 15M weights `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (P2.1.d 2026-05-13 + P2.3 HYPE/DOGE live promotion 2026-05-14); unknown assets + non-15M paths fall back to the scalar MARKET_BLEND_W = 0.40 (legacy 60/40 blend)
+5. Market blend: per-asset 15M weights `MARKET_BLEND_W_BY_ASSET = {BNB:0.20,BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (P2.1.d 2026-05-13 + P2.3 HYPE/DOGE live promotion 2026-05-14 + P2.4 BNB live promotion 2026-05-19); unknown assets + non-15M paths fall back to the scalar MARKET_BLEND_W = 0.40 (legacy 60/40 blend)
 6. Fee-adjusted edge check: price-dependent minimum (0.25% at 80-90c up to 1.0% at 97c+)
 
 ## Hourly Three-Layer Optimization
@@ -54,7 +54,7 @@ The three pipelines use the SAME formulas. Any drift = silent training-distribut
 | Cohort | Activated | Used by |
 |---|---|---|
 | v1 (8 features) | features active since 2026-02-22; bundles trained 2026-04-28 | Prior LIVE bundle, cfg_fp `178d14020bd21beb` (commit `7122693`). Superseded by v1.1 on 2026-05-13 via P2.1.d. |
-| v1.1 (same 8 features; adds `sigma_winsor_abs_cap` to canonical dict) | Recipe shipped 2026-04-29 commit `7ad2464`; retrained 2026-05-12 (P2.1.b); LIVE 2026-05-13 (P2.1.d) | **CURRENT LIVE** bundle for BTC/ETH/SOL/XRP, cfg_fp `345978797274721f`. Shipped atomically with per-asset `MARKET_BLEND_W_BY_ASSET = {BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (canonical doc-drift form) from the P2.1.c-fu1 4×6 sim-PnL sweep + P2.3 2026-05-14 (`86b9xv66a`) HYPE/DOGE B.1 Brier sweep extension. Money Printer Roadmap Phase 2 (`86b9wuhhr` / `86b9xfwkg` / `86b9xv66a`). |
+| v1.1 (same 8 features; adds `sigma_winsor_abs_cap` to canonical dict) | Recipe shipped 2026-04-29 commit `7ad2464`; retrained 2026-05-12 (P2.1.b); LIVE 2026-05-13 (P2.1.d) | **CURRENT LIVE** bundle for BTC/ETH/SOL/XRP, cfg_fp `345978797274721f`. Shipped atomically with per-asset `MARKET_BLEND_W_BY_ASSET = {BNB:0.20,BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` (canonical doc-drift form) from the P2.1.c-fu1 4×6 sim-PnL sweep + P2.3 2026-05-14 (`86b9xv66a`) HYPE/DOGE B.1 Brier sweep extension + P2.4 2026-05-19 (`86b9zmj37`) BNB B.1-equivalent Brier sweep extension. Money Printer Roadmap Phase 2 (`86b9wuhhr` / `86b9xfwkg` / `86b9xv66a` / `86b9zmj37`). |
 | v2 (+8 features: momentum, buffer, BTC RV) | 2026-04-19 | K=1 train target 2026-05-19 |
 | v3 (+3 features: spread, flow, CB-Kraken gap) | 2026-04-23 | K=2 train target 2026-06-22 |
 | External market data (OKX funding+OI, Deribit DVOL) | 2026-04-29 (commit `7ad2464`) | Earliest v3 use 2026-06-22 |

@@ -59,8 +59,8 @@ STALE_THRESHOLD_S = 10.0
 # rows into ≤BATCH_SIZE batches, committing between each via executemany.
 BATCH_SIZE = 50
 
-# Default polling cadence. Live snapshotter sees BTC/ETH/SOL/XRP/HYPE/DOGE
-# + occasionally BNB in T1-shadow (theoretical max ~7 tickers/tick). Live
+# Default polling cadence. Live snapshotter sees BTC/ETH/SOL/XRP/HYPE/DOGE/BNB
+# (all 7 live post P2.4 2026-05-19; theoretical max ~7 tickers/tick). Live
 # active-window churn averages ~4.8 effective tickers/tick (some 15M
 # markets are inactive in the active-windows feed at any given moment),
 # yielding 8640 ticks/day × ~4.8 tickers ≈ 41.5K rows/day empirically

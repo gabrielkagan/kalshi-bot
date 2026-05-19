@@ -419,7 +419,7 @@ This is a discrete approximation of the Grossman-Zhou (1993) result that drawdow
 
 [^girs]: Goetzmann, W. N., Ingersoll, J. E., & Ross, S. A. (2003). "High-Water Marks and Hedge Fund Management Contracts." *Journal of Finance* 58(4): 1685–1718.
 
-Per-asset caps are tighter than the global Kelly cap: BTC 15%, ETH 20%, SOL 15%, XRP 15%, HYPE 10%, DOGE 10%. SPX uses eighth-Kelly (0.125); the weather YES-side simulation used quarter-Kelly (0.25); weather NO was 1-contract verification-mode prior to the May 16 kill.
+Per-asset caps are tighter than the global Kelly cap: BTC 15%, ETH 20%, SOL 15%, XRP 15%, HYPE 10%, DOGE 10%, BNB 10%. SPX uses eighth-Kelly (0.125); the weather YES-side simulation used quarter-Kelly (0.25); weather NO was 1-contract verification-mode prior to the May 16 kill.
 
 ## 4.3 Edge-detection guards
 
@@ -427,7 +427,7 @@ Before any trade is placed, five independent checks must pass:
 
 1. The model's estimated probability is high enough to justify the contract price.
 2. The fee-adjusted edge exceeds the price-dependent minimum (0.25% at 80–90¢, dipping to 0.20% at 91–92¢, climbing to 1.0% at 97¢+) — V-shaped because near-100¢ entries have asymmetric loss distributions.
-3. The contract price is within hard per-asset bounds (BTC 88¢+, ETH 90¢+ main / 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+, HYPE 90¢+, DOGE 85¢+).
+3. The contract price is within hard per-asset bounds (BTC 88¢+, ETH 90¢+ main / 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+, HYPE 90¢+, DOGE 85¢+, BNB 90¢+).
 4. The z-score is not extreme (|z| > 25 rejects — preserves valid high-conviction trades while blocking obvious data-corruption inputs).
 5. Model-market discrepancy guard — if the model says ≥90% but the market is below 75¢, the model is suspected of missing material information and the trade is refused.
 
