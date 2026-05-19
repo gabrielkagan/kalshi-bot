@@ -77,21 +77,37 @@ def tm_sweep_counterfactual_pnl(unfilled, entry_tier, depths, market_result,
     return total, legs
 
 
+def _resolve_buf_multiplier(buf_pct: Optional[float]) -> float:
+    """Look up the wide-buffer size multiplier (Sim B, ticket 86ba0v6z1).
+
+    TM_BUFFER_SIZE_MULTIPLIER is sorted ascending by floor; we walk from the
+    last entry backward and return the multiplier of the first entry whose
+    floor ≤ buf_pct. buf_pct=None → 1.0 (legacy / unknown buffer).
+    """
+    if buf_pct is None:
+        return 1.0
+    for floor, mult in reversed(TM_BUFFER_SIZE_MULTIPLIER):
+        if buf_pct >= floor:
+            return mult
+    return 1.0
+
+
 def tm_compute_contracts(price_cents: int, seconds_to_close: float,
                          bankroll_cents: int = 100000,
                          asset: str = "",
                          buf_pct: Optional[float] = None,
                          risk_cap_price: Optional[int] = None) -> int:
-    """Margin × STC-aware sizing for terminal momentum.
+    """Margin × STC × buf-multiplier sizing for terminal momentum.
 
-    Formula: TM_BASE × (100 - price) × stc_multiplier
+    Formula: TM_BASE × (100 - price) × stc_multiplier × buf_multiplier
     Capped at per-asset risk limit (structural: TM respects same caps as main pipeline).
     Negative-EV tiers (95c) get minimum sizing until WR proves above breakeven.
-    Thin-buffer cap: when buf_pct < TM_THIN_BUFFER_PCT, cap contracts to
+    Thin-buffer cap (BACKSTOP): when buf_pct < TM_THIN_BUFFER_PCT, cap contracts to
     TM_THIN_BUFFER_CONTRACT_CAP to bound tail risk (Apr 1-23: all 8 catastrophic
     TM losses ≥100ct were at sub-0.20% buffer; one ETH loss @ 0.155% buffer = -$178).
 
-    Data (1,056 trades, Apr 1-23 2026, refines earlier n=278):
+    Pre-Sim-B data (cap motivation, 1,056 trades, Apr 1-23 2026, refines
+    earlier n=278):
     - STC < 180s: safe-zone boost ×1.5
     - STC 180-240s: danger zone ×0.5
     - STC 240+: standard ×1.0
@@ -99,6 +115,22 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
     - buf_pct < 0.20%: cap to TM_THIN_BUFFER_CONTRACT_CAP (=50)
       (losses avg buf_pct 0.189% vs wins 0.240% — the earlier "buffer doesn't
        predict" finding held on Apr 1-7 n=278; fails on full April sample.)
+
+    Sim B (2026-05-19, ticket 86ba0v6z1) added the wide-buffer multiplier
+    (TM_BUFFER_SIZE_MULTIPLIER) from a separate 30d phantom-corrected window
+    (settled through 2026-05-18, n=1,055):
+    - buf<0.20%: 1.0× (thin; cap still binds)
+    - 0.20-0.40%: 1.0× (already-profitable band; no change)
+    - 0.40-0.80%: 2.0× ($+1.40/ct realized; under-sized)
+    - ≥0.80%: 3.0× ($+1.67/ct realized; under-sized)
+    The 50-ct thin-buffer cap, per-asset risk caps, and TM_MAX_CONTRACTS
+    hard ceiling all still bound the multiplier's upside.
+
+    Caveat: the +$108/30d counterfactual sim figure that motivates Sim B
+    assumes fixed-outcome (win/loss doesn't change with size). Larger sizes
+    at thin top-of-book may degrade fills — post-deploy soak must validate
+    realized PnL/contract in the 0.40-0.80% band against the +1.40¢/ct
+    sim prediction. See kb/decisions/tm-buf-multiplier-sizing-plan.md.
 
     risk_cap_price (adversary A6): when computing max_by_risk, callers may
     pass the WORST-CASE fill price (e.g. MAX_ENTRY_PRICE=99 when sweeping)
@@ -121,7 +153,9 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
     else:
         stc_mult = TM_STC_NORMAL_MULT
 
-    ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
+    buf_mult = _resolve_buf_multiplier(buf_pct)
+
+    ct = int(TM_BASE_CONTRACTS * margin * stc_mult * buf_mult)
 
     # Per-asset risk cap (structural: TM no longer bypasses asset caps)
     if bankroll_cents > 0:
@@ -136,6 +170,7 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
         ct = min(ct, max_by_risk)
 
     # Thin-buffer cap: bounds the fat tail when spot is close to threshold
+    # (BACKSTOP — preserved alongside the new buf_multiplier per Sim B)
     if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
         ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
 

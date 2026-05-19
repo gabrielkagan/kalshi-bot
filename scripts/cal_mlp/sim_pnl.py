@@ -292,6 +292,15 @@ TM_MIN_CONTRACTS = 25
 TM_MAX_CONTRACTS = 500
 TM_THIN_BUFFER_PCT = 0.20
 TM_THIN_BUFFER_CONTRACT_CAP = 50
+# Sim B mirror (2026-05-19, ticket 86ba0v6z1). Lockstep with bot/constants.py
+# TM_BUFFER_SIZE_MULTIPLIER — both must move together (pinned by
+# tests/integration/test_tm_buffer_multiplier.py::test_sim_pnl_buf_multiplier_constant_matches_canonical).
+TM_BUFFER_SIZE_MULTIPLIER = (
+    (0.00, 1.0),
+    (0.20, 1.0),
+    (0.40, 2.0),
+    (0.80, 3.0),
+)
 TM_NEGATIVE_EV_TIERS: frozenset = frozenset()  # bot.py:1090 cleared
 TM_ASSET_RISK_CAPS = {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.15, 'XRP': 0.15}
 # bot.py:1153 TM_SWEEP_LIVE_ENABLED defaults to "1"; bot.py:13763 passes
@@ -310,12 +319,15 @@ def _tm_size(
     asset: str,
     buf_pct: Optional[float] = None,
 ) -> int:
-    """Mirror bot.py:1226 tm_compute_contracts. Returns contract count.
+    """Mirror bot/helpers/tm_sweep.py::tm_compute_contracts. Returns contract count.
 
-    Formula: TM_BASE × margin × stc_mult, capped by per-asset risk frac
-    against the sweep-live worst-case price (=99c), then by thin-buffer
-    cap when buf_pct < 0.20%, then floored at TM_MIN_CONTRACTS and
-    capped at TM_MAX_CONTRACTS.
+    Formula: TM_BASE × margin × stc_mult × buf_multiplier, capped by per-asset
+    risk frac against the sweep-live worst-case price (=99c), then by
+    thin-buffer cap when buf_pct < 0.20%, then floored at TM_MIN_CONTRACTS
+    and capped at TM_MAX_CONTRACTS.
+
+    Sim B (2026-05-19, ticket 86ba0v6z1) added buf_multiplier from
+    TM_BUFFER_SIZE_MULTIPLIER (1×/1×/2×/3× across the 4 bands).
     """
     margin = 100 - price_cents
     if margin <= 0:
@@ -328,7 +340,14 @@ def _tm_size(
         stc_mult = TM_STC_DANGER_MULT
     else:
         stc_mult = TM_STC_NORMAL_MULT
-    ct = int(TM_BASE_CONTRACTS * margin * stc_mult)
+    # buf_multiplier — mirror bot/helpers/tm_sweep.py::_resolve_buf_multiplier
+    buf_mult = 1.0
+    if buf_pct is not None:
+        for floor, mult in reversed(TM_BUFFER_SIZE_MULTIPLIER):
+            if buf_pct >= floor:
+                buf_mult = mult
+                break
+    ct = int(TM_BASE_CONTRACTS * margin * stc_mult * buf_mult)
     if balance_cents > 0:
         risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
         max_by_risk = int(balance_cents * risk_frac / TM_SWEEP_LIVE_RISK_DENOM_PRICE)

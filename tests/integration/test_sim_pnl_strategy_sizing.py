@@ -150,41 +150,45 @@ def test_weekend_fixed_risk_constant_matches_bot_py():
 
 def test_tm_size_safe_zone_uses_1_5_multiplier():
     """STC<180s → safe-zone boost ×1.5. Plenty-of-balance scenario so
-    margin × stc formula determines the result (not the per-asset cap)."""
+    margin × stc formula determines the result (not the per-asset cap).
+
+    buf_pct=0.30% (in 0.20-0.40% band where TM_BUFFER_SIZE_MULTIPLIER=1.0)
+    isolates STC behavior from the Sim B buf-multiplier (2026-05-19).
+    """
     import sim_pnl
 
     ct = sim_pnl._tm_size(
         price_cents=98, stc=120.0, balance_cents=10_000_000,  # $100k
-        asset='BTC', buf_pct=1.0,
+        asset='BTC', buf_pct=0.30,
     )
-    # margin=2, stc_mult=1.5 → 100 * 2 * 1.5 = 300
+    # margin=2, stc_mult=1.5, buf_mult=1.0 → 100 * 2 * 1.5 * 1.0 = 300
     # max_by_risk = 10_000_000 * 0.15 / 99 = 15,151 (won't bind)
     # Result = 300
     assert ct == 300
 
 
 def test_tm_size_danger_zone_uses_0_5_multiplier():
-    """STC 180-240s → danger ×0.5 multiplier."""
+    """STC 180-240s → danger ×0.5 multiplier. buf_pct=0.30% isolates STC."""
     import sim_pnl
 
     ct = sim_pnl._tm_size(
         price_cents=98, stc=200.0, balance_cents=10_000_000,
-        asset='BTC', buf_pct=1.0,
+        asset='BTC', buf_pct=0.30,
     )
-    # margin=2, stc_mult=0.5 → 100 * 2 * 0.5 = 100
+    # margin=2, stc_mult=0.5, buf_mult=1.0 → 100 * 2 * 0.5 * 1.0 = 100
     # 100 ≥ TM_MIN_CONTRACTS(25) → 100
     assert ct == 100
 
 
 def test_tm_size_normal_zone_uses_1_0_multiplier():
-    """STC≥240s → normal ×1.0."""
+    """STC≥240s → normal ×1.0. buf_pct=0.30% isolates STC."""
     import sim_pnl
 
     ct = sim_pnl._tm_size(
         price_cents=98, stc=260.0, balance_cents=10_000_000,
-        asset='BTC', buf_pct=1.0,
+        asset='BTC', buf_pct=0.30,
     )
-    # margin=2, stc_mult=1.0 → 100 * 2 * 1.0 = 200
+    # margin=2, stc_mult=1.0, buf_mult=1.0 → 100 * 2 * 1.0 * 1.0 = 200
     assert ct == 200
 
 
@@ -217,15 +221,51 @@ def test_tm_size_thin_buffer_caps_at_50():
     assert ct == 50
 
 
-def test_tm_size_thin_buffer_does_not_apply_when_buf_above_threshold():
-    """buf_pct >= 0.20% → no cap."""
+def test_tm_size_thin_buffer_cap_off_and_2x_mult_clamped_at_tm_max():
+    """Two invariants pinned together (buf_pct >= 0.20%):
+       1. Thin-buffer cap (50ct) does NOT apply (above 0.20% threshold).
+       2. Sim B's 2× multiplier in the 0.40-0.80% band fires.
+
+    Pre-Sim-B this test asserted == 300 (pure pass-through above the cap).
+    Post-Sim-B (2026-05-19): 100*2*1.5*2.0 = 600, clamped by TM_MAX_CONTRACTS=500.
+    Renamed from `_thin_buffer_does_not_apply_when_buf_above_threshold` to make
+    both invariants visible on a future failure."""
     import sim_pnl
 
     ct = sim_pnl._tm_size(
         price_cents=98, stc=120.0, balance_cents=10_000_000,
-        asset='BTC', buf_pct=0.50,  # >= 0.20
+        asset='BTC', buf_pct=0.50,  # >= 0.20, in 0.40-0.80% band → 2× mult
     )
-    assert ct == 300  # uncapped
+    assert ct == 500  # 2× mult pushes formula to 600 → TM_MAX clamp
+
+
+def test_tm_size_buf_multiplier_2x_at_wide_buffer():
+    """Sim B (2026-05-19, ticket 86ba0v6z1): buf_pct in 0.40-0.80% → 2× multiplier.
+
+    Pin sim_pnl mirror matches bot.helpers.tm_sweep canonical behavior."""
+    import sim_pnl
+
+    # price=99, STC=300 (normal=1.0) → base = 100*1*1.0 = 100
+    # buf=0.50% (in 0.40-0.80% band, 2×) → 100 * 2.0 = 200
+    # Asset cap at 10_000_000c * 0.15 / 99c = 15,151 (won't bind)
+    # Result = 200
+    ct = sim_pnl._tm_size(
+        price_cents=99, stc=300.0, balance_cents=10_000_000,
+        asset='BTC', buf_pct=0.50,
+    )
+    assert ct == 200, f"expected 200 (2× mult, no cap bind), got {ct}"
+
+
+def test_tm_size_buf_multiplier_3x_at_very_wide_buffer():
+    """Sim B: buf_pct ≥0.80% → 3× multiplier."""
+    import sim_pnl
+
+    # price=99, STC=300 → base = 100. 3× → 300. Asset cap (15,151) doesn't bind.
+    ct = sim_pnl._tm_size(
+        price_cents=99, stc=300.0, balance_cents=10_000_000,
+        asset='BTC', buf_pct=1.00,
+    )
+    assert ct == 300, f"expected 300 (3× mult, no cap bind), got {ct}"
 
 
 def test_tm_size_buf_pct_none_passes_through():
@@ -422,12 +462,16 @@ def test_strategy_size_default_passes_through_to_compute_size():
 
 
 def test_strategy_size_terminal_momentum_uses_tm_formula():
-    """TM strategy → tm_compute_contracts formula (NOT Kelly)."""
+    """TM strategy → tm_compute_contracts formula (NOT Kelly).
+
+    spot/threshold sized to land buf_pct≈0.31% (in 0.20-0.40% band where
+    Sim B's buf_multiplier=1.0) so the test isolates "TM formula vs Kelly
+    tier ladder" rather than bundling in the buf-multiplier signal."""
     import sim_pnl
 
     # TM-98 BTC safe zone, $100k balance. Standard Kelly at edge=2.5%
     # would give ~204 contracts on tier-1 (20% of $100k / 98c). TM
-    # formula gives 300 (margin × 1.5 mult, uncapped).
+    # formula gives 300 (margin × 1.5 mult × 1.0 buf-mult, uncapped).
     got = sim_pnl._strategy_size(
         strategy='terminal_momentum_98',
         fee_adjusted_edge_frac=0.025,
@@ -437,7 +481,7 @@ def test_strategy_size_terminal_momentum_uses_tm_formula():
         hwm_cents=10_000_000,
         seconds_to_close=120.0,
         asset='BTC',
-        spot_price=98_500.0, threshold=98_000.0,  # buf_pct ~0.51% (no cap)
+        spot_price=98_300.0, threshold=98_000.0,  # buf_pct ~0.306% → 1× mult
     )
     assert got.contract_count == 300
     assert got.tier_idx == -1  # bypasses Kelly tier ladder
