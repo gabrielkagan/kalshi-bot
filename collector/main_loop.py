@@ -328,6 +328,62 @@ def _drain_rotated(
     _write_health_sidecar_safe()
 
 
+def _start_archivers_staggered(
+    archivers: Sequence[BronzeArchiver],
+    *,
+    shutdown_event: threading.Event,
+    stagger_seconds: float = _RECONNECT_STAGGER_SECONDS,
+) -> int:
+    """Start each archiver in sequence with a wall-clock stagger between starts.
+
+    Boot-time counterpart to ``_replan_for_archivers``. PR #110
+    (D1.3-fu4-oom-closure) staggered the REST-refresh-driven
+    ``request_reconnect()`` dispatch; post-deploy verification on
+    2026-05-19 11:42 UTC found that the BOOT path also drove the cgroup
+    memory peak to 510.7 MiB / 512 MiB (99.7%) because all 7 archivers'
+    ``start()`` ran in tight succession — each triggers a WS connect +
+    subscribe-burst whose cumulative-ticker-payload acks (~5 MB per
+    frame) land near-simultaneously across the 7 asyncio threads. This
+    helper applies the same stagger pattern to the boot loop so peak
+    in-flight ack memory across conns is bounded to ~1 × ack_size
+    instead of ~N × ack_size.
+
+    Semantics (mirror ``_replan_for_archivers``):
+      - First archiver starts immediately (NO leading stagger).
+      - Between iterations: ``shutdown_event.wait(timeout=stagger_seconds)``
+        — cancellable so a graceful ``systemctl stop`` mid-boot exits
+        in ≤ one stagger interval instead of blocking for
+        ``(N-1) * stagger_seconds``.
+      - Return value: count of archivers that actually received
+        ``.start()`` before any cancellation. Lets the caller log a
+        partial-boot warning + decide whether to proceed to
+        ``refresher.start()``.
+
+    See ``kb/decisions/d1-3-fu4-boot-stagger-plan.md`` for the full
+    RCA + boot-peak mechanism trace.
+    """
+    n = len(archivers)
+    started = 0
+    for idx, archiver in enumerate(archivers):
+        if idx > 0 and stagger_seconds > 0:
+            if shutdown_event.wait(timeout=stagger_seconds):
+                logger.info(
+                    "Boot stagger: shutdown_event fired before archiver "
+                    "%d of %d; partial boot.", idx, n,
+                )
+                break
+        try:
+            archiver.start()
+            started += 1
+        except Exception:
+            logger.exception(
+                "Boot stagger: archiver.start() raised for conn=%s; "
+                "continuing with remaining archivers.",
+                getattr(archiver, "_conn_id", "?"),
+            )
+    return started
+
+
 def _replan_for_archivers(
     *,
     new_tickers_by_tier: Mapping[object, Sequence[str]],
@@ -535,8 +591,10 @@ def run(
       4. For each ConnPlan: build per-channel writers + subscribe-frames
          + archiver.
       5. Single drain thread fans out across all writers.
-      6. Hand control to per-conn ``BronzeArchiver.start()``; main
-         thread blocks on shutdown_event.
+      6. Hand control to per-conn ``BronzeArchiver.start()`` via
+         ``_start_archivers_staggered`` (staggered by
+         ``_RECONNECT_STAGGER_SECONDS`` per D1.3-fu4-boot-stagger
+         2026-05-19); main thread blocks on shutdown_event.
       7. On shutdown: stop all archivers, close all writers, join drain,
          final outbox sweep.
     """
@@ -737,9 +795,25 @@ def run(
     )
 
     try:
-        # Step 6 — start all archivers, then block until shutdown.
-        for archiver in archivers:
-            archiver.start()
+        # Step 6 — start all archivers (staggered per
+        # D1.3-fu4-boot-stagger 2026-05-19 — see
+        # kb/decisions/d1-3-fu4-boot-stagger-plan.md §RCA), then block
+        # until shutdown. Pre-Bit code fired all archivers' .start()
+        # within <100ms, driving cgroup memory peak to 99.7% of the
+        # 512M cap during the concurrent boot subscribe-ack flood.
+        # The stagger spreads conn N+1's WS connect + subscribe
+        # dispatch by `_RECONNECT_STAGGER_SECONDS` after conn N's,
+        # bounding peak ack memory to ~1 × ack_size instead of
+        # ~N × ack_size.
+        n_started = _start_archivers_staggered(
+            archivers, shutdown_event=shutdown_event,
+        )
+        if n_started < len(archivers):
+            logger.warning(
+                "Boot: only %d of %d archivers started (shutdown fired "
+                "mid-boot); proceeding to refresher.start() + shutdown.",
+                n_started, len(archivers),
+            )
         if refresher is not None:
             refresher.start()
         shutdown_event.wait()
