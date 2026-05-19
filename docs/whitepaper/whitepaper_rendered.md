@@ -230,7 +230,7 @@ systemd ──┬── kalshi-bot.service        (ExecStart=start.sh → python
 
 The bot's `start.sh` activates the venv and runs `python -m bot`. The collector's `collector-start.sh` sources a dedicated `.env.collector` file (separate from the bot's `.env`) and runs `python -m collector`.
 
-`OMP_NUM_THREADS=1` is critical and is set by `bot/_thread_env.py` which **must** import before any numpy-dependent module. Without it, numpy's transitive parallelism would oversubscribe the 2 vCPU budget (the bot occupies vCPU-0 implicitly; the collector is pinned to vCPU-1) and degrade real-time performance.
+`OMP_NUM_THREADS=1` is critical and is set by `bot/_thread_env.py` which **must** import before any numpy-dependent module. Without it, numpy's transitive parallelism would oversubscribe the 2 vCPU budget (the kernel scheduler floats both bot and collector across the two vCPUs; the collector's `Nice=10` polite-background priority is the load-bearing isolation knob keeping the bot's scan ticks responsive) and degrade real-time performance.
 
 ## 2.4 Data flow
 
@@ -929,8 +929,10 @@ ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh
 Restart=on-failure
 RestartSec=10s
 
-CPUAffinity=1                    # taskset to vCPU-1 (bot is implicit vCPU-0)
-Nice=10                          # I/O-bound, NOT -19
+# CPUAffinity retired 2026-05-19 (ticket 86ba12rv6): the single-vCPU
+# pin saturated at 90% CPU under 754K+ tickers; collector now floats
+# both vCPUs with Nice=10 as the priority-isolation knob.
+Nice=10                          # I/O-bound polite background; load-bearing isolation
 MemoryMax=512M                   # OOM the collector before it OOMs the box
 MemorySwapMax=0
 LimitNOFILE=4096                 # 6 WS conns + rotation + rclone fd headroom
@@ -953,7 +955,7 @@ Structurally:
 | `import-linter` forbidden contract `collector → bot` | Code-tree isolation enforced in CI |
 | Separate state file (`collector_state.db`) | No SQLite write contention |
 | Separate disk path (`bronze_buffer/`) | I/O isolation |
-| `CPUAffinity=1` | CPU contention bounded |
+| `Nice=10` (collector) vs `Nice=0` (bot) | CPU contention bounded via priority — CPUAffinity retired 2026-05-19 ticket 86ba12rv6 |
 | `MemoryMax=512M` | RAM exhaustion of collector cannot OOM bot |
 
 The off-switch is `sudo systemctl stop kalshi-collector` — bot trading unaffected. Inverse off-switch: bot crash, collector keeps capturing.

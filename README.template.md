@@ -250,7 +250,7 @@ kalshi_wire/                   -- shared Kalshi WS transport library (top-level 
 kalshi_wire/{auth,ws_client}.py
                                -- auth.py: RSA-PSS-SHA256 sign + REST/WS header helpers; ws_client.py: WSClient (asyncio thread + connect/reconnect + silence watchdog + send queue) + Frame dataclass + build_envelope() (D0.3 §2 6-field bronze envelope)
 collector-start.sh             -- wrapper invoked by ops/kalshi-collector.service (D1.5 SHIPPED; parallel to start.sh; sources /home/botuser/.env.collector; `python -m collector`)
-ops/kalshi-collector.service   -- D1.5 systemd unit (SHIPPED 2026-05-16, ticket 86b9ypna4; CPUAffinity=1, Nice=10, MemoryMax=512M, dedicated EnvironmentFile=/home/botuser/.env.collector)
+ops/kalshi-collector.service   -- D1.5 systemd unit (SHIPPED 2026-05-16, ticket 86b9ypna4; Nice=10, MemoryMax=512M, dedicated EnvironmentFile=/home/botuser/.env.collector — CPUAffinity retired 2026-05-19 ticket 86ba12rv6)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template
 .github/workflows/deploy.yml   -- auto-deploy on push to main

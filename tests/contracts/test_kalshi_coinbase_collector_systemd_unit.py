@@ -15,11 +15,12 @@ Per-unit deltas vs ``kalshi-collector.service`` (D1.5):
   - Different EnvironmentFile (``/home/botuser/.env.coinbase-collector``
     — DEDICATED env file, NOT shared with the Kalshi side). Isolation
     parity with the Kalshi-side D1.5 dedicated-env convention.
-  - NO ``CPUAffinity`` directive. The 2-vCPU VPS already has the bot
-    implicitly on vCPU-0 and kalshi-collector pinned to vCPU-1; adding
-    a third pinned tenant would over-constrain the kernel scheduler.
-    Coinbase single-conn light load is fine on either vCPU; Nice=10 +
-    MemoryMax floor is the structural bound.
+  - NO ``CPUAffinity`` directive. Same posture as kalshi-collector
+    post-retirement 2026-05-19 (ticket 86ba12rv6). The 2-vCPU VPS lets
+    the kernel scheduler float all collector tenants across both
+    vCPUs; Nice=10 (collectors) vs Nice=0 (bot) gates priority when
+    CPU is contended. Coinbase single-conn light load is fine
+    wherever it lands.
   - ``MemoryMax=256M`` (vs Kalshi's 512M). Coinbase single-conn × 7
     products × 5 channels is well under Kalshi's 7-conn × 21K-subs
     steady-state footprint; halve the cap.
@@ -173,15 +174,15 @@ def test_service_restart_on_failure_with_10s_backoff():
 def test_service_has_no_cpu_affinity_directive():
     """No ``CPUAffinity=`` — D2.5 operator-decided posture.
 
-    The 2-vCPU VPS has the bot implicitly on vCPU-0 and kalshi-collector
-    pinned to vCPU-1 (D1.5). Pinning a third tenant would over-constrain
-    the kernel scheduler. Coinbase single-conn light load is fine on
-    either vCPU; the Nice=10 + MemoryMax structural bounds are
-    sufficient.
+    Same posture as kalshi-collector post-retirement 2026-05-19 (ticket
+    86ba12rv6). The 2-vCPU VPS lets the kernel scheduler float all
+    collector tenants across both vCPUs; Nice=10 (collectors) vs
+    Nice=0 (bot) gates priority when CPU is contended. Coinbase
+    single-conn light load is fine wherever it lands.
 
-    Negative pin (assert absent) so a future copy-paste from
-    kalshi-collector.service can't silently introduce ``CPUAffinity=1``
-    that would contend with kalshi-collector for the same core.
+    Negative pin (assert absent) so a future copy-paste from a hypothetical
+    re-introduced affinity directive can't silently introduce
+    ``CPUAffinity=`` here.
     """
     text = _read_unit()
     cpu_affinity = _directive(text, "CPUAffinity")

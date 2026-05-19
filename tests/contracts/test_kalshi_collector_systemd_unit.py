@@ -3,8 +3,10 @@
 Ticket `86b9ypna4` (2026-05-16, REQUIRES-APPROVAL discipline tier).
 
 Pins the structural shape of the NEW systemd unit that ships the
-Data Corpus collector to production: isolation knobs (CPUAffinity,
-Nice, MemoryMax, MemorySwapMax, LimitNOFILE), lifecycle directives
+Data Corpus collector to production: isolation knobs (Nice,
+MemoryMax, MemorySwapMax, LimitNOFILE; CPUAffinity retired
+2026-05-19 per ticket 86ba12rv6 — see
+``test_service_no_cpu_affinity_pinning``), lifecycle directives
 (Restart, RestartSec, Type), identity (User, WorkingDirectory),
 config seam (EnvironmentFile), entrypoint (ExecStart →
 collector-start.sh), and standard wiring (network-online,
@@ -163,18 +165,26 @@ def test_service_restart_on_failure_with_10s_backoff():
     )
 
 
-def test_service_cpu_affinity_pinned_to_vcpu_1():
-    """``CPUAffinity=1`` pins collector to vCPU-1 (bot implicit vCPU-0).
+def test_service_no_cpu_affinity_pinning():
+    """``CPUAffinity`` directive MUST be absent.
 
-    Per ``feedback_vps_compute_isolation``: 2-vCPU VPS, sustained
-    CPU contention is real even at Nice=10. Affinity is the hard
-    structural guarantee that the bot's scan latency cannot be
-    starved by zstd flushes on the collector.
+    RETIRED 2026-05-19 (ticket 86ba12rv6, umbrella 86ba12rf0). At
+    754K+ tickers the single-vCPU pin saturated at 90% CPU on 1 core
+    while vCPU-0 sat idle, driving ~33% sustained frame drop. The
+    Nice=10 polite-background posture (`test_service_nice_is_10`)
+    remains the load-bearing guarantee that bot scan latency cannot
+    be starved by the collector; the kernel scheduler now floats both
+    processes across both vCPUs. A future re-add of CPUAffinity must
+    document why the scaling argument has reversed AND update
+    `kb/decisions/collector-queue-saturation-fix-plan.md` Phase 2.
     """
     text = _read_unit()
-    assert _directive(text, "CPUAffinity") == "1", (
-        "CPUAffinity=1 — D0.3 §6 isolation. Pin collector to vCPU-1 so "
-        "bot keeps vCPU-0 uncontended."
+    assert _directive(text, "CPUAffinity") is None, (
+        "CPUAffinity directive must NOT be present — retired per "
+        "ticket 86ba12rv6 (single-vCPU pin caused 33% frame drop "
+        "at 754K-ticker universe). Re-adding requires RCA + plan "
+        "doc update; see kb/decisions/collector-queue-saturation-"
+        "fix-plan.md."
     )
 
 
