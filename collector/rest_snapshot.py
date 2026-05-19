@@ -74,7 +74,10 @@ TIER_ALL: str = "1"
 
 # Hourly default — see module docstring for the cost / freshness
 # rationale. The refresh thread polls REST every interval_seconds and
-# force-reconnects WS conns when the ticker set changes.
+# force-reconnects WS conns (STAGGERED by
+# ``collector.main_loop._RECONNECT_STAGGER_SECONDS`` per
+# D1.3-fu4-oom-closure 2026-05-19, ticket 86b9zk4hz REUSED) when the
+# ticker set changes.
 DEFAULT_REFRESH_INTERVAL_SECONDS: float = 3600.0
 
 

@@ -92,8 +92,10 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   `kalshi_wire.auth.make_rest_headers` + `RestSnapshotRefresher` hourly
   poll + `BronzeArchiver.update_subscriptions` / `request_reconnect`
   surface + `main_loop._replan_for_archivers` callback that rebuilds
-  per-conn subscribe frames + force-reconnects WS sessions when the
-  REST catalog refresh detects a ticker-set change). Hourly REST is
+  per-conn subscribe frames + force-reconnects each WS conn — STAGGERED
+  in wall-clock time by `_RECONNECT_STAGGER_SECONDS`=20s per
+  D1.3-fu4-oom-closure 2026-05-19 — when the REST catalog refresh
+  detects a ticker-set change). Hourly REST is
   now the default ticker source; `COLLECTOR_TICKERS_FILE` retained as
   the offline/test boot seam. **D1.5 SHIPPED 2026-05-16, ticket
   `86b9ypna4`** (REQUIRES-APPROVAL discipline tier) — wrote

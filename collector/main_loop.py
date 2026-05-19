@@ -42,8 +42,10 @@ D1.4 (`86b9ypn8r`) added the periodic REST catalog refresh: when no
 ``COLLECTOR_TICKERS_FILE`` is configured, the collector pulls the open-
 market universe from Kalshi's REST ``/markets`` endpoint at boot and
 re-polls hourly. On ticker-set changes the refresher invokes a callback
-that rebuilds per-conn subscribe frames + force-reconnects each WS conn
-so the new subscriptions take effect (Kalshi has no in-session
+that rebuilds per-conn subscribe frames + force-reconnects each WS conn —
+STAGGERED in wall-clock time by ``_RECONNECT_STAGGER_SECONDS`` (20s
+default) per D1.3-fu4-oom-closure 2026-05-19, ticket ``86b9zk4hz``
+REUSED — so the new subscriptions take effect (Kalshi has no in-session
 add/remove; reconnect-and-resubscribe is the protocol-level mechanism).
 D1.5 (SHIPPED 2026-05-16, ticket ``86b9ypna4``, requires-approval)
 deploys this loop via the ``ops/kalshi-collector.service`` systemd
@@ -68,6 +70,7 @@ import logging
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -99,6 +102,21 @@ _DRAIN_POLL_SECONDS: float = 1.0
 # conn gets a 10K-id range, enough headroom for 15K subs per conn × 3
 # channels even with batch_size=1 (worst case).
 _PER_CONN_CMD_ID_STRIDE: int = 100_000
+
+# D1.3-fu4-oom-closure (ticket 86b9zk4hz, 2026-05-19): wall-clock seconds
+# to wait between per-archiver `request_reconnect()` calls when REST
+# refresh triggers a re-plan. Pre-Bit the for-loop dispatched all 7
+# archivers' reconnect within <100ms — the resulting concurrent
+# subscribe-ack flood (peak ~7 × 5 MB cumulative-ticker payloads parsed
+# simultaneously on the asyncio threads) pushed the Python heap past the
+# 512M MemoryMax cgroup cap → OOM-kill → 84 restarts over 41 hours. The
+# stagger spreads conn N+1's reconnect by this many seconds after conn
+# N's, giving the per-conn ack burst time to drain before the next conn
+# starts. With 7 conns and the 20s default the full reconnect window is
+# 6 × 20s = 120s; well under DEFAULT_REFRESH_INTERVAL_SECONDS=3600 (no
+# overlap with next REST tick). See
+# kb/decisions/d1-3-fu4-oom-closure-plan.md §RCA for the derivation.
+_RECONNECT_STAGGER_SECONDS: float = 20.0
 
 
 def _required_env(name: str) -> str:
@@ -316,6 +334,8 @@ def _replan_for_archivers(
     archivers: Sequence[BronzeArchiver],
     conn_count: int,
     batch_size: int,
+    shutdown_event: Optional[threading.Event] = None,
+    stagger_seconds: float = _RECONNECT_STAGGER_SECONDS,
 ) -> None:
     """REST-refresh callback: rebuild subscribe frames + force-reconnect.
 
@@ -343,6 +363,39 @@ def _replan_for_archivers(
     unambiguous (boot uses idx*100_000+1; refresh re-uses the same
     starting cmd_id since Kalshi sids reset per session and ack
     correlation is session-scoped anyway).
+
+    D1.3-fu4-oom-closure (ticket 86b9zk4hz, 2026-05-19): per-archiver
+    reconnects are STAGGERED in time by ``stagger_seconds`` (default
+    ``_RECONNECT_STAGGER_SECONDS``=20s). Pre-Bit code fired all 7
+    archivers' ``request_reconnect`` within <100ms — the resulting
+    concurrent subscribe-ack flood (~7 × 5 MB cumulative-ticker
+    payloads parsed simultaneously on the asyncio threads) drove the
+    Python heap past the 512M cgroup cap → OOM-kill → 84 restarts
+    over 41 hours. See ``kb/decisions/d1-3-fu4-oom-closure-plan.md``
+    §RCA.
+
+    Stagger semantics:
+      - Sleep BETWEEN iterations, never AFTER the last archiver
+        (avoids spurious trailing wall-clock cost on every replan).
+      - When ``shutdown_event`` is provided, the stagger sleep uses
+        ``event.wait(timeout=stagger_seconds)`` so a graceful
+        shutdown does not block on the remaining replan window
+        (worst-case shutdown latency post-Bit: ``stagger_seconds``
+        not ``(N-1) * stagger_seconds``).
+      - When the event is not provided (tests / future callers), the
+        stagger falls back to ``time.sleep`` which is uninterruptible
+        but otherwise equivalent.
+
+    Subscription-drift note: archivers N+1..end are still on OLD
+    subscribe frames during the stagger window (conns 0..N have
+    already reconnected with the new set). Existing data flow on the
+    OLD subscription set continues uninterrupted; only NEW tickers
+    added in this refresh have a ≤ ``(n_archivers - 1) * stagger_seconds``
+    lag before the last conn subscribes to them. At
+    ``DEFAULT_REFRESH_INTERVAL_SECONDS=3600`` and ``stagger_seconds=20``
+    with 7 conns, the worst-case new-ticker subscribe lag is
+    ``6 × 20s = 120s`` on top of the REST-poll cadence (NOT
+    ``7 × 20s`` — the last conn has no trailing stagger).
     """
     mgr = SubscriptionManager(
         tickers_by_tier=new_tickers_by_tier,
@@ -357,7 +410,18 @@ def _replan_for_archivers(
             len(plans), len(archivers),
         )
         return
+    n_archivers = len(archivers)
     for idx, (plan, archiver) in enumerate(zip(plans, archivers)):
+        # Honor shutdown_event BEFORE each iteration so a signal that
+        # arrived during the previous stagger sleep — or before this
+        # call started — short-circuits the remaining work without
+        # forcing a partial reconnect on the next archiver.
+        if shutdown_event is not None and shutdown_event.is_set():
+            logger.info(
+                "Replan: shutdown_event set; breaking after %d of %d "
+                "archivers.", idx, n_archivers,
+            )
+            break
         new_frames, new_map = SubscriptionManager.build_subscribe_frames(
             plan,
             cmd_id_start=idx * _PER_CONN_CMD_ID_STRIDE + 1,
@@ -377,6 +441,25 @@ def _replan_for_archivers(
                 "refresh tick.",
                 plan.conn_id,
             )
+        # Stagger BETWEEN iterations only — no trailing sleep after the
+        # last archiver. The cancellable event.wait lets graceful
+        # shutdown break out of the stagger without waiting the full
+        # interval. ``stagger_seconds <= 0`` (which the contract test
+        # forbids on the module constant) would no-op the sleep — keep
+        # the branch tight so a future test override of stagger_seconds=0
+        # exhibits the pre-Bit behavior loudly.
+        is_last = idx == n_archivers - 1
+        if is_last or stagger_seconds <= 0:
+            continue
+        if shutdown_event is not None:
+            if shutdown_event.wait(timeout=stagger_seconds):
+                logger.info(
+                    "Replan: shutdown_event fired during stagger after "
+                    "archiver %d of %d; breaking.", idx + 1, n_archivers,
+                )
+                break
+        else:
+            time.sleep(stagger_seconds)
 
 
 def _build_writers_for_plan(
@@ -621,6 +704,13 @@ def run(
     # COLLECTOR_TICKERS_FILE override). Closes over `archivers` so an
     # on_refresh tick can rebuild each archiver's subscribe frames +
     # force-reconnect to push the new subscription set to Kalshi.
+    #
+    # D1.3-fu4-oom-closure (86b9zk4hz, 2026-05-19): pass
+    # ``shutdown_event`` through to `_replan_for_archivers` so the
+    # ``_RECONNECT_STAGGER_SECONDS`` between-archiver stagger sleeps
+    # are cancellable — a `systemctl stop kalshi-collector` mid-replan
+    # exits in ≤ one stagger interval instead of pinning the refresher
+    # thread for ~(N-1) * stagger seconds.
     refresher: Optional[RestSnapshotRefresher] = None
     if not tickers_file and rest_private_key is not None:
         def _on_refresh(new_tickers_by_tier: Dict[str, List[str]]) -> None:
@@ -629,6 +719,7 @@ def run(
                 archivers=archivers,
                 conn_count=conn_count,
                 batch_size=batch_size,
+                shutdown_event=shutdown_event,
             )
         refresher = RestSnapshotRefresher(
             api_key=api_key,

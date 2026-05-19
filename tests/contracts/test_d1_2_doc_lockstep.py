@@ -103,6 +103,15 @@ TRACKED_DOCS: list[Path] = [
     # split. Adding to TRACKED_DOCS so the L99 ratchet covers it
     # (closes the asymmetric-coverage gap the R2 reviewer flagged).
     REPO_ROOT / "tests" / "contracts" / "test_bronze_archiver_worker_thread.py",
+    # D1.3-fu4-oom-closure R2-MN3 (2026-05-19): the staggered-reconnect
+    # contract test file is the canonical pin for the
+    # `_replan_for_archivers` stagger surface (5 tests covering
+    # constant invariants + dispatch preservation + wall-clock stagger
+    # + no-trailing-stagger + cancellability). Same pattern as the
+    # D1.3-fu4 worker-thread test file inclusion above — adding the
+    # test file to TRACKED_DOCS so the L99 ratchet covers any future
+    # drift on the file's docstring + comments.
+    REPO_ROOT / "tests" / "contracts" / "test_collector_replan_stagger.py",
     # D1.6 fu R1-M5: monitor + sidecar narrative surfaces. The 144 LOC
     # added to collector_health_monitor.py + the new contract test file
     # carry the dropped-frames/STALE/SCHEMA alert documentation; close
@@ -1654,5 +1663,182 @@ def test_d2_5_shipped_status_in_at_least_one_tracked_doc():
     assert matched_docs, (
         "No tracked doc claims D2.5 SHIPPED — staleness ratchets "
         "clean but nothing affirms the ship. Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D1.3-fu4-oom-closure (staggered reconnect, 2026-05-19, ticket 86b9zk4hz REUSED) ──
+#
+# D1.3-fu4-oom-closure pivots `_replan_for_archivers` from tight-loop
+# dispatch (all 7 archivers' `request_reconnect()` within <100ms) to
+# staggered dispatch (`_RECONNECT_STAGGER_SECONDS`=20s between
+# iterations). Closes the residual OOM-restart class (84 cgroup OOM-kills
+# 2026-05-17 → 2026-05-19) that the D1.3-fu4 worker-thread decouple
+# (2026-05-17, SAME ticket 86b9zk4hz REUSED — see
+# `kb/decisions/d1-3-fu4-oom-closure-plan.md` ticket-reuse preamble)
+# did NOT close. The `-oom-closure` suffix is the structural
+# disambiguator from the 2026-05-17 worker-thread scope.
+
+STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE: list[str] = [
+    # The pre-Bit `_replan_for_archivers` phrasing — "on every archiver"
+    # in the tight-loop sense. The post-Bit phrasing must add the
+    # stagger semantics (the agent_docs/bot_layout.md R1-M2 amendment
+    # is the canonical reference). Future revival via copy-paste from
+    # a pre-Bit git blame must fire.
+    "request_reconnect()` on every archiver.",
+    "request_reconnect() on every archiver.",
+    # Pre-Bit framing of the reconnect storm as "fire-and-forget so
+    # order doesn't matter" — retracted; order matters for memory
+    # pressure reasons (concurrent ack-parse heap peak).
+    "request_reconnect is fire-and-forget so order doesn't matter",
+    # Pre-Bit framing of the OOM mechanism as queue-overflow rather
+    # than concurrent ack-parse heap pressure.
+    "OOM was caused by queue overflow",
+    "OOM was caused by write_queue overflow",
+    # Pre-Bit claim that D1.3-fu5 skip-ack-enqueue closed the OOM-via-ack
+    # class outright — it closed the ack-IN-QUEUE class, but the
+    # ack-PARSE-on-asyncio-thread peak across 7 concurrent conns
+    # remained open until D1.3-fu4-oom-closure.
+    "fu5 skip-ack-enqueue closed the OOM-via-ack class",
+    "D1.3-fu5 closed the OOM-via-ack class",
+    # Pre-Bit "iterate as fast as possible" framing of _replan_for_archivers.
+    "_replan_for_archivers should iterate as fast as possible",
+    "iterate as fast as possible to minimize subscription drift",
+    # Pre-Bit "All archivers reconnect concurrently on REST refresh"
+    # framing — retracted; staggered.
+    "All archivers reconnect concurrently on REST refresh",
+    "all 7 archivers reconnect concurrently",
+    # Pre-Bit "OOM-restart loop is unrecoverable" / "D1.3-fu4 worker-
+    # thread decouple closes the OOM" overclaim — fu4 (2026-05-17)
+    # closed the 1011 class but not the OOM class; only
+    # D1.3-fu4-oom-closure (2026-05-19) closes the OOM-restart loop.
+    "D1.3-fu4 worker-thread decouple closes the OOM",
+    "D1.3-fu4 closes the OOM-restart loop",
+    # R2-M1 paraphrase coverage: "propagates to every archiver" was
+    # the pre-Bit CLAUDE.md:28 phrasing for `_replan_for_archivers`'s
+    # dispatch shape — implies simultaneous fan-out without the
+    # stagger. Post-Bit narrative must add the stagger semantics.
+    # Adding the trailing-`)` substring so the pattern matches the
+    # narrowed-quote form without firing on legitimate prose like
+    # "propagates to every archiver, staggered ...".
+    "propagates to every archiver).",
+    # R2-M2 paraphrase coverage: fu5's bullet originally claimed
+    # "fu4's bounded queue accidentally opened an OOM-via-large-ack
+    # class" — the qualified-SUBCLASS amendment ("fu4 ... opened an
+    # OOM-via-large-ack SUBCLASS") is the post-Bit phrasing. A bare
+    # "OOM-via-large-ack class" without the SUBCLASS qualifier
+    # implies fu5 closed the whole cgroup-OOM class; retract that
+    # framing.
+    "opened an OOM-via-large-ack class:",
+    # R2-M2 cross-ref coverage WAS encoded here as a multi-line
+    # needle (lines spanning the pre-amendment fu5 bullet tail +
+    # the `\n\nNO ``bot.*`` imports` separator) AND as the
+    # single-line `_ack_frames_processed counter.` anchor. Both
+    # forms were RETRACTED in R4-M1:
+    #   - The multi-line form could never match (`_scan` iterates
+    #     `splitlines()`).
+    #   - The single-line `counter.` anchor matched the POST-
+    #     amendment canonical surface itself (the IMPORTANT
+    #     qualifier was appended on the same line in
+    #     `collector/ws_connection.py:52`), so the pattern was a
+    #     self-fire false positive on the legitimate post-amendment
+    #     phrasing.
+    # The R2-M2 fix is structurally enforced by the post-amendment
+    # docstring at `collector/ws_connection.py:48-69` (the
+    # `IMPORTANT:` qualifier + the 6th D1.3-fu4-oom-closure bullet
+    # are now byte-anchored in TRACKED_DOCS) AND by the SHIPPED-
+    # status positive test below. Together these prevent the pre-
+    # amendment fu5 narrative from being copy-pasted intact without
+    # also dropping the IMPORTANT qualifier, which would fail the
+    # `"opened an OOM-via-large-ack class:"` and `"fu5 ... closed
+    # the OOM-via-ack class"` patterns ALREADY in this list. So
+    # the dedicated tail-of-fu5 anchor is no longer needed.
+    # R3-M1 paraphrase coverage: `tests/contracts/test_collector_replan_stagger.py`
+    # docstrings originally said "~140s" for the worst-case stagger
+    # window, but production code + the test file's own assertions
+    # enforce `(N-1) × stagger_seconds = 6 × 20s = 120s` (no trailing
+    # stagger after the last archiver). Encode both retracted forms
+    # so future copy-paste from a pre-fix git blame doesn't re-
+    # introduce the N×S = 140s framing.
+    "~140s during graceful shutdown",
+    "pinning the refresher thread for ~140s",
+    # R5-M1 paraphrase coverage: three sister TRACKED_DOC surfaces
+    # described the REST-refresh callback as "force-reconnects ..."
+    # without the stagger semantics:
+    #   - CONTRIBUTING.md:95 "force-reconnects WS sessions when the"
+    #   - collector/main_loop.py:45 "force-reconnects each WS conn so"
+    #   - collector/rest_snapshot.py:77 "force-reconnects WS conns when"
+    # Post-Bit phrasing must integrate the stagger semantics inline
+    # (the R5 fix amends all three with the
+    # `_RECONNECT_STAGGER_SECONDS` note). Patterns are narrowed to
+    # the trailing keyword (`so` / `when`) so legitimate post-Bit
+    # phrasing like "force-reconnects each WS conn — STAGGERED ..."
+    # doesn't fire.
+    "force-reconnects WS sessions when the",
+    "force-reconnects each WS conn so the",
+    "force-reconnects WS conns when the ticker set changes",
+]
+
+
+@pytest.mark.parametrize(
+    "pattern", STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE,
+)
+def test_no_post_d1_3_fu4_oom_closure_stale_forward_looking_phrase(
+    pattern: str,
+):
+    """No tracked doc should still say a D1.3-fu4-oom-closure-pending
+    phrase after the Bit shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.3-fu4-oom-closure
+    (staggered reconnect in `_replan_for_archivers`). Same lesson as
+    D1.3-fu4 / D1.4 / D1.5 R1-M4: encode retracted prose at ship
+    time so sister-doc drift cannot re-introduce it via copy-paste
+    from a pre-Bit git blame.
+
+    NOTE: pattern matching is plain substring (not regex). To match a
+    range of phrasings, add multiple literal-substring entries.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.3-fu4-oom-closure-pending phrasing detected "
+        f"(pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson (D1.2 R3, reaffirmed D1.3/D1.4/D1.5/D1.3-fu4): "
+        "lockstep ratchets must have PARANOID pattern coverage from "
+        "day-1. If THIS pattern is a legitimate forward-looking "
+        "phrase for a subsequent Bit, narrow it (add a qualifier that "
+        "won't match historical D1.3-fu4-oom-closure prose)."
+    )
+
+
+def test_d1_3_fu4_oom_closure_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D1.3-fu4-oom-closure as SHIPPED. Catches the inverse failure mode
+    where staleness patterns pass (no mention at all) but the docs
+    haven't been updated to claim D1.3-fu4-oom-closure SHIPPED.
+
+    The `-oom-closure` suffix is the structural disambiguator from the
+    2026-05-17 D1.3-fu4 worker-thread decouple ship (same ticket
+    `86b9zk4hz`, different scope).
+    """
+    shipped_re = re.compile(
+        r"D1\.3-fu4-oom-closure\s+SHIPPED|"
+        r"D1\.3-fu4-oom-closure.*shipped|"
+        r"shipped.*D1\.3-fu4-oom-closure",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.3-fu4-oom-closure SHIPPED — "
+        "staleness ratchets clean but nothing affirms the ship. "
+        "Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
     )

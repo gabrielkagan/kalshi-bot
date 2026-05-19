@@ -1,6 +1,8 @@
 """Kalshi WS consumer — D1.1.5 + D1.2 + D1.3 + D1.3-fu3 + D1.3-fu4 + D1.3-fu5
-(tickets 86b9zdhz2 + 86b9ypn66 + 86b9ypn72 + 86b9zjyr0 + 86b9zk4hz + 86b9zky3u,
-2026-05-16 / 2026-05-17).
++ D1.3-fu4-oom-closure
+(tickets 86b9zdhz2 + 86b9ypn66 + 86b9ypn72 + 86b9zjyr0 + 86b9zk4hz + 86b9zky3u
++ 86b9zk4hz REUSED for the 2026-05-19 oom-closure scope,
+2026-05-16 / 2026-05-17 / 2026-05-19).
 
 Thin consumer of ``kalshi_wire.ws_client.WSClient`` that pipes raw Kalshi
 WS frames into per-channel bronze JSONL writers (``collector/writer.py``).
@@ -38,16 +40,35 @@ Bit ordering:
     throttled log; never block, never raise. Closes the 1011
     keepalive-ping-timeout storm class that D1.3-fu3 only mitigated.
   - **D1.3-fu5** (`86b9zky3u`) skips enqueueing subscribe-ack frames.
-    fu4's bounded queue accidentally opened an OOM-via-large-ack class:
-    cumulative-ticker payloads in Kalshi acks reach ~5 MB per frame;
-    queueing 7K acks during subscribe burst pushed RSS past the
-    cgroup MemoryMax → SIGKILL → restart loop. Acks are protocol
-    metadata (no silver/gold pipeline consumes them); fu5 binds sid
-    synchronously and returns without enqueueing. Postmortem:
-    ``kb/failures/collector-oom-via-ack-queue-may17.md``. The
-    ``_unrouted/`` bronze partition no longer receives ack frames;
-    operator can still observe ack activity via the new
-    ``_ack_frames_processed`` counter.
+    fu4's bounded queue accidentally opened an OOM-via-large-ack
+    SUBCLASS: cumulative-ticker payloads in Kalshi acks reach ~5 MB
+    per frame; queueing 7K acks during subscribe burst pushed RSS
+    past the cgroup MemoryMax → SIGKILL → restart loop. Acks are
+    protocol metadata (no silver/gold pipeline consumes them); fu5
+    binds sid synchronously and returns without enqueueing.
+    Postmortem: ``kb/failures/collector-oom-via-ack-queue-may17.md``.
+    The ``_unrouted/`` bronze partition no longer receives ack
+    frames; operator can still observe ack activity via the new
+    ``_ack_frames_processed`` counter. **IMPORTANT:** fu5 closed
+    the ack-IN-QUEUE subclass of the cgroup OOM, BUT NOT the full
+    OOM-restart loop — see D1.3-fu4-oom-closure below.
+  - **D1.3-fu4-oom-closure** (`86b9zk4hz` REUSED for the 2026-05-19
+    scope — see ``kb/decisions/d1-3-fu4-oom-closure-plan.md`` ticket-
+    reuse preamble) closes the RESIDUAL cgroup-OOM SUBCLASS that
+    fu5 did NOT close. fu4 + fu5 together bounded the worker queue
+    AND removed acks from it; the residual peak heap pressure came
+    from the asyncio-thread ``json.loads`` of ~5 MB ack payloads
+    running CONCURRENTLY across all 7 archiver conns during a
+    REST-refresh-driven reconnect storm. The closure surface lives
+    in ``collector/main_loop.py::_replan_for_archivers``, NOT this
+    module: per-archiver ``request_reconnect()`` calls are
+    STAGGERED in wall-clock time by ``_RECONNECT_STAGGER_SECONDS``
+    (20s default) so the concurrent ack-parse storm is replaced by
+    sequential single-conn ack windows. Peak in-flight ack memory
+    drops from ~7×5MB to ~1×5MB. 84 OOM-restart cycles 2026-05-17
+    → 2026-05-19 are the historical evidence trail. The
+    BronzeArchiver code in THIS module is unchanged at fu4-oom-
+    closure; only the orchestrator's dispatch shape changed.
 
 NO ``bot.*`` imports (pinned by ``collector-no-bot`` import-linter
 contract). Auth + WS transport reach into ``kalshi_wire/`` only.
