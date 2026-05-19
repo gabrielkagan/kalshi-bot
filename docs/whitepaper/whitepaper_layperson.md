@@ -65,7 +65,7 @@ None of this is magic. It's just a lot of careful, conservative engineering appl
 
 As of May 2026, the bot is actively trading:
 
-- **Six cryptocurrencies** in 15-minute windows: Bitcoin, Ethereum, Solana, XRP, HYPE, and Dogecoin. Each has slightly different rules and price floors based on how well the bot's model has historically worked on that coin. A seventh — BNB — was added on 2026-05-17 in shadow mode: the bot evaluates BNB windows the same way as the live six but does not place any real BNB orders yet. It's accumulating data so the calibration model can be trained before BNB graduates to live trading (target: around 2026-06-10).
+- **Seven cryptocurrencies** in 15-minute windows: Bitcoin, Ethereum, Solana, XRP, HYPE, Dogecoin, and BNB. Each has slightly different rules and price floors based on how well the bot's model has historically worked on that coin. BNB graduated from shadow observation to live trading on 2026-05-19 (P2.4 promotion, sibling to the P2.3 HYPE/DOGE promotion on 2026-05-14) — when its T1 shadow data showed a clean Brier-sweep argmin and 90c+ tier verification, it earned the same disciplined path the others walked.
 - **Specialty overlays** that look for narrower opportunities: contracts that are almost certainly going to settle one way ("decided contracts"), late-window momentum trades in the final 1–5 minutes before settlement, and weekend/overnight bets where fewer humans are watching the market.
 - **Observation mode** on adjacent markets — the bot watches but doesn't trade S&P 500 short-term contracts, weather-temperature markets across 19 U.S. cities, and live sports markets across 28 leagues. These are research feeds: it's learning what works without risking money.
 

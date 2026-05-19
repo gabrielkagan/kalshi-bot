@@ -3027,9 +3027,9 @@ class OpportunityScanner:
                 _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
                 if best_ask < ENDGAME_BLEND_PRICE:
                     _mkt = best_ask / 100.0
-                    # P2.1.d + P2.3: per-asset blend weight for all 6 production
-                    # 15M assets; unknown assets fall back to MARKET_BLEND_W
-                    # (legacy 0.40) via dict.get default.
+                    # P2.1.d + P2.3 + P2.4: per-asset blend weight for all 7
+                    # production 15M assets; unknown assets fall back to
+                    # MARKET_BLEND_W (legacy 0.40) via dict.get default.
                     _cf_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                     _old_system_prob = (1.0 - _cf_blend_w) * _old_system_prob + _cf_blend_w * _mkt
 

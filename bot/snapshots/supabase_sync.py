@@ -833,9 +833,10 @@ class SupabaseSyncer:
                 "temperature": getattr(cal, "_temperature", None),
                 "sample_count": obs_count,
                 "market_blend_weight": getattr(_bot_mod, "MARKET_BLEND_W", None),
-                # P2.1.d (2026-05-13) + P2.3 (2026-05-14, 86b9xv66a): per-asset
-                # 15M blend weights for all 6 production assets (BTC 0.10,
-                # DOGE 0.60, ETH 0.20, HYPE 0.80, SOL 0.80, XRP 0.90).
+                # P2.1.d (2026-05-13) + P2.3 (2026-05-14, 86b9xv66a) + P2.4
+                # (2026-05-19, 86b9zmj37): per-asset 15M blend weights for all
+                # 7 production assets (BNB 0.20, BTC 0.10, DOGE 0.60, ETH 0.20,
+                # HYPE 0.80, SOL 0.80, XRP 0.90).
                 # Unknown assets + non-15M paths fall back to the scalar
                 # above. Schema column added in
                 # scripts/ops/supabase_migration_020_market_blend_weight_by_asset.sql
