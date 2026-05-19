@@ -2,14 +2,27 @@
 
 ## Cron Jobs
 
-Add to botuser's crontab (`crontab -e`):
+Add to botuser's crontab (`crontab -e`).
+
+**IMPORTANT:** Telegram-alerting scripts must source `~/.env` to pick up
+`TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`. Without the env load the script
+runs without crashing but silently skips all alerts (see
+`data_health_monitor.send_telegram`: "No Telegram config, skipping alert.").
+This is a separate latent failure class from the path drift that caused
+the 2026-05-17 data_health_monitor incident (ticket 86ba0xmmq, where the
+live VPS cron line referenced the pre-Bit-11.2 path
+`scripts/data_health_monitor.py` after the script was relocated to
+`scripts/audit/`). The env-loading pattern below guards against both classes.
+
+Pinned by `tests/contracts/test_vps_setup_cron_paths.py` — every Python
+script referenced below must exist at the documented path in the repo.
 
 ```cron
 # Data health monitor — every 30 min, sends Telegram for critical issues
-*/30 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/audit/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
+*/30 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
 
 # Quiet market monitor — every 15 min, alerts when 15M goes unusually silent
-*/15 * * * * cd /home/botuser/kalshi-bot-repo && /home/botuser/kalshi-bot-repo/venv/bin/python scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
+*/15 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
 ```
 
 ## MCP Server Setup
