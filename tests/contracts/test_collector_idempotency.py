@@ -5,14 +5,20 @@ Pins three load-bearing invariants:
 1. tmp/ → outbox/ atomic via os.replace (POSIX rename(2)) — only atomic
    on the SAME filesystem. Test pins they share the same parent dir.
 2. On collector restart, leftover outbox/ files are re-uploaded BEFORE new
-   rotations begin. Per D0.3 §7 last paragraph: "On collector restart,
-   any leftover outbox/ files are re-uploaded before new rotations begin
-   — bit-identical re-uploads no-op via --checksum."
+   rotations begin. Per D0.3 §7 last paragraph (B-orphan-sweep AMENDMENT
+   2026-05-19, ticket 86ba0jmz9): "On collector restart, any leftover
+   outbox/ files are re-uploaded before new rotations begin — bit-
+   identical re-uploads no-op via --checksum." The amendment extends
+   the restart-sweep contract symmetrically: bare-``in_flight_<usec>``
+   orphans are ALSO recovered via ``salvage_in_flight_orphans`` BEFORE
+   the outbox loop runs (sister contract pinned by
+   ``test_collector_in_flight_recovery.py``; this file only pins the
+   outbox-side semantics it always did).
 3. zstd compression is reversible — `_raw` payloads survive round-trip
    through zstd-6 → decompress.
 
 Sister to ``test_collector_writer.py`` + ``test_collector_rotation.py`` +
-``test_collector_uploader.py``.
+``test_collector_uploader.py`` + ``test_collector_in_flight_recovery.py``.
 
 If this test fails:
 - tmp/ + outbox/ moved to different filesystems: os.replace is NO LONGER

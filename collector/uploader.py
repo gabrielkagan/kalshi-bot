@@ -44,6 +44,28 @@ Contract pins:
   on failure.
 - tests/contracts/test_collector_idempotency.py — sweep_outbox restart
   semantics (re-upload leftover chunks on startup).
+
+B-orphan-sweep AMENDMENT 2026-05-19 (ticket 86ba0jmz9): the 6-step
+contract above describes the GRACEFUL path. When the collector process
+is SIGKILL'd / OOM-killed, the writer's ``writer.close()`` in
+collector/main_loop.py's finally block does NOT run, leaving bare
+``in_flight/in_flight_<usec>.jsonl`` orphans (un-rotated, un-renamed,
+un-paired with any outbox/.jsonl.zst). The restart-sweep contract is
+EXTENDED symmetrically: ``sweep_outbox(root_dir)`` first invokes
+``salvage_in_flight_orphans(root_dir)``, which re-rotates each
+salvageable orphan into the standard outbox + in_flight pair before
+the existing outbox loop runs. See ``salvage_in_flight_orphans``
+docstring for safety rules (90s mtime threshold, empty-orphan delete,
+malformed KEEP-local, chunk_id collision preserve).
+
+Contract pins (B-orphan-sweep amendment):
+- tests/contracts/test_collector_in_flight_recovery.py — salvage path
+  + chunk_id collision ratchet (R1-C1/C2) + safety-age + zstd round-
+  trip + empty/malformed handling.
+- The salvage zstd level MUST match the writer's. Pinned by the
+  module-level ``_SALVAGE_ZSTD_LEVEL == writer._ZSTD_LEVEL`` constant
+  + a behavioral test that proves byte-identical output for the same
+  input across both producers (test_salvage_zstd_level_matches_writer).
 """
 from __future__ import annotations
 
@@ -51,8 +73,18 @@ import json
 import logging
 import os
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
+
+import zstandard as zstd
+
+# Single-source the salvage zstd level by importing the writer's pinned
+# constant. Drift would break the silver-ETL byte-identical guarantee
+# (R2-M6 structural ratchet — pre-fix this was a copy in module scope
+# with only an honor-system comment claiming it matched).
+from collector.writer import _ZSTD_LEVEL as _WRITER_ZSTD_LEVEL
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +94,25 @@ logger = logging.getLogger(__name__)
 # structurally impossible.
 _RCLONE_SUBCOMMAND_UPLOAD: str = "copyto"
 _RCLONE_SUBCOMMAND_VERIFY: str = "size"
+
+# B-orphan-sweep (2026-05-19) — in_flight salvage tunables.
+#
+# Don't touch files whose mtime is within this many seconds of "now" —
+# they could be the active writer's still-open first-frame in_flight.
+# Writer's normal rotation cadence is 5 min; 90s gives a healthy margin
+# while still salvaging post-crash orphans (mtime is the wall-clock of
+# the LAST write to the file; if no writer has written for 90s+, the
+# previous owner is gone — either crashed or rotated cleanly).
+_IN_FLIGHT_SAFETY_AGE_SECONDS: float = 90.0
+
+# Salvage zstd level is single-sourced from the writer via the import
+# above (R2-M6 structural ratchet). The alias remains so the rest of
+# the module reads as ``_SALVAGE_ZSTD_LEVEL`` (intent-clear locally)
+# while drift is structurally impossible — re-binding the writer's
+# constant would break ``_WRITER_ZSTD_LEVEL`` import everywhere it's
+# read, and the contract test ``test_salvage_zstd_level_matches_writer``
+# pins the equality behaviorally on top of the static lock-step.
+_SALVAGE_ZSTD_LEVEL: int = _WRITER_ZSTD_LEVEL
 
 
 def build_rclone_copy_argv(local_path: Path, s3_dest: str) -> List[str]:
@@ -197,19 +248,35 @@ class RcloneUploader:
     def sweep_outbox(self, root_dir: Path) -> int:
         """Re-upload any leftover outbox/*.jsonl.zst files under root_dir.
 
-        Per D0.3 §7 last paragraph: "On collector restart, any leftover
-        outbox/ files are re-uploaded before new rotations begin —
-        bit-identical re-uploads no-op via --checksum."
+        Per D0.3 §7 last paragraph (B-orphan-sweep AMENDMENT 2026-05-19,
+        ticket 86ba0jmz9): "On collector restart, any leftover outbox/
+        files are re-uploaded before new rotations begin — bit-identical
+        re-uploads no-op via --checksum." The amendment extends symmetry
+        to the in_flight side: bare-``in_flight_<usec>.jsonl`` orphans
+        are also recovered via ``salvage_in_flight_orphans`` BEFORE the
+        outbox loop iterates.
 
         For each outbox chunk, the matching in-flight .jsonl shares the
         same chunk_id stem (per BronzeWriter._rotate's rename step) and
         lives in the sibling in_flight/ dir. We pass both to upload_chunk
         so the delete-on-success step removes both files.
 
+        B-orphan-sweep (2026-05-19): before iterating outbox/, salvage any
+        bare-``in_flight_<usec>.jsonl`` orphans left behind by SIGKILL/OOM-
+        killed prior processes (whose ``writer.close()``-in-finally never
+        ran). Salvage re-rotates each orphan into the standard
+        ``outbox/{chunk_id}.jsonl.zst`` + ``in_flight/{chunk_id}.jsonl``
+        pair, after which the existing outbox loop below picks them up
+        identically to a graceful-rotate chunk. See the salvage method
+        docstring for parsing + safety details.
+
         Returns the number of chunks successfully re-uploaded.
         """
         n_ok = 0
         root_dir = Path(root_dir)
+        # Step 0: salvage in_flight orphans into the outbox shape so the
+        # main loop below treats them identically to graceful rotations.
+        self.salvage_in_flight_orphans(root_dir)
         for outbox_dir in root_dir.rglob("outbox"):
             if not outbox_dir.is_dir():
                 continue
@@ -239,3 +306,225 @@ class RcloneUploader:
                 ):
                     n_ok += 1
         return n_ok
+
+    def salvage_in_flight_orphans(self, root_dir: Path) -> int:
+        """Re-rotate bare-``in_flight_<usec>.jsonl`` orphans into outbox.
+
+        B-orphan-sweep (2026-05-19, ticket 86ba0jmz9). Background: when
+        the collector process is SIGKILL'd or OOM-killed by systemd, the
+        graceful ``writer.close()`` in main_loop's finally block does
+        NOT run. Any open in_flight files are left on disk with their
+        pre-rotation filenames (``in_flight_<wall-clock-µs>.jsonl``) and
+        are invisible to the chunk_id-stem-based pairing in
+        ``sweep_outbox``. This method walks the tree, re-rotates each
+        salvageable orphan into the standard
+        ``outbox/{chunk_id}.jsonl.zst`` + ``in_flight/{chunk_id}.jsonl``
+        shape that ``sweep_outbox`` expects, then returns.
+
+        The salvage is defensive and applies UNIFORMLY across all three
+        collector services (kalshi-collector, kalshi-coinbase-collector,
+        kalshi-weather-collector). Each service holds its own
+        ``bronze_root`` so the rglob walks are partition-isolated; the
+        observed leak in the Kalshi service is one instance of the same
+        latent class on all three.
+
+        Safety rules:
+        - Files with mtime within ``_IN_FLIGHT_SAFETY_AGE_SECONDS`` (90s)
+          of "now" are skipped — they could belong to an active writer
+          whose first frame is still mid-rotation interval. The writer's
+          5-min rotation cadence means this window is large enough to
+          identify a truly-orphaned file with healthy margin.
+        - Empty (0-byte) orphans have no derivable chunk_id; they are
+          unlinked + logged.
+        - Malformed orphans (non-JSON content / unparseable envelopes)
+          are LOGGED + PRESERVED on disk for operator triage. Silent
+          data-loss-on-corruption is worse than disk-pressure.
+        - chunk_id collision (R1-C1/C2 ratchet): if salvage would
+          produce an ``outbox/{chunk_id}.jsonl.zst`` or
+          ``in_flight/{chunk_id}.jsonl`` that ALREADY exists on disk
+          (e.g., a prior boot's graceful rotation left a canonical pair,
+          AND a subsequent SIGKILL produced an orphan with same first/
+          last frame ts+seq derivation), the orphan is LOGGED + PRESERVED
+          rather than clobbering the canonical chunk. Pre-fix this was a
+          silent-overwrite bronze-loss class.
+
+        Returns the number of orphans successfully salvaged into outbox.
+        """
+        n_salvaged = 0
+        now = time.time()
+        root_dir = Path(root_dir)
+        for in_flight_dir in root_dir.rglob("in_flight"):
+            if not in_flight_dir.is_dir():
+                continue
+            # Glob ONLY the bare-µs pattern, not chunk_id-named files
+            # (those are paired with outbox/ chunks and handled by the
+            # sweep_outbox loop).
+            for orphan in in_flight_dir.glob("in_flight_*.jsonl"):
+                try:
+                    if self._salvage_one_orphan(orphan, now=now):
+                        n_salvaged += 1
+                except Exception:
+                    # Per-orphan failure must not block other orphans.
+                    # Log with traceback for operator triage; KEEP-local
+                    # since the file is still on disk.
+                    logger.exception(
+                        "salvage_in_flight_orphans: unexpected error "
+                        "for %s — file preserved for manual triage.",
+                        orphan,
+                    )
+        # R3-m1: ensure salvage activity is operator-visible WITHOUT
+        # requiring every caller to read the return value + log it. A
+        # bare INFO when n>0 prevents the "silent salvage" failure mode
+        # the R3 reviewer flagged (the operator-facing "%d leftover
+        # outbox chunks" log only counts upload-success, not salvage).
+        if n_salvaged:
+            logger.info(
+                "salvage_in_flight_orphans: re-rotated %d in_flight "
+                "orphan(s) into outbox shape under %s",
+                n_salvaged, root_dir,
+            )
+        return n_salvaged
+
+    def _salvage_one_orphan(self, orphan: Path, *, now: float) -> bool:
+        """Re-rotate a single bare-µs orphan into outbox/in_flight shape.
+
+        Returns True if and only if a NEW outbox file was created AND
+        the orphan was renamed to its chunk_id-stemmed pair (i.e., a
+        real bronze data salvage). All other paths (fresh-skip / empty-
+        delete / whitespace-delete / malformed-keep / collision-keep)
+        return False so the caller's counter reflects only true
+        salvages, not cleanup operations (R2-m1 honest-counter ratchet).
+
+        Side-effects:
+        - On True: writes ``outbox/{chunk_id}.jsonl.zst`` (atomic) +
+          renames the orphan to ``in_flight/{chunk_id}.jsonl``.
+        - On False with empty/whitespace input: orphan unlinked.
+        - On False with malformed/collision/fresh input: orphan
+          preserved on disk for next-pass retry or manual triage.
+        """
+        # Safety: skip files an active writer might still be appending.
+        try:
+            mtime = orphan.stat().st_mtime
+        except FileNotFoundError:
+            return False  # raced; another sweep handled it.
+        if now - mtime < _IN_FLIGHT_SAFETY_AGE_SECONDS:
+            return False
+
+        raw_bytes = orphan.read_bytes()
+        if not raw_bytes:
+            # Empty orphan — no chunk_id derivable; clean up the inode.
+            try:
+                orphan.unlink()
+                logger.info("salvage: empty in_flight orphan deleted: %s", orphan)
+            except FileNotFoundError:
+                pass
+            return False
+
+        # Parse first + last non-empty lines for ts + seq. KEEP-local on
+        # any parse failure — operator triage > silent loss. ``.strip()``
+        # filters whitespace-only lines (R1-n1 hardening; defensive
+        # against any non-writer producer that might inject blank lines).
+        lines = [b for b in raw_bytes.split(b"\n") if b.strip()]
+        if not lines:
+            try:
+                orphan.unlink()
+                logger.info("salvage: whitespace-only in_flight orphan deleted: %s", orphan)
+            except FileNotFoundError:
+                pass
+            return False
+        try:
+            first_env = json.loads(lines[0].decode("utf-8"))
+            last_env = json.loads(lines[-1].decode("utf-8"))
+            first_ts = _parse_wire_recv_ts(first_env["_wire_recv_ts"])
+            last_ts = _parse_wire_recv_ts(last_env["_wire_recv_ts"])
+            first_seq = int(first_env["_collector_seq"])
+            last_seq = int(last_env["_collector_seq"])
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "salvage: malformed in_flight orphan %s (%r) — preserved "
+                "for manual triage.",
+                orphan, exc,
+            )
+            return False
+
+        chunk_id = (
+            f"{_format_compact_iso(first_ts)}"
+            f"_to_{_format_compact_iso(last_ts)}"
+            f"_seq{first_seq}-{last_seq}"
+        )
+        partition = orphan.parent.parent  # strip in_flight/ + filename
+        tmp_dir = partition / "tmp"
+        outbox_dir = partition / "outbox"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        outbox_dir.mkdir(parents=True, exist_ok=True)
+        tmp_path = tmp_dir / f"{chunk_id}.jsonl.zst.tmp"
+        outbox_path = outbox_dir / f"{chunk_id}.jsonl.zst"
+        renamed_in_flight = orphan.parent / f"{chunk_id}.jsonl"
+
+        # R1-C1/C2 ratchet: chunk_id collision pre-check. Writer's
+        # ``_format_compact_iso`` is second-resolution + ``_collector_seq``
+        # resets across process restarts, so two boots within the same
+        # wall-clock-second that ingest overlapping seq ranges CAN derive
+        # the same chunk_id. If a canonical pair already exists on disk
+        # (graceful rotation from a prior boot), refuse to clobber —
+        # silent overwrite of canonical bronze with partial orphan
+        # content would be a data-loss class equivalent to the bug this
+        # method is fixing.
+        if outbox_path.exists() or renamed_in_flight.exists():
+            logger.warning(
+                "salvage: chunk_id collision for orphan=%s "
+                "(would clobber outbox=%s in_flight=%s); preserving "
+                "orphan for manual triage.",
+                orphan.name, outbox_path, renamed_in_flight,
+            )
+            return False
+
+        # Compress + fsync + atomic-rename to outbox. Same zstd level
+        # as the writer so silver ETL sees byte-identical compressed
+        # bronze regardless of recovery path.
+        cctx = zstd.ZstdCompressor(level=_SALVAGE_ZSTD_LEVEL)
+        with open(tmp_path, "wb") as dst:
+            dst.write(cctx.compress(raw_bytes))
+            dst.flush()
+            os.fsync(dst.fileno())
+        os.replace(tmp_path, outbox_path)
+
+        # Rename orphan → chunk_id-stemmed in_flight so the sweep_outbox
+        # pairing loop finds it via its name-based lookup. Log both the
+        # ORIGINAL wall-clock-µs filename AND the recovered chunk_id so
+        # operators can correlate against journalctl OOM-kill traces
+        # (R1-m2 forensic-anchor hardening).
+        orphan_original_name = orphan.name
+        os.replace(orphan, renamed_in_flight)
+        logger.info(
+            "salvage: in_flight orphan recovered orphan=%s → outbox=%s "
+            "(%d bytes raw, %d bytes compressed)",
+            orphan_original_name, outbox_path,
+            len(raw_bytes), outbox_path.stat().st_size,
+        )
+        return True
+
+
+# ─── Salvage helpers (module-private) ────────────────────────────────────────
+
+
+def _parse_wire_recv_ts(ts_str: str) -> datetime:
+    """Mirror of BronzeWriter's ts-parse — tz-aware UTC from ISO-µs string.
+
+    Kept local to avoid an uploader→writer import edge that would tighten
+    the import-linter graph beyond what this Bit needs.
+    """
+    return datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=timezone.utc,
+    )
+
+
+def _format_compact_iso(ts: datetime) -> str:
+    """Mirror of BronzeWriter._format_compact_iso for chunk_id naming.
+
+    Local copy avoids an uploader→writer import edge. The pinned format
+    ``YYYYMMDDTHHMMSSZ`` is single-sourced via the contract test that
+    asserts the salvage chunk_id stem matches the writer's stem given
+    the same first/last frame ts.
+    """
+    return ts.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
