@@ -23,6 +23,9 @@ script referenced below must exist at the documented path in the repo.
 
 # Quiet market monitor — every 15 min, alerts when 15M goes unusually silent
 */15 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
+
+# Monitor-the-monitor (E.1, ticket 86ba0xq51) — every 10 min, alerts on stale cron monitor logs
+*/10 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
 ```
 
 ## MCP Server Setup
