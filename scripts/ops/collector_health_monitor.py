@@ -38,9 +38,17 @@ D1.6 fu adds the 4th check:
       * sidecar SCHEMA SKEW (schema_version != 1; future bumps would
         silently degrade the signal otherwise)
 
-Operator install (manual, post-D1.6 merge):
-    # In /etc/cron.d/kalshi-collector-health or `crontab -e` (botuser):
-    */5 * * * * cd /home/botuser/kalshi-bot-repo && source venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> /var/log/kalshi-collector-health.log 2>&1
+Operator install (manual, post-D1.6 merge — log path canonicalized by
+Bit 86ba0jvka 2026-05-19 incident to `~/collector_health.log`; the
+prior D1.6 docstring referenced `/var/log/...` which would have
+required sudo NOPASSWD that botuser doesn't have for write access,
+AND `/tmp/` was a worse choice yet because `systemd-tmpfiles-clean
+.timer` periodically wipes it, hiding crash traces — the actual VPS
+crontab at incident time used `/tmp/collector_health.log` which
+explains why the canary's `ModuleNotFoundError: No module named 'bot'`
+crashes went undetected for 2 days):
+    # In `crontab -e` (botuser):
+    */5 * * * * cd /home/botuser/kalshi-bot-repo && source venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> ~/collector_health.log 2>&1
 
 Env reads:
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — from /home/botuser/.env (loaded
@@ -60,6 +68,27 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+# Bit 86ba0jvka (2026-05-19): bootstrap repo root onto sys.path BEFORE
+# any `from bot.*` / `import bot.*` reference fires below. Cron's
+# invocation flow (`cd ~/kalshi-bot-repo && source venv/bin/activate
+# && python3 scripts/ops/collector_health_monitor.py`) does NOT
+# auto-add the repo root to sys.path — only the script's parent dir
+# (scripts/ops/) is added by Python's script-invocation rule. Without
+# this bootstrap the script crashes at `from bot.notifier import
+# TelegramNotifier` (the function-scoped lazy import inside `main()`)
+# with `ModuleNotFoundError: No module named 'bot'`. This silent-fail
+# mode kept the disk-pressure canary DEAD from D1.6 ship (2026-05-17)
+# through the 2026-05-19 disk-full incident — zero alerts fired
+# across 2 days of an 80% watermark threshold being crossed. Pinned
+# by tests/contracts/test_collector_health_monitor_runnable.py via 3
+# AST guards: (1) bootstrap exists, (2) precedes every `from bot.*` /
+# `import bot.*` statement, (3) derives from `parents[2]` (= repo
+# root; parents[0]/[1]/[3+] would silently fail on the VPS). The
+# AST-only approach replaced a behavioral subprocess test that
+# couldn't escape editable-install MetaPathFinders on dev machines
+# (R4-C1 ratchet of this Bit's adv-review cycle).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 # Defaults (overridable via env for tuning without redeploy).
@@ -679,7 +708,9 @@ def main() -> int:
                 # check functions return None on missing-tooling / missing-
                 # files). Log + continue so one broken check doesn't
                 # silence the others. Cron convention = exit 0 always;
-                # operator sees the exception in /var/log/... .
+                # operator sees the exception in the cron-redirected log
+                # file (canonically ~/collector_health.log per the module
+                # docstring's operator-install block).
                 print(
                     f"[{tier_name}/{check_name}] EXCEPTION: {exc!r}",
                     file=sys.stderr,
