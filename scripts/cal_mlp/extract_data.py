@@ -135,7 +135,16 @@ def _normalize_cutoff_end(s: Optional[str]) -> str:
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Phase 2 cal_mlp data extraction")
-    ap.add_argument('--asset', required=True, choices=['BTC', 'ETH', 'SOL', 'XRP'])
+    # Bit B (86ba0jn0w, 2026-05-19) — widened from 4 assets to add
+    # HYPE/DOGE. Allows HYPE/DOGE LIVE rows in `evaluated_opportunities`
+    # to flow through the production recipe. The HYPE/DOGE REPLAY corpus
+    # is consumed by the parallel `scripts/cal_mlp/extract_data_replay.py`
+    # extractor (P2.1.a-3 ticket `86b9wuhhr`) — no UNION here.
+    ap.add_argument(
+        '--asset',
+        required=True,
+        choices=['BTC', 'ETH', 'SOL', 'XRP', 'HYPE', 'DOGE'],
+    )
     ap.add_argument('--folds', type=int, default=3)
     ap.add_argument('--train-days', type=int, default=60)
     ap.add_argument('--cal-days', type=int, default=15)
@@ -343,7 +352,18 @@ def pull_and_classify(
         all (default) → no provenance clause (backwards-compat)
     Unknown values raise ValueError. `source_total` reflects only rows the
     SQL pull returned — it does NOT count rows excluded by the provenance
-    filter (those never reached the bucketing stage)."""
+    filter (those never reached the bucketing stage).
+
+    Bit B (86ba0jn0w, 2026-05-19): NO behavior change here. The widened
+    `--asset` choices in `parse_args` let HYPE/DOGE *live* rows in
+    `evaluated_opportunities` flow through this function unchanged. The
+    HYPE/DOGE *replay* corpus (`historical_replay_calmlp`) is consumed by
+    the parallel extractor `scripts/cal_mlp/extract_data_replay.py`
+    (P2.1.a-3, ticket `86b9wuhhr`, shipped commit `3a9d690a`) with its
+    own `compute_cfg_fp_replay` namespace — a UNION here would regress
+    on that two-extractor architecture and trip
+    `build_feature_frame`'s NULL contract once `market_price` lands.
+    """
     if provenance_filter not in PROVENANCE_FILTER_CHOICES:
         raise ValueError(
             f"provenance_filter must be one of {PROVENANCE_FILTER_CHOICES}; "

@@ -45,6 +45,27 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
 - `hype_doge_replay_backfill.py` — Phase 2 replay backfill (86b9wy7v3, 2026-05-12). Pulls historical Kalshi `KX{HYPE,DOGE}15M` settled markets (public REST) + Coinbase 1-min HYPE-USD/DOGE-USD candles, drives `bot.engines.probability.ProbabilityEngine.compute()` against each market's open_time, pairs with realized YES/NO settlement, writes to NEW `historical_replay_calmlp` table (PK `(ticker, evaluation_time)`, CHECK on asset+result enums). Lock-step via `bot.helpers.derived_features` for `hour_sin`/`hour_cos`/`sigma_winsorize`/`prob_breakeven_gap`. Phase 2 v1: `blended_prob` honest-NULL (no HYPE/DOGE trained cal_mlp predictor exists at either deployment site — Mac OR VPS; production `_calmlp_predictors` covers only BTC/ETH/SOL/XRP), `prob_breakeven_gap` honest-NULL (no historical Kalshi orderbook). Mac-side fetch — Bybit (CloudFront 403 from US) + Binance.com (HTTP 451) geo-blocked, mirroring `BINANCE_FEED_ENABLED=0` runtime default; uses Coinbase REST (also bot's primary live feed for these assets per `bot/constants.py:700-701`). Operator-supplied `--db PATH`; do NOT point at production `state.db`. Sister `86b9wy15n` (calibration health check) consumes the corpus.
 - `cross_asset_transfer_blended_prob.py` — Bit A of HYPE/DOGE cal_mlp v1.1 retrain umbrella (umbrella `86ba0jmyq`, bit ticket `86ba0jmzu`, 2026-05-19). Reads `historical_replay_calmlp` HYPE/DOGE rows WHERE `blended_prob IS NULL`, feeds each through `CalMLPPredictor("BTC")` (cross-asset transfer mechanism: unseen ticker → vocab ID 0 per `scripts/cal_mlp/integration.py:1037`), UPDATEs `blended_prob` in place. Idempotent + per-row try/except + Mac-only defensive guard (refuses paths under `/home/botuser/`). Lock-step via `bot.helpers.derived_features.compute_derived_features` + `compute_hour_sin_cos` (no inline math.sin/cos; AST pinned by `tests/integration/test_cross_asset_transfer_blended_prob.py::test_no_inline_hour_sin_cos_math`). Honest-NULL: every row in the current 9,794-row replay corpus (4,897 HYPE + 4,897 DOGE) has `prob_breakeven_gap IS NULL`; the script's skip counters partition the candidates into `null_raw_prob=76` (raw_prob pre-filter, predict never invoked) + `predict_raised=9,718` (CalMLPError missing_features on the bp_gap CONT_FEATURE_COLS check). `blended_prob` stays NULL on every row; no fabricated feature values. CLI: `--db PATH [--asset HYPE|DOGE] [--limit N] [--dry-run]`. Sister Bit E (`86ba0jn6a` — Kalshi trade-history scrape to backfill `prob_breakeven_gap`) is the prerequisite for non-trivial Bit A outcome; once that lands, this script's idempotent re-run produces the real backfill.
 
+## cal_mlp pipeline (`scripts/cal_mlp/`)
+- `extract_data.py` — Phase 2 training-corpus extractor for the
+  PRODUCTION recipe. Reads `evaluated_opportunities` from `state.db`,
+  runs `_classify_drop` (12 sequential predicates) per row, writes
+  kept rows to per-asset Parquet under `data/cal_mlp/<asset>/`. Bit B
+  (86ba0jn0w, 2026-05-19) widened `--asset` choices from
+  `['BTC','ETH','SOL','XRP']` to add HYPE/DOGE — letting HYPE/DOGE
+  LIVE rows (in `evaluated_opportunities`) flow through the production
+  recipe. No UNION with the replay corpus (architectural regression
+  per Bit B R1 finding M1; see `kb/decisions/v1-1-B-extract-union-plan.md`
+  L99 STALE patterns). `cfg_fp` UNCHANGED by Bit B.
+- `extract_data_replay.py` — parallel HYPE/DOGE replay-corpus
+  extractor shipped P2.1.a-3 (ticket `86b9wuhhr`, commit `3a9d690a`).
+  Reads `historical_replay_calmlp` from `data/replay/state.db`
+  (Mac-only). Strict-subset 4-feature recipe with its own
+  `compute_cfg_fp_replay` namespace pinned at `9347942aaba71146`
+  (dropped from recipe: `market_price`, `prob_breakeven_gap`). Boundary
+  with `extract_data.py`: live rows → production recipe; replay rows →
+  replay recipe. `train.py` consumes both bundle types via
+  `CONT_FEATURE_COLS_REPLAY` routing at `train.py:690`.
+
 ## Ops scripts (`scripts/ops/`)
 ### Backup (Phase 0a — state.db S3 backup)
 - `state_db_s3_backup.py` — `sqlite3.Connection.backup()` → zstd → `rclone copyto s3prod:bucket/daily/...`. Invoked every 4h by `kalshi-state-db-backup.timer` (00/04/08/12/16/20:00 UTC; cadence revised from daily 06:00 UTC by ticket `86b9zkp89` 2026-05-17 — Bronze durability; sub-daily ticks share the same `daily/<UTC-date>.db.zst` S3 key, so S3 retains the latest-of-day per day). NEVER call directly with rsync semantics — see the docstring + `kb/decisions/auto-research-phase-0a-plan-may09.md` RCA.
