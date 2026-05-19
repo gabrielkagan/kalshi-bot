@@ -348,8 +348,11 @@ class TestTMThinBufferCap(unittest.TestCase):
 
     def _compile_fn(self):
         """Extract TM constants + tm_compute_contracts into an isolated namespace."""
+        import math
         from typing import Optional
-        ns = {"Optional": Optional}
+        # `math` injected for the NaN defense in tm_compute_contracts
+        # (ticket 86ba0vpfd, 2026-05-19) — the function body calls math.isnan.
+        ns = {"Optional": Optional, "math": math}
         # Hoist the needed constants + TM_ASSET_RISK_CAPS
         const_names = [
             "TM_BASE_CONTRACTS", "TM_STC_SAFE_THRESHOLD", "TM_STC_DANGER_HI",

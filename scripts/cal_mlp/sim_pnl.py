@@ -328,6 +328,12 @@ def _tm_size(
 
     Sim B (2026-05-19, ticket 86ba0v6z1) added buf_multiplier from
     TM_BUFFER_SIZE_MULTIPLIER (1×/1×/2×/3× across the 4 bands).
+
+    buf_pct semantics (ticket 86ba0vpfd, 2026-05-19): None preserves the legacy
+    "no buffer info — caller predates buf_pct kwarg" bypass of the thin-buffer
+    cap; NaN is treated as a conservative-unknown numeric value and triggers
+    the cap (IEEE-754 `NaN < 0.20` is False, which would otherwise silently
+    bypass).
     """
     margin = 100 - price_cents
     if margin <= 0:
@@ -352,8 +358,15 @@ def _tm_size(
         risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
         max_by_risk = int(balance_cents * risk_frac / TM_SWEEP_LIVE_RISK_DENOM_PRICE)
         ct = min(ct, max_by_risk)
-    if buf_pct is not None and buf_pct < TM_THIN_BUFFER_PCT:
-        ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
+    # Thin-buffer cap mirror (BACKSTOP — lockstep with bot/helpers/tm_sweep.py
+    # post-Sim-B). NaN defense (ticket 86ba0vpfd, 2026-05-19): IEEE-754
+    # `NaN < 0.20` is False, which would silently bypass the cap on a NaN
+    # buf_pct. Treat NaN as a conservative-unknown numeric value and apply
+    # the cap. `None` (legacy "no buffer info — caller predates buf_pct kwarg")
+    # intentionally still bypasses; only NaN is the new defense surface.
+    if buf_pct is not None:
+        if math.isnan(buf_pct) or buf_pct < TM_THIN_BUFFER_PCT:
+            ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
     return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
 
 
