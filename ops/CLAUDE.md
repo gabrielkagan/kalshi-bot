@@ -47,9 +47,9 @@ One-time bucket + IAM + lifecycle setup is operator-only — see `scripts/STATE_
 
 ## market_observations_continuous archive (ticket 86b9xcdwg)
 
-`market_observations_continuous` is the only retention-pruned table on the VPS — the hourly retention sweep DELETEs rows older than 14 days (`bot/snapshots/market_observations_snapshotter.py:539-575`). Without archival, ~35K NBBO rows/day are permanently lost. Nightly archive shipped via:
+`market_observations_continuous` is the only retention-pruned table on the VPS — the hourly retention sweep DELETEs rows older than 5 days (`bot/snapshots/market_observations_snapshotter.py::_retention_sweep`; tightened from 14d to 5d by ticket 86ba0jb39 2026-05-19 to reduce executemany lock-hold tail). Without archival, ~41.5K NBBO rows/day are permanently lost. Nightly archive shipped via:
 
-- `kalshi-market-obs-archive.{service,timer}` — daily 05:30 UTC (unchanged by 86b9zkp89; weekly market_obs volume is tiny and per-day archival is sufficient). Falls between the 04:00 and 08:00 every-4h state.db backup ticks. Reads rows for `target_date = today_utc - 13d` (day 13 of the 14d window — rows still exist for ≥1 more day) via a read-only SQLite connection, writes Parquet with internal zstd, then `rclone copyto s3prod:kalshi-bot-archive/market_obs/YYYY-MM-DD.parquet.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+- `kalshi-market-obs-archive.{service,timer}` — daily 05:30 UTC (unchanged by 86b9zkp89; weekly market_obs volume is tiny and per-day archival is sufficient). Falls between the 04:00 and 08:00 every-4h state.db backup ticks. Reads rows for `target_date = today_utc - 4d` (day 4 of the 5d retention window — rows still exist for ≥1 more day) via a read-only SQLite connection, writes Parquet with internal zstd, then `rclone copyto s3prod:kalshi-bot-archive/market_obs/YYYY-MM-DD.parquet.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
 
 Idempotent: same date = S3 object overwrite. Bucket lifecycle routes `market_obs/` to Glacier IR from day 0 (rarely read, but want instant retrieval for research). Cost ~$0.02/mo at year 5.
 

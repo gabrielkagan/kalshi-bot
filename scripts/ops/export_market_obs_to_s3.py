@@ -2,14 +2,15 @@
 """Nightly archive of market_observations_continuous to S3 (ticket 86b9xcdwg).
 
 market_observations_continuous is the only retention-pruned table on the
-VPS (DEFAULT_RETENTION_DAYS=14 per bot/snapshots/market_observations_
-snapshotter.py:70). Without this archive ~35K NBBO rows/day are
-permanently lost.
+VPS (DEFAULT_RETENTION_DAYS=5 per bot/snapshots/market_observations_
+snapshotter.py — tightened from 14d by ticket 86ba0jb39 2026-05-19 to
+reduce executemany lock-hold tail). Without this archive ~41.5K NBBO
+rows/day are permanently lost.
 
 Flow (one nightly run, 05:30 UTC, between journal-rotate @04:00 and
 state.db backup @06:00):
-  1. target_date = today_utc - 13d (rows exist for ≥1 more day before
-     the snapshotter's hourly sweep deletes them).
+  1. target_date = today_utc - 4d (one day inside the 5d retention
+     boundary so rows still exist when the read fires).
   2. Read rows via read-only SQLite connection (mode=ro — cannot race
      the snapshotter or sweep, cannot mutate state.db).
   3. Write Parquet with internal zstd (~1-2 MB/day vs ~5 MB raw).
@@ -21,6 +22,10 @@ state.db backup @06:00):
 
 Idempotent: same date = S3 object overwrite. Bucket lifecycle routes
 market_obs/ → Glacier IR from day 0; ~$0.02/mo at year 5.
+
+LOCKSTEP: _DEFAULT_LOOKBACK_DAYS must remain strictly less than the
+snapshotter's DEFAULT_RETENTION_DAYS (pinned by
+tests/contracts/test_market_obs_retention_lockstep.py).
 """
 
 from __future__ import annotations
@@ -39,8 +44,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
-# Retention is 14d; we archive day 13 so rows still exist during read.
-_DEFAULT_LOOKBACK_DAYS = 13
+# Retention is 5d (post-86ba0jb39 2026-05-19); we archive day 4 so rows
+# still exist during read. Must remain strictly less than the snapshotter's
+# DEFAULT_RETENTION_DAYS — see module docstring + lockstep contract test.
+_DEFAULT_LOOKBACK_DAYS = 4
 DEFAULT_RCLONE_REMOTE = "s3prod"
 DEFAULT_TABLE = "market_observations_continuous"
 DEFAULT_TIME_COL = "observation_time"

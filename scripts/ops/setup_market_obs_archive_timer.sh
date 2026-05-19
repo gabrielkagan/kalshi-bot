@@ -119,9 +119,13 @@ WorkingDirectory=${BOT_DIR}
 ${ENV_FILE_DIRECTIVE}
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 ExecStart=${VENV_PYTHON} ${WRAPPER} --label market-obs-archive -- ${VENV_PYTHON} ${SCRIPT} --db ${DB} --rclone-remote ${RCLONE_REMOTE}
-# Reading 14d × 35K rows + Parquet write + S3 upload — typically <60s on
-# the 1-vCPU VPS. 600s (10min) gives generous headroom for an off-hours
-# bucket reachability blip without running into the 06:00 state.db backup.
+# Reading ~41.5K rows (one UTC day) + Parquet write + S3 upload —
+# typically <60s on the 1-vCPU VPS (retention tightened 14d → 5d by
+# 86ba0jb39 2026-05-19; archive lookback dropped from day-13 to day-4
+# in lockstep, archive reads ONE day at a time via substr-equality
+# filter — see export_market_obs_to_s3.py::read_rows_for_date).
+# 600s (10min) gives generous headroom for an off-hours bucket
+# reachability blip without running into the 06:00 state.db backup.
 TimeoutStartSec=600
 RuntimeMaxSec=600
 PrivateTmp=true

@@ -171,6 +171,27 @@ before API call"). Pinned by
 - DB write batches: ≤50 rows per commit. Larger holds the write lock
   long enough to deadlock readers + checkpoints.
 - Don't commit inside loops — accumulate writes, commit once at the end.
+- **Retention-window-as-contention-control on `market_observations_continuous`
+  (Bit 86ba0jb39, 2026-05-19).** The MarketObsSnapshotter daemon thread
+  writes ~4.8 rows every 10s (empirical, ~41.5K rows/day) through its
+  own conn against `market_observations_continuous` + two secondary
+  indexes (`idx_moc_ticker_time` + `idx_moc_time`). The executemany
+  lock-hold tail scales with b-tree page count (page-cache miss penalty
+  on scattered index pages). At 14d retention (~580K rows / 63MB
+  indexes) we observed executemany_ms spikes to 3.24s that cascaded
+  into MainThread `database is locked` storms — peak 805/10min at
+  01:00 UTC on 2026-05-19. `DEFAULT_RETENTION_DAYS = 5` (was 14)
+  shrinks the index footprint ~3× to bound the tail; long-term history
+  lives in S3 via `scripts/ops/export_market_obs_to_s3.py` so no
+  historical data is lost. **Chunked retention sweep**: the sweep
+  deletes in chunks of `_RETENTION_DELETE_CHUNK_ROWS=5000` with a 50ms
+  inter-chunk sleep so a one-time-large drain (first deploy of a
+  retention shrink, long-outage recovery, retention re-tune) cannot
+  re-trigger the same multi-second write-lock hold the Bit is designed
+  to prevent. LOCKSTEP CONTRACT: the export script's
+  `_DEFAULT_LOOKBACK_DAYS` must remain strictly less than the
+  snapshotter's `DEFAULT_RETENTION_DAYS` (pinned by
+  `tests/contracts/test_market_obs_retention_lockstep.py`).
 
 ## Band-calibrated sizing (P4.1)
 

@@ -59,20 +59,60 @@ STALE_THRESHOLD_S = 10.0
 # rows into ≤BATCH_SIZE batches, committing between each via executemany.
 BATCH_SIZE = 50
 
-# Default polling cadence. 10s × ~30 active 15M tickers = ~3 inserts/sec
-# (peak). Daily volume: 8640 ticks/day × ~30 tickers = ~260K rows/day.
+# Default polling cadence. Live snapshotter sees BTC/ETH/SOL/XRP/HYPE/DOGE
+# + occasionally BNB in T1-shadow (theoretical max ~7 tickers/tick). Live
+# active-window churn averages ~4.8 effective tickers/tick (some 15M
+# markets are inactive in the active-windows feed at any given moment),
+# yielding 8640 ticks/day × ~4.8 tickers ≈ 41.5K rows/day empirically
+# (observed 2026-05-19 across the 14-day on-VPS corpus). Pre-Bit-86ba0jb39
+# docstring claimed "~30 tickers / ~260K rows/day" — that was theoretical
+# for a wider asset set and never reflected the live mix.
 DEFAULT_INTERVAL_S = 10.0
 
 # Retention: rows older than this are deleted by the periodic sweep. The
 # H-3 fill simulator only ever cares about NBBO around fill events; the
-# full continuous corpus has no value beyond ~14 days. At ~260K rows/day
-# this caps disk growth at ~3.6M rows / ~900MB. Configurable per env.
-DEFAULT_RETENTION_DAYS = 14
+# full continuous corpus has no value beyond a few days on-VPS — long-term
+# history lives in S3 via scripts/ops/export_market_obs_to_s3.py (ticket
+# 86b9xcdwg), so a tight on-VPS retention is purely a hot-store window.
+# At ~41.5K rows/day (observed 2026-05-19), 5d caps the table at ~210K
+# rows / ~18MB data + ~23MB indexes (vs ~580K rows / ~50MB data / ~63MB
+# indexes at the pre-Bit-86ba0jb39 14d setting — measured directly via
+# dbstat).
+# Ticket 86ba0jb39: shrinking the b-tree index footprint is the lever to
+# reduce executemany_ms lock-hold tail (was hitting 3.24s spikes that
+# cascaded into MainThread "database is locked" storms — peak 805/10min
+# at 01:00 UTC on 2026-05-19). LOCKSTEP: scripts/ops/export_market_obs_
+# to_s3.py::_DEFAULT_LOOKBACK_DAYS must remain strictly less than this
+# value so the nightly archive timer reads rows that have not yet been
+# swept. Pinned by tests/contracts/test_market_obs_retention_lockstep.py.
+# Configurable per env via the MarketObservationsSnapshotter constructor.
+DEFAULT_RETENTION_DAYS = 5
 
 # How often to run retention sweep (every N ticks). At 10s/tick × 360 =
 # every 1 hour, sweep fires. Once-per-hour is conservative — retention
 # bound is days, so within-hour drift is irrelevant.
 RETENTION_SWEEP_EVERY_N_TICKS = 360
+
+# Chunked-delete tuning (Bit 86ba0jb39 R1-C1, 2026-05-19). The retention
+# sweep deletes in chunks bounded by `_RETENTION_DELETE_CHUNK_ROWS` rows
+# per transaction, with a brief sleep between chunks. This bounds the
+# per-tx write-lock hold so a one-time-large drain (first deploy after a
+# retention shrink; recovery from a long outage; retention re-tune) does
+# not stack into a multi-second lock-hold and re-trigger the cascade the
+# Bit is designed to fix.
+# - 5000 rows ≈ ~3 hours of steady-state production rows (at ~4.8
+#   effective tickers/tick × 360 ticks/hour ≈ 1728 rows/hour). Each chunk
+#   DELETE walks 3 indexes for 5000 rows; measured ~30-50ms hold at the
+#   live state.db corpus size.
+# - 50ms inter-chunk sleep yields the WAL write lock long enough for
+#   MainThread / settlement_tracker to begin_immediate cleanly.
+# - 1000-iteration safety cap = 5M rows (vs ~580K at first-deploy
+#   worst-case / ~210K post-drain steady-state at 5d retention), keeps
+#   a wedged sweep from looping forever if the DELETE returns
+#   rowcount=0 falsely.
+_RETENTION_DELETE_CHUNK_ROWS = 5000
+_RETENTION_INTER_CHUNK_SLEEP_S = 0.05
+_RETENTION_MAX_CHUNK_ITERATIONS = 1000
 
 # ISO 8601 with microseconds + Z suffix — same shape as bot.py's
 # Python-written timestamps. Lexical comparison works against
@@ -538,7 +578,23 @@ class MarketObservationsSnapshotter:
 
     def _retention_sweep(self, conn: Any) -> None:
         """Delete rows older than `retention_days`. Idempotent + cheap when
-        nothing's old. Skipped if retention_days <= 0 (operator-disabled)."""
+        nothing's old. Skipped if retention_days <= 0 (operator-disabled).
+
+        Chunked DELETE (Bit 86ba0jb39 R1-C1, 2026-05-19): the sweep deletes
+        in batches of `_RETENTION_DELETE_CHUNK_ROWS` rows + sleeps briefly
+        between chunks, bounding the per-transaction write-lock hold to
+        ~30-50ms. WITHOUT this, the startup sweep on first deploy after a
+        retention shrink (e.g., 14d→5d this Bit) would execute a single
+        unbounded DELETE for ~9 days of accumulated rows (~373K), which is
+        exactly the lock-hold cascade the Bit is designed to prevent. The
+        chunked form also defends against future backfill scenarios (long
+        outages, retention re-tunes) without operator pre-deploy steps.
+        Steady-state per-hour delete volume (~1728 rows/hour at ~4.8
+        effective tickers × 360 ticks/hour) is well under the 5000-row
+        chunk size, so each hourly sweep tick completes in a single
+        chunk — runtime cost vs the pre-Bit single-DELETE form is
+        unchanged in the common case.
+        """
         if self._retention_days <= 0:
             return
         cutoff_dt = (
@@ -546,30 +602,55 @@ class MarketObservationsSnapshotter:
             - datetime.timedelta(days=self._retention_days)
         )
         cutoff_iso = cutoff_dt.strftime(_ISO_FORMAT)
-        try:
-            cur = conn.execute(
-                "DELETE FROM market_observations_continuous "
-                "WHERE observation_time < ?",
-                (cutoff_iso,),
-            )
-            conn.commit()
+        total_deleted = 0
+        # Safety cap on chunk iterations — at chunk=5000 rows, 1000 iterations
+        # = 5M rows. Steady-state never approaches this; the Bit-86ba0jb39
+        # first-deploy drain removes the 9d-worth of rows that were stale
+        # under the new 5d retention but still kept by the prior 14d
+        # setting (~9 days × 41.5K rows/day = ~373K rows ≈ 75 iterations).
+        for _ in range(_RETENTION_MAX_CHUNK_ITERATIONS):
+            if self._stop_event.is_set():
+                # Shutdown requested mid-drain; abort cleanly. Whatever's
+                # already deleted is committed; the next start resumes.
+                break
+            try:
+                cur = conn.execute(
+                    "DELETE FROM market_observations_continuous "
+                    "WHERE id IN ("
+                    "  SELECT id FROM market_observations_continuous "
+                    "  WHERE observation_time < ? "
+                    "  LIMIT ?"
+                    ")",
+                    (cutoff_iso, _RETENTION_DELETE_CHUNK_ROWS),
+                )
+                conn.commit()
+            except sqlite3.Error:
+                # Round-3 #3: broadened to sqlite3.Error parity with
+                # _tick_once's broadened catch. Same trade-off — keep the
+                # thread alive on any DB-layer error; resurface via metric.
+                self.metrics["errors"] += 1
+                logger.warning(
+                    "retention sweep failed — will retry next sweep window",
+                    exc_info=True,
+                )
+                return
             # Round-3 #1: cur.rowcount returns -1 in some DB-API impls
             # when row count is unavailable. The previous `... or 0`
             # treated -1 as truthy, which would have decremented the
             # metric. max(0, ...) guards properly.
             n = max(0, getattr(cur, "rowcount", 0) or 0)
+            total_deleted += n
             self.metrics["retention_deletes"] += n
-            if n > 0:
-                logger.info(
-                    "MarketObs retention sweep: deleted %d rows older than %s",
-                    n, cutoff_iso,
-                )
-        except sqlite3.Error:
-            # Round-3 #3: broadened to sqlite3.Error parity with
-            # _tick_once's broadened catch. Same trade-off — keep the
-            # thread alive on any DB-layer error; resurface via metric.
-            self.metrics["errors"] += 1
-            logger.warning(
-                "retention sweep failed — will retry next sweep window",
-                exc_info=True,
+            if n < _RETENTION_DELETE_CHUNK_ROWS:
+                # Drained: last chunk was a partial (or zero) — nothing
+                # more to delete this sweep cycle. Exit the loop.
+                break
+            # Yield to other writers between chunks so the per-tx lock-hold
+            # doesn't stack into a multi-second window during a long drain.
+            # Uses _stop_event.wait so shutdown still interrupts promptly.
+            self._stop_event.wait(_RETENTION_INTER_CHUNK_SLEEP_S)
+        if total_deleted > 0:
+            logger.info(
+                "MarketObs retention sweep: deleted %d rows older than %s",
+                total_deleted, cutoff_iso,
             )

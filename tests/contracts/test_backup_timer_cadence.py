@@ -17,7 +17,10 @@ Pins:
   3. state.db restore-verify remains weekly (Sun 07:00 UTC) — this
      Bit's scope is BACKUP cadence, not verification cadence.
   4. market_obs archive remains daily 05:30 UTC — out of scope this
-     Bit (weekly volume is tiny; ~1 row/sec for 14d only).
+     Bit (weekly archive volume is bounded by the on-VPS retention
+     window; cadence claim is independent of retention duration —
+     86ba0jb39 2026-05-19 subsequently tightened retention 14d → 5d
+     without affecting this timer's daily cadence).
   5. No other setup_*_timer.sh OnCalendar value silently drifted in
      this Bit — exhaustive baseline check catches sister-timer typos.
 

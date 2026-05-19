@@ -760,6 +760,81 @@ def test_retention_sweep_deletes_old_rows(tmp_path):
     assert snap.metrics["retention_deletes"] == 1
 
 
+def test_retention_sweep_chunked_for_large_drains(tmp_path):
+    """Bit 86ba0jb39 R1-C1: a one-time-large drain (first deploy after a
+    retention shrink; recovery from a long outage) must NOT execute as a
+    single unbounded DELETE — that's exactly the lock-hold cascade pattern
+    the Bit is designed to prevent. Pin: when more than one chunk's worth
+    of stale rows exist, the sweep issues multiple commits (chunked) AND
+    cleanly drains all of them.
+    """
+    db = tmp_path / "state.db"
+    conn = _make_db(db)
+    mod.ensure_schema(conn)
+
+    now_dt = datetime.datetime(2026, 5, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    now = now_dt.timestamp()
+
+    # Insert (chunk + half-chunk) rows that are stale, plus a single fresh
+    # row. With chunk=5000 the stale set requires at least 2 commits
+    # (5000 + 2500). Use distinct microseconds so id-ordering is stable.
+    chunk = mod._RETENTION_DELETE_CHUNK_ROWS
+    n_stale = chunk + chunk // 2
+    stale_rows = [
+        ("OLD", f"2026-05-01T00:00:{i // 1000000:02d}.{i % 1000000:06d}Z", "ws_cache")
+        for i in range(n_stale)
+    ]
+    stale_rows.append(("FRESH", "2026-05-19T11:59:59.000000Z", "ws_cache"))
+    conn.executemany(
+        "INSERT INTO market_observations_continuous "
+        "(ticker, observation_time, source) VALUES (?, ?, ?)",
+        stale_rows,
+    )
+    conn.commit()
+
+    # Wrap the conn so we can count commits. Delegate every other call.
+    class _CommitCountingConn:
+        def __init__(self, real):
+            self._real = real
+            self.commits = 0
+
+        def execute(self, *args, **kwargs):
+            return self._real.execute(*args, **kwargs)
+
+        def commit(self):
+            self.commits += 1
+            return self._real.commit()
+
+    wrapped = _CommitCountingConn(conn)
+
+    snap = mod.MarketObservationsSnapshotter(
+        db_path=str(db), ws_client=FakeWS({}),
+        active_tickers_provider=lambda: [],
+        clock=lambda: now,
+        retention_days=5,
+    )
+    snap._retention_sweep(wrapped)
+
+    # Stale rows fully drained, fresh row preserved.
+    remaining = sorted(r[0] for r in conn.execute(
+        "SELECT ticker FROM market_observations_continuous"
+    ).fetchall())
+    assert remaining == ["FRESH"], (
+        f"chunked sweep should drain all stale rows; remaining={remaining}"
+    )
+    # Metric reflects total deleted.
+    assert snap.metrics["retention_deletes"] == n_stale
+    # Commit count proves chunking: must be at least 2 commits for a drain
+    # of size > chunk. (The early-exit branch on the last partial chunk
+    # also commits, so total commits == ceil(n_stale / chunk).)
+    expected_commits = (n_stale + chunk - 1) // chunk
+    assert wrapped.commits == expected_commits, (
+        f"chunked sweep should issue {expected_commits} commits for "
+        f"{n_stale} stale rows at chunk={chunk}; saw {wrapped.commits}. "
+        f"Single-DELETE regression would show commits == 1."
+    )
+
+
 def test_retention_disabled_when_zero(tmp_path):
     """retention_days=0 → no sweep, no deletes."""
     db = tmp_path / "state.db"

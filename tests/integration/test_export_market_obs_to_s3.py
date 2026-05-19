@@ -1,9 +1,11 @@
 """Tests for scripts/ops/export_market_obs_to_s3.py.
 
 Ticket: 86b9xcdwg — archive market_observations_continuous to S3 before
-the 14-day local retention sweep prunes rows. Without this, ~35K NBBO
-rows/day are permanently lost — exactly the data the H-3 fill simulator
-+ future calibration work needs historical depth on.
+the on-VPS retention sweep prunes rows. Without this, ~41.5K NBBO rows/day
+are permanently lost — exactly the data the H-3 fill simulator + future
+calibration work needs historical depth on. Ticket 86ba0jb39 (2026-05-19)
+tightened the on-VPS retention from 14d to 5d to reduce executemany
+lock-hold tail; the export script's lookback dropped 13d → 4d in lockstep.
 
 Why these tests:
   - The acceptance criterion is round-trip parity: a row count in the
@@ -11,7 +13,7 @@ Why these tests:
     headline test pins that contract end-to-end via LocalDirStore (no
     S3/rclone dep).
   - Date-window correctness: we archive the date that is one day inside
-    the retention boundary (today - 13d) so rows still exist when we
+    the retention boundary (today - 4d) so rows still exist when we
     read them. Tested directly + via fake-today injection.
   - Bucket-name validation reuses the same regex pattern Phase 0a
     settled on (lowercase, 3-63, [a-z0-9.-]). Tested so a typo doesn't
@@ -121,9 +123,9 @@ class LocalDirStore:
 
 
 class TestTargetDate:
-    def test_default_target_is_13_days_before_today(self, export_module):
+    def test_default_target_is_4_days_before_today(self, export_module):
         d = date(2026, 5, 13)
-        assert export_module.compute_target_date(d) == date(2026, 4, 30)
+        assert export_module.compute_target_date(d) == date(2026, 5, 9)
 
     def test_target_date_lookback_override(self, export_module):
         d = date(2026, 5, 13)
@@ -216,8 +218,8 @@ class TestEndToEnd:
         store_root = tmp_path / "store"
         store = LocalDirStore(store_root)
 
-        # Run as if today is target + 13d (so the default lookback fires on target).
-        today = target + timedelta(days=13)
+        # Run as if today is target + 4d (so the default lookback fires on target).
+        today = target + timedelta(days=4)
 
         result = export_module.run_export(
             db_path=live_db, store=store, today=today,
