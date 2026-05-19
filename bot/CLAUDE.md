@@ -86,6 +86,7 @@ Untracked dev artifacts (NOT in HOUR_SINCOS_DRIFT_SITES; ticket `86b9wjd3e` pend
 - `scripts/backfill/backfill_extended_features.py` — backfill script (pre-B.1a evaluated_opportunities Tier 4/5)
 - `scripts/backfill/wave1_derived_cols.py` — backfill script (B.1a-fu2, 2026-05-12; replays B.1a auto-fill on `rejected_opportunities` Wave 1 derivable cols + `evaluated_opportunities.prob_breakeven_gap`)
 - `scripts/backfill/hype_doge_replay_backfill.py` — HYPE/DOGE Phase 2 replay backfill (86b9wy7v3, 2026-05-12); per-market `replay_market()` calls `compute_hour_sin_cos` + `compute_derived_features` + `apply_sigma_winsor` for the lock-step features written to `historical_replay_calmlp`
+- `scripts/backfill/cross_asset_transfer_blended_prob.py` — Bit A of HYPE/DOGE cal_mlp v1.1 retrain umbrella (`86ba0jmyq` / `86ba0jmzu`, 2026-05-19); `_build_row_features()` calls `compute_hour_sin_cos` (schema-drift fallback path) + `compute_derived_features` (fallback path when stored lock-step cols are NULL) before invoking `CalMLPPredictor("BTC").predict()` for the cross-asset transfer
 - `scripts/cal_mlp/integration.py` — serve-path `should_block_tm96` (post-A.1b)
 
 Splitting → train/serve skew (model trained on one distribution,
