@@ -27,7 +27,10 @@ What this file pins:
   4. Cancellability via shutdown_event — `_replan_for_archivers`
      accepts a `shutdown_event` parameter; if the event fires during
      the stagger sleep, the loop terminates early instead of pinning
-     the refresher thread for ~140s during graceful shutdown.
+     the refresher thread for ~120s during graceful shutdown
+     (`(N-1) × stagger_seconds = 6 × 20s = 120s` at the
+     production default; the last conn has no trailing stagger so
+     the total is NOT `N × 20s = 140s`).
 
   5. Existing dispatch contract preserved — every archiver still
      receives BOTH `update_subscriptions(new_frames, new_map)` AND
@@ -241,7 +244,10 @@ def test_replan_no_stagger_after_last_archiver():
 
 def test_replan_observes_shutdown_event_mid_stagger():
     """If `shutdown_event` fires during the stagger sleep, the loop
-    breaks early instead of pinning the refresher thread for ~140s.
+    breaks early instead of pinning the refresher thread for the full
+    `(N-1) × stagger_seconds = 6 × 20s = 120s` interval at production
+    defaults (the last conn has no trailing stagger so the total is
+    NOT `N × 20s = 140s`).
 
     Test setup: 5 archivers, stagger=0.5s. Total no-shutdown wall would
     be ~(5-1)×0.5 = 2.0s. We set the shutdown event after ~0.6s, which

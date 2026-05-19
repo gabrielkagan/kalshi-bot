@@ -1739,6 +1739,15 @@ STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE: list[str] = [
     # any sister doc that copy-pastes the pre-amendment block.
     "operator can still observe ack activity via the new\n    "
     "``_ack_frames_processed`` counter.\n\nNO ``bot.*`` imports",
+    # R3-M1 paraphrase coverage: `tests/contracts/test_collector_replan_stagger.py`
+    # docstrings originally said "~140s" for the worst-case stagger
+    # window, but production code + the test file's own assertions
+    # enforce `(N-1) × stagger_seconds = 6 × 20s = 120s` (no trailing
+    # stagger after the last archiver). Encode both retracted forms
+    # so future copy-paste from a pre-fix git blame doesn't re-
+    # introduce the N×S = 140s framing.
+    "~140s during graceful shutdown",
+    "pinning the refresher thread for ~140s",
 ]
 
 
