@@ -3299,8 +3299,73 @@ class StateManager:
     def insert_bot_order(self, client_order_id: str, ticker: str,
                          event_ticker: str, asset: str, side: str,
                          count: int, price_cents: int, is_taker: bool):
-        """Insert a new bot-initiated order with status='pending'."""
+        """Insert a new bot-initiated order with status='pending'.
+
+        Order-ledger crash-safety contract (ticket 86ba0jb1g,
+        2026-05-19): if the DB persist fails, place_order MUST NOT
+        fire — pinned by tests/integration/test_execution.py
+        ::test_maker_persists_to_db_before_api. Retry transient
+        SQLITE_BUSY up to 3 times via explicit BEGIN IMMEDIATE
+        (same intra-process contention pattern as
+        insert_evaluated_opportunity, bot/state.py:2563-2594
+        May-9 instrumentation). Same 3-retry × 25-75ms jittered
+        backoff (worst-case ~225ms per call) as the sister site
+        for the same SCAN_BODY_SLOW 1.5s budget reasons (see
+        :2565-2570). On retry exhaustion, RE-RAISE — unlike
+        insert_evaluated_opportunity which swallows (telemetry
+        rows: losing data > tick crash; order rows: tick crash >
+        lost record). Stale-tx ("cannot start a transaction
+        within a transaction") ALSO re-raises immediately for
+        the same crash-safety reason (sister site falls through
+        to the implicit-tx INSERT; we cannot — losing the order
+        row is unacceptable).
+
+        B3-fu1 commit-race swallow: settlement_tracker writes
+        to pending_orders via cleanup_expired_resting_orders
+        (bot/settlement.py:201) on shared state.conn; if its
+        commit lands between our BEGIN IMMEDIATE and COMMIT,
+        our COMMIT finds no active tx but our INSERT was
+        captured by the racer's commit. Swallow ONLY that
+        signature; propagate everything else. Documented
+        residual hazard (mirrors sister at :2917-2926): a rare
+        cross-thread settlement_tracker.conn.rollback() at
+        bot/settlement.py:1015 — only fires inside its
+        chunked-batch commit-failure handler — would silently
+        lose our INSERT row. Single-row-bounded rare loss is
+        preferable to an exception storm masking real failures;
+        accept the same tradeoff the sister site made.
+
+        On either raise path (retry exhaustion + non-race COMMIT
+        failure) we emit a structured WARNING with retry count,
+        BEGIN duration, and recent_writes() ring-buffer evidence
+        — mirrors sister diagnostic at :2974-2984 so the
+        operator can correlate order-ledger failures to the
+        broader contention storm class.
+        """
         now = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        _be_err_repr: Optional[str] = None
+        _be_duration_ms: Optional[float] = None
+        _be_retries: int = 0
+        _t0_lock = time.perf_counter()
+        for _attempt in range(3):
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                _be_retries = _attempt
+                break
+            except sqlite3.OperationalError as _be_err:
+                _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
+                _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
+                _be_retries = _attempt + 1
+                _err_msg = str(_be_err).lower()
+                _is_transient = ("locked" in _err_msg) or ("busy" in _err_msg)
+                if not _is_transient or _attempt == 2:
+                    self._log_insert_bot_order_failure(
+                        client_order_id, ticker, _be_err,
+                        _be_err_repr, _be_duration_ms, _be_retries,
+                        phase="begin_immediate")
+                    raise
+                time.sleep(0.025 + random.random() * 0.050)
         self.conn.execute("""
             INSERT INTO pending_orders (order_id, client_order_id, ticker,
                 event_ticker, asset, side, action, count, price_cents,
@@ -3309,7 +3374,61 @@ class StateManager:
         """, (client_order_id, client_order_id, ticker,
               event_ticker, asset, side, "buy", count, price_cents,
               "pending", now, now))
-        self.conn.commit()
+        try:
+            self.conn.execute("COMMIT")
+        except sqlite3.OperationalError as _ce:
+            if "no transaction is active" not in str(_ce).lower():
+                self._log_insert_bot_order_failure(
+                    client_order_id, ticker, _ce,
+                    _be_err_repr, _be_duration_ms, _be_retries,
+                    phase="commit")
+                raise
+
+    def _log_insert_bot_order_failure(
+            self, client_order_id: str, ticker: str,
+            err: BaseException, be_err_repr: Optional[str],
+            be_duration_ms: Optional[float], be_retries: int,
+            phase: str) -> None:
+        """Diagnostic envelope for insert_bot_order raise paths
+        (ticket 86ba0jb1g, 2026-05-19). Mirrors the sister
+        insert_evaluated_opportunity envelope at state.py:2974-2984
+        so operators can correlate order-ledger contention to the
+        broader storm. `phase` distinguishes the BEGIN-retry-
+        exhaustion path from the COMMIT non-race re-raise path.
+        """
+        try:
+            _diag_active = [
+                f"{tok.split('#', 1)[0]}/{kind}/{th}"
+                f"@{(time.time() - started) * 1000:.0f}ms"
+                for (tok, started, kind, th) in snapshot_active()
+            ]
+        except Exception:
+            _diag_active = ["<snapshot_failed>"]
+        try:
+            _now = time.time()
+            _diag_recent = [
+                f"{name}/{kind}/{th}"
+                f"@{(_now - finished_ts) * 1000:.0f}ms_ago/{dur:.1f}ms"
+                for (name, kind, dur, finished_ts, th) in recent_writes(2.0)
+            ]
+        except Exception:
+            _diag_recent = ["<recent_failed>"]
+        _diag_be_dur = (
+            f"{be_duration_ms:.1f}" if be_duration_ms is not None else "?"
+        )
+        logging.warning(
+            f"insert_bot_order failed: {err} "
+            f"phase={phase!r} "
+            f"client_order_id={client_order_id!r} "
+            f"ticker={ticker!r} "
+            f"begin_immediate={be_err_repr!r} "
+            f"begin_immediate_duration_ms={_diag_be_dur} "
+            f"begin_immediate_retries={be_retries} "
+            f"thread={threading.current_thread().name!r} "
+            f"active_writers={_diag_active!r} "
+            f"recent_writes={_diag_recent!r}",
+            exc_info=True,
+        )
 
     def confirm_order_submitted(self, client_order_id: str, order_id: str):
         """Update with server-assigned order_id, set status='resting'."""
