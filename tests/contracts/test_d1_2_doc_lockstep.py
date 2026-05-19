@@ -1867,9 +1867,19 @@ def test_d1_3_fu4_oom_closure_shipped_status_in_at_least_one_tracked_doc():
 # deploy on 2026-05-19 11:42 UTC).
 
 STALE_PATTERNS_POST_D1_3_FU4_BOOT_STAGGER: list[str] = [
-    # Pre-Bit boot for-loop literal — retracted by extraction into
-    # `_start_archivers_staggered` helper.
-    "for archiver in archivers:\n            archiver.start()",
+    # R2-C1 retraction: a multi-line `"for archiver in archivers:\n
+    # ... archiver.start()"` needle was REJECTED here — the `_scan`
+    # helper iterates `splitlines()` so multi-line needles are dead
+    # code (PR #110 R4-M1 lesson, re-applied at day-1 for this Bit).
+    # The single-line `"for archiver in archivers: archiver.start()"`
+    # form would self-fire on legitimate post-amendment retrospective
+    # in CLAUDE.md:28 + agent_docs/bot_layout.md:250 (those surfaces
+    # cite the pre-Bit literal as the SHIPPED narrative's reference
+    # point). Coverage of the pre-Bit code shape is instead provided
+    # by `test_start_archivers_staggered_helper_exists` in
+    # tests/contracts/test_collector_boot_stagger.py (structural pin
+    # that the helper is the canonical home).
+    #
     # Pre-Bit Step 6 comment from run() — retracted by stagger note.
     "Step 6 — start all archivers, then block until shutdown.",
     # Pre-Bit boot-time-cost framing (the <100ms tight-loop claim is
@@ -1879,6 +1889,10 @@ STALE_PATTERNS_POST_D1_3_FU4_BOOT_STAGGER: list[str] = [
     "boot subscribe burst is unbounded across conns",
     "start each archiver without delay",
     "boot for-loop dispatches archiver.start in tight succession",
+    # R2 paraphrase coverage: additional single-line forms to preserve
+    # paranoid coverage in lieu of the rejected multi-line needle.
+    "7 archivers' start() within <100ms",
+    "fires all archivers' .start() in tight succession",
     # Pre-Bit Step 6 docstring phrase (the `;` + ` main` suffix narrows
     # the pattern to the EXACT pre-amendment shape and avoids firing on
     # the legitimate post-amendment "via ``_start_archivers_staggered``"
@@ -1903,8 +1917,12 @@ def test_no_post_d1_3_fu4_boot_stagger_stale_forward_looking_phrase(
 
     NOTE: pattern matching is plain substring (not regex). The `_scan`
     helper iterates `splitlines()` so multi-line needles are dead
-    code (see R4-M1 in D1.3-fu4-oom-closure history). All entries
-    above are single-line.
+    code (see R4-M1 in D1.3-fu4-oom-closure history). R2-C1 in
+    THIS Bit's history rejected a `for archiver in archivers:\n
+    archiver.start()` multi-line needle for the same reason; the
+    list comment block documents the retraction. Pattern authors
+    adding entries here MUST verify each entry contains no `\n`
+    or it will be dead code.
     """
     findings: list[str] = []
     for doc in TRACKED_DOCS:
