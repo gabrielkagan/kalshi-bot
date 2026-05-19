@@ -167,12 +167,13 @@ def test_market_blend_w_by_asset_includes_hype_doge():
     )
 
 
-def test_market_blend_w_by_asset_has_six_keys():
-    """MARKET_BLEND_W_BY_ASSET MUST have exactly 6 keys after P2.3 ship:
-    the 4 P2.1.d assets + HYPE + DOGE. Locks against accidental
-    addition of a 7th asset without a Bit + sweep."""
+def test_market_blend_w_by_asset_has_seven_keys():
+    """MARKET_BLEND_W_BY_ASSET MUST have exactly 7 keys after P2.4 ship:
+    the 4 P2.1.d assets + HYPE + DOGE (P2.3) + BNB (P2.4 2026-05-19,
+    86b9zmj37). Locks against accidental addition of an 8th asset
+    without a Bit + sweep."""
     from bot.constants import MARKET_BLEND_W_BY_ASSET
-    expected_keys = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"}
+    expected_keys = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
     actual_keys = set(MARKET_BLEND_W_BY_ASSET.keys())
     assert actual_keys == expected_keys, (
         f"MARKET_BLEND_W_BY_ASSET key set drift: got {sorted(actual_keys)} "

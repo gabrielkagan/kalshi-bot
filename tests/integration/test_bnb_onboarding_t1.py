@@ -1,4 +1,4 @@
-"""T1 regression tests for BNB asset onboarding (shadow observation).
+"""T1 + T4 regression tests for BNB asset onboarding.
 
 These tests lock the atomic-activation safety invariant: if BNB is in
 config.ASSETS, then the shadow gates and exclusion sets MUST contain it.
@@ -7,11 +7,20 @@ caught here (would otherwise risk live orders on an asset with no per-asset
 risk sizing).
 
 Mirrors tests/integration/test_doge_hype_onboarding_t1.py (HYPE/DOGE T1
-SHIPPED 2026-05-10) with BNB-specific assertions, retargeted to current
-HEAD (post-Bit-9.3-iii.c, post-Sprint-10 sibling-reorg, post-D1.6).
+SHIPPED 2026-05-10, T4 SHIPPED 2026-05-14 as P2.3 promotion) with
+BNB-specific assertions, retargeted to current HEAD (post-Bit-9.3-iii.c,
+post-Sprint-10 sibling-reorg, post-D1.6).
 
-Plan:    agent_docs/bnb-t1-plan-may17.md
-ClickUp: 86b9zmj0c
+**Post-P2.4 (BNB live promotion, 2026-05-19, sibling to P2.3 86b9xv66a):**
+the `test_bnb_15m_shadow_flag_defined` T1-only assertion was REMOVED
+(matching HYPE/DOGE post-T4 file shape). T4 contract is enforced via
+`test_bnb_t4_prereqs_wired_when_shadow_flag_false` (returns early
+trivially if flag still True, asserts when False). The
+`TestBnbP24ConstantValues` and `TestBnbP24ScannerLiveRouting` classes pin
+exact post-P2.4 values + scanner elif-chain wiring.
+
+Plan:    agent_docs/bnb-t1-plan-may17.md, kb/decisions/p2-4-bnb-live-promotion-plan.md
+ClickUp: 86b9zmj0c (T1), 86b9zmj37 (T4 P2.4)
 Umbrella: 86b9zmhyk
 """
 from __future__ import annotations
@@ -62,18 +71,13 @@ class TestAtomicActivationSafety(unittest.TestCase):
         from bot.config import ASSETS
         self.assertIn("BNB", ASSETS, "BNB missing from bot.config.ASSETS")
 
-    def test_bnb_15m_shadow_flag_defined(self):
-        """T1 ship state: BNB_15M_SHADOW must exist and be True (shadow mode)."""
+    def test_bnb_15m_shadow_flag_is_bool(self):
+        """Post-P2.4 (2026-05-19): the T1 `assertTrue(BNB_15M_SHADOW)` assertion
+        was retired matching HYPE/DOGE post-T4 file shape. Kill-switch type
+        contract preserved — flag must remain a bool so flipping back to True
+        (rollback) works without surprise."""
         from bot.constants import BNB_15M_SHADOW
         self.assertIsInstance(BNB_15M_SHADOW, bool)
-        # During T1 shadow phase, must be True. At T4 promotion this assertion
-        # flips to False — but the constant must remain (kill-switch).
-        self.assertTrue(
-            BNB_15M_SHADOW,
-            "T1 invariant: BNB_15M_SHADOW must be True (shadow). "
-            "If you're flipping to False, ensure T4 prereq constants are wired "
-            "(BNB_MIN_ENTRY_PRICE, BNB_MAX_RISK_PER_TRADE, TM_ASSET_RISK_CAPS['BNB'])."
-        )
 
     def test_bnb_t4_prereqs_wired_when_shadow_flag_false(self):
         """Post-T4 live promotion: when BNB_15M_SHADOW=False, all T4 prerequisite
@@ -329,6 +333,116 @@ class TestStrategyKillSwitchClauses(unittest.TestCase):
         self.assertIn("BNB_15M_SHADOW", dc_window,
             "DC eligibility missing BNB_15M_SHADOW kill-switch — "
             "flipping BNB_15M_SHADOW=True would NOT revert BNB from DC live")
+
+
+# ─── P2.4 BNB live promotion — exact-value pins ──────────────────────────
+# Post-2026-05-19 P2.4 ship: pin the 5 prereq constants to their
+# data-justified values. Plan doc: kb/decisions/p2-4-bnb-live-promotion-plan.md.
+# Brier sweep: w=0.20 argmin at n=721. Per-tier WR: 90c+ 100% WR n=272.
+# Risk cap: HYPE/DOGE conservative-new-asset precedent (0.10).
+# NBBO: analog default mirror of ETH (90, 99, 300.0).
+
+class TestBnbP24ConstantValues(unittest.TestCase):
+    """Exact-value pins for P2.4. These guard against silent edits that
+    drift the constants away from their data justifications without
+    re-running the sweep methodology."""
+
+    def test_bnb_min_entry_price_value(self):
+        from bot.constants import BNB_MIN_ENTRY_PRICE
+        # Per-tier WR analysis (kb/decisions/p2-4-bnb-live-promotion-plan.md
+        # § RCA #1): 85-89c BNB is +0.08c naive (sub-fee EV); 90c+ is +7.60c
+        # at 100% WR n=272 (exceeds HYPE n=250 precedent).
+        self.assertEqual(BNB_MIN_ENTRY_PRICE, 90)
+
+    def test_bnb_max_risk_per_trade_value(self):
+        from bot.constants import BNB_MAX_RISK_PER_TRADE
+        # HYPE/DOGE conservative-new-asset precedent (bot/constants.py:103-104).
+        self.assertEqual(BNB_MAX_RISK_PER_TRADE, 0.10)
+
+    def test_tm_asset_risk_caps_bnb_entry(self):
+        from bot.constants import TM_ASSET_RISK_CAPS, BNB_MAX_RISK_PER_TRADE
+        # Mechanical mirror: TM must not bypass the per-asset cap.
+        self.assertIn("BNB", TM_ASSET_RISK_CAPS)
+        self.assertEqual(TM_ASSET_RISK_CAPS["BNB"], BNB_MAX_RISK_PER_TRADE)
+
+    def test_market_blend_w_by_asset_bnb_value(self):
+        from bot.constants import MARKET_BLEND_W_BY_ASSET
+        # B.1-equivalent Brier sweep argmin: w=0.20 at n=721 settled
+        # evaluations (kb/decisions/p2-4-bnb-live-promotion-plan.md § RCA #4).
+        # Matches ETH pattern (interior argmin) — opposite of HYPE/DOGE
+        # which needed heavy market blend (0.80/0.60) because their raw
+        # models were overconfident; BNB's raw model is well-calibrated.
+        self.assertIn("BNB", MARKET_BLEND_W_BY_ASSET)
+        self.assertEqual(MARKET_BLEND_W_BY_ASSET["BNB"], 0.20)
+
+    def test_nbbo_fallback_gates_bnb_entry(self):
+        from bot.constants import NBBO_FALLBACK_GATES, BNB_MIN_ENTRY_PRICE
+        # Analog default mirror of ETH. Post-T4 follow-up to refine from
+        # actual NBBO-fallback observations once they accumulate.
+        self.assertIn("BNB", NBBO_FALLBACK_GATES)
+        gate = NBBO_FALLBACK_GATES["BNB"]
+        self.assertEqual(gate, (90, 99, 300.0))
+        # Consistency: NBBO floor matches non-NBBO MIN_ENTRY_PRICE.
+        self.assertEqual(gate[0], BNB_MIN_ENTRY_PRICE)
+
+
+class TestBnbP24ScannerLiveRouting(unittest.TestCase):
+    """Source-walk AST guards pinning the 3 new BNB elif clauses in the
+    scanner: per-asset floor, 15M sizer cap, DC asset cap. Without these
+    elif branches, BNB would fall back to globals (MIN_ENTRY_PRICE=75,
+    no asset cap) — defeating the per-asset T4 contract."""
+
+    def setUp(self):
+        import bot.scanner
+        import inspect
+        self.source = inspect.getsource(bot.scanner)
+
+    def test_scanner_imports_bnb_floor_and_risk_constants(self):
+        # Top-of-file import block must include both new constants so
+        # the elif branches below resolve.
+        self.assertIn("BNB_MIN_ENTRY_PRICE", self.source,
+            "BNB_MIN_ENTRY_PRICE not imported into bot/scanner/__init__.py")
+        self.assertIn("BNB_MAX_RISK_PER_TRADE", self.source,
+            "BNB_MAX_RISK_PER_TRADE not imported into bot/scanner/__init__.py")
+
+    def test_scanner_per_asset_floor_elif_for_bnb(self):
+        # Anchor on the DOGE branch in the per-asset floor elif chain
+        # (~line 2713 pre-P2.4) and verify BNB has a parallel branch.
+        # Mirrors HYPE/DOGE T4 elif insertion shape.
+        floor_idx = self.source.find('elif asset == "DOGE":\n                        _asset_floor = DOGE_MIN_ENTRY_PRICE')
+        self.assertGreater(floor_idx, 0,
+            "DOGE per-asset floor elif anchor not found — file shape changed")
+        # BNB elif must appear within 200 chars after DOGE branch
+        bnb_window = self.source[floor_idx:floor_idx + 400]
+        self.assertIn('elif asset == "BNB":', bnb_window,
+            "Scanner per-asset floor elif missing BNB branch — "
+            "BNB would fall back to global MIN_ENTRY_PRICE=75 (defeats P2.4 floor=90)")
+        self.assertIn("BNB_MIN_ENTRY_PRICE", bnb_window)
+
+    def test_scanner_15m_sizer_cap_elif_for_bnb(self):
+        # Anchor on the DOGE branch in the 15M sizer cap elif chain
+        # (~line 4889 pre-P2.4) and verify BNB parallel branch.
+        sizer_anchor = self.source.find('elif asset == "DOGE" and _pt in (None, "15m"):\n                    _doge_max = int((_sizing_balance * DOGE_MAX_RISK_PER_TRADE)')
+        self.assertGreater(sizer_anchor, 0,
+            "DOGE 15M sizer cap elif anchor not found — file shape changed")
+        # BNB elif must follow within 500 chars
+        bnb_window = self.source[sizer_anchor:sizer_anchor + 800]
+        self.assertIn('elif asset == "BNB" and _pt in (None, "15m"):', bnb_window,
+            "Scanner 15M sizer cap elif missing BNB branch — "
+            "BNB would size uncapped (defeats P2.4 MAX_RISK_PER_TRADE=0.10)")
+        self.assertIn("BNB_MAX_RISK_PER_TRADE", bnb_window)
+
+    def test_scanner_dc_asset_cap_elif_for_bnb(self):
+        # Anchor on the DOGE branch in the DC asset cap elif chain
+        # (~line 4316 pre-P2.4) and verify BNB parallel branch.
+        dc_anchor = self.source.find('elif asset == "DOGE":\n                                    _dc_asset_max = int((_dc_balance * DOGE_MAX_RISK_PER_TRADE)')
+        self.assertGreater(dc_anchor, 0,
+            "DOGE DC asset cap elif anchor not found — file shape changed")
+        bnb_window = self.source[dc_anchor:dc_anchor + 600]
+        self.assertIn('elif asset == "BNB":', bnb_window,
+            "Scanner DC asset cap elif missing BNB branch — "
+            "DC strategy would bypass the per-asset cap for BNB")
+        self.assertIn("BNB_MAX_RISK_PER_TRADE", bnb_window)
 
 
 if __name__ == "__main__":

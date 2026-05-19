@@ -123,9 +123,11 @@ SCALAR_KEYS = (
     "XRP_MIN_ENTRY_PRICE",
     "HYPE_MIN_ENTRY_PRICE",  # P2.3 live promotion 2026-05-14
     "DOGE_MIN_ENTRY_PRICE",  # P2.3 live promotion 2026-05-14
+    "BNB_MIN_ENTRY_PRICE",   # P2.4 live promotion 2026-05-19
     "XRP_15M_SHADOW",
     "HYPE_15M_SHADOW",  # P2.3 live promotion 2026-05-14 (now False)
     "DOGE_15M_SHADOW",  # P2.3 live promotion 2026-05-14 (now False)
+    "BNB_15M_SHADOW",   # P2.4 live promotion 2026-05-19 (now False)
     "MAX_ENTRY_PRICE",
     "MARKET_BLEND_W",
     "MAX_RISK_PER_TRADE",
@@ -135,6 +137,7 @@ SCALAR_KEYS = (
     "BTC_MAX_RISK_PER_TRADE",
     "HYPE_MAX_RISK_PER_TRADE",  # P2.3 live promotion 2026-05-14
     "DOGE_MAX_RISK_PER_TRADE",  # P2.3 live promotion 2026-05-14
+    "BNB_MAX_RISK_PER_TRADE",   # P2.4 live promotion 2026-05-19
     "SOL_MIN_EDGE",
     "MAKER_ONLY_THRESHOLD",
     "DRAWDOWN_HALF_THRESHOLD",

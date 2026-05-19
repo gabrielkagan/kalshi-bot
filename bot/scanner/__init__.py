@@ -84,6 +84,8 @@ from bot.constants import (
     BRACKET_NO_KILL_THRESHOLD,
     BRACKET_NO_MAX_CONCURRENT,
     BNB_15M_SHADOW,
+    BNB_MAX_RISK_PER_TRADE,
+    BNB_MIN_ENTRY_PRICE,
     BRACKET_NO_MIN_STC,
     BRACKET_NO_YES_MAX,
     BRACKET_NO_YES_MIN,
@@ -2711,6 +2713,8 @@ class OpportunityScanner:
                         _asset_floor = HYPE_MIN_ENTRY_PRICE
                     elif asset == "DOGE":
                         _asset_floor = DOGE_MIN_ENTRY_PRICE
+                    elif asset == "BNB":
+                        _asset_floor = BNB_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
                     # ── LPNE intercept: BTC 80-87c near-expiry ──────────────
                     # Data: BTC 80-87c at STC<=120s = 97.6% WR (42 obs), p=0.031.
@@ -4317,6 +4321,10 @@ class OpportunityScanner:
                                     _dc_asset_max = int((_dc_balance * DOGE_MAX_RISK_PER_TRADE) / best_ask)
                                     if _dc_position > _dc_asset_max >= 1:
                                         _dc_position = _dc_asset_max
+                                elif asset == "BNB":
+                                    _dc_asset_max = int((_dc_balance * BNB_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
                                 # EV with assumed win prob — calibrated from 14-day settlement data:
                                 # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)
                                 # T1B: 47/47 (100%) at 95-98c → 0.98 (was 0.97, unlocks 97c)
@@ -4892,6 +4900,12 @@ class OpportunityScanner:
                         logging.info("ASSET_CAP: DOGE raw=%d capped=%d balance=$%.2f",
                                      sizing["contracts"], _doge_max, _sizing_balance / 100)
                         sizing["contracts"] = _doge_max
+                elif asset == "BNB" and _pt in (None, "15m"):
+                    _bnb_max = int((_sizing_balance * BNB_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _bnb_max >= 1:
+                        logging.info("ASSET_CAP: BNB raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _bnb_max, _sizing_balance / 100)
+                        sizing["contracts"] = _bnb_max
 
                 # ETH sub-80c position cap: clamp to [20, 50] contracts
                 # Half-Kelly at 75c/87% WR = 322-645 contracts — uncapped is reckless.
