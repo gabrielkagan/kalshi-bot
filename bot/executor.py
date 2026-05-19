@@ -3828,7 +3828,11 @@ class OrderExecutor:
         # IOC resolves instantly; brief wait + collect ALL fill events.
         # An IOC can match against multiple resting orders, generating
         # multiple fill events.  _check_for_fill() returns one unseen
-        # fill per call (tracks seen IDs), so loop until exhausted.
+        # fill per call (tracks seen IDs), so loop until exhausted OR
+        # until filled_so_far reaches the requested count. The second
+        # break is the post-completion-fill-leak guard paired with the
+        # `remaining <= 0` early-return in `_on_fill` (2026-05-19 HYPE
+        # incident, KXHYPE15M-26MAY190645-45).
         time.sleep(0.3)
         total_filled = 0
         while True:
@@ -3837,9 +3841,11 @@ class OrderExecutor:
                 break
             fill_count = self._on_fill(fill, order_info)
             total_filled += fill_count
+            if order_info.get("filled_so_far", 0) >= order_info["count"]:
+                break
 
         # Second poll pass: catch late fills that arrived after initial 0.3s
-        if total_filled > 0:
+        if total_filled > 0 and order_info.get("filled_so_far", 0) < order_info["count"]:
             time.sleep(0.5)
             while True:
                 fill = self._check_for_fill(order_info)
@@ -3847,6 +3853,8 @@ class OrderExecutor:
                     break
                 fill_count = self._on_fill(fill, order_info)
                 total_filled += fill_count
+                if order_info.get("filled_so_far", 0) >= order_info["count"]:
+                    break
 
         if total_filled > 0:
             if (candidate.get("entry_path") != "confirmation_addon"
@@ -4447,7 +4455,13 @@ class OrderExecutor:
     def _on_fill(self, fill: Dict, order: Dict) -> int:
         """Handle fill: update SQLite, log trade, record position.
 
-        Returns the fill_count so callers can track partial vs complete fills.
+        Returns the fill_count recorded to the positions table so callers
+        can track partial vs complete fills. Returns 0 (with a
+        POST_COMPLETION_FILL_DROPPED WARNING) when the fill arrived after
+        the order was already complete and was dropped without writing any
+        side effects (positions row, trade journal, lifecycle snapshot,
+        order-status mark, Telegram alert) — see the 2026-05-19 HYPE
+        incident defense at the top of the function body.
         """
         order_id = order["order_id"]
         ticker = order["ticker"]
@@ -4456,7 +4470,22 @@ class OrderExecutor:
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
         raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
         remaining = order["count"] - order.get("filled_so_far", 0)
-        if raw_fill_count > remaining > 0:
+        # Post-completion fill leak guard (2026-05-19 HYPE incident,
+        # KXHYPE15M-26MAY190645-45 +10-ct phantom): when /portfolio/fills
+        # returns a fill AFTER filled_so_far has already reached count
+        # (duplicate trade_id, cross-order misattribution, transient
+        # Kalshi over-fill, or any other source), drop it with a
+        # WARNING. Without this guard, the leaky fill flowed past the
+        # `> remaining > 0` cap and wrote a phantom row to positions.
+        if remaining <= 0:
+            logging.warning(
+                "POST_COMPLETION_FILL_DROPPED: %s order=%s "
+                "raw_fill_count=%d filled_so_far=%d count=%d — "
+                "order already complete, discarding leaky fill",
+                order["ticker"], order_id, raw_fill_count,
+                order.get("filled_so_far", 0), order["count"])
+            return 0
+        if raw_fill_count > remaining:
             logging.warning(
                 f"Fill count {raw_fill_count} exceeds remaining {remaining} for "
                 f"{order['ticker']} — capping to {remaining}")
