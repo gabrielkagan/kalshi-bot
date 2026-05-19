@@ -36,16 +36,69 @@ ASSET_FLOORS = {
 }
 GLOBAL_MIN_ENTRY_PRICE = 75   # bot.py:219 — sub-floor opt-in via --include-sub-floor
 
-# P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets.
-# Kept SEPARATE from production ASSET_FLOORS so adding/removing replay
-# assets doesn't drift the production v1.1 cfg_fp pin (345978797274721f) —
-# `compute_cfg_fp()` bakes the entire ASSET_FLOORS dict into the canonical
-# fingerprint, so any membership change there shifts every existing
-# bundle's identity. `compute_cfg_fp_replay()` reads ASSET_FLOORS_REPLAY
-# instead. bot/constants.py has no per-asset MIN_*_ENTRY_PRICE for
-# HYPE/DOGE; both fall through to MIN_ENTRY_PRICE=75. When HYPE/DOGE
-# T4-promote and earn per-asset floors in bot/constants.py, update both
-# sides here in the same commit (and bump cfg_fp_replay).
+# Bit C (86ba0jn2b, 2026-05-19) — EXTENSION list for assets that the
+# bot scans live but DO NOT YET have a SHIPPED cal_mlp v1.1 production
+# bundle on the live `CURRENT` pointer. T4-promotion in the BOT (live
+# trading via `raw_prob × MARKET_BLEND_W`) is INDEPENDENT of cal_mlp
+# v1.1 bundle promotion (which is gated by the umbrella's Bit D
+# Brier-head-to-head decision). HYPE/DOGE are already T4-promoted in
+# the bot (2026-05-14, `bot/constants.py:HYPE_15M_SHADOW=False` +
+# `HYPE_MIN_ENTRY_PRICE=90` / `DOGE_MIN_ENTRY_PRICE=85`) but have NO
+# live cal_mlp v1.1 bundle — they bypass cal_mlp at serve time per
+# CLAUDE.md ("cal_mlp training arc retired"). The EXT/CORE split is
+# the cal_mlp PIPELINE's view of the asset, NOT the bot's T4 state.
+#
+# CRITICAL: ASSET_FLOORS_EXT is INTENTIONALLY OMITTED from
+# `compute_cfg_fp()`'s canonical dict — that's the entire point of the
+# EXT/CORE split. Adding a new asset here is a 1-line edit that does
+# NOT rotate cfg_fp_production (=345978797274721f) and does NOT
+# invalidate the 4 existing BTC/ETH/SOL/XRP production bundles.
+#
+# Lifecycle:
+#   - New Kalshi crypto rollout (Coinbase has the spot feed; bot
+#     scans the asset's KX*15M markets) → add to ASSET_FLOORS_EXT at
+#     the cal_mlp extract floor for that asset (defaults to
+#     GLOBAL_MIN_ENTRY_PRICE=75 for thin-data assets; tighter values
+#     can be chosen per-asset if training-data abundance allows).
+#   - When the asset's cal_mlp v1.1 bundle ships to production (Bit D
+#     gate flip — `CURRENT` pointer at `models/cal_mlp_<ASSET>/`
+#     points at a v1.1_production-recipe bundle that the bot now
+#     consumes at serve time), MOVE the entry from ASSET_FLOORS_EXT to
+#     ASSET_FLOORS in the SAME commit (this IS the cfg_fp-rotation
+#     event for production; all 4+ production bundles need to be
+#     re-extracted+re-trained against the new identity).
+#   - `test_asset_floors_ext_extensibility.test_core_and_ext_are_disjoint`
+#     pins the no-overlap invariant.
+#
+# Initial Bit-C population: HYPE + DOGE (T1-onboarded 2026-05-10;
+# T4-promoted in bot 2026-05-14 via raw_prob direct-promote; cal_mlp
+# v1.1 bundles being trained now in this Bit, awaiting Bit D's
+# Brier-head-to-head gate before CURRENT-pointer flip).
+# Future additions (no specific commit): BNB (T1 shadow as of
+# 2026-05-17), then SHIB/ADA/etc. as Kalshi rolls out new markets.
+#
+# Floor-value note: the EXT floor (75 here) is the cal_mlp EXTRACT
+# floor (rows below this are dropped pre-training). It is DELIBERATELY
+# DIFFERENT from the bot's RUNTIME serving floor (`bot/constants.py`
+# `HYPE_MIN_ENTRY_PRICE=90` / `DOGE_MIN_ENTRY_PRICE=85`) — the cal_mlp
+# pipeline extracts at the permissive floor to maximize thin-T1
+# training data; the bot never invokes cal_mlp at serve time on prices
+# below its runtime floor, so the 75-89c HYPE training rows just give
+# the model a broader empirical view without affecting serve-time
+# inputs. If a future Bit decides train/serve floor alignment is the
+# right call, raising EXT to match bot/constants.py is a 1-line edit.
+ASSET_FLOORS_EXT = {
+    'HYPE': 75,
+    'DOGE': 75,
+}
+
+# P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets in
+# the REPLAY recipe namespace. Kept SEPARATE so the replay-corpus
+# pipeline (`extract_data_replay.py` + `compute_cfg_fp_replay()`) has
+# its own asset-floor universe (cfg_fp_replay=9347942aaba71146). Adding
+# a new asset to ASSET_FLOORS_REPLAY rotates cfg_fp_replay; the EXT
+# pattern above is the production-recipe equivalent that explicitly
+# does NOT rotate cfg_fp.
 ASSET_FLOORS_REPLAY = {
     'HYPE': 75,
     'DOGE': 75,
@@ -326,10 +379,23 @@ def compute_cfg_fp(
 
 
 def asset_min_price(asset: str, *, include_sub_floor: bool) -> int:
-    """Per-asset entry floor; opt-in to global floor via --include-sub-floor."""
+    """Per-asset entry floor; opt-in to global floor via --include-sub-floor.
+
+    Bit C (86ba0jn2b, 2026-05-19): falls through ASSET_FLOORS_EXT before
+    GLOBAL_MIN_ENTRY_PRICE so HYPE/DOGE (and future extension-list assets)
+    resolve via the EXT path explicitly rather than the
+    silent-unknown-asset path. Functional outcome is unchanged for both
+    CORE and pre-EXT-listed assets — same numeric values returned — but
+    the lookup semantics are clearer:
+        CORE asset  → ASSET_FLOORS[asset]
+        EXT asset   → ASSET_FLOORS_EXT[asset]
+        unknown     → GLOBAL_MIN_ENTRY_PRICE (back-compat).
+    """
     if include_sub_floor:
         return GLOBAL_MIN_ENTRY_PRICE
-    return ASSET_FLOORS.get(asset, GLOBAL_MIN_ENTRY_PRICE)
+    if asset in ASSET_FLOORS:
+        return ASSET_FLOORS[asset]
+    return ASSET_FLOORS_EXT.get(asset, GLOBAL_MIN_ENTRY_PRICE)
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +505,12 @@ class RecipeSpec(NamedTuple):
       - cont_feature_transforms: per-col transform name dict
       - missing_indicator_cols: per-recipe MISSING_INDICATOR_COLS (both
         empty today; field kept for forward-compat with v2 retrain)
-      - asset_floors: per-recipe asset-floor dict (BTC/ETH/SOL/XRP for
-        production, HYPE/DOGE for replay). Caller membership-tests
+      - asset_floors: per-recipe asset-floor dict. Production namespace
+        merges CORE (`ASSET_FLOORS` = {BTC, ETH, SOL, XRP}, baked into
+        cfg_fp) + EXT (`ASSET_FLOORS_EXT` = {HYPE, DOGE, ...}, NOT in
+        cfg_fp; extensible for future Kalshi crypto rollouts per Bit C
+        86ba0jn2b 2026-05-19). Replay namespace = HYPE/DOGE only
+        (separate `ASSET_FLOORS_REPLAY`). Caller membership-tests
         `if asset not in recipe.asset_floors` to guard `--asset NAME`
         against `recipe_namespace=NS` mismatch.
       - categorical_feature_cols: per-recipe tuple of categorical column
@@ -482,12 +552,19 @@ def resolve_recipe(recipe_namespace):
             typo'd bundle silently mis-train on the wrong feature set.
     """
     if recipe_namespace is None or recipe_namespace == RECIPE_NAMESPACE_V1_1_PRODUCTION:
+        # Bit C (86ba0jn2b, 2026-05-19): asset_floors is the UNION of
+        # ASSET_FLOORS (CORE, baked into cfg_fp) and ASSET_FLOORS_EXT
+        # (EXTENSION, NOT in cfg_fp). The union is used ONLY by
+        # `recipe.asset_floors` consumers (train.py:693 asset-membership
+        # guard). `compute_cfg_fp()` continues to bake CORE only —
+        # extending EXT does not rotate cfg_fp. Pinned by
+        # `tests/contracts/test_asset_floors_ext_extensibility.py`.
         return RecipeSpec(
             namespace=RECIPE_NAMESPACE_V1_1_PRODUCTION,
             cont_feature_cols=tuple(CONT_FEATURE_COLS),
             cont_feature_transforms=dict(CONT_FEATURE_TRANSFORMS),
             missing_indicator_cols=tuple(MISSING_INDICATOR_COLS),
-            asset_floors=dict(ASSET_FLOORS),
+            asset_floors={**ASSET_FLOORS, **ASSET_FLOORS_EXT},
             # All four categoricals are present in production fold
             # parquets (extract_data.py digitizes market_price → price_tier
             # and stamps vol_regime_int from the vol-regime string).

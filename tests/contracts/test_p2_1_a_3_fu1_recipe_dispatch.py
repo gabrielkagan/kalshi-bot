@@ -146,10 +146,18 @@ def test_resolve_recipe_production_namespace():
     # features that don't exist in replay corpora).
     assert "market_price" in cont_cols
     assert "prob_breakeven_gap" in cont_cols
-    # Asset floors quartet matches production.
-    assert set(recipe.asset_floors.keys()) == PRODUCTION_ASSETS, (
-        f"production recipe asset_floors must be exactly {PRODUCTION_ASSETS}, "
-        f"got {set(recipe.asset_floors.keys())}"
+    # Asset floors contract:
+    # - PRE-Bit-C (86ba0jn2b, 2026-05-19): exactly == PRODUCTION_ASSETS (the
+    #   CORE 4 baked into cfg_fp).
+    # - POST-Bit-C: SUPERSET of PRODUCTION_ASSETS, because the recipe now
+    #   merges ASSET_FLOORS (CORE) with ASSET_FLOORS_EXT (extension list
+    #   for HYPE/DOGE + future Kalshi crypto rollouts). The contract is
+    #   now `PRODUCTION_ASSETS ⊆ recipe.asset_floors`. The cfg_fp identity
+    #   (`345978797274721f`) is the load-bearing invariant — pinned by
+    #   `tests/contracts/test_asset_floors_ext_extensibility.py`.
+    assert PRODUCTION_ASSETS <= set(recipe.asset_floors.keys()), (
+        f"production recipe must include CORE {PRODUCTION_ASSETS}; "
+        f"missing: {PRODUCTION_ASSETS - set(recipe.asset_floors.keys())}"
     )
     # Recipe namespace field round-trips.
     assert recipe.namespace == NAMESPACE_PRODUCTION

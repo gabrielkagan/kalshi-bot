@@ -118,8 +118,30 @@ and requires a sister anchor in the dispatch test):
 
 | Namespace | CONT_FEATURE_COLS | Assets | cfg_fp |
 |---|---|---|---|
-| `v1.1_production` | 8 (incl. market_price, prob_breakeven_gap) | BTC/ETH/SOL/XRP | `345978797274721f` (default flags) / `1969b12c6c0c39bf` (ablation) |
+| `v1.1_production` | 8 (incl. market_price, prob_breakeven_gap) | CORE: BTC/ETH/SOL/XRP (baked into cfg_fp) + EXT: HYPE/DOGE/... (NOT in cfg_fp; extensible per Bit C 86ba0jn2b 2026-05-19) | `345978797274721f` (default flags) / `1969b12c6c0c39bf` (ablation) |
 | `replay_v1` | 4 (no market_price, no prob_breakeven_gap, no seconds_to_close, no time_decayed_proximity) | HYPE/DOGE | `9347942aaba71146` |
+
+**CORE vs EXT split in `v1.1_production`** (Bit C, `86ba0jn2b`, 2026-05-19):
+- `features.ASSET_FLOORS` (CORE) = `{BTC: 88, ETH: 90, SOL: 86, XRP: 92}`.
+  Frozen. Membership baked into `compute_cfg_fp()` canonical dict. Changing this rotates cfg_fp and invalidates all production bundles.
+- `features.ASSET_FLOORS_EXT` (EXTENSION) = `{HYPE: 75, DOGE: 75, ...}`.
+  Extensible. Membership NOT in cfg_fp — adding a new Kalshi crypto rollout (BNB next; future SHIB/ADA/etc.) is a 1-line edit with no cfg_fp rotation, no production-bundle invalidation.
+- `resolve_recipe('v1.1_production').asset_floors` returns the UNION
+  (CORE ∪ EXT). `train.py:693`'s membership guard reads the union;
+  `compute_cfg_fp()` reads CORE only.
+- Lifecycle: EXT → CORE migration is triggered by the asset's cal_mlp
+  v1.1 bundle SHIPPING to production (the `CURRENT` pointer at
+  `models/cal_mlp_<ASSET>/` flips to a v1.1_production-recipe bundle
+  that the bot consumes at serve time). T4-promotion in the BOT (live
+  trading via `raw_prob × MARKET_BLEND_W`) is INDEPENDENT — HYPE and
+  DOGE are already T4-promoted in the bot (2026-05-14) but have no
+  live cal_mlp v1.1 bundle, so they stay in EXT. When the asset's
+  cal_mlp v1.1 bundle ships (umbrella `86ba0jmyq` Bit D gate for
+  HYPE/DOGE), MOVE the entry `ASSET_FLOORS_EXT[ASSET] →
+  ASSET_FLOORS[ASSET]` in the SAME commit (this IS the cfg_fp rotation
+  event; ship a re-extract+re-train of all 4+ production bundles).
+- Pinned by `tests/contracts/test_asset_floors_ext_extensibility.py`
+  (11 tests including a monkeypatched-BNB-addition no-rotation case).
 
 **Bundle stamping convention:**
 - `extract_data_replay.py` ALWAYS stamps `recipe_namespace='replay_v1'`
