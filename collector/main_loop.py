@@ -388,10 +388,12 @@ def _replan_for_archivers(
     subscribe frames during the stagger window (conns 0..N have
     already reconnected with the new set). Existing data flow on the
     OLD subscription set continues uninterrupted; only NEW tickers
-    added in this refresh have a ≤ (N-1) × stagger_seconds lag before
-    the last conn subscribes to them. At ``DEFAULT_REFRESH_INTERVAL_SECONDS``
-    =3600 and stagger=20s × 7 conns, the worst-case new-ticker
-    subscribe lag is ~120s on top of the REST-poll cadence.
+    added in this refresh have a ≤ ``(n_archivers - 1) * stagger_seconds``
+    lag before the last conn subscribes to them. At
+    ``DEFAULT_REFRESH_INTERVAL_SECONDS=3600`` and ``stagger_seconds=20``
+    with 7 conns, the worst-case new-ticker subscribe lag is
+    ``6 × 20s = 120s`` on top of the REST-poll cadence (NOT
+    ``7 × 20s`` — the last conn has no trailing stagger).
     """
     mgr = SubscriptionManager(
         tickers_by_tier=new_tickers_by_tier,

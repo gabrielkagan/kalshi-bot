@@ -270,17 +270,23 @@ def test_replan_observes_shutdown_event_mid_stagger():
     elapsed = time.monotonic() - t0
     timer.join(timeout=1.0)
 
-    # Expected behavior: archivers 0 + 1 receive both calls (firing at
-    # t≈0 and t≈0.5); archivers 2-4 either receive 0 or only
-    # update_subscriptions before the loop exits via the cancelled wait.
-    # Gate the reconnect counts: at most 2 of the 5 archivers should
-    # have actually reconnected.
+    # Expected behavior: arch0 reconnects at t≈0; stagger sleeps;
+    # arch1 reconnects at t≈0.5; stagger starts; event fires at t≈0.6;
+    # event.wait returns True; loop breaks. Exactly 2 reconnects.
+    # MN3 (R1 ratchet): the `== 2` lower-bound + upper-bound is tighter
+    # than `<= 2` and rejects two regression classes: (a) shutdown
+    # ignored entirely (would give 5 reconnects), AND (b) shutdown
+    # observed too early before iteration 2 (would give 1 reconnect).
     n_reconnected = sum(a.request_reconnect.call_count for a in archivers)
-    assert n_reconnected <= 2, (
-        f"Shutdown event fired mid-replan; expected ≤ 2 archivers to "
-        f"have completed request_reconnect (the loop should have "
-        f"observed the event during stagger and exited). Got "
-        f"{n_reconnected} reconnects across {len(archivers)} archivers."
+    assert n_reconnected == 2, (
+        f"Shutdown event fired mid-replan (t≈0.6s, between iterations "
+        f"2 and 3); expected EXACTLY 2 archivers to have completed "
+        f"request_reconnect (arch0 at t≈0, arch1 at t≈0.5, then break "
+        f"on cancelled event.wait). Got {n_reconnected} reconnects "
+        f"across {len(archivers)} archivers — < 2 means the event was "
+        f"observed early (broke before iteration 1's reconnect); > 2 "
+        f"means the event was missed (stagger.wait did not honor the "
+        f"event set during sleep)."
     )
 
     # Elapsed wall should be roughly bounded by the time we set the
