@@ -36,14 +36,19 @@ Design (per D0.3 §0 architectural principle + the D1.4 pickup-prompt):
   partial subscribe → reconnect storm now + a recovery reconnect on
   the next successful tick — 2× reconnects per single REST hiccup.
 
-D0.3 §1 medallion layout — REST snapshots themselves are NOT yet
-written to bronze in D1.4 (the WS ``market_lifecycle_v2`` channel
-covers most observable market state). A future D1.6+ sub-Bit may
-add an S3 write of the raw REST snapshot payload under
-``bronze/kalshi_rest/markets_snapshot/...`` per D0.3 §1.
+D0.3 §1 medallion layout — D1.9 (ticket ``86ba0pmzz``, 2026-05-19)
+extended this module to write each REST page to bronze under
+``bronze/kalshi_rest/markets/...``. ``fetch_tickers_by_tier`` and
+``RestSnapshotRefresher`` each accept an optional ``bronze_writer``;
+when present, every page (success or failure) emits one JSONL record
+via ``writer.write_frame``. Bronze write is best-effort — any
+exception in ``write_frame`` is swallowed so production subscription
+planning keeps working. Default ``None`` preserves the pre-D1.9 shape
+for offline / test callers.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import threading
@@ -106,6 +111,7 @@ def fetch_tickers_by_tier(
     base_url: str = DEFAULT_REST_BASE_URL,
     session: Optional[requests.Session] = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
+    bronze_writer: Optional[Any] = None,
     _test_skip_auth: bool = False,
     _test_backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
 ) -> Optional[Dict[str, List[str]]]:
@@ -124,6 +130,31 @@ def fetch_tickers_by_tier(
             one per call; production code shares a session across
             refresh ticks (RestSnapshotRefresher).
         max_retries: Transient-error retries before giving up.
+        bronze_writer: Optional D0.3 §2 ``BronzeWriter`` for the
+            ``kalshi_rest/markets`` partition (D1.9, ticket
+            ``86ba0pmzz``). When non-None, one JSONL record is
+            emitted per REST page (success or failure) with the
+            diagnostic envelope:
+              success (7 keys):
+                ``{"http_status": 200, "elapsed_ms": <int>,
+                   "attempts": <int>, "page_idx": <int>,
+                   "cursor_in": <str|null>, "cursor_out": <str>,
+                   "response": <body>}``
+              failure (6 keys):
+                ``{"http_status": <int|null>, "elapsed_ms": <int>,
+                   "attempts": <int>, "page_idx": <int>,
+                   "cursor_in": <str|null>, "error": "<reason>"}``
+            ``elapsed_ms`` is per-LAST-attempt wall-clock (excludes
+            backoff sleeps between retries). ``attempts`` is the count
+            of HTTP attempts the inner loop made; silver D3.x can
+            disaggregate first-attempt vs retried pages via
+            ``(elapsed_ms, attempts)`` jointly. ``cursor_in`` is None
+            on the first page; ``cursor_out`` is the empty string ``""``
+            on the terminal page (Kalshi's end-of-pagination sentinel).
+            Bronze write is BEST-EFFORT — any exception from
+            ``write_frame`` is swallowed (logged at WARNING) so
+            production subscription planning is unaffected by bronze
+            failures. Default ``None`` preserves the pre-D1.9 shape.
         _test_skip_auth: When True, skips ``make_rest_headers`` and
             sends no auth headers — for tests pointing at fakes.
         _test_backoff_seconds: Base backoff seconds. Tests pass 0.0
@@ -157,18 +188,47 @@ def fetch_tickers_by_tier(
         if cursor:
             params["cursor"] = cursor
 
-        body = _do_request_with_retry(
-            session=session,
-            url=url,
-            params=params,
-            api_key=api_key,
-            private_key=private_key,
-            max_retries=max_retries,
-            skip_auth=_test_skip_auth,
-            backoff_seconds=_test_backoff_seconds,
+        # D1.9: call the inner helper which returns the parsed body PLUS
+        # per-last-attempt diagnostic fields (status, error, attempts,
+        # elapsed_ms, wire_recv_ts). `elapsed_ms` is per-LAST-attempt
+        # wall-clock (NOT the loop's total — backoff sleeps are excluded).
+        # The single-attempt `t0`/elapsed pattern matches
+        # `weather_archiver.py:_fetch_and_write` (which has no retry
+        # loop); D1.9 extends it to per-LAST-attempt semantics for the
+        # retry-aware REST surface. `attempts` is also surfaced so
+        # silver D3.x can disaggregate retried-then-succeeded pages
+        # from first-attempt successes. `wire_recv_ts` is the
+        # response-receipt instant of the LAST attempt (or exception
+        # fire for transport errors).
+        body, status, error_reason, attempts, elapsed_ms, wire_recv_ts = (
+            _do_request_with_retry_inner(
+                session=session,
+                url=url,
+                params=params,
+                api_key=api_key,
+                private_key=private_key,
+                max_retries=max_retries,
+                skip_auth=_test_skip_auth,
+                backoff_seconds=_test_backoff_seconds,
+            )
         )
+
+        # D1.9: write bronze BEFORE the parsed-body branches that might
+        # return early. The diagnostic envelope is the IRREVERSIBLE
+        # capture; downstream "did we capture this page" must NOT depend
+        # on whether the page parsed cleanly.
         if body is None:
-            # Transient errors exhausted retries OR non-retryable 4xx.
+            # Failure path — error_reason carries the diagnostic string.
+            _write_bronze_failure(
+                bronze_writer=bronze_writer,
+                wire_recv_ts=wire_recv_ts,
+                page_idx=page_idx,
+                cursor_in=cursor,
+                http_status=status,
+                elapsed_ms=elapsed_ms,
+                attempts=attempts,
+                error_reason=error_reason or "unknown",
+            )
             # R1-M2: return None (not partial) so _do_refresh keeps the
             # prior ticker map. Propagating a partial set would cause a
             # reconnect storm on this tick + a recovery reconnect on
@@ -181,6 +241,24 @@ def fetch_tickers_by_tier(
                 page_idx, len(tickers),
             )
             return None
+
+        next_cursor = body.get("cursor") if isinstance(body, dict) else None
+        next_cursor_str = (
+            next_cursor if isinstance(next_cursor, str) else ""
+        )
+
+        # D1.9: bronze success record — captures the verbatim page body.
+        _write_bronze_success(
+            bronze_writer=bronze_writer,
+            wire_recv_ts=wire_recv_ts,
+            page_idx=page_idx,
+            cursor_in=cursor,
+            cursor_out=next_cursor_str,
+            http_status=status if status is not None else 200,
+            elapsed_ms=elapsed_ms,
+            attempts=attempts,
+            response_body=body,
+        )
 
         markets = body.get("markets") if isinstance(body, dict) else None
         if not isinstance(markets, list):
@@ -210,7 +288,6 @@ def fetch_tickers_by_tier(
             if isinstance(ticker, str) and ticker:
                 tickers.add(ticker)
 
-        next_cursor = body.get("cursor") if isinstance(body, dict) else None
         if not next_cursor or not isinstance(next_cursor, str):
             break
         cursor = next_cursor
@@ -218,7 +295,105 @@ def fetch_tickers_by_tier(
     return {TIER_ALL: sorted(tickers)}
 
 
-def _do_request_with_retry(
+# ─── D1.9 bronze write helpers ────────────────────────────────────────────
+
+
+def _write_bronze_success(
+    *,
+    bronze_writer: Optional[Any],
+    wire_recv_ts: _dt.datetime,
+    page_idx: int,
+    cursor_in: Optional[str],
+    cursor_out: str,
+    http_status: int,
+    elapsed_ms: int,
+    attempts: int,
+    response_body: Dict[str, Any],
+) -> None:
+    """Emit one bronze record for a successful page (D1.9).
+
+    Best-effort: any exception from ``write_frame`` is swallowed +
+    logged at WARNING so production subscription planning is
+    unaffected by bronze failures. Mirrors
+    ``WeatherArchiver._fetch_and_write`` posture.
+
+    `elapsed_ms` is per-LAST-attempt wall-clock (NOT inclusive of
+    backoff sleeps). `attempts` is the count of HTTP attempts the
+    inner loop made — silver D3.x consumers can disaggregate
+    "first-attempt success at 80ms" from "third-attempt success at
+    80ms" via `(elapsed_ms, attempts)` jointly.
+    """
+    if bronze_writer is None:
+        return
+    diag: Dict[str, Any] = {
+        "http_status": http_status,
+        "elapsed_ms": elapsed_ms,
+        "attempts": attempts,
+        "page_idx": page_idx,
+        "cursor_in": cursor_in,
+        "cursor_out": cursor_out,
+        "response": response_body,
+    }
+    _write_bronze_diag(bronze_writer, wire_recv_ts, diag)
+
+
+def _write_bronze_failure(
+    *,
+    bronze_writer: Optional[Any],
+    wire_recv_ts: _dt.datetime,
+    page_idx: int,
+    cursor_in: Optional[str],
+    http_status: Optional[int],
+    elapsed_ms: int,
+    attempts: int,
+    error_reason: str,
+) -> None:
+    """Emit one bronze record for a failed page (D1.9).
+
+    Failure-shape diagnostic dict (6 keys; ``response`` replaced by
+    ``error``). Bronze captures the failure mode verbatim so silver
+    D3.x can model REST reliability.
+
+    `elapsed_ms` is per-LAST-attempt wall-clock (NOT inclusive of
+    backoff sleeps). `attempts` is the count of HTTP attempts the
+    inner loop made before giving up.
+    """
+    if bronze_writer is None:
+        return
+    diag: Dict[str, Any] = {
+        "http_status": http_status,
+        "elapsed_ms": elapsed_ms,
+        "attempts": attempts,
+        "page_idx": page_idx,
+        "cursor_in": cursor_in,
+        "error": error_reason,
+    }
+    _write_bronze_diag(bronze_writer, wire_recv_ts, diag)
+
+
+def _write_bronze_diag(
+    bronze_writer: Any,
+    wire_recv_ts: _dt.datetime,
+    diag: Dict[str, Any],
+) -> None:
+    """Serialize diagnostic dict + dispatch to writer with exception swallow.
+
+    The ``write_frame`` contract handles envelope construction +
+    seq increment; we only need to provide the raw payload string.
+    """
+    try:
+        raw_str = json.dumps(diag, separators=(",", ":"), ensure_ascii=False)
+        bronze_writer.write_frame(wire_recv_ts, raw_str)
+    except Exception:
+        logger.warning(
+            "RestSnapshot bronze write_frame raised; production "
+            "subscription planning continues. page_idx=%s",
+            diag.get("page_idx"),
+            exc_info=True,
+        )
+
+
+def _do_request_with_retry_inner(
     *,
     session: requests.Session,
     url: str,
@@ -228,24 +403,54 @@ def _do_request_with_retry(
     max_retries: int,
     skip_auth: bool,
     backoff_seconds: float,
-) -> Optional[Dict[str, Any]]:
-    """Single-page GET with retry + backoff.
+) -> tuple[
+    Optional[Dict[str, Any]],
+    Optional[int],
+    Optional[str],
+    int,
+    int,
+    _dt.datetime,
+]:
+    """Single-page GET with retry + backoff. Returns per-LAST-attempt
+    diagnostics for bronze capture.
 
-    Returns parsed JSON body on success; ``None`` on giveup.
+    Returns a 6-tuple:
+      ``(body, last_status, error_reason, attempts, elapsed_ms, wire_recv_ts)``
+
+      - On success: ``(body_dict, status_code, None, attempts, elapsed_ms, wire_recv_ts)``
+      - On failure: ``(None, last_status_or_None, error_reason_str, attempts, elapsed_ms, wire_recv_ts)``
+
+    `attempts` is the count of HTTP attempts made (1 for first-try
+    success, N for N-th retry result).
+
+    `elapsed_ms` is wall-clock-ms for the LAST attempt ONLY (the one
+    whose status/body lands in bronze) — backoff sleeps between
+    attempts are NOT included. This matches the
+    ``weather_archiver.py:_fetch_and_write`` precedent so silver D3.x
+    can use a consistent per-attempt latency unit across sources.
+
+    `wire_recv_ts` is the UTC instant the LAST attempt's response was
+    received (or the transport exception fired). Per D0.3 §2 this is
+    the envelope's `_wire_recv_ts` anchor.
 
     Retry policy:
       - 5xx + transport errors (connect timeout / DNS) → retry with
         exponential backoff up to ``max_retries``.
       - 429 → respect ``Retry-After`` header (or fall back to backoff)
         and retry.
-      - Non-429 4xx → return None immediately (no retry — auth misconfig
+      - Non-429 4xx → return immediately (no retry — auth misconfig
         retrying would just spam Kalshi and burn rate-limit budget).
       - Malformed JSON → return None (treat as transient; refresh
         thread will try again next interval).
     """
     attempts = 0
+    last_status: Optional[int] = None
+    last_error: Optional[str] = None
+    last_elapsed_ms: int = 0
+    last_wire_recv_ts: _dt.datetime = _dt.datetime.now(_dt.timezone.utc)
     while True:
         attempts += 1
+        t0 = time.time()
         try:
             if skip_auth:
                 headers: Mapping[str, str] = {}
@@ -258,26 +463,46 @@ def _do_request_with_retry(
                 timeout=_REQUEST_TIMEOUT_SECONDS,
             )
         except requests.exceptions.RequestException as exc:
+            last_elapsed_ms = int((time.time() - t0) * 1000)
+            last_wire_recv_ts = _dt.datetime.now(_dt.timezone.utc)
             logger.warning(
                 "RestSnapshot transport error (attempt %d/%d): %s",
                 attempts, max_retries, exc,
             )
+            last_status = None
+            last_error = (
+                f"request_exception: {type(exc).__name__}: {exc!r}"
+            )
             if attempts >= max_retries:
-                return None
+                return (
+                    None, last_status, last_error,
+                    attempts, last_elapsed_ms, last_wire_recv_ts,
+                )
             _sleep_backoff(attempts, backoff_seconds)
             continue
 
+        # Response received — capture per-attempt elapsed + wire_recv_ts.
+        last_elapsed_ms = int((time.time() - t0) * 1000)
+        last_wire_recv_ts = _dt.datetime.now(_dt.timezone.utc)
         status = getattr(resp, "status_code", None)
+        last_status = status
         if status == 200:
             try:
-                return resp.json()
+                return (
+                    resp.json(), status, None,
+                    attempts, last_elapsed_ms, last_wire_recv_ts,
+                )
             except (ValueError, json.JSONDecodeError) as exc:
                 logger.warning(
                     "RestSnapshot JSON decode failed (attempt %d/%d): %s",
                     attempts, max_retries, exc,
                 )
+                last_error = f"json_decode_error: {exc!r}"
                 if attempts >= max_retries:
-                    return None
+                    return (
+                        None, last_status, last_error,
+                        attempts, last_elapsed_ms, last_wire_recv_ts,
+                    )
                 _sleep_backoff(attempts, backoff_seconds)
                 continue
 
@@ -287,8 +512,12 @@ def _do_request_with_retry(
                 "RestSnapshot 429 rate-limited (attempt %d/%d); sleeping %.1fs.",
                 attempts, max_retries, retry_after_s,
             )
+            last_error = _format_http_error_reason(resp, 429)
             if attempts >= max_retries:
-                return None
+                return (
+                    None, last_status, last_error,
+                    attempts, last_elapsed_ms, last_wire_recv_ts,
+                )
             time.sleep(retry_after_s)
             continue
 
@@ -297,8 +526,12 @@ def _do_request_with_retry(
                 "RestSnapshot 5xx (status=%s attempt %d/%d).",
                 status, attempts, max_retries,
             )
+            last_error = _format_http_error_reason(resp, status)
             if attempts >= max_retries:
-                return None
+                return (
+                    None, last_status, last_error,
+                    attempts, last_elapsed_ms, last_wire_recv_ts,
+                )
             _sleep_backoff(attempts, backoff_seconds)
             continue
 
@@ -306,7 +539,30 @@ def _do_request_with_retry(
         logger.warning(
             "RestSnapshot non-retryable status=%s; giving up.", status,
         )
-        return None
+        last_error = _format_http_error_reason(resp, status)
+        return (
+            None, last_status, last_error,
+            attempts, last_elapsed_ms, last_wire_recv_ts,
+        )
+
+
+def _format_http_error_reason(resp, status: Optional[int]) -> str:
+    """Build the ``error`` diagnostic string for a non-200 response.
+
+    Tries to extract Kalshi's JSON ``reason`` field; falls back to
+    bare ``http_<status>``. Mirrors WeatherArchiver._fetch_and_write
+    line 343-355 pattern.
+    """
+    base = f"http_{status}" if status is not None else "http_unknown"
+    try:
+        err_payload = resp.json()
+    except (ValueError, json.JSONDecodeError):
+        return base
+    if isinstance(err_payload, dict):
+        reason = err_payload.get("reason")
+        if reason:
+            return f"{base}: {reason!r}"
+    return base
 
 
 def _retry_after_seconds(
@@ -377,6 +633,7 @@ class RestSnapshotRefresher:
         interval_seconds: float = DEFAULT_REFRESH_INTERVAL_SECONDS,
         base_url: str = DEFAULT_REST_BASE_URL,
         session: Optional[requests.Session] = None,
+        bronze_writer: Optional[Any] = None,
     ):
         if interval_seconds <= 0:
             raise ValueError(
@@ -392,6 +649,9 @@ class RestSnapshotRefresher:
         self._session = session if session is not None else requests.Session()
         self._thread: Optional[threading.Thread] = None
         self._last_tier_map: Dict[str, List[str]] = {}
+        # D1.9 — forwarded to fetch_tickers_by_tier on every _do_refresh
+        # tick. None = no bronze write (offline / test mode).
+        self._bronze_writer = bronze_writer
 
     def start(self) -> None:
         """Spawn the daemon refresh thread."""
@@ -423,11 +683,18 @@ class RestSnapshotRefresher:
 
     def _do_refresh(self) -> None:
         try:
+            # Bare-name call: Python resolves ``fetch_tickers_by_tier``
+            # via this function's ``__globals__`` dict (= the module's
+            # namespace) at call-time, so tests that do
+            # ``collector.rest_snapshot.fetch_tickers_by_tier = fake``
+            # see their patch take effect (module attribute assignment
+            # IS dict mutation of the same dict the function reads).
             new_map = fetch_tickers_by_tier(
                 api_key=self._api_key,
                 private_key=self._private_key,
                 base_url=self._base_url,
                 session=self._session,
+                bronze_writer=self._bronze_writer,
             )
         except Exception:
             logger.exception(

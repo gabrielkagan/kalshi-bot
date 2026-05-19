@@ -676,12 +676,26 @@ def run(
     # before any WS connect attempt. Matches `_required_env`'s posture for
     # KALSHI_COLLECTOR_KEY_ID + KALSHI_COLLECTOR_KEY_PATH.
     rest_private_key = None
+    # D1.9 (ticket 86ba0pmzz, 2026-05-19): kalshi_rest/markets bronze
+    # writer. Only constructed in the production REST path (file-mode
+    # boot has no REST fetch → no bronze write surface). Registered
+    # with the drain thread below via ``all_writers`` so the rotation
+    # → upload → delete cycle picks it up automatically.
+    kalshi_rest_writer: Optional[BronzeWriter] = None
     if tickers_file:
         tickers_by_tier = _load_tickers_by_tier(tickers_file)
     else:
         rest_private_key = load_private_key(private_key_path)
+        kalshi_rest_writer = BronzeWriter(
+            root_dir=bronze_root,
+            source="kalshi_rest",
+            channel="markets",
+            conn=None,
+        )
         rest_initial = fetch_tickers_by_tier(
-            api_key=api_key, private_key=rest_private_key,
+            api_key=api_key,
+            private_key=rest_private_key,
+            bronze_writer=kalshi_rest_writer,
         )
         if rest_initial is None:
             # Fetch failed (transient 5xx exhausted retries, partial
@@ -712,6 +726,12 @@ def run(
     # Step 4 — per-conn components.
     archivers: List[BronzeArchiver] = []
     all_writers: List[BronzeWriter] = []
+    # D1.9: include the kalshi_rest/markets writer in the drain set so
+    # rotation → upload → delete fires for it on the same cadence as the
+    # WS writers. Order is irrelevant to drain semantics (each writer's
+    # rotated_outbox_paths is drained independently).
+    if kalshi_rest_writer is not None:
+        all_writers.append(kalshi_rest_writer)
     for idx, plan in enumerate(plans):
         writers_by_channel = _build_writers_for_plan(plan, bronze_root)
         all_writers.extend(writers_by_channel.values())
@@ -798,6 +818,7 @@ def run(
             on_refresh=_on_refresh,
             shutdown_event=shutdown_event,
             interval_seconds=refresh_seconds,
+            bronze_writer=kalshi_rest_writer,  # D1.9
         )
 
     logger.info(
