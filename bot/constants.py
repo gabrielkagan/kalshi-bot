@@ -88,11 +88,15 @@ DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor
 # (B.1-equivalent Brier sweep argmin at n=721 — matches ETH pattern; raw model beats
 # market by ~10% Brier), NBBO_FALLBACK_GATES["BNB"]=(90, 99, 300.0) (analog default
 # mirror of ETH; post-T4 refinement follow-up when NBBO-fallback observations accumulate).
-# Kill-switch clauses preserved at TM/WKND/OVN/DC strategy eligibility sites in
-# bot/scanner/__init__.py — flipping BNB_15M_SHADOW=True reverts to shadow in lock-step.
-# Hourly stays in HOURLY_EXCLUDED_ASSETS (15M-only promotion; matches HYPE/DOGE P2.3
-# post-T4 state). Plan: kb/decisions/p2-4-bnb-live-promotion-plan.md.
-# Regression lock: tests/integration/test_bnb_onboarding_t1.py.
+# MIN_ENTRY_PRICE + MAX_RISK_PER_TRADE constants wired into the elif chains
+# (scanner per-asset floor + 15M sizer cap + DC asset cap; executor mirrors at
+# escalation floor ~:2097 + maker floor ~:3197 + sub-floor-fill telemetry map
+# ~:4638 — same shape as HYPE/DOGE P2.3 lockstep). Kill-switch clauses
+# preserved at TM/WKND/OVN/DC strategy eligibility sites in bot/scanner/__init__.py —
+# flipping BNB_15M_SHADOW=True reverts to shadow in lock-step. Hourly stays in
+# HOURLY_EXCLUDED_ASSETS (15M-only promotion; matches HYPE/DOGE P2.3 post-T4
+# state). Plan: kb/decisions/p2-4-bnb-live-promotion-plan.md. Regression lock:
+# tests/integration/test_bnb_onboarding_t1.py.
 BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); flip to True for kill-switch revert
 
 # T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend

@@ -445,5 +445,58 @@ class TestBnbP24ScannerLiveRouting(unittest.TestCase):
         self.assertIn("BNB_MAX_RISK_PER_TRADE", bnb_window)
 
 
+class TestBnbP24ExecutorLockstep(unittest.TestCase):
+    """Source-walk AST guards pinning the 3 BNB executor mirror sites:
+    escalation floor, maker floor, sub-floor-fill telemetry map.
+
+    Discovered via R4 adv review: R1-R3 swept only scanner sites; the
+    executor mirror was missed entirely. Without these 3 mirrors, BNB
+    maker/escalation orders at 76-89c would BYPASS the BNB_MIN_ENTRY_PRICE=90
+    contract (falling through to the 15M default 75c floor) — i.e., live
+    trading bug.
+
+    These tests close the lockstep contract documented in bot/constants.py
+    banner (executor mirrors at ~:2097 + ~:3197 + ~:4638)."""
+
+    def setUp(self):
+        import bot.executor
+        import inspect
+        self.source = inspect.getsource(bot.executor)
+
+    def test_executor_imports_bnb_min_entry_price(self):
+        self.assertIn("BNB_MIN_ENTRY_PRICE", self.source,
+            "BNB_MIN_ENTRY_PRICE not imported into bot/executor.py")
+
+    def test_executor_escalation_floor_elif_for_bnb(self):
+        anchor = self.source.find('elif _esc_asset == "DOGE":\n            _esc_floor = DOGE_MIN_ENTRY_PRICE')
+        self.assertGreater(anchor, 0,
+            "DOGE escalation-floor elif anchor not found — file shape changed")
+        window = self.source[anchor:anchor + 300]
+        self.assertIn('elif _esc_asset == "BNB":', window,
+            "Executor escalation floor missing BNB branch — "
+            "BNB escalation would fall through to global MIN_ENTRY_PRICE=75 (defeats P2.4 floor=90)")
+        self.assertIn("BNB_MIN_ENTRY_PRICE", window)
+
+    def test_executor_maker_floor_elif_for_bnb(self):
+        anchor = self.source.find('elif _asset == "DOGE":\n                _floor = DOGE_MIN_ENTRY_PRICE')
+        self.assertGreater(anchor, 0,
+            "DOGE maker-floor elif anchor not found — file shape changed")
+        window = self.source[anchor:anchor + 300]
+        self.assertIn('elif _asset == "BNB":', window,
+            "Executor maker floor missing BNB branch — "
+            "BNB maker orders could be placed at 76-89c (defeats P2.4 floor=90)")
+        self.assertIn("BNB_MIN_ENTRY_PRICE", window)
+
+    def test_executor_sub_floor_fill_telemetry_includes_bnb(self):
+        anchor = self.source.find('_ASSET_FLOOR_MAP = {')
+        self.assertGreater(anchor, 0,
+            "_ASSET_FLOOR_MAP anchor not found in bot/executor.py")
+        window = self.source[anchor:anchor + 400]
+        self.assertIn('"BNB"', window,
+            "Executor sub-floor-fill telemetry map missing BNB — "
+            "BNB sub-90c fills would NOT trigger SUB_FLOOR_FILL Telegram alert (operator loses defense-in-depth visibility on the very class of BNB fill the P2.4 contract is designed to prevent)")
+        self.assertIn("BNB_MIN_ENTRY_PRICE", window)
+
+
 if __name__ == "__main__":
     unittest.main()
