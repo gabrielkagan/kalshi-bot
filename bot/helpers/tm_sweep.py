@@ -188,3 +188,138 @@ def tm_compute_contracts(price_cents: int, seconds_to_close: float,
             ct = min(ct, TM_THIN_BUFFER_CONTRACT_CAP)
 
     return max(TM_MIN_CONTRACTS, min(TM_MAX_CONTRACTS, ct))
+
+
+# ── Sim C — TM half-Kelly cal_mlp shadow (ticket 86ba0v7fc, 2026-05-19) ────
+# Shadow-only Kelly-on-cal_mlp sizing helpers. The return value is logged
+# to evaluated_opportunities.tm_shadow_kelly_* columns; NEVER consumed by
+# production sizing. See kb/decisions/tm-half-kelly-shadow-plan.md.
+
+
+def tm_shadow_kelly_contracts_with_bound(
+    price_cents: int,
+    bankroll_cents: int,
+    asset: str,
+    cal_mlp_p_mean: Optional[float],
+    raw_prob_fallback: Optional[float],
+    kelly_fraction: float = TM_SHADOW_KELLY_FRACTION,
+    abs_loss_bound_cents: int = TM_SHADOW_KELLY_ABS_LOSS_BOUND_CENTS,
+) -> Tuple[Optional[int], str]:
+    """Counterfactual Kelly contracts + which constraint bound the size.
+
+    SHADOW-ONLY — return value is logged via insert_evaluated_opportunity
+    kwargs (tm_shadow_kelly_ct, tm_shadow_kelly_bound_hit, ...). NEVER
+    consumed by production sizing.
+
+    Returns:
+        (ct, bound_hit) tuple where:
+          - ct is Optional[int]: the counterfactual contract count, or
+            None when no probability signal is available (null_prob).
+          - bound_hit is one of:
+              'null_prob'    — both probs are None; no sizing possible
+              'raw_fallback' — cal_mlp_p_mean is None, fell back to raw_prob
+              'kelly'        — Kelly's natural ct is the binding constraint
+              'abs_loss'     — abs_loss_bound_cents is the binding constraint
+              'asset_cap'    — TM_ASSET_RISK_CAPS[asset] is the binding constraint
+
+    Kelly formula for a YES-side bet at price p cents:
+        edge_numerator = (P * 100) - p   (cents expected value above breakeven)
+        f = (P * 100 - p) / (100 - p)
+        stake_cents = fractional_kelly * bankroll_cents
+        ct = stake_cents / p   (capital deployed per contract is p cents)
+
+    Negative-edge returns 0 ct (no betting on losing trades).
+    NULL-safe: cal_mlp+raw both None → (None, 'null_prob').
+    """
+    # Probability signal selection — cal_mlp_p_mean preferred; raw_prob fallback
+    if cal_mlp_p_mean is not None:
+        p = float(cal_mlp_p_mean)
+        used_fallback = False
+    elif raw_prob_fallback is not None:
+        p = float(raw_prob_fallback)
+        used_fallback = True
+    else:
+        return (None, "null_prob")
+
+    # Clamp price/margin sanity
+    price = int(price_cents)
+    margin = 100 - price
+    if margin <= 0 or price <= 0:
+        # Degenerate; no Kelly bet possible. Return 0 ct with the source tag.
+        return (0, "raw_fallback" if used_fallback else "kelly")
+
+    # Kelly fraction (full Kelly, fractional). Negative edge → 0 ct.
+    p_pct = p * 100.0  # convert prob (0..1) to cents
+    numerator = p_pct - price
+    if numerator <= 0:
+        # Negative or zero edge — don't bet.
+        return (0, "raw_fallback" if used_fallback else "kelly")
+    f_full = numerator / margin
+    f = max(0.0, float(kelly_fraction) * f_full)
+
+    # Stake cents → contracts at the entry price
+    stake_cents = f * float(bankroll_cents)
+    kelly_ct = int(stake_cents / price) if price > 0 else 0
+
+    # Constraints (compute each independently; min wins; which one wins = bound_hit)
+    # Abs-loss bound: ct * price ≤ abs_loss_bound_cents
+    abs_loss_ct = int(abs_loss_bound_cents / price) if price > 0 else 0
+
+    # Per-asset risk cap (mirrors TM_ASSET_RISK_CAPS; default 0.15 for unknown asset)
+    risk_frac = TM_ASSET_RISK_CAPS.get(asset, 0.15)
+    if bankroll_cents > 0 and price > 0:
+        asset_cap_ct = int(bankroll_cents * risk_frac / price)
+    else:
+        asset_cap_ct = 0
+
+    # Pick the smallest binding constraint
+    candidates = (
+        (kelly_ct, "kelly"),
+        (abs_loss_ct, "abs_loss"),
+        (asset_cap_ct, "asset_cap"),
+    )
+    ct, bound = min(candidates, key=lambda t: t[0])
+
+    # If we fell back to raw_prob, mark the bound_hit as 'raw_fallback' to
+    # surface the provenance — the analysis script wants to know which rows
+    # got their prob from the fallback path independent of which numeric cap
+    # bound the size. (Plan doc: "marks `prob=raw_fallback`".)
+    if used_fallback:
+        bound = "raw_fallback"
+
+    # Floor at zero (negative-edge already handled above; this is defense-in-depth)
+    ct = max(0, ct)
+    return (ct, bound)
+
+
+def tm_shadow_kelly_contracts(
+    price_cents: int,
+    bankroll_cents: int,
+    asset: str,
+    cal_mlp_p_mean: Optional[float],
+    raw_prob_fallback: Optional[float],
+    kelly_fraction: float = TM_SHADOW_KELLY_FRACTION,
+    abs_loss_bound_cents: int = TM_SHADOW_KELLY_ABS_LOSS_BOUND_CENTS,
+) -> Optional[int]:
+    """Shadow-only counterfactual Kelly size — NEVER consumed by production sizing.
+
+    Thin wrapper around `tm_shadow_kelly_contracts_with_bound` that returns
+    only the contract count (drops the bound-hit tag). Use the `_with_bound`
+    variant when you need both values for logging — callers in
+    `bot.scanner` use that form to populate the 4 tm_shadow_kelly_*
+    evaluated_opportunities columns in lockstep.
+
+    Returns None when probability signal is unavailable (NULL cal_mlp + NULL
+    raw_prob). Mirrors per-asset risk caps so the logged number is
+    decision-realistic.
+    """
+    ct, _bound = tm_shadow_kelly_contracts_with_bound(
+        price_cents=price_cents,
+        bankroll_cents=bankroll_cents,
+        asset=asset,
+        cal_mlp_p_mean=cal_mlp_p_mean,
+        raw_prob_fallback=raw_prob_fallback,
+        kelly_fraction=kelly_fraction,
+        abs_loss_bound_cents=abs_loss_bound_cents,
+    )
+    return ct

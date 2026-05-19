@@ -280,24 +280,29 @@ class TestTMSizing(unittest.TestCase):
 
     def test_scan_time_uses_compute_fn(self):
         """TM candidate must derive size from tm_compute_contracts."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
+        # Window grew 20000→21000 chars in Sim C ship (86ba0v7fc) — the
+        # shadow-compute helper call site sits between `Terminal Momentum
+        # intercept` and the candidate dict, pushing the dict ~520 chars
+        # further down. The 21000-char ceiling is comfortably below the
+        # next scanner block (post-TM eval / wknd_discount block).
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
         self.assertIn("tm_compute_contracts(", tm_block)
 
     def test_scan_time_sets_position_size(self):
         """TM candidate must use _tm_size for position_size."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
         self.assertIn('"position_size": _tm_size', tm_block)
 
     def test_kelly_zero_in_candidate(self):
         """TM candidate must set kelly_f=0.0."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
         self.assertIn('"kelly_f": 0.0', tm_block)
 
     def test_drawdown_scaler_routes_through_real_sizer_in_candidate(self):
         """TM candidate must route drawdown_scaler through the real PositionSizer
         readonly accessor (post-DD-2, ClickUp 86b9z6y4k — was stubbed 1.0 pre-fix,
         which poisoned `evaluated_opportunities.drawdown_scaler` analytics)."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
         self.assertIn(
             '"drawdown_scaler": self._sizer._drawdown_scaler_readonly('
             'self._get_balance_cached() or 0)',

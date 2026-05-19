@@ -1320,6 +1320,24 @@ TM_ASSET_RISK_CAPS = {
     "DOGE": DOGE_MAX_RISK_PER_TRADE,      # 0.10 (P2.3 live promotion 2026-05-14)
 }
 
+# ── TM half-Kelly cal_mlp shadow (Sim C, ticket 86ba0v7fc, 2026-05-19) ─────
+# Shadow-only Kelly sizing on cal_mlp_p_mean (with raw_prob fallback) — logged
+# to evaluated_opportunities.tm_shadow_kelly_* columns; NEVER consumed by
+# production sizing. Sim C validates the Kelly-on-cal_mlp framework against
+# realized TM PnL before any promotion. See
+# kb/decisions/tm-half-kelly-shadow-plan.md.
+#
+# Half-Kelly: quarter-Kelly was over-conservative ($-49 vs actual $+125 in
+# 30d counterfactual); half-Kelly was the data-justified choice ($+183 vs
+# actual $+125 +$57 delta).
+TM_SHADOW_KELLY_FRACTION = 0.50
+
+# $100 absolute-loss bound — caps catastrophic-tail at any single TM trade
+# matching the empirical loss-distribution constraint the TM_THIN_BUFFER
+# cap was originally designed around (Apr 1-23: 8/14 TM losses ≥100ct were
+# at sub-0.20% buffer). At 99c entry, 10000/99 ≈ 101 ct.
+TM_SHADOW_KELLY_ABS_LOSS_BOUND_CENTS = 10000
+
 # ── TM Sweep Shadow ────────────────────────────────────────────────────────
 # Captures pre/post-fill orderbook depths at TM-relevant tiers (96/97/98/99)
 # every TM execution. On settlement, computes counterfactual sweep PnL
