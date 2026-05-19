@@ -198,8 +198,25 @@ def compute_brier_headtohead(
     *,
     project_root: Optional[Path] = None,
     bootstrap_b: int = 2000,
+    align_w: bool = False,
 ) -> dict:
-    """Head-to-head Brier: production blend vs cal_mlp v1.1 on test fold."""
+    """Head-to-head Brier: production blend vs cal_mlp v1.1 on test fold.
+
+    Args:
+        asset: 'HYPE' or 'DOGE'.
+        project_root: override project root (default: worktree containing script).
+        bootstrap_b: bootstrap resample count for CI on delta.
+        align_w: Bit D followup F1 (2026-05-19). When True, override
+            `predictor.market_blend_w` with `MARKET_BLEND_W_BY_ASSET[asset]`
+            (HYPE=0.80, DOGE=0.60) instead of the bundle's hardcoded 0.40.
+            This makes v1.1's INTERNAL blend (applied inside
+            `predict_with_interval`: `cal_prob = W*market + (1-W)*p_pred`)
+            match production's asset-specific blend at predict time.
+            Without this, v1.1 puts 60% weight on the model output;
+            production puts 20% (HYPE) / 40% (DOGE). The unaligned
+            comparison was Bit D's original numbers; aligned tests
+            whether the blend mismatch was the structural disadvantage.
+    """
     if asset not in _MARKET_BLEND_W_BY_ASSET:
         raise ValueError(f"Unknown asset {asset!r}")
     blend_w = _MARKET_BLEND_W_BY_ASSET[asset]
@@ -214,6 +231,8 @@ def compute_brier_headtohead(
     outcomes = (df["market_result"].astype(str) == "yes").to_numpy(dtype=float)
 
     predictor = _load_predictor(asset, project_root=project_root)
+    if align_w:
+        predictor.market_blend_w = blend_w
     v1_1_preds = np.empty(n)
     for i, (_, row) in enumerate(df.iterrows()):
         try:
@@ -288,6 +307,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Override project root (default: worktree containing this script).",
     )
     parser.add_argument(
+        "--align-w", action="store_true",
+        help=(
+            "Bit D followup F1: align v1.1's predictor.market_blend_w to "
+            "production's MARKET_BLEND_W_BY_ASSET[asset] (HYPE=0.80, "
+            "DOGE=0.60) instead of bundle's hardcoded 0.40."
+        ),
+    )
+    parser.add_argument(
         "--log-level", default="INFO",
         help="Logging level.",
     )
@@ -303,6 +330,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             asset,
             project_root=args.project_root,
             bootstrap_b=args.bootstrap_b,
+            align_w=args.align_w,
         )
     print(json.dumps(out, indent=2, default=str))
     return 0

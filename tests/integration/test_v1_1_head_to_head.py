@@ -247,6 +247,51 @@ def test_recommendation_hold_when_v1_1_worse(monkeypatch):
 # ── Defensive guard ──────────────────────────────────────────────────
 
 
+def test_align_w_overrides_predictor_market_blend_w(monkeypatch):
+    """Bit D followup F1: --align-w flag overrides predictor.market_blend_w
+    to MARKET_BLEND_W_BY_ASSET[asset] (HYPE=0.80, DOGE=0.60) so v1.1's
+    internal blend matches production's asset-specific blend (instead of
+    the bundle's hardcoded 0.40)."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
+    import v1_1_hype_doge_head_to_head as m
+
+    df = _synthetic_test_df(asset="HYPE")
+    monkeypatch.setattr(m, "_load_test_fold", lambda asset, project_root=None: df)
+    fake_predictor = MagicMock()
+    fake_predictor.market_blend_w = 0.40  # bundle default
+    fake_predictor.predict.side_effect = lambda raw_prob, **_: (
+        raw_prob, 0.05, 0.5, 1.0
+    )
+    monkeypatch.setattr(m, "_load_predictor", lambda asset, project_root=None: fake_predictor)
+
+    # With align_w=True, market_blend_w should be set to 0.80 (HYPE).
+    m.compute_brier_headtohead("HYPE", align_w=True)
+    assert fake_predictor.market_blend_w == 0.80, (
+        f"align_w=True should set predictor.market_blend_w to 0.80 (HYPE production); "
+        f"got {fake_predictor.market_blend_w}"
+    )
+
+
+def test_align_w_default_false_preserves_bundle_w(monkeypatch):
+    """Default behavior (align_w omitted) preserves bundle's market_blend_w
+    so original Bit D verdict is reproducible."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
+    import v1_1_hype_doge_head_to_head as m
+
+    df = _synthetic_test_df(asset="HYPE")
+    monkeypatch.setattr(m, "_load_test_fold", lambda asset, project_root=None: df)
+    fake_predictor = MagicMock()
+    fake_predictor.market_blend_w = 0.40
+    fake_predictor.predict.side_effect = lambda raw_prob, **_: (raw_prob, 0.05, 0.5, 1.0)
+    monkeypatch.setattr(m, "_load_predictor", lambda asset, project_root=None: fake_predictor)
+
+    m.compute_brier_headtohead("HYPE")  # default
+    assert fake_predictor.market_blend_w == 0.40, (
+        f"align_w default=False should preserve bundle market_blend_w=0.40; "
+        f"got {fake_predictor.market_blend_w}"
+    )
+
+
 def test_refuses_vps_path():
     """`_refuse_vps_path` rejects /home/botuser/ paths (Mac-only invariant)."""
     sys.path.insert(0, str(REPO_ROOT / "scripts" / "audit"))
