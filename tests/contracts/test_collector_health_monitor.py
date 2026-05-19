@@ -323,17 +323,22 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
              patch.object(mod, "check_dropped_frames", _alert):
             mod.main()
 
-    # 4 checks × 2 tiers = 8 alerts.
-    assert len(sent_calls) == 8, (
-        f"Expected 8 alert dispatches (4 checks × 2 tiers); got "
-        f"{len(sent_calls)}. Dispatch loop may have lost a tier."
+    # Post-D1.8 (2026-05-18, ticket 86ba0duck): 4 checks × 2 WS-collector
+    # tiers (Kalshi + Coinbase) + 3 checks × 1 weather-collector tier
+    # (NO ws_reconnects — HTTP polling has no WS conn) + bot tier OK
+    # (test does not patch the bot's check function) = 4 + 4 + 3 + 0 = 11.
+    assert len(sent_calls) == 11, (
+        f"Expected 11 alert dispatches (4×2 WS-collector + 3×1 "
+        f"weather-collector + 0 bot); got {len(sent_calls)}. Dispatch "
+        f"loop may have lost a tier."
     )
 
-    # Inspect the dedup keys. 4 must start with `d1_6_` (Kalshi side),
-    # 4 must start with `d2_5_` (Coinbase side).
+    # Inspect the dedup keys: 4 d1_6_ (Kalshi), 4 d2_5_ (Coinbase),
+    # 3 d1_8_ (Weather — NO ws_reconnects).
     dedup_keys = [k for _, k in sent_calls]
     kalshi_keys = [k for k in dedup_keys if k and k.startswith("d1_6_")]
     coinbase_keys = [k for k in dedup_keys if k and k.startswith("d2_5_")]
+    weather_keys = [k for k in dedup_keys if k and k.startswith("d1_8_")]
     assert len(kalshi_keys) == 4, (
         f"Expected 4 dedup keys with `d1_6_` prefix (Kalshi side); got "
         f"{len(kalshi_keys)}: {kalshi_keys}"
@@ -343,12 +348,30 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         f"got {len(coinbase_keys)}: {coinbase_keys}. The D2.5 dual-tier "
         f"dispatch was lost or its dedup-key prefix regressed."
     )
+    assert len(weather_keys) == 3, (
+        f"Expected 3 dedup keys with `d1_8_` prefix (Weather side, "
+        f"subset NO ws_reconnects); got {len(weather_keys)}: "
+        f"{weather_keys}. The D1.8 weather-tier dispatch was lost or "
+        f"its dedup-key prefix regressed."
+    )
 
-    # Per-check parity: every check_name appears under BOTH prefixes.
+    # Per-check parity: kalshi and coinbase share the same 4-check set.
     kalshi_check_names = {k.removeprefix("d1_6_") for k in kalshi_keys}
     coinbase_check_names = {k.removeprefix("d2_5_") for k in coinbase_keys}
     assert kalshi_check_names == coinbase_check_names, (
-        f"Per-check name parity broken across tiers. Kalshi side: "
-        f"{kalshi_check_names}; Coinbase side: {coinbase_check_names}. "
-        f"Every check_name must be present under BOTH dedup prefixes."
+        f"Per-check name parity broken across WS-collector tiers. "
+        f"Kalshi side: {kalshi_check_names}; Coinbase side: "
+        f"{coinbase_check_names}. Every check_name must be present "
+        f"under BOTH WS-tier dedup prefixes."
+    )
+    # Weather's 3-check subset: disk + collector_active + dropped_frames
+    # (NO ws_reconnects). The subset must be strict — adding
+    # ws_reconnects here would silently produce always-OK false negatives
+    # on the HTTP-polled tier.
+    weather_check_names = {k.removeprefix("d1_8_") for k in weather_keys}
+    expected_weather_checks = {"disk", "collector_active", "dropped_frames"}
+    assert weather_check_names == expected_weather_checks, (
+        f"Weather-tier check set mismatch. Got: {weather_check_names}; "
+        f"expected: {expected_weather_checks}. The D1.8 weather tier "
+        f"subset (NO ws_reconnects) must include exactly these 3 checks."
     )

@@ -3,10 +3,11 @@
 #   - /etc/systemd/system/kalshi-bot.service              (Bit 2.0.5.1)
 #   - /etc/systemd/system/kalshi-collector.service        (D1.5, 86b9ypna4)
 #   - /etc/systemd/system/kalshi-coinbase-collector.service (D2.5, 86b9znq4w)
+#   - /etc/systemd/system/kalshi-weather-collector.service (D1.8, 86ba0duck)
 #
 # Source of truth = ops/*.service in this directory. Re-run this
 # script after any edit to any unit file. The script is idempotent —
-# re-running just re-installs the same content for all three.
+# re-running just re-installs the same content for all four.
 #
 # Bit 2.0.5.1 of repo modularization plan
 # (kb/decisions/repo-modularization-plan-may05.md). Created in
@@ -26,6 +27,12 @@
 # dedicated .env.coinbase-collector). Three-unit parallel-array form;
 # the length-mismatch guard now expects N=3.
 #
+# D1.8 (2026-05-18, ticket 86ba0duck) extends the installer further
+# to install kalshi-weather-collector.service — the weather bronze
+# collector unit (first non-WS source; HTTP poll at 60-min cadence,
+# no CPUAffinity, 128M cap, dedicated .env.weather-collector).
+# Four-unit parallel-array form; the length-mismatch guard now expects N=4.
+#
 # This script does NOT restart the bot or collectors — operator decides
 # when. It WILL prompt for sudo password on the cp / daemon-reload /
 # enable steps; only `sudo -n /bin/systemctl restart kalshi-bot` is
@@ -33,17 +40,23 @@
 # design. A `tty -s` guard fails loudly if invoked via non-interactive
 # ssh instead of hanging on the password prompt forever.
 #
-# D2.5 PREREQUISITE NOTE: post-D2.5 the script validates ALL THREE
-# units (incl. their env-files) BEFORE any `sudo cp` lands. First-time
-# D2.5 install therefore requires `/home/botuser/.env.coinbase-collector`
-# to be provisioned per the ops/CLAUDE.md "D2.5 Coinbase collector
-# deploy" runbook BEFORE running this script. The two-pass design
-# (validate-ALL then install-ALL) prevents half-installed state — a
-# routine post-D2.5 re-install for a bot-only systemd edit still
-# requires the Coinbase env-file present. If the operator hasn't yet
-# provisioned `.env.coinbase-collector`, the per-unit FAIL hint (grep
-# for `D2.5 operator runbook` in this script's failure output) tells
-# them what to populate.
+# PREREQUISITE NOTE (post-D1.8): the script validates ALL FOUR units
+# (incl. their env-files) BEFORE any `sudo cp` lands. First-time
+# install of any newly-added unit therefore requires its dedicated
+# home-rooted env-file to be provisioned per the matching ops/CLAUDE.md
+# deploy runbook BEFORE running this script:
+#   - kalshi-collector       → /home/botuser/.env.collector
+#                              (ops/CLAUDE.md "D1.5 collector deploy")
+#   - kalshi-coinbase-collector → /home/botuser/.env.coinbase-collector
+#                              (ops/CLAUDE.md "D2.5 Coinbase collector deploy")
+#   - kalshi-weather-collector → /home/botuser/.env.weather-collector
+#                              (ops/CLAUDE.md "D1.8 weather collector deploy")
+# The two-pass design (validate-ALL then install-ALL) prevents half-
+# installed state — a routine re-install for a bot-only systemd edit
+# still requires every collector env-file present. If the operator
+# hasn't yet provisioned a required env-file, the per-unit FAIL hint
+# (grep for the matching `D<N>.<m> operator runbook` line in this
+# script's failure output) tells them what to populate.
 set -euo pipefail
 
 if ! tty -s; then
@@ -65,22 +78,28 @@ UNIT_NAMES=(
     "kalshi-bot"
     "kalshi-collector"
     "kalshi-coinbase-collector"
+    "kalshi-weather-collector"
 )
 UNIT_WRAPPERS=(
     "$REPO_ROOT/start.sh"
     "$REPO_ROOT/collector-start.sh"
     "$REPO_ROOT/coinbase-collector-start.sh"
+    "$REPO_ROOT/weather-collector-start.sh"
 )
 # Env-file paths that the unit's EnvironmentFile= directive references.
 # Bot: repo-rooted .env (existing). Kalshi collector: home-rooted
 # .env.collector (D1.5 — credential isolation, see ops/CLAUDE.md).
 # Coinbase collector: home-rooted .env.coinbase-collector (D2.5 — same
 # isolation pattern as Kalshi, separate file for separate failure
-# domain + separate credential surface).
+# domain + separate credential surface). Weather collector: home-rooted
+# .env.weather-collector (D1.8 — same isolation; no API key needed
+# since Open-Meteo is keyless, but the env file still carries bronze
+# root + rclone remote + bucket knobs that should survive deploys).
 UNIT_ENV_FILES=(
     "$REPO_ROOT/.env"
     "/home/botuser/.env.collector"
     "/home/botuser/.env.coinbase-collector"
+    "/home/botuser/.env.weather-collector"
 )
 # Expected directive lines per unit. Each entry is the literal
 # `Key=Value` line that must appear at column 0 in the source unit.
@@ -91,8 +110,10 @@ UNIT_EXPECTED_EXECSTART=(
     "ExecStart=$REPO_ROOT/start.sh"
     "ExecStart=$REPO_ROOT/collector-start.sh"
     "ExecStart=$REPO_ROOT/coinbase-collector-start.sh"
+    "ExecStart=$REPO_ROOT/weather-collector-start.sh"
 )
 UNIT_EXPECTED_WORKINGDIR=(
+    "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
@@ -101,6 +122,7 @@ UNIT_EXPECTED_ENVFILE=(
     "EnvironmentFile=$REPO_ROOT/.env"
     "EnvironmentFile=/home/botuser/.env.collector"
     "EnvironmentFile=/home/botuser/.env.coinbase-collector"
+    "EnvironmentFile=/home/botuser/.env.weather-collector"
 )
 
 # Length-mismatch guard — protects against future edits adding to one
@@ -163,6 +185,16 @@ for i in "${!UNIT_NAMES[@]}"; do
             echo "      D2.1.5 narrowed auth scope). See ops/CLAUDE.md \"D2.5 Coinbase"
             echo "      collector deploy\" + feedback_vps_sudoers_collector_gap_may17"
             echo "      (sudoers NOPASSWD extension for kalshi-coinbase-collector)."
+        elif [ "$name" = "kalshi-weather-collector" ]; then
+            echo "      D1.8 operator runbook: provision /home/botuser/.env.weather-collector"
+            echo "      with WEATHER_BRONZE_ROOT (recommended"
+            echo "      /var/lib/kalshi-weather-collector/bronze) / RCLONE_REMOTE /"
+            echo "      S3_BUCKET / WEATHER_POLL_INTERVAL_SECONDS (default 3600). No PEM"
+            echo "      or KEY_ID needed at D1.8 (Open-Meteo is free + keyless;"
+            echo "      kb-research/bot/weather-nwp-analysis.md confirms 10K req/day quota)."
+            echo "      See ops/CLAUDE.md \"D1.8 weather collector deploy\" +"
+            echo "      feedback_vps_sudoers_collector_gap_may17 (sudoers NOPASSWD extension"
+            echo "      for kalshi-weather-collector)."
         else
             echo "      Copy from .env.example and populate credentials, then re-run install.sh."
         fi
@@ -218,7 +250,8 @@ echo "Done."
 for name in "${UNIT_NAMES[@]}"; do
     echo "  Verify ${name}: systemctl cat ${name} | head -20"
 done
-echo "Restart hints (post-D2.5 deploy.yml auto-restarts kalshi-collector + kalshi-coinbase-collector on path-affecting deploys; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
+echo "Restart hints (post-D2.5 deploy.yml auto-restarts kalshi-collector + kalshi-coinbase-collector on path-affecting deploys; D1.8 weather collector is REQUIRES-APPROVAL at ship — no path-aware restart block yet, file as D1.8-fu2 if desired; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
 echo "  Bot                : sudo -n /bin/systemctl restart kalshi-bot"
 echo "  Kalshi collector   : sudo -n /bin/systemctl restart kalshi-collector  (NOPASSWD assumes operator has extended /etc/sudoers.d/botuser-systemctl-restart to include kalshi-collector; see feedback_vps_sudoers_collector_gap_may17)"
 echo "  Coinbase collector : sudo -n /bin/systemctl restart kalshi-coinbase-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-coinbase-collector; see ops/CLAUDE.md D2.5 deploy section)"
+echo "  Weather collector  : sudo -n /bin/systemctl restart kalshi-weather-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-weather-collector; see ops/CLAUDE.md D1.8 deploy section)"
