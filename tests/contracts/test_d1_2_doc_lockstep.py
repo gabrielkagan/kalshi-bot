@@ -1730,15 +1730,29 @@ STALE_PATTERNS_POST_D1_3_FU4_OOM_CLOSURE: list[str] = [
     # implies fu5 closed the whole cgroup-OOM class; retract that
     # framing.
     "opened an OOM-via-large-ack class:",
-    # R2-M2 cross-ref coverage: any post-Bit fu5 narrative that ends
-    # at "_unrouted/ bronze partition no longer receives ack frames"
-    # without the D1.3-fu4-oom-closure cross-ref leaves the reader
-    # believing the OOM-restart loop is closed. The amendment
-    # appends an IMPORTANT note + a 6th bullet; the pre-amendment
-    # tail-of-fu5 phrasing is encoded here so the ratchet fires on
-    # any sister doc that copy-pastes the pre-amendment block.
-    "operator can still observe ack activity via the new\n    "
-    "``_ack_frames_processed`` counter.\n\nNO ``bot.*`` imports",
+    # R2-M2 cross-ref coverage WAS encoded here as a multi-line
+    # needle (lines spanning the pre-amendment fu5 bullet tail +
+    # the `\n\nNO ``bot.*`` imports` separator) AND as the
+    # single-line `_ack_frames_processed counter.` anchor. Both
+    # forms were RETRACTED in R4-M1:
+    #   - The multi-line form could never match (`_scan` iterates
+    #     `splitlines()`).
+    #   - The single-line `counter.` anchor matched the POST-
+    #     amendment canonical surface itself (the IMPORTANT
+    #     qualifier was appended on the same line in
+    #     `collector/ws_connection.py:52`), so the pattern was a
+    #     self-fire false positive on the legitimate post-amendment
+    #     phrasing.
+    # The R2-M2 fix is structurally enforced by the post-amendment
+    # docstring at `collector/ws_connection.py:48-69` (the
+    # `IMPORTANT:` qualifier + the 6th D1.3-fu4-oom-closure bullet
+    # are now byte-anchored in TRACKED_DOCS) AND by the SHIPPED-
+    # status positive test below. Together these prevent the pre-
+    # amendment fu5 narrative from being copy-pasted intact without
+    # also dropping the IMPORTANT qualifier, which would fail the
+    # `"opened an OOM-via-large-ack class:"` and `"fu5 ... closed
+    # the OOM-via-ack class"` patterns ALREADY in this list. So
+    # the dedicated tail-of-fu5 anchor is no longer needed.
     # R3-M1 paraphrase coverage: `tests/contracts/test_collector_replan_stagger.py`
     # docstrings originally said "~140s" for the worst-case stagger
     # window, but production code + the test file's own assertions
