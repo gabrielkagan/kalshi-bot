@@ -209,67 +209,67 @@
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 1462,
+      "line": 1480,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 1554,
+      "line": 1572,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 1557,
+      "line": 1575,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 1793,
+      "line": 1811,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 1798,
+      "line": 1816,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 1800,
+      "line": 1818,
       "description": "Maker wait for short STC"
     },
     "EGARCH_SHADOW_MODE": {
       "value": false,
-      "line": 2031,
+      "line": 2049,
       "description": "EGARCH shadow mode"
     },
     "EGARCH_BLEND_SHADOW_MODE": {
       "value": false,
-      "line": 2061,
+      "line": 2079,
       "description": "EGARCH blend shadow mode"
     },
     "MZ_SIGMOID_SHADOW_MODE": {
       "value": true,
-      "line": 2072,
+      "line": 2090,
       "description": "Sigmoid QLIKE shadow mode"
     },
     "DRAWDOWN_HALF_THRESHOLD": {
       "value": 0.85,
-      "line": 2101,
+      "line": 2119,
       "description": "Halve sizing below this ratio"
     },
     "DRAWDOWN_QUARTER_THRESHOLD": {
       "value": 0.75,
-      "line": 2102,
+      "line": 2120,
       "description": "Quarter sizing below this ratio"
     },
     "DRAWDOWN_HALT_THRESHOLD": {
       "value": 0.65,
-      "line": 2103,
+      "line": 2121,
       "description": "Stop trading below this ratio"
     },
     "MAX_RISK_PER_TRADE": {
       "value": 0.25,
-      "line": 2105,
+      "line": 2123,
       "description": "Max bankroll fraction per trade"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -402,7 +402,7 @@
           0.0025
         ]
       ],
-      "line": 1426,
+      "line": 1444,
       "description": "Price-dependent edge schedule"
     },
     "SIZING_TIERS": {
@@ -440,13 +440,13 @@
           0.02
         ]
       ],
-      "line": 2091,
+      "line": 2109,
       "description": "Edge-tiered sizing schedule"
     }
   },
-  "_combined_source_lines": 2105,
+  "_combined_source_lines": 2123,
   "_exchange_feeds": [],
-  "_extracted_at": "2026-05-19T17:56:20Z",
+  "_extracted_at": "2026-05-19T18:49:34Z",
   "_sources": [
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/constants.py",
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/config.py"

@@ -56,7 +56,7 @@ The third structural fact is that the entire platform is **operated by one perso
 
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
-> **Live trading snapshot (auto-updated, last refresh 2026-05-19T17:56:18Z):**
+> **Live trading snapshot (auto-updated, last refresh 2026-05-19T18:49:32Z):**
 >
 > - **4,522** settled trades since 2026-02-22 — 4,185W / 335L / 2 BE; win rate 92.5\%
 > - Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
@@ -506,4 +506,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-19T17:56:18Z*
+*Last updated: 2026-05-19T18:49:32Z*
