@@ -116,6 +116,19 @@ _PER_CONN_CMD_ID_STRIDE: int = 100_000
 # 6 × 20s = 120s; well under DEFAULT_REFRESH_INTERVAL_SECONDS=3600 (no
 # overlap with next REST tick). See
 # kb/decisions/d1-3-fu4-oom-closure-plan.md §RCA for the derivation.
+#
+# D1.3-fu4-boot-stagger (2026-05-19, post-PR-#110 follow-up): this
+# constant is ALSO reused as the default `archiver.start()` stagger
+# interval at boot via `_start_archivers_staggered`. Post-PR-#110
+# deploy verification measured cgroup memory peak at 510.7 MiB /
+# 512 MiB (99.7%) within ~30s of boot, confirming the boot subscribe-
+# burst hits the same OOM-precursor mechanism the REST-refresh path
+# does. Single source of truth: both call sites read this same
+# constant by design (the boot mechanism is identical to the refresh
+# mechanism; same value applies). See
+# kb/decisions/d1-3-fu4-boot-stagger-plan.md §RCA for the boot-side
+# mechanism trace. Pinned by
+# `tests/contracts/test_collector_boot_stagger.py::test_boot_stagger_default_matches_reconnect_constant`.
 _RECONNECT_STAGGER_SECONDS: float = 20.0
 
 
@@ -809,10 +822,19 @@ def run(
             archivers, shutdown_event=shutdown_event,
         )
         if n_started < len(archivers):
+            # R1-m1: helper decrements `started` ONLY when
+            # shutdown_event.wait() fires OR archiver.start() raises.
+            # Differentiate the two by checking the event so the
+            # WARNING text accurately reflects which path triggered
+            # the partial boot.
+            if shutdown_event.is_set():
+                reason = "shutdown fired mid-boot"
+            else:
+                reason = "archiver.start() raised on at least one conn"
             logger.warning(
-                "Boot: only %d of %d archivers started (shutdown fired "
-                "mid-boot); proceeding to refresher.start() + shutdown.",
-                n_started, len(archivers),
+                "Boot: only %d of %d archivers started (%s); proceeding "
+                "to refresher.start() + shutdown.",
+                n_started, len(archivers), reason,
             )
         if refresher is not None:
             refresher.start()

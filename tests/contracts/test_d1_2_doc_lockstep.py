@@ -112,6 +112,16 @@ TRACKED_DOCS: list[Path] = [
     # test file to TRACKED_DOCS so the L99 ratchet covers any future
     # drift on the file's docstring + comments.
     REPO_ROOT / "tests" / "contracts" / "test_collector_replan_stagger.py",
+    # D1.3-fu4-boot-stagger R1-M1 (2026-05-19): the boot-stagger
+    # contract test file is the canonical pin for the
+    # `_start_archivers_staggered` boot-loop surface (7 tests
+    # covering helper-exists + dispatch preservation + wall-clock
+    # stagger + no-leading-stagger + cancellability + return-count
+    # + constant-reuse). Same pattern as the replan-stagger test
+    # file inclusion above — adding to TRACKED_DOCS so the L99
+    # ratchet covers any future drift on the file's docstring +
+    # comments.
+    REPO_ROOT / "tests" / "contracts" / "test_collector_boot_stagger.py",
     # D1.6 fu R1-M5: monitor + sidecar narrative surfaces. The 144 LOC
     # added to collector_health_monitor.py + the new contract test file
     # carry the dropped-frames/STALE/SCHEMA alert documentation; close
@@ -1838,6 +1848,105 @@ def test_d1_3_fu4_oom_closure_shipped_status_in_at_least_one_tracked_doc():
             matched_docs.append(str(doc.relative_to(REPO_ROOT)))
     assert matched_docs, (
         "No tracked doc claims D1.3-fu4-oom-closure SHIPPED — "
+        "staleness ratchets clean but nothing affirms the ship. "
+        "Update at least one of:\n  "
+        + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
+    )
+
+
+# ─── D1.3-fu4-boot-stagger (staggered archiver.start() boot loop, 2026-05-19) ──
+#
+# Post-PR-#110 follow-up. Extends the same stagger pattern to the boot
+# for-loop `for archiver in archivers: archiver.start()` via new helper
+# `_start_archivers_staggered`. The mechanism is identical to the
+# REST-refresh-side stagger (concurrent ack-PARSE peak across asyncio
+# threads); the constant `_RECONNECT_STAGGER_SECONDS` is shared between
+# both call sites as single source of truth. See
+# kb/decisions/d1-3-fu4-boot-stagger-plan.md for the boot-peak mechanism
+# trace (cgroup memory peak 510.7M / 512M = 99.7% measured post-PR-#110
+# deploy on 2026-05-19 11:42 UTC).
+
+STALE_PATTERNS_POST_D1_3_FU4_BOOT_STAGGER: list[str] = [
+    # Pre-Bit boot for-loop literal — retracted by extraction into
+    # `_start_archivers_staggered` helper.
+    "for archiver in archivers:\n            archiver.start()",
+    # Pre-Bit Step 6 comment from run() — retracted by stagger note.
+    "Step 6 — start all archivers, then block until shutdown.",
+    # Pre-Bit boot-time-cost framing (the <100ms tight-loop claim is
+    # specifically what the L99 PARANOID-day-1 ratchet retracts).
+    "all archivers start near-simultaneously at boot",
+    "the boot for-loop completes in <100ms",
+    "boot subscribe burst is unbounded across conns",
+    "start each archiver without delay",
+    "boot for-loop dispatches archiver.start in tight succession",
+    # Pre-Bit Step 6 docstring phrase (the `;` + ` main` suffix narrows
+    # the pattern to the EXACT pre-amendment shape and avoids firing on
+    # the legitimate post-amendment "via ``_start_archivers_staggered``"
+    # form which has a different surrounding context).
+    "Hand control to per-conn ``BronzeArchiver.start()``; main",
+]
+
+
+@pytest.mark.parametrize(
+    "pattern", STALE_PATTERNS_POST_D1_3_FU4_BOOT_STAGGER,
+)
+def test_no_post_d1_3_fu4_boot_stagger_stale_forward_looking_phrase(
+    pattern: str,
+):
+    """No tracked doc should still carry a D1.3-fu4-boot-stagger-pending
+    phrase after the Bit shipped.
+
+    L99 PARANOID-at-day-1 ratchet extension for D1.3-fu4-boot-stagger.
+    Same lesson as D1.3-fu4 / D1.3-fu4-oom-closure / D1.4 / D1.5 R1-M4:
+    encode retracted prose at ship time so sister-doc drift cannot
+    re-introduce it via copy-paste from a pre-Bit git blame.
+
+    NOTE: pattern matching is plain substring (not regex). The `_scan`
+    helper iterates `splitlines()` so multi-line needles are dead
+    code (see R4-M1 in D1.3-fu4-oom-closure history). All entries
+    above are single-line.
+    """
+    findings: list[str] = []
+    for doc in TRACKED_DOCS:
+        for lineno, line in _scan(doc, pattern):
+            findings.append(f"{doc.relative_to(REPO_ROOT)}:{lineno}: {line}")
+    assert not findings, (
+        f"Stale D1.3-fu4-boot-stagger-pending phrasing detected "
+        f"(pattern {pattern!r}):\n"
+        + "\n".join(findings)
+        + "\n\nL99 lesson: lockstep ratchets must have PARANOID "
+        "pattern coverage from day-1. If THIS pattern is a legitimate "
+        "forward-looking phrase for a subsequent Bit, narrow it (add "
+        "a qualifier that won't match historical D1.3-fu4-boot-stagger "
+        "prose)."
+    )
+
+
+def test_d1_3_fu4_boot_stagger_shipped_status_in_at_least_one_tracked_doc():
+    """Positive assertion: at least one tracked doc explicitly marks
+    D1.3-fu4-boot-stagger as SHIPPED. Catches the inverse failure mode
+    where staleness patterns pass (no mention at all) but the docs
+    haven't been updated to claim D1.3-fu4-boot-stagger SHIPPED.
+
+    Parallel of D1.3-fu4-oom-closure shipped-status pin above. The
+    `-boot-stagger` suffix is the structural disambiguator from both
+    the 2026-05-17 D1.3-fu4 worker-thread decouple AND the 2026-05-19
+    D1.3-fu4-oom-closure ship.
+    """
+    shipped_re = re.compile(
+        r"D1\.3-fu4-boot-stagger\s+SHIPPED|"
+        r"D1\.3-fu4-boot-stagger.*shipped|"
+        r"shipped.*D1\.3-fu4-boot-stagger",
+        re.IGNORECASE,
+    )
+    matched_docs: list[str] = []
+    for doc in TRACKED_DOCS:
+        if not doc.is_file():
+            continue
+        if shipped_re.search(doc.read_text()):
+            matched_docs.append(str(doc.relative_to(REPO_ROOT)))
+    assert matched_docs, (
+        "No tracked doc claims D1.3-fu4-boot-stagger SHIPPED — "
         "staleness ratchets clean but nothing affirms the ship. "
         "Update at least one of:\n  "
         + "\n  ".join(str(d.relative_to(REPO_ROOT)) for d in TRACKED_DOCS)
