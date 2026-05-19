@@ -54,6 +54,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
 
 
+@pytest.fixture(autouse=True)
+def _disable_kill_switch_for_calibration_assertions(monkeypatch):
+    """Most tests in this file exercise the calibration math under the
+    assumption that the helper does NOT short-circuit. The wholesale
+    kill switch `BAND_CALIBRATION_KILL_SWITCH` defaults to True post
+    2026-05-19 (ticket 86b9znd21), so we flip it OFF here per-test.
+    The dedicated `test_kill_switch_*` tests below either pin against
+    the source literal (default-is-True) or explicitly re-set the
+    runtime constant to True inside the test body."""
+    from bot.helpers import band_calibration as bc
+    monkeypatch.setattr(bc, "BAND_CALIBRATION_KILL_SWITCH", False)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Anchor data — frozen 2026-05-17 09:35 UTC against state.db sync from VPS
 # HEAD=e3aecd4. Hybrid lookback (operator decision 2026-05-17):
@@ -328,6 +341,53 @@ def test_disabled_cells_escape_hatch():
         )
     finally:
         bc.BAND_CALIBRATION_DISABLED_CELLS.discard(("DOGE", "86-89"))
+
+
+# Kill switch (ticket 86b9znd21, 2026-05-19).
+
+
+def test_kill_switch_default_is_true_wholesale_disable():
+    """`BAND_CALIBRATION_KILL_SWITCH` source-level default must be True
+    (ticket 86b9znd21, 2026-05-19): the helper short-circuits to raw_prob
+    for ALL cells unconditionally, reverting 15M Kelly sizing to pre-P4.1
+    behavior without unwiring the 10 call sites. Source-level pin (NOT
+    runtime) because the autouse fixture below monkeypatches the runtime
+    constant to False for calibration-math assertions in this file."""
+    import bot.helpers.band_calibration as bc
+    from pathlib import Path
+    src = Path(bc.__file__).read_text()
+    expected = "BAND_CALIBRATION_KILL_SWITCH: bool = True"
+    assert expected in src, (
+        f"expected '{expected}' literal in "
+        f"bot/helpers/band_calibration.py source — the wholesale kill "
+        f"switch must default True until soak data re-enables P4.1"
+    )
+
+
+def test_kill_switch_short_circuits_helper_to_raw_prob():
+    """When `BAND_CALIBRATION_KILL_SWITCH` is True, `calibrated_prob_for_sizing`
+    returns `raw_prob` for ALL inputs unconditionally — regardless of
+    asset/band/product_type/DISABLED_CELLS state. This is the wholesale
+    revert to pre-P4.1 behavior."""
+    from bot.helpers import band_calibration as bc
+    # Explicitly set True (overrides the file-level autouse fixture for
+    # this test only; the fixture's monkeypatch teardown restores it).
+    bc.BAND_CALIBRATION_KILL_SWITCH = True
+    # In-table DOGE 86c → kill switch wins over calibrated 0.8058.
+    out = bc.calibrated_prob_for_sizing("DOGE", 86, raw_prob=0.81, product_type="15m")
+    assert out == 0.81, (
+        f"kill switch must short-circuit in-table cell ('DOGE','86-89') to "
+        f"raw_prob; got {out}"
+    )
+    # In-table BTC 99c → kill switch wins over calibrated 1.0.
+    out2 = bc.calibrated_prob_for_sizing("BTC", 99, raw_prob=0.90, product_type="15m")
+    assert out2 == 0.90, (
+        f"kill switch must short-circuit in-table cell ('BTC','99') to "
+        f"raw_prob; got {out2}"
+    )
+    # Non-15M product type already passes through; kill switch is a no-op there.
+    out3 = bc.calibrated_prob_for_sizing("BTC", 90, raw_prob=0.85, product_type="hourly")
+    assert out3 == 0.85
 
 
 def test_helper_passes_through_for_unknown_asset(caplog):

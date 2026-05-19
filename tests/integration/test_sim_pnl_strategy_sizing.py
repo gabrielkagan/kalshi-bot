@@ -640,7 +640,7 @@ def test_strategy_size_weekend_discount_fallback_boundary_at_zero_edge():
     )
 
 
-def test_calibrated_edge_for_sizing_sol_91c_negative():
+def test_calibrated_edge_for_sizing_sol_91c_negative(monkeypatch):
     """Regression: deeper parity. The SOL 91c shape (raw p_mean positive,
     band-calibrated Kelly negative) must produce a NEGATIVE edge_frac
     through the new `_calibrated_edge_for_sizing` helper, which mirrors
@@ -654,8 +654,13 @@ def test_calibrated_edge_for_sizing_sol_91c_negative():
     breakeven=0.91 with taker fee ~0.7c → fee_frac ~0.007 → calibrated
     edge_frac = 0.8540 - 0.91 - 0.007 = -0.063. Negative.
 
-    Ticket 86b9zk3at.
+    Ticket 86b9zk3at. Kill switch (86b9znd21, 2026-05-19) disabled at
+    runtime here so this regression continues to validate the
+    underlying calibration math even though prod has the wholesale
+    wrap short-circuited.
     """
+    from bot.helpers import band_calibration as bc
+    monkeypatch.setattr(bc, "BAND_CALIBRATION_KILL_SWITCH", False)
     import sim_pnl
 
     # SOL 91c, raw p_mean ~0.99 (high), band-calibrated → 0.8540

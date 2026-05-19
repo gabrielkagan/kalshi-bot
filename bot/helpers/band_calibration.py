@@ -171,6 +171,17 @@ _warned_missing_cells: set = set()
 # here, also file the per-cell rollback note in the soak-monitoring ticket.
 BAND_CALIBRATION_DISABLED_CELLS: set = set()
 
+# Wholesale kill switch (ticket 86b9znd21, flipped 2026-05-19): when True the
+# helper short-circuits to `raw_prob` for ALL inputs unconditionally, which
+# reverts 15M Kelly sizing to pre-P4.1 behavior without unwiring the 10 call
+# sites. Flip back to False to re-engage band calibration once soak data
+# supports it. Rationale: 2d post-ship corrected-PnL for wrapped strategies
+# (`main` n=8 -$24, `decided` n=59 -$14) plus the 2026-05-17 rolling-backtest
+# conclusion ("all approaches lose; signal noise") argues against keeping
+# the wrap engaged through the original 2026-05-31 soak window. Cell-level
+# escape via `BAND_CALIBRATION_DISABLED_CELLS` remains.
+BAND_CALIBRATION_KILL_SWITCH: bool = True
+
 
 def _reset_warning_cache_for_tests() -> None:
     """Test seam: clear the one-time-warning cache between caplog runs."""
@@ -218,6 +229,8 @@ def calibrated_prob_for_sizing(
       This helper only changes the Kelly *magnitude*, not the
       should-we-trade decision.
     """
+    if BAND_CALIBRATION_KILL_SWITCH:
+        return raw_prob
     if product_type not in _KNOWN_15M_PRODUCT_TYPES:
         return raw_prob
     band = _classify_band(market_price_cents)
