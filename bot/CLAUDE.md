@@ -151,7 +151,17 @@ site) and `StateManager.mark_rejection_settled` (the
 settlement_tracker-thread UPDATE+commit site). Full cross-thread
 refactor (process-wide write lock or dedicated conn for settlement)
 is OUT OF SCOPE for B3-fu1 — deferred for a future Bit if the
-race surface widens.
+race surface widens. **86ba0jb1g (2026-05-19) extended the same
+retry-on-busy + B3-fu1 commit-race swallow to
+`StateManager.insert_bot_order` after a `database is locked`
+production trace at 07:42:37 UTC reached the order-ledger path.
+Crash-safety divergence: `insert_bot_order` RE-RAISES on retry
+exhaustion (and on stale-tx) — telemetry rows can be lost via the
+sister's outer `except Exception` WARNING swallow, but order rows
+must not, per `tests/integration/test_execution.py
+::test_maker_persists_to_db_before_api` ("DB persist must happen
+before API call"). Pinned by
+`tests/integration/test_insert_bot_order_defensive_guard_regression.py`.**
 
 - New `sqlite3.connect()`: set `PRAGMA journal_mode=WAL` +
   `PRAGMA busy_timeout=10000`. Catch the contention bugs early.
