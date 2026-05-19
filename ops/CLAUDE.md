@@ -47,9 +47,9 @@ One-time bucket + IAM + lifecycle setup is operator-only — see `scripts/STATE_
 
 ## market_observations_continuous archive (ticket 86b9xcdwg)
 
-`market_observations_continuous` is the only retention-pruned table on the VPS — the hourly retention sweep DELETEs rows older than 5 days (`bot/snapshots/market_observations_snapshotter.py::_retention_sweep`; tightened from 14d to 5d by ticket 86ba0jb39 2026-05-19 to reduce executemany lock-hold tail). Without archival, ~41.5K NBBO rows/day are permanently lost. Nightly archive shipped via:
+`market_observations_continuous` is the only retention-pruned table on the VPS — the hourly retention sweep DELETEs rows older than 14 days (`bot/snapshots/market_observations_snapshotter.py:539-575`). Without archival, ~35K NBBO rows/day are permanently lost. Nightly archive shipped via:
 
-- `kalshi-market-obs-archive.{service,timer}` — daily 05:30 UTC (unchanged by 86b9zkp89; weekly market_obs volume is tiny and per-day archival is sufficient). Falls between the 04:00 and 08:00 every-4h state.db backup ticks. Reads rows for `target_date = today_utc - 4d` (day 4 of the 5d retention window — rows still exist for ≥1 more day) via a read-only SQLite connection, writes Parquet with internal zstd, then `rclone copyto s3prod:kalshi-bot-archive/market_obs/YYYY-MM-DD.parquet.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+- `kalshi-market-obs-archive.{service,timer}` — daily 05:30 UTC (unchanged by 86b9zkp89; weekly market_obs volume is tiny and per-day archival is sufficient). Falls between the 04:00 and 08:00 every-4h state.db backup ticks. Reads rows for `target_date = today_utc - 13d` (day 13 of the 14d window — rows still exist for ≥1 more day) via a read-only SQLite connection, writes Parquet with internal zstd, then `rclone copyto s3prod:kalshi-bot-archive/market_obs/YYYY-MM-DD.parquet.zst`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
 
 Idempotent: same date = S3 object overwrite. Bucket lifecycle routes `market_obs/` to Glacier IR from day 0 (rarely read, but want instant retrieval for research). Cost ~$0.02/mo at year 5.
 
@@ -324,6 +324,31 @@ sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
 - `check_collector_active` — `systemctl is-active` gate
 - `check_dropped_frames` — schema-parity with Kalshi+Coinbase sidecars (weather has no worker-queue drops by design; sidecar emits `total_dropped_frames=0` unconditionally)
 - NOT `check_ws_reconnects` — HTTP polling has no persistent WS connection; a log-marker filter would never match (always-OK false negative).
+
+## Phantom reconcile cron (TBD, 2026-05-19)
+
+`scripts/ops/phantom_reconcile_monitor.py` is the hourly cron-driven Telegram-alerting wrapper around `scripts/audit/phantom_pnl_audit.py`. Pre-this-Bit the audit was manual-only (operator ran `--run-id may18` on 2026-05-18; nothing since); per-PnL phantom drift was silently accumulating. Memory record `feedback_use_corrected_pnl_always` confirms the magnitude (2026-05-18: raw 7d -$98.92 vs corrected -$39.02; $60 swing on one ticker).
+
+Operator install:
+```
+crontab -e
+# Add (offset 7 min past the hour to avoid auditor.py at :00):
+7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> /var/log/phantom_reconcile.log 2>&1
+```
+
+Pre-install operator checks:
+- `~/.env` exports `KALSHI_API_KEY` (or `KALSHI_API_KEY_ID`) + `KALSHI_PRIVATE_KEY_PATH` + `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`.
+- `botuser` can write `/var/log/phantom_reconcile.log` (touch + chown if needed).
+- `~/kalshi-bot-repo/phantom_reconcile_dedup.json` writable (auto-created on first run).
+
+Three alert classes with day-stable cross-process dedup via JSON sidecar at `./phantom_reconcile_dedup.json` (configurable via `PHANTOM_RECONCILE_DEDUP_PATH` env or `--dedup-sidecar`):
+- **SUMMARY** (prefix `phantom_reconcile_summary`) — aggregated material drift `|delta_pnl_cents| >= $5`, top 5 by |Δpnl|.
+- **UNVERIFIED** (prefix `phantom_reconcile_unverified`) — Kalshi REST left ≥50% (ticker, side) pairs unverified (visibility-degraded signal; closes the silent-fail class where n_divergent=0 looks healthy but really we're blind).
+- **CRASH** (prefix `phantom_reconcile_crash`) — auditor itself raised `Exception` (NOT `BaseException` — `KeyboardInterrupt` / `SystemExit` propagate so operator Ctrl-C aborts cleanly and missing-env `sys.exit(1)` from `load_client()` lands in journalctl).
+
+`audit_run_id` is day-granular `auto-YYYY-MM-DD` (UTC). 24 hourly cron firings within a UTC day share one run_id; `INSERT OR REPLACE` on `UNIQUE(audit_run_id, ticker, side)` keeps `phantom_corrections` to AT MOST one row per (day, ticker, side). Downstream LEFT JOIN consumers see no row multiplication. The `auto-` prefix namespace-isolates from operator manual `--run-id <name>` runs.
+
+Cron convention: always exits 0 (cron's mail-spool reservation; signal goes via Telegram, not exit code).
 
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
