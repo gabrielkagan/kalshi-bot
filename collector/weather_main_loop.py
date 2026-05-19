@@ -276,8 +276,11 @@ def run(
 
     Boot sequence:
       1. Resolve config (env vars, with explicit args overriding).
-      2. Restart sweep: re-upload any leftover outbox/ chunks across
-         the entire bronze tree (D0.3 §7 last paragraph).
+      2. Restart sweep: re-upload any leftover outbox/ chunks AND
+         re-rotate bare-in_flight_<usec>.jsonl orphans across the entire
+         bronze tree (D0.3 §7 last paragraph + B-orphan-sweep AMENDMENT
+         2026-05-19 ticket 86ba0jmz9 — symmetric salvage across both
+         chunk-pair sides via uploader.salvage_in_flight_orphans).
       3. Allocate per-channel writers (one per channel in
          ``DEFAULT_CHANNELS``).
       4. Construct WeatherArchiver wired to the writers dict.
