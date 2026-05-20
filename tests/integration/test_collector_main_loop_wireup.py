@@ -6,7 +6,9 @@ boot-time wire-up:
   envelope (kalshi_wire.build_envelope shape)
       │
       ▼
-  BronzeWriter.write(envelope)  ─► JSONL append + flush
+  BronzeWriter.write(envelope, wire_recv_ts=...)  ─► JSONL append
+      (post-P1-A 2026-05-20 ticket 86ba1pqqx: no per-frame flush;
+       flush + fsync deferred to rotation/close per D0.3 §7)
       │
       ▼ (rotation triggered by size cap)
   rotated_outbox_paths.append((outbox_path, in_flight_renamed))

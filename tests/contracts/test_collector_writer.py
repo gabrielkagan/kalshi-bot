@@ -384,6 +384,14 @@ def test_writer_appends_to_in_flight_until_rotate(tmp_path: Path):
     rotation, all frames land in one growing .jsonl. Test pins the
     one-file invariant for a small N writes well below the 100MB / 5min
     rotation thresholds.
+
+    Post-P1-A (ticket 86ba1pqqx, 2026-05-20) the writer no longer
+    fflushes per-frame, so reading the in-flight file from a separate
+    fd may see empty until the writer flushes (at rotation or close).
+    The test explicitly forces a buffered flush via the writer's own
+    file handle to verify the on-disk content WITHOUT triggering
+    rotation. The "one file" invariant under the rotation thresholds
+    is what's being pinned; the flush is test-scaffolding only.
     """
     writer = BronzeWriter(
         root_dir=tmp_path,
@@ -397,7 +405,13 @@ def test_writer_appends_to_in_flight_until_rotate(tmp_path: Path):
             wire_recv_ts=base_ts.replace(microsecond=base_ts.microsecond + i),
             raw_payload=f'{{"i":{i}}}',
         )
-    # DO NOT call writer.close() — closing forces rotation.
+    # P1-A: force a buffered flush so the on-disk content reflects the
+    # writes. This is test scaffolding — production callers rely on
+    # rotation (or close) to durably persist; per-frame flush was the
+    # 2026-05-20 hot-path waste removed for ~thousands of syscalls/sec.
+    # DO NOT call writer.close() — closing forces rotation, which would
+    # break the "one in-flight file pre-rotation" invariant being pinned.
+    writer._in_flight_fh.flush()
     in_flights = list(tmp_path.rglob("*.jsonl"))
     assert len(in_flights) == 1, (
         f"expected 1 in-flight .jsonl, got {len(in_flights)}: {in_flights}. "

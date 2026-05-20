@@ -3,6 +3,7 @@ websocket-client
 websockets
 cryptography
 zstandard
+orjson
 scipy
 numpy
 lightgbm

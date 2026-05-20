@@ -26,13 +26,13 @@ Contract pins:
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import orjson
 import zstandard as zstd
 
 from kalshi_wire.ws_client import build_envelope
@@ -47,6 +47,17 @@ ROTATION_SIZE_BYTES: int = 100 * 1024 * 1024          # 100 MB
 # speed-vs-ratio sweet spot. Operator-side silver backfill (D1.8) may
 # use level 9-19 separately.
 _ZSTD_LEVEL: int = 6
+
+# P1-A (ticket 86ba1pqqx, 2026-05-20) — envelope re-validation gate.
+# The producer (BronzeArchiver._on_frame) constructs the envelope from
+# the SAME (source, channel, conn) constants 2 lines earlier; the
+# writer's re-check cannot mismatch in production. Gating saves 3 dict
+# lookups + 3 cmps per frame. Default True under __debug__ (tests run
+# with assertions enabled; CPython prod can pass -O to strip), False
+# explicitly under -O. Tests that exercise the validation path can
+# patch this flag locally. Pinned by
+# tests/contracts/test_collector_writer_p1a_hotpath.py::test_write_envelope_revalidation_is_gated.
+_VALIDATE_ENVELOPE: bool = __debug__
 
 
 class BronzeWriter:
@@ -109,48 +120,68 @@ class BronzeWriter:
 
     # ── Public API ──────────────────────────────────────────────────────
 
-    def write(self, envelope: Dict[str, Any]) -> None:
+    def write(
+        self,
+        envelope: Dict[str, Any],
+        *,
+        wire_recv_ts: Optional[datetime] = None,
+    ) -> None:
         """Append a pre-built bronze envelope as one JSONL line.
 
-        This is the production seam called by ``BronzeArchiver._on_frame``
-        with envelopes from ``kalshi_wire.build_envelope`` — kalshi_wire
-        owns envelope construction (D0.3 §5 AMENDMENT 2026-05-16 "two
-        sides of the same coin"). The writer is a dumb persister.
+        This is the production seam called by ``BronzeArchiver._drain_loop``
+        (post-D1.3-fu4 worker thread; pre-fu4 the call was on the asyncio
+        thread from ``_on_frame``) with envelopes from
+        ``kalshi_wire.build_envelope`` — kalshi_wire owns envelope
+        construction (D0.3 §5 AMENDMENT 2026-05-16 "two sides of the same
+        coin"). The writer is a dumb persister.
 
-        Validates that ``_source``/``_channel``/``_conn`` match the
-        writer's constructor args — silver-ETL dispatch must see a
-        consistent partition vs. envelope-field invariant. A mismatch
-        means the caller routed a frame to the wrong writer instance;
-        raise rather than silently corrupt the bronze.
+        Args:
+            envelope: pre-built 6-field bronze envelope (D0.3 §2).
+            wire_recv_ts: P1-A (ticket 86ba1pqqx, 2026-05-20) — caller
+                may pass the source datetime directly to skip the
+                per-frame ``strptime`` round-trip of the ISO string the
+                same process serialized in ``build_envelope``. Saves
+                15-25% per-frame worker CPU. Defaults to ``None``
+                (back-compat with callers that don't yet pass it —
+                tests + ``write_frame`` — which fall back to parsing).
+
+        Under ``__debug__`` (or when ``_VALIDATE_ENVELOPE`` is True),
+        validates that ``_source``/``_channel``/``_conn`` match the
+        writer's constructor args — defends against routing bugs in
+        test fixtures. Skipped in -O production runs since the producer
+        constructs the envelope from the SAME constants 2 lines earlier
+        and cannot mismatch.
 
         Triggers rotation BEFORE the write if either the time or size
         threshold has been exceeded for the currently-open in-flight.
         """
-        if envelope.get("_source") != self.source:
-            raise ValueError(
-                f"envelope _source={envelope.get('_source')!r} does not "
-                f"match writer.source={self.source!r}. Each writer is "
-                f"scoped to one (source, channel, conn) partition."
-            )
-        if envelope.get("_channel") != self.channel:
-            raise ValueError(
-                f"envelope _channel={envelope.get('_channel')!r} does not "
-                f"match writer.channel={self.channel!r}."
-            )
-        if envelope.get("_conn") != self.conn:
-            raise ValueError(
-                f"envelope _conn={envelope.get('_conn')!r} does not "
-                f"match writer.conn={self.conn!r}."
-            )
+        if _VALIDATE_ENVELOPE:
+            if envelope.get("_source") != self.source:
+                raise ValueError(
+                    f"envelope _source={envelope.get('_source')!r} does not "
+                    f"match writer.source={self.source!r}. Each writer is "
+                    f"scoped to one (source, channel, conn) partition."
+                )
+            if envelope.get("_channel") != self.channel:
+                raise ValueError(
+                    f"envelope _channel={envelope.get('_channel')!r} does not "
+                    f"match writer.channel={self.channel!r}."
+                )
+            if envelope.get("_conn") != self.conn:
+                raise ValueError(
+                    f"envelope _conn={envelope.get('_conn')!r} does not "
+                    f"match writer.conn={self.conn!r}."
+                )
 
-        # Extract wire_recv_ts for rotation + partition logic. Envelope
-        # carries the ISO-8601-UTC-µs string; we parse back into a
-        # datetime for the rotation triggers / hive-partition derivation.
-        ts_str = envelope["_wire_recv_ts"]
-        # strptime+microsecond %f handles the trailing Z by replace.
-        wire_recv_ts = datetime.strptime(
-            ts_str, "%Y-%m-%dT%H:%M:%S.%fZ"
-        ).replace(tzinfo=timezone.utc)
+        # P1-A fix #1: prefer the caller-supplied datetime (production
+        # path via BronzeArchiver._on_frame) over the strptime round-trip
+        # (back-compat path for tests + write_frame helpers).
+        if wire_recv_ts is None:
+            ts_str = envelope["_wire_recv_ts"]
+            # strptime+microsecond %f handles the trailing Z by replace.
+            wire_recv_ts = datetime.strptime(
+                ts_str, "%Y-%m-%dT%H:%M:%S.%fZ"
+            ).replace(tzinfo=timezone.utc)
         seq = int(envelope["_collector_seq"])
 
         # Check rotation triggers against the EXISTING in-flight (if any).
@@ -163,14 +194,19 @@ class BronzeWriter:
             # partition on the frame ts, not wall-clock-at-open.
             self._open_in_flight(seed_ts=wire_recv_ts)
 
-        line = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False) + "\n"
-        line_bytes = line.encode("utf-8")
+        # P1-A fix #3: orjson.dumps is 3-5× faster than stdlib json,
+        # returns bytes directly (no .encode("utf-8") needed), releases
+        # GIL identically. Envelope value types (str/int/None/dict) are
+        # all natively supported.
+        line_bytes = orjson.dumps(envelope) + b"\n"
         self._in_flight_fh.write(line_bytes)
-        # Flush to OS so concurrent readers (silver QA tooling running
-        # in parallel on the same host) see the bytes immediately. Does
-        # NOT fsync — bronze durability is the uploader's contract
-        # (D0.3 §7 fsyncs at rotation time before zstd-compress).
-        self._in_flight_fh.flush()
+        # P1-A fix #2: per-frame flush REMOVED. D0.3 §7 says bronze
+        # durability is the uploader's contract at rotation time
+        # (_rotate flushes + fsyncs + zstd-compresses). Per-frame flush
+        # was thousands of syscalls/sec across N writers for zero
+        # invariant benefit — data lands in the kernel page cache after
+        # fh.write() either way, and power-fail loses unflushed data
+        # regardless (no fsync happened).
         self._in_flight_bytes += len(line_bytes)
 
         if self._frame_ts_first is None:
