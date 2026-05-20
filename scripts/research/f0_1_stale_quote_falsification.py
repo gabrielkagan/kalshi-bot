@@ -12,8 +12,11 @@ Umbrella: kb/decisions/ct-mdp-attack-alpha-program-plan.md (ticket 86ba18zbv)
 Hypothesis:
   Kalshi NBBO refreshes lag Coinbase price moves. During the lag, the
   resting Kalshi quote is takeable at a price inconsistent with current
-  spot. Sum-of-(dislocation × duration × size × hit_probability) over the
-  available data window estimates the annual ceiling on Attack #1.
+  spot. Sum-of-(|dislocation| × min(size, MAX_TAKE) × hit_probability)
+  over the available data window estimates the annual ceiling on
+  Attack #1. (`duration` is recorded as honest-reporting metadata but
+  is NOT a multiplicative factor in the per-event value — see
+  `_compute_event_record` docstring + plan-doc § Method L74.)
 
 Methodology note (per R1 RCA on cache_age_ms semantics):
   `cache_age_ms` from market_observations_continuous is a CONFIRMATION
@@ -31,9 +34,14 @@ Kill threshold (per ticket 86ba18zg8):
   If 95th-pct ceiling across 7 assets < $5K/yr, kill Attack #1.
 
 Data sources (per RCA at plan-doc kickoff 2026-05-20):
-  - market_observations_continuous: ~5d of Kalshi NBBO + cache_age_ms.
-  - evaluated_opportunities: spot at decision moments (sparser cadence).
-  - settled_trades: 7-asset universe + 15m window mapping.
+  - market_observations_continuous: ~5d of Kalshi NBBO + cache_age_ms
+    (primary spine).
+  - evaluated_opportunities: Coinbase spot at decision moments
+    (cross-asset cadence ~30s) — drives σ-event detection per the R2-M2
+    empirical.
+  - 7-asset universe is pinned in-script at `ASSET_TICKER_PREFIX` (not
+    derived from settled_trades — F0.1 does not consume any settled
+    outcomes).
 
 Run:
   python3 scripts/research/f0_1_stale_quote_falsification.py --db state.db
@@ -43,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import math
 import random
 import sqlite3
 from collections import defaultdict
@@ -74,12 +83,9 @@ EVAL_OPPS_SPOT_COLUMNS: tuple[str, ...] = (
     "bnb_spot_at_decision",
 )
 
-SETTLED_TRADES_REQUIRED_COLUMNS: tuple[str, ...] = (
-    "asset",
-    "settled_at",
-    "ticker",
-    "event_ticker",
-)
+# SETTLED_TRADES_REQUIRED_COLUMNS removed at R1-M2: the constant was declared
+# + test-pinned but `settled_trades` is never queried by the F0.1 pipeline.
+# The 7-asset universe lives in `ASSET_TICKER_PREFIX` (below).
 
 
 def _parse_iso(ts: str) -> dt.datetime:
@@ -204,9 +210,12 @@ def bootstrap_ceiling_ci(
         resampled_sums.append(total)
     resampled_sums.sort()
 
-    # Percentile via nearest-rank method (k = ceil(p * N)).
-    lo_idx = max(0, int(0.025 * n_resamples) - 1)
-    hi_idx = min(n_resamples - 1, int(0.975 * n_resamples))
+    # Nearest-rank percentile: rank k = ceil(p * N), index = k - 1.
+    # R1-M5 fix: prior impl used `int(p*N) - 1` for lo (one rank too low)
+    # and `int(p*N)` for hi (one rank too high at N=1000) — drifted from
+    # docstring spec.
+    lo_idx = max(0, math.ceil(0.025 * n_resamples) - 1)
+    hi_idx = min(n_resamples - 1, math.ceil(0.975 * n_resamples) - 1)
     return {
         "ci_low": float(resampled_sums[lo_idx]),
         "point": point,
@@ -345,7 +354,6 @@ def _detect_sigma_events(
     if len(series) < 2:
         return []
     log_returns: list[tuple[dt.datetime, float]] = []
-    import math
     for i in range(1, len(series)):
         t_prev, p_prev = series[i - 1]
         t_cur, p_cur = series[i]
@@ -436,31 +444,47 @@ def _compute_event_record(
     event_time: dt.datetime,
     sigma_at_t: float,
     sigma_median: float,
+    drop_counters: dict[str, int] | None = None,
 ) -> dict[str, Any] | None:
-    """Build the per-event aggregate dict that feeds compute_ceiling()."""
+    """Build the per-event aggregate dict that feeds compute_ceiling().
+
+    `_match_event_to_moc` already guarantees `stale.obs_dt ≤ event_time
+    < refreshed.obs_dt` AND `stale._mid != refreshed._mid` (different mid
+    on the post-event row of the same ticker). So `_compute_event_record`
+    drops events for one of two REMAINING reasons only:
+      - `available_size <= 0` (no depth on the stale snapshot's bid OR ask)
+      - `dislocation == 0` — IMPOSSIBLE here given the matcher pre-filter,
+        retained as a defensive guard.
+
+    `cache_age_ms` is recorded as metadata (per plan-doc R1 RCA on the
+    confirmation-signal-vs-duration-measure semantics) but does NOT gate
+    the result — under the matcher's invariants `last_kalshi_update =
+    stale.obs_dt - cache_age_ms/1000 ≤ stale.obs_dt ≤ event_time`, so
+    the construction `max(last_kalshi_update, event_time)` always picks
+    `event_time` and the cache_age_ms branch is inert. We keep
+    `duration_s` for honest reporting but `hit_prob` is structurally
+    1.0 whenever a mid-changing refresh occurred post-event. This is
+    the strict-takeable UPPER-BOUND assumption per plan-doc Open Q3.
+    """
     stale_mid = stale["_mid"]
     refresh_mid = refreshed["_mid"]
     dislocation = abs(refresh_mid - stale_mid)
     if dislocation <= 0:
+        if drop_counters is not None:
+            drop_counters["zero_dislocation"] = drop_counters.get("zero_dislocation", 0) + 1
         return None
     size = _take_size(stale)
     if size <= 0:
+        if drop_counters is not None:
+            drop_counters["zero_size"] = drop_counters.get("zero_size", 0) + 1
         return None
-    # Dislocation duration per plan-doc R1 RCA:
-    #   duration = max(0, refreshed.obs_dt - max(stale.obs_dt - cache_age_ms/1000, event_time))
     cache_age_ms = stale.get("cache_age_ms")
     last_kalshi_update = stale["_obs_dt"]
     if cache_age_ms is not None:
         last_kalshi_update = stale["_obs_dt"] - dt.timedelta(milliseconds=int(cache_age_ms))
     binding = max(last_kalshi_update, event_time)
     duration_s = max(0.0, (refreshed["_obs_dt"] - binding).total_seconds())
-    # Hit probability (per plan-doc Open Q3 + Method §): strict-takeable
-    # upper-bound — 1.0 iff the quote was genuinely stale at event_time
-    # (cache_age_ms shows no Kalshi update since event_time) AND there was
-    # a non-zero dislocation duration.
-    hit_prob = 1.0 if duration_s > 0 else 0.0
-    if hit_prob == 0.0:
-        return None
+    hit_prob = 1.0  # strict-takeable upper-bound; see docstring + plan-doc Open Q3.
     return {
         "dislocation_cents": float(dislocation),
         "available_size": int(size),
@@ -501,12 +525,21 @@ def _per_asset_analysis(
         moc_by_ticker[r["ticker"]].append(r)
 
     event_records: list[dict[str, Any]] = []
+    drop_counters: dict[str, int] = {
+        "no_match": 0,
+        "zero_dislocation": 0,
+        "zero_size": 0,
+    }
     for t_C, _r, sigma_t in sigma_events:
         pair = _match_event_to_moc(moc_by_ticker, t_C)
         if pair is None:
+            drop_counters["no_match"] += 1
             continue
         stale, refreshed = pair
-        rec = _compute_event_record(stale, refreshed, t_C, sigma_t, sigma_median)
+        rec = _compute_event_record(
+            stale, refreshed, t_C, sigma_t, sigma_median,
+            drop_counters=drop_counters,
+        )
         if rec is not None:
             event_records.append(rec)
 
@@ -537,6 +570,7 @@ def _per_asset_analysis(
         "n_events": len(sigma_events),
         "n_matched": len(event_records),
         "events": event_records,
+        "drop_counters": drop_counters,
     }
 
 
@@ -613,6 +647,7 @@ def main(
         n_events_per_asset: dict[str, int] = {}
         n_matched_per_asset: dict[str, int] = {}
         regime_breakdown: dict[str, dict[str, float]] = {}
+        drop_counters_per_asset: dict[str, dict[str, int]] = {}
         for asset in ASSET_TICKER_PREFIX.keys():
             res = _per_asset_analysis(
                 conn=conn,
@@ -629,6 +664,7 @@ def main(
             regime_breakdown[asset] = {
                 k: v for k, v in res["ceiling"].items() if k != "total"
             }
+            drop_counters_per_asset[asset] = res["drop_counters"]
     finally:
         conn.close()
 
@@ -648,6 +684,7 @@ def main(
         "n_events_per_asset": n_events_per_asset,
         "n_matched_per_asset": n_matched_per_asset,
         "regime_breakdown": regime_breakdown,
+        "drop_counters_per_asset": drop_counters_per_asset,
     }
 
     if output_path:

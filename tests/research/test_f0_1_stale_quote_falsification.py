@@ -6,7 +6,9 @@ implementation; all tests RED at scaffold-ship; transition to GREEN as
 
 Invariants pinned here:
 
-1. Schema invariants — required columns exist in moc + evaluated_opportunities + settled_trades.
+1. Schema invariants — required columns exist in moc + evaluated_opportunities.
+   7-asset universe pinned in-script via ASSET_TICKER_PREFIX (R1-M2 — settled_trades
+   is NOT consumed by the F0.1 pipeline).
 2. No-look-ahead — script reads only rows with observation_time ≤ σ-move time for the stale snapshot.
    (R1-M1 regression: mixed timestamp precision must not break the invariant via lexicographic compare.)
 3. Regime conditioning — vol-high vs. vol-low buckets produce distinct ceilings.
@@ -63,11 +65,15 @@ def test_evaluated_opportunities_has_spot_columns():
         f"missing eval_opps spot columns: {required_spot - set(cols)}"
 
 
-def test_settled_trades_has_asset_and_time():
-    """settled_trades anchors the 7-asset universe + window time mapping."""
-    cols = falsification.SETTLED_TRADES_REQUIRED_COLUMNS
-    assert "asset" in cols
-    assert "settled_at" in cols
+def test_seven_asset_universe_pinned_in_script():
+    """7-asset universe must be hardcoded in the script (NOT derived from settled_trades).
+
+    R1-M2: the F0.1 pipeline does not consume `settled_trades` outcomes;
+    pinning the asset list in-script is the correct architecture for a
+    quote-only research script.
+    """
+    expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
+    assert set(falsification.ASSET_TICKER_PREFIX.keys()) == expected
 
 
 # ----- No-look-ahead (Invariant 2) ---------------------------------------
