@@ -25,4 +25,4 @@ set -eo pipefail
 cd /home/botuser/kalshi-bot-repo
 source /home/botuser/kalshi-bot-repo/venv/bin/activate
 source /home/botuser/.env.collector
-exec python3 -m collector
+exec python3 -O -m collector
