@@ -41,6 +41,7 @@ Scaffolds a failing test file for a new bot extraction or new behavior, then run
 - Pure repo/Makefile/pyproject invariants → `tests/unit/`
 - Behavioral / multi-module / real-DB → `tests/integration/`
 - Engine equivalence snapshots → `tests/equivalence/` (Pillar 3; regen is human-only)
+- Falsification spike tests / cross-system research → `tests/research/` (paired with `scripts/research/`; NOT in `make test` aggregate; may carry intentional `NotImplementedError` stubs during scaffold-first phase)
 
 ## Steps
 
