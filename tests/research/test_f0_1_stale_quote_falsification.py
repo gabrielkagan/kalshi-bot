@@ -1,19 +1,21 @@
 """F0.1 — Stale-quote sniping falsification test suite.
 
 TDD-first scaffold per `CLAUDE.md` extraction-bit discipline. Landed
-BEFORE implementation at scaffold-ship `f6871ee1` (11 GREEN / 2 RED
-NotImplementedError stubs / 1 SKIP fixture); transitioned to 14/14
-GREEN at impl-Bit ship `14286a11`. All invariants below are now
-actively pinned by the test suite.
+BEFORE implementation at scaffold-ship `f6871ee1` (11 test functions:
+8 GREEN + 2 RED NotImplementedError stubs + 1 SKIP fixture); 3 more
+tests added at scaffold-R1 fix-up `24a21c6e` (mixed-timestamp regression,
+universe-pinning, kill-zero-clearing diagnostic) → 14 total;
+transitioned to 14/14 GREEN at impl-Bit ship `14286a11`. All invariants
+below are now actively pinned by the test suite.
 
 Invariants pinned here:
 
-(Two adv-review rounds touched this file: the SCAFFOLD-round at R1
-on commit f6871ee1 produced findings "scaffold-R1-M1..M5"; the
-IMPL-Bit round at R1 on commit 14286a11 produced findings
-"impl-R1-M1..M5". Comment markers below use the prefixed form to
-disambiguate the two namespaces — see plan-doc Status log for the
-canonical finding lists.)
+(Two adv-review rounds touched this file: the SCAFFOLD-round at
+scaffold-R1 on commit f6871ee1 produced findings
+"scaffold-R1-M1..M5"; the IMPL-Bit round at impl-R1 on commit
+14286a11 produced findings "impl-R1-M1..M5". Comment markers below
+use the prefixed form to disambiguate the two namespaces — see
+plan-doc Status log for the canonical finding lists.)
 
 1. Schema invariants — required columns exist in moc + evaluated_opportunities.
    7-asset universe pinned in-script via ASSET_TICKER_PREFIX (impl-R1-M2 — settled_trades

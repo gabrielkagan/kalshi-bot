@@ -29,7 +29,7 @@ Methodology note (per scaffold-R1 RCA on cache_age_ms semantics):
   separately from evaluated_opportunities.*_spot_at_decision snapshots
   (cross-asset cadence ~30s per the scaffold-R2-M2 empirical). Dislocation duration
   is computed as:
-    duration = max(0, now − max(now − cache_age_ms/1000, t_coinbase_move))
+    duration = max(0, refresh.obs_dt − max(stale.obs_dt − cache_age_ms/1000, t_coinbase_move))
   i.e., the binding constraint is whichever clock (last-Kalshi-update or
   the Coinbase-move-time) is most recent.
 
