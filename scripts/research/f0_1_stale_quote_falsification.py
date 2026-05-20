@@ -1,9 +1,12 @@
 """F0.1 — Stale-quote sniping falsification (CT-MDP Attack #1, Phase 0).
 
-Skeleton ship — defines the public API surface for the failing-assertion
-test scaffold at `tests/research/test_f0_1_stale_quote_falsification.py`.
-All algorithmic helpers raise `NotImplementedError`; subsequent commits
-fill them in function-by-function (TDD GREEN progression).
+Full implementation post-impl-Bit ship (`14286a11`). All algorithmic
+helpers (`compute_ceiling`, `bootstrap_ceiling_ci`, `aggregate_event_value`,
+`survival_diagnostics`, `main`) are implemented; the 14-test suite at
+`tests/research/test_f0_1_stale_quote_falsification.py` is fully GREEN.
+The scaffold-ship phase (commit `f6871ee1`) introduced 2 RED
+`NotImplementedError` stubs + 1 SKIP fixture; all three were resolved
+at impl-Bit ship.
 
 Parent plan: kb/decisions/ct-mdp-f0-1-stale-quote-falsification-plan.md
 Parent ClickUp: 86ba18zg8
@@ -18,13 +21,13 @@ Hypothesis:
   is NOT a multiplicative factor in the per-event value — see
   `_compute_event_record` docstring + plan-doc § Method L74.)
 
-Methodology note (per R1 RCA on cache_age_ms semantics):
+Methodology note (per scaffold-R1 RCA on cache_age_ms semantics):
   `cache_age_ms` from market_observations_continuous is a CONFIRMATION
   signal (wall-clock age of the bot's cached Kalshi orderbook from
   bot/snapshots/market_observations_snapshotter.py:511,528) — NOT a
   cross-venue dislocation duration measure. Coinbase σ-moves are sourced
   separately from evaluated_opportunities.*_spot_at_decision snapshots
-  (cross-asset cadence ~30s per the R2-M2 empirical). Dislocation duration
+  (cross-asset cadence ~30s per the scaffold-R2-M2 empirical). Dislocation duration
   is computed as:
     duration = max(0, now − max(now − cache_age_ms/1000, t_coinbase_move))
   i.e., the binding constraint is whichever clock (last-Kalshi-update or
@@ -37,7 +40,7 @@ Data sources (per RCA at plan-doc kickoff 2026-05-20):
   - market_observations_continuous: ~5d of Kalshi NBBO + cache_age_ms
     (primary spine).
   - evaluated_opportunities: Coinbase spot at decision moments
-    (cross-asset cadence ~30s) — drives σ-event detection per the R2-M2
+    (cross-asset cadence ~30s) — drives σ-event detection per the scaffold-R2-M2
     empirical.
   - 7-asset universe is pinned in-script at `ASSET_TICKER_PREFIX` (not
     derived from settled_trades — F0.1 does not consume any settled
@@ -190,7 +193,8 @@ def bootstrap_ceiling_ci(
     - point = observed sum of per_event_values (NOT mean of resamples — the
       point estimate of an annual ceiling is the observed total, not a
       bias-adjusted statistic).
-    - ci_low / ci_high = 2.5th / 97.5th percentile of resampled sums.
+    - ci_low / ci_high = 2.5th / 97.5th percentile of resampled sums via
+      nearest-rank convention: rank k = ceil(p × N), index = k - 1.
 
     Edge case: empty input → all-zeros (no events ⇒ no ceiling, no CI to draw).
     """
@@ -456,7 +460,7 @@ def _compute_event_record(
       - `dislocation == 0` — IMPOSSIBLE here given the matcher pre-filter,
         retained as a defensive guard.
 
-    `cache_age_ms` is recorded as metadata (per plan-doc R1 RCA on the
+    `cache_age_ms` is recorded as metadata (per plan-doc scaffold-R1 RCA on the
     confirmation-signal-vs-duration-measure semantics) but does NOT gate
     the result — under the matcher's invariants `last_kalshi_update =
     stale.obs_dt - cache_age_ms/1000 ≤ stale.obs_dt ≤ event_time`, so
@@ -578,12 +582,13 @@ def _format_verdict_markdown(result: Mapping[str, Any]) -> str:
     """Render the verdict result dict as a markdown report body.
 
     Intentionally a SUBSET of the curated verdict-doc at
-    `kb/findings/ct-mdp-f0-1-verdict.md` — the curated doc adds
-    methodology summary, caveat register, deflation analysis, and
-    drop_counters tables that this auto-generated output does NOT
-    surface. Do not "fix" the gap by adding those sections here; the
-    human-curated finding doc is the source of truth for downstream
-    decisions, and a stale auto-gen would mask drift.
+    `kb/findings/ct-mdp-f0-1-verdict.md`. DO NOT add methodology summary
+    / caveat register / deflation analysis / drop_counters tables here
+    — those are exclusively the human-curated finding doc's
+    responsibility. The auto-generated output is a numeric-table
+    sanity-check artifact for ad-hoc re-runs; the finding doc is the
+    source of truth for downstream decisions. An auto-gen that drifts
+    silently from the finding doc would mask methodology shifts.
     """
     lines: list[str] = []
     lines.append(f"# F0.1 stale-quote sniping falsification — verdict\n")

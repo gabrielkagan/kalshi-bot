@@ -1,8 +1,10 @@
-"""F0.1 — Stale-quote sniping falsification: failing-assertion scaffold.
+"""F0.1 — Stale-quote sniping falsification test suite.
 
-TDD-first scaffold per `CLAUDE.md` extraction-bit discipline. Lands BEFORE
-implementation; all tests RED at scaffold-ship; transition to GREEN as
-`scripts/research/f0_1_stale_quote_falsification.py` is implemented.
+TDD-first scaffold per `CLAUDE.md` extraction-bit discipline. Landed
+BEFORE implementation at scaffold-ship `f6871ee1` (11 GREEN / 2 RED
+NotImplementedError stubs / 1 SKIP fixture); transitioned to 14/14
+GREEN at impl-Bit ship `14286a11`. All invariants below are now
+actively pinned by the test suite.
 
 Invariants pinned here:
 
