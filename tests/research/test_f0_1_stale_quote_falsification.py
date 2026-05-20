@@ -6,18 +6,25 @@ implementation; all tests RED at scaffold-ship; transition to GREEN as
 
 Invariants pinned here:
 
+(Two adv-review rounds touched this file: the SCAFFOLD-round at R1
+on commit f6871ee1 produced findings "scaffold-R1-M1..M5"; the
+IMPL-Bit round at R1 on commit 14286a11 produced findings
+"impl-R1-M1..M5". Comment markers below use the prefixed form to
+disambiguate the two namespaces — see plan-doc Status log for the
+canonical finding lists.)
+
 1. Schema invariants — required columns exist in moc + evaluated_opportunities.
-   7-asset universe pinned in-script via ASSET_TICKER_PREFIX (R1-M2 — settled_trades
+   7-asset universe pinned in-script via ASSET_TICKER_PREFIX (impl-R1-M2 — settled_trades
    is NOT consumed by the F0.1 pipeline).
 2. No-look-ahead — script reads only rows with observation_time ≤ σ-move time for the stale snapshot.
-   (R1-M1 regression: mixed timestamp precision must not break the invariant via lexicographic compare.)
+   (scaffold-R1-M1 regression: mixed timestamp precision must not break the invariant via lexicographic compare.)
 3. Regime conditioning — vol-high vs. vol-low buckets produce distinct ceilings.
 4. Bootstrap CI shape — (low, point, high) with low ≤ point ≤ high.
 5. Verdict mapping — synthetic ceiling < $5K/yr per asset → KILL; ≥ $5K/yr on any asset → SURVIVE.
 6. Hit-probability clamp — over-1.0 input triggers ERROR.
 7. Size clamp — observed size > MAX_TAKE clamps to MAX_TAKE.
 8. Kill-rule wiring — 7-asset end-to-end pipeline returns KILL when all sub-threshold.
-9. Program-level diagnostics (R1-M5) — n_assets_clearing_threshold + assets_clearing_threshold
+9. Program-level diagnostics (scaffold-R1-M5) — n_assets_clearing_threshold + assets_clearing_threshold
    exposed so the umbrella ≥2-of-3 gate has data without re-running F0.1.
 
 Parent plan: kb/decisions/ct-mdp-f0-1-stale-quote-falsification-plan.md
@@ -32,7 +39,7 @@ import pytest
 
 # Plain import — NOT importorskip — so that any future import-time error in
 # the script (SyntaxError, missing dep, etc.) FAILS rather than silently
-# greens the module per R1-M4. The script already exists; the skip was
+# greens the module per scaffold-R1-M4. The script already exists; the skip was
 # defensive against a no-longer-existing condition.
 from scripts.research import f0_1_stale_quote_falsification as falsification
 
@@ -68,7 +75,7 @@ def test_evaluated_opportunities_has_spot_columns():
 def test_seven_asset_universe_pinned_in_script():
     """7-asset universe must be hardcoded in the script (NOT derived from settled_trades).
 
-    R1-M2: the F0.1 pipeline does not consume `settled_trades` outcomes;
+    impl-R1-M2: the F0.1 pipeline does not consume `settled_trades` outcomes;
     pinning the asset list in-script is the correct architecture for a
     quote-only research script.
     """
@@ -98,7 +105,7 @@ def test_stale_snapshot_uses_only_pre_event_rows():
 
 
 def test_stale_snapshot_handles_mixed_timestamp_precision():
-    """Regression for R1-M1: lexicographic string compare would have admitted a microsecond-precision row in the same second AFTER a second-precision event."""
+    """Regression for scaffold-R1-M1: lexicographic string compare would have admitted a microsecond-precision row in the same second AFTER a second-precision event."""
     # `"2026-05-20T10:01:00.999999Z"` is ~999ms AFTER `"2026-05-20T10:01:00Z"`.
     # Lexicographic compare: `.` (0x2E) < `Z` (0x5A) so the post-event row
     # would have been wrongly included. Numeric datetime compare excludes it.
@@ -197,7 +204,7 @@ def test_size_clamps_to_max_take():
         f"size did not clamp to MAX_TAKE: value={value}, expected ≤ {expected_max_take_value}"
 
 
-# ----- Program-level diagnostics (R1-M5) ---------------------------------
+# ----- Program-level diagnostics (scaffold-R1-M5) ------------------------
 
 
 def test_survival_diagnostics_exposes_per_asset_clear_count():

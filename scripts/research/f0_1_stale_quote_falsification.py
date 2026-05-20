@@ -83,9 +83,9 @@ EVAL_OPPS_SPOT_COLUMNS: tuple[str, ...] = (
     "bnb_spot_at_decision",
 )
 
-# SETTLED_TRADES_REQUIRED_COLUMNS removed at R1-M2: the constant was declared
-# + test-pinned but `settled_trades` is never queried by the F0.1 pipeline.
-# The 7-asset universe lives in `ASSET_TICKER_PREFIX` (below).
+# SETTLED_TRADES_REQUIRED_COLUMNS removed at impl-R1-M2: the constant was
+# declared + test-pinned but `settled_trades` is never queried by the F0.1
+# pipeline. The 7-asset universe lives in `ASSET_TICKER_PREFIX` (below).
 
 
 def _parse_iso(ts: str) -> dt.datetime:
@@ -211,9 +211,9 @@ def bootstrap_ceiling_ci(
     resampled_sums.sort()
 
     # Nearest-rank percentile: rank k = ceil(p * N), index = k - 1.
-    # R1-M5 fix: prior impl used `int(p*N) - 1` for lo (one rank too low)
-    # and `int(p*N)` for hi (one rank too high at N=1000) — drifted from
-    # docstring spec.
+    # impl-R1-M5 fix: prior impl used `int(p*N) - 1` for lo (one rank too
+    # low) and `int(p*N)` for hi (one rank too high at N=1000) — drifted
+    # from docstring spec.
     lo_idx = max(0, math.ceil(0.025 * n_resamples) - 1)
     hi_idx = min(n_resamples - 1, math.ceil(0.975 * n_resamples) - 1)
     return {
@@ -264,7 +264,7 @@ def survival_diagnostics(
     § Rules of engagement) is ≥2 of 3 falsifications survive their per-attack threshold.
     Per-attack F0.1 survives on `n_assets_clearing_threshold ≥ 1` — but downstream
     callers may want to weight a single-asset SURVIVE differently (false-survive risk
-    at small sample size per R1-M5). Diagnostics let them.
+    at small sample size per scaffold-R1-M5). Diagnostics let them.
     """
     clearing = [a for a, c in per_asset_ceilings.items() if c >= threshold_dollars]
     return {
@@ -575,7 +575,16 @@ def _per_asset_analysis(
 
 
 def _format_verdict_markdown(result: Mapping[str, Any]) -> str:
-    """Render the verdict result dict as a markdown report body."""
+    """Render the verdict result dict as a markdown report body.
+
+    Intentionally a SUBSET of the curated verdict-doc at
+    `kb/findings/ct-mdp-f0-1-verdict.md` — the curated doc adds
+    methodology summary, caveat register, deflation analysis, and
+    drop_counters tables that this auto-generated output does NOT
+    surface. Do not "fix" the gap by adding those sections here; the
+    human-curated finding doc is the source of truth for downstream
+    decisions, and a stale auto-gen would mask drift.
+    """
     lines: list[str] = []
     lines.append(f"# F0.1 stale-quote sniping falsification — verdict\n")
     lines.append(f"**Verdict: {result['verdict']}** "
