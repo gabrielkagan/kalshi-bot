@@ -35,6 +35,13 @@ dependencies = [
     # bot/ continues to have zero zstd touchpoints (rotate_journals.sh
     # shells to the binary, but it's a bash script not a bot/ module).
     "zstandard",
+    # P1-A (ticket 86ba1pqqx, 2026-05-20) — orjson replaces stdlib json
+    # in collector/writer.py::BronzeWriter.write (3-5× faster, returns
+    # bytes directly, releases GIL identically). Required by collector/
+    # write path; not used elsewhere. Without this entry the pyproject↔
+    # requirements.txt drift check (tests/unit/test_pyproject.py::
+    # test_pyproject_runtime_deps_match_requirements_txt) fails.
+    "orjson",
     "scipy",
     "numpy",
     "lightgbm",
