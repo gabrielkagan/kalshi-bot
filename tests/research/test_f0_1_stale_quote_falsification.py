@@ -4,16 +4,19 @@ TDD-first scaffold per `CLAUDE.md` extraction-bit discipline. Lands BEFORE
 implementation; all tests RED at scaffold-ship; transition to GREEN as
 `scripts/research/f0_1_stale_quote_falsification.py` is implemented.
 
-The 8 invariants pinned here:
+Invariants pinned here:
 
 1. Schema invariants — required columns exist in moc + evaluated_opportunities + settled_trades.
 2. No-look-ahead — script reads only rows with observation_time ≤ σ-move time for the stale snapshot.
+   (R1-M1 regression: mixed timestamp precision must not break the invariant via lexicographic compare.)
 3. Regime conditioning — vol-high vs. vol-low buckets produce distinct ceilings.
 4. Bootstrap CI shape — (low, point, high) with low ≤ point ≤ high.
-5. Verdict mapping — synthetic ceiling = $4K/yr → KILL; $10K/yr → SURVIVE.
+5. Verdict mapping — synthetic ceiling < $5K/yr per asset → KILL; ≥ $5K/yr on any asset → SURVIVE.
 6. Hit-probability clamp — over-1.0 input triggers ERROR.
 7. Size clamp — observed size > MAX_TAKE clamps to MAX_TAKE.
-8. Kill-rule wiring — 7-asset run; all < $5K → KILL; one ≥ $5K → SURVIVE.
+8. Kill-rule wiring — 7-asset end-to-end pipeline returns KILL when all sub-threshold.
+9. Program-level diagnostics (R1-M5) — n_assets_clearing_threshold + assets_clearing_threshold
+   exposed so the umbrella ≥2-of-3 gate has data without re-running F0.1.
 
 Parent plan: kb/decisions/ct-mdp-f0-1-stale-quote-falsification-plan.md
 Parent ClickUp: 86ba18zg8
@@ -21,18 +24,15 @@ Parent ClickUp: 86ba18zg8
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-
-# Skip the entire module if the script doesn't import yet — keeps CI green
-# while the scaffold lands. Remove this skip once the script ships.
-falsification = pytest.importorskip(
-    "scripts.research.f0_1_stale_quote_falsification",
-    reason="F0.1 script not yet implemented (TDD-first scaffold)",
-)
+# Plain import — NOT importorskip — so that any future import-time error in
+# the script (SyntaxError, missing dep, etc.) FAILS rather than silently
+# greens the module per R1-M4. The script already exists; the skip was
+# defensive against a no-longer-existing condition.
+from scripts.research import f0_1_stale_quote_falsification as falsification
 
 
 # ----- Schema invariants (Invariant 1) -----------------------------------
@@ -85,9 +85,28 @@ def test_stale_snapshot_uses_only_pre_event_rows():
         sigma_move_time="2026-05-20T10:01:00Z",
     )
     # No row from after the σ-move time may appear in the stale set.
+    event_dt = falsification._parse_iso("2026-05-20T10:01:00Z")
     for row in stale_rows:
-        assert row["observation_time"] <= "2026-05-20T10:01:00Z", \
+        assert falsification._parse_iso(row["observation_time"]) <= event_dt, \
             f"look-ahead violation: {row['observation_time']}"
+
+
+def test_stale_snapshot_handles_mixed_timestamp_precision():
+    """Regression for R1-M1: lexicographic string compare would have admitted a microsecond-precision row in the same second AFTER a second-precision event."""
+    # `"2026-05-20T10:01:00.999999Z"` is ~999ms AFTER `"2026-05-20T10:01:00Z"`.
+    # Lexicographic compare: `.` (0x2E) < `Z` (0x5A) so the post-event row
+    # would have been wrongly included. Numeric datetime compare excludes it.
+    stale_rows = falsification.select_stale_snapshot(
+        moc_rows=[
+            {"observation_time": "2026-05-20T10:00:59.500000Z"},   # pre-event, included
+            {"observation_time": "2026-05-20T10:01:00.999999Z"},   # post-event, MUST be excluded
+        ],
+        sigma_move_time="2026-05-20T10:01:00Z",
+    )
+    obs_times = [r["observation_time"] for r in stale_rows]
+    assert "2026-05-20T10:00:59.500000Z" in obs_times, "pre-event row dropped"
+    assert "2026-05-20T10:01:00.999999Z" not in obs_times, \
+        "look-ahead violation: post-event microsecond row included via lexicographic compare"
 
 
 # ----- Regime conditioning (Invariant 3) ----------------------------------
@@ -170,6 +189,35 @@ def test_size_clamps_to_max_take():
     expected_max_take_value = 5.0 * 100 * 0.5
     assert value <= expected_max_take_value + 1e-6, \
         f"size did not clamp to MAX_TAKE: value={value}, expected ≤ {expected_max_take_value}"
+
+
+# ----- Program-level diagnostics (R1-M5) ---------------------------------
+
+
+def test_survival_diagnostics_exposes_per_asset_clear_count():
+    """The umbrella program-level gate (≥2 of 3 falsifications survive) consumes per-asset detail. F0.1 must expose n_assets_clearing_threshold so the umbrella gate has data without re-running F0.1."""
+    diag = falsification.survival_diagnostics(
+        per_asset_ceilings={
+            "BTC": 1000.0, "ETH": 2000.0, "SOL": 500.0,
+            "XRP": 3000.0, "HYPE": 6000.0, "DOGE": 1000.0, "BNB": 8000.0,
+        },
+        threshold_dollars=5000.0,
+    )
+    assert diag["verdict"] == "SURVIVE"
+    assert diag["n_assets_clearing_threshold"] == 2
+    assert diag["assets_clearing_threshold"] == ["BNB", "HYPE"]
+    assert diag["threshold_dollars"] == 5000.0
+
+
+def test_survival_diagnostics_kill_zero_clearing():
+    """KILL verdict + n_assets_clearing_threshold=0 when all assets sub-threshold."""
+    diag = falsification.survival_diagnostics(
+        per_asset_ceilings={"BTC": 100.0, "ETH": 200.0},
+        threshold_dollars=5000.0,
+    )
+    assert diag["verdict"] == "KILL"
+    assert diag["n_assets_clearing_threshold"] == 0
+    assert diag["assets_clearing_threshold"] == []
 
 
 # ----- Kill-rule wiring (Invariant 8) ------------------------------------

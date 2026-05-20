@@ -11,6 +11,7 @@ The flat `scripts/` root was reorganized into 3 tier subdirs:
 - `scripts/ops/` — operator-facing one-shots + setup + migrations + lock sentinels (34 files).
 - `scripts/cal_mlp/` — cal_mlp pipeline (already a subdir; untouched by 11.2).
 - `scripts/git_hooks/` — git hook templates (already a subdir; untouched by 11.2).
+- `scripts/research/` — falsification spikes + cross-system research (e.g., `p4_1_rolling_backtest.py`, F-series CT-MDP falsifications; tests at `tests/research/`). Read-only against `state.db`; verdict docs land at `kb/findings/`.
 
 Files remaining directly at `scripts/`:
 
