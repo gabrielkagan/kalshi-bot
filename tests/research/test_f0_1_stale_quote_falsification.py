@@ -3,10 +3,15 @@
 TDD-first scaffold per `CLAUDE.md` extraction-bit discipline. Landed
 BEFORE implementation at scaffold-ship `f6871ee1` (11 test functions:
 8 GREEN + 2 RED NotImplementedError stubs + 1 SKIP fixture); 3 more
-tests added at scaffold-R1 fix-up `24a21c6e` (mixed-timestamp regression,
-universe-pinning, kill-zero-clearing diagnostic) → 14 total;
-transitioned to 14/14 GREEN at impl-Bit ship `14286a11`. All invariants
-below are now actively pinned by the test suite.
+tests added at scaffold-R1 fix-up `24a21c6e` — namely
+`test_stale_snapshot_handles_mixed_timestamp_precision` +
+`test_survival_diagnostics_exposes_per_asset_clear_count` +
+`test_survival_diagnostics_kill_zero_clearing` — taking the count to
+14. impl-Bit ship `14286a11` did not change count. impl-R1 fix-up
+`968f2fe3` swapped `test_settled_trades_has_asset_and_time` (deleted)
+for `test_seven_asset_universe_pinned_in_script` (added) — still 14
+functions, all GREEN. All invariants below are now actively pinned by
+the test suite.
 
 Invariants pinned here:
 
