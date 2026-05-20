@@ -147,6 +147,7 @@ Per `CLAUDE.md` interaction rules + the modularization plan
 | `test-integration-shard-0` | <30s (half the corpus, xdist + pytest-shard) | Auto-runs via `make test` (Bit-9) |
 | `test-integration-shard-1` | <30s (other half) | Auto-runs via `make test` (Bit-9) |
 | `test-integration-serial` | <20s (timing-sensitive @serial) | Before PR (auto-runs via `make test`) |
+| `test-research` | varies | During Phase 0 falsification work (NOT deploy-blocking; see `tests/CLAUDE.md`) |
 
 `make test-affected` is testmon-driven (re-runs only tests with
 changed dependencies). Right tool for the tight inner loop.
