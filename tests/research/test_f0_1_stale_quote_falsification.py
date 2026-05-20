@@ -240,8 +240,99 @@ def test_full_pipeline_kill_when_all_assets_subthreshold(tmp_path: Path):
 def _seed_synthetic_subthreshold_db(db_path: Path) -> None:
     """Create a minimal state.db with 7 assets, all sub-threshold dislocations.
 
-    Helper for the kill-rule wiring test. Leave empty / skip until the
-    script's data-loading layer is implemented and the test fixture format
-    is defined by R1.
+    Schema mirrors only the columns the script reads (not the full state.db
+    schema — the script does `SELECT col FROM table` not `SELECT *`, so unused
+    columns don't need to exist).
+
+    Sub-threshold construction: each asset gets a small number of σ-events
+    with tiny dislocations × small size, so the annualized per-asset ceiling
+    stays well under $5K/yr.
     """
-    pytest.skip("synthetic-db fixture not yet defined (lands with implementation)")
+    import datetime as dt
+    import sqlite3
+
+    base = dt.datetime(2026, 5, 15, 12, 0, 0, tzinfo=dt.timezone.utc)
+    assets = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"]
+    prefix = {
+        "BTC": "KXBTC", "ETH": "KXETH", "SOL": "KXSOL", "XRP": "KXXRP",
+        "HYPE": "KXHYPE", "DOGE": "KXDOGE", "BNB": "KXBNB",
+    }
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE market_observations_continuous (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT,
+            observation_time TEXT,
+            yes_bid_cents INTEGER,
+            yes_ask_cents INTEGER,
+            no_bid_cents INTEGER,
+            no_ask_cents INTEGER,
+            bid_depth INTEGER,
+            ask_depth INTEGER,
+            cache_age_ms INTEGER
+        )
+    """)
+    spot_cols = ",\n            ".join(f"{a.lower()}_spot_at_decision REAL" for a in assets)
+    conn.execute(f"""
+        CREATE TABLE evaluated_opportunities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            evaluation_time TEXT,
+            {spot_cols}
+        )
+    """)
+
+    # Synthetic spot trajectory: 200 rows at 30s cadence, each asset gets a
+    # tiny 0.5σ-style jiggle every 20 ticks. Sub-threshold dislocations.
+    eval_rows: list[tuple] = []
+    for i in range(200):
+        t = base + dt.timedelta(seconds=30 * i)
+        # Build a price per asset with mostly flat then small bumps.
+        prices = {}
+        for a in assets:
+            base_price = {"BTC": 70000.0, "ETH": 3500.0, "SOL": 150.0, "XRP": 0.6,
+                          "HYPE": 30.0, "DOGE": 0.15, "BNB": 600.0}[a]
+            # Small drift + 0.001 jump every 20 ticks to produce few σ-events.
+            jiggle = 0.001 if i % 20 == 0 and i > 0 else 0.0
+            prices[a] = base_price * (1.0 + jiggle)
+        eval_rows.append((
+            t.isoformat().replace("+00:00", "Z"),
+            *[prices[a] for a in assets],
+        ))
+    placeholders = ",".join(["?"] * (1 + len(assets)))
+    col_names = "evaluation_time," + ",".join(f"{a.lower()}_spot_at_decision" for a in assets)
+    conn.executemany(
+        f"INSERT INTO evaluated_opportunities ({col_names}) VALUES ({placeholders})",
+        eval_rows,
+    )
+
+    # moc rows: each asset gets 50 observations at 30s cadence on a single
+    # ticker. Tiny mid changes (1 cent dislocation), tiny depth, large cache_age_ms
+    # to ensure hit_prob fires but per-event $ stays sub-threshold.
+    moc_rows: list[tuple] = []
+    for a in assets:
+        ticker = f"{prefix[a]}15M-26MAY151200-SYN"
+        for i in range(50):
+            t = base + dt.timedelta(seconds=30 * i)
+            yb = 50 + (i % 3) * 0  # mid mostly flat at 50
+            ya = 51 + (i % 3) * 0
+            # Tiny dislocation every 10 ticks (will be detected by mid-change diff).
+            if i % 10 == 0 and i > 0:
+                yb, ya = 51, 52
+            moc_rows.append((
+                ticker,
+                t.isoformat().replace("+00:00", "Z"),
+                yb, ya,
+                100 - ya, 100 - yb,
+                3, 3,  # tiny depth (anti-fantasy)
+                5000,  # cache_age_ms — 5s stale, so duration > 0 fires hit_prob
+            ))
+    conn.executemany(
+        "INSERT INTO market_observations_continuous "
+        "(ticker, observation_time, yes_bid_cents, yes_ask_cents, "
+        "no_bid_cents, no_ask_cents, bid_depth, ask_depth, cache_age_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        moc_rows,
+    )
+    conn.commit()
+    conn.close()
