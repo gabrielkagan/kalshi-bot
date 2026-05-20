@@ -21,6 +21,7 @@ tests/
   integration/   # Tier 4 — everything else, real DB, broad behavioral suite
   regression/    # Sprint-1 legacy bucket (8 files pinned by test_no_root_test_files.py)
   hooks/         # Test infrastructure (pre-commit hook tests)
+  research/      # Falsification spike tests + cross-system research (paired with scripts/research/)
   fixtures/      # Shared fixture data (non-test files)
 ```
 
@@ -29,6 +30,7 @@ tests/
 - AST guards, public_api snapshots, import-linter contracts → `tests/contracts/`
 - Engine equivalence snapshots → `tests/equivalence/` (Pillar 3 isolation; regen is human-only)
 - Bug-fix regression tests → mirror the feature being tested in `tests/integration/` and name `test_<bug_keyword>_regression`; reserve `tests/regression/` for the 8 Sprint-1 files
+- Falsification spike tests / cross-system research tests → `tests/research/` (paired with the script at `scripts/research/`)
 - Everything else (behavioral, multi-module, real-DB) → `tests/integration/`
 
 ## Run

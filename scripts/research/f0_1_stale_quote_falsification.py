@@ -15,6 +15,18 @@ Hypothesis:
   spot. Sum-of-(dislocation × duration × size × hit_probability) over the
   available data window estimates the annual ceiling on Attack #1.
 
+Methodology note (per R1 RCA on cache_age_ms semantics):
+  `cache_age_ms` from market_observations_continuous is a CONFIRMATION
+  signal (wall-clock age of the bot's cached Kalshi orderbook from
+  bot/snapshots/market_observations_snapshotter.py:511,528) — NOT a
+  cross-venue dislocation duration measure. Coinbase σ-moves are sourced
+  separately from evaluated_opportunities.*_spot_at_decision snapshots
+  (cross-asset cadence ~30s per the R2-M2 empirical). Dislocation duration
+  is computed as:
+    duration = max(0, now − max(now − cache_age_ms/1000, t_coinbase_move))
+  i.e., the binding constraint is whichever clock (last-Kalshi-update or
+  the Coinbase-move-time) is most recent.
+
 Kill threshold (per ticket 86ba18zg8):
   If 95th-pct ceiling across 7 assets < $5K/yr, kill Attack #1.
 
