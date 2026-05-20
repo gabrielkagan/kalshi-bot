@@ -1,0 +1,49 @@
+[Unit]
+Description=Kalshi ESPN Bronze Collector (D1.11.a)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/.env.espn-collector
+ExecStart=/home/botuser/kalshi-bot-repo/espn-collector-start.sh
+Restart=on-failure
+RestartSec=10s
+
+# D1.11.a isolation knobs — load-bearing structural bounds on the
+# ESPN collector blast radius (NOT documentation suggestions).
+# Pinned by tests/contracts/test_kalshi_espn_collector_systemd_unit.py;
+# a future edit that loosens any of these must update the test in the
+# same commit (and update kb/decisions/d1-11a-espn-bronze-plan.md #8).
+#
+# Deltas vs kalshi-weather-collector.service (D1.8):
+#   - MemoryMax=256M (Weather: 128M, Coinbase: 256M, Kalshi: 512M).
+#     ESPNArchiver.poll_once is a strict sequential `for league in
+#     self._leagues` loop with a single requests.Session — peak in-flight
+#     = 1 response × ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈
+#     ~250 KB working set. 256M matches Coinbase's known-good cap (vs
+#     right-sizing to ~250 KB) so envelope-construction transients +
+#     json-decode peaks + Python interpreter overhead are absorbed
+#     without tight-fitting.
+#   - NO CPUAffinity (same posture as D2.5 + D1.8). With 5 tenants on
+#     a 2-vCPU box (bot implicit vCPU-0, Kalshi pinned vCPU-1,
+#     Coinbase + Weather + ESPN all unpinned), additional pins would
+#     over-constrain the scheduler. ESPN's HTTP-poll load floats
+#     safely across either vCPU.
+#   - LimitNOFILE=512 (same as Coinbase + Weather). 24 writers × 2
+#     rotation files + rclone subprocess + HTTP keep-alive sockets ≈
+#     60 fd typical; 512 gives ~8× headroom.
+#
+# Same as kalshi-weather-collector.service:
+Nice=10
+MemoryMax=256M
+MemorySwapMax=0
+LimitNOFILE=512
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
