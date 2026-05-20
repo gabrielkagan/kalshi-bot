@@ -17,12 +17,15 @@ invariants below are now actively pinned by the test suite.
 
 Invariants pinned here:
 
-(Two adv-review rounds touched this file: the SCAFFOLD-round at
-scaffold-R1 on commit f6871ee1 produced findings
-"scaffold-R1-M1..M5"; the IMPL-Bit round at impl-R1 on commit
-14286a11 produced findings "impl-R1-M1..M5". Comment markers below
-use the prefixed form to disambiguate the two namespaces — see
-plan-doc Status log for the canonical finding lists.)
+(Three finding-marker namespaces appear in this file: the
+SCAFFOLD-round at scaffold-R1 on commit f6871ee1 produced findings
+"scaffold-R1-M1..M5"; the IMPL-Bit R1 round on commit 14286a11
+produced findings "impl-R1-M1..M5"; the IMPL-Bit R10 round on
+commit `84de594c` produced finding "impl-R10-C1" (the CRITICAL
+early-return KeyError) which is cited in the L262
+test_full_pipeline_handles_zero_sigma_events_for_one_asset docstring.
+Comment markers throughout use the prefixed form to disambiguate the
+namespaces — see plan-doc Status log for the canonical finding lists.)
 
 1. Schema invariants — required columns exist in moc + evaluated_opportunities.
    7-asset universe pinned in-script via ASSET_TICKER_PREFIX (impl-R1-M2 — settled_trades

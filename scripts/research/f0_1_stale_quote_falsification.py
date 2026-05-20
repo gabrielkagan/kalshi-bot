@@ -2,8 +2,10 @@
 
 Full implementation post-impl-Bit ship (`14286a11`). All algorithmic
 helpers (`compute_ceiling`, `bootstrap_ceiling_ci`, `aggregate_event_value`,
-`survival_diagnostics`, `main`) are implemented; the 14-test suite at
-`tests/research/test_f0_1_stale_quote_falsification.py` is fully GREEN.
+`survival_diagnostics`, `main`) are implemented; the 15-test suite at
+`tests/research/test_f0_1_stale_quote_falsification.py` is fully GREEN
+(14/14 GREEN at impl-Bit ship; impl-R10 fix-up `efecfbc4` added a 15th
+test as regression for the CRITICAL early-return KeyError).
 The scaffold-ship phase (commit `f6871ee1`) introduced 2 RED
 `NotImplementedError` stubs + 1 SKIP fixture; all three were resolved
 at impl-Bit ship.
