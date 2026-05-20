@@ -259,6 +259,36 @@ def test_full_pipeline_kill_when_all_assets_subthreshold(tmp_path: Path):
     assert all(c < 5000.0 for c in result["per_asset_ceilings"].values())
 
 
+def test_full_pipeline_handles_zero_sigma_events_for_one_asset(tmp_path: Path):
+    """Regression for impl-R10-C1: `_per_asset_analysis` early-return on `not sigma_events` was missing `drop_counters` key, crashing `main()` with KeyError when any asset has insufficient spot history. With the fix, main() must complete cleanly for an asset with zero σ-events (flat or empty spot series)."""
+    db_path = tmp_path / "synthetic_state.db"
+    _seed_synthetic_subthreshold_db(db_path)
+
+    # Mutate the fixture: blank out BNB spot to force zero σ-events for BNB
+    # (the rest of the assets still produce events; only BNB hits the
+    # early-return branch).
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE evaluated_opportunities SET bnb_spot_at_decision = NULL")
+    conn.commit()
+    conn.close()
+
+    result = falsification.main(
+        db_path=str(db_path),
+        days=5,
+        sigma_threshold=0.3,
+        bootstrap_n=100,
+    )
+    # Pipeline completed without KeyError. BNB ceiling stays 0; verdict stable.
+    assert result["per_asset_ceilings"]["BNB"] == 0.0
+    assert result["n_events_per_asset"]["BNB"] == 0
+    assert result["drop_counters_per_asset"]["BNB"] == {
+        "no_match": 0,
+        "zero_dislocation": 0,
+        "zero_size": 0,
+    }
+
+
 def _seed_synthetic_subthreshold_db(db_path: Path) -> None:
     """Create a minimal state.db with 7 assets, all sub-threshold dislocations.
 

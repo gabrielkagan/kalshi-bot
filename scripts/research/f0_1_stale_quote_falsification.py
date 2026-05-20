@@ -518,6 +518,7 @@ def _per_asset_analysis(
             "n_events": 0,
             "n_matched": 0,
             "events": [],
+            "drop_counters": {"no_match": 0, "zero_dislocation": 0, "zero_size": 0},
         }
     sigmas_sorted = sorted(s for _, _, s in sigma_events)
     sigma_median = sigmas_sorted[len(sigmas_sorted) // 2]
