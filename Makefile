@@ -91,6 +91,7 @@ CONTRACT_FILES := tests/contracts
 INTEGRATION_IGNORES := \
 	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
 	--ignore=tests/equivalence \
+	--ignore=tests/research \
 	--ignore=tests/integration/test_calmlp_sigma_winsorize.py
 
 # Ticket 86b9vgh1a — cross-platform exclusive-lock guard.
@@ -127,6 +128,7 @@ help:
 	@echo "  make test-integration-shard-0 first half of integration, xdist (<30s)"
 	@echo "  make test-integration-shard-1 second half of integration, xdist (<30s)"
 	@echo "  make test-integration-serial @serial-marked timing-sensitive tests (<20s)"
+	@echo "  make test-research    Phase-0 falsification spikes (not deploy-blocking)"
 	@echo "  make test             all tiers + serial, fail-fast    (<2min)"
 	@echo
 	@echo "Incremental:"
@@ -281,6 +283,15 @@ test-contract:
 # numeric-snapshot comparison.
 test-equivalence:
 	$(MUTMUT_GUARD) $(PYTHON) -m pytest -m "not fragile" tests/equivalence/
+
+# Tier 6: research (paired with scripts/research/). Falsification spikes +
+# cross-system research. NOT part of test-integration (integration ignores
+# tests/research/ via INTEGRATION_IGNORES) — research tests may carry
+# intentional NotImplementedError stubs during the scaffold-first
+# extraction-Bit phase per CLAUDE.md TDD-first discipline. Operator runs
+# this target during Phase 0 falsification work; not deploy-blocking.
+test-research:
+	$(MUTMUT_GUARD) $(PYTHON) -m pytest -m "not fragile and not serial" tests/research/
 
 # Tier 4: integration. Everything else. Mirrors the historical
 # `make test` semantics minus the tiers above.
