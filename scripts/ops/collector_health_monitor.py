@@ -1,15 +1,17 @@
-"""D1.6 + D1.6 fu + D2.5 + D1.8: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
+"""D1.6 + D1.6 fu + D2.5 + D1.8 + D1.11.a: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
 
 Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
 + 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
 kalshi-coinbase-collector) + 86ba0duck (D1.8, 2026-05-18 — extends
 to also poll kalshi-weather-collector with a subset of checks: disk
 + collector_active + dropped_frames; NO ws_reconnects since weather
-is HTTP-polled and has no persistent WS conn). Standalone CLI run
-via cron on the VPS. Polls 4 health surfaces × 2 WS-collectors +
-3 health surfaces × 1 weather-collector + 1 bot check (B3-fu3,
-2026-05-18) = 12 total alert classes; sends Telegram alerts via the
-existing ``bot.notifier.TelegramNotifier`` (no Telegram client
+is HTTP-polled and has no persistent WS conn) + 86ba0ppy0 (D1.11.a,
+2026-05-19 — extends to also poll kalshi-espn-collector with the
+same HTTP-poll subset as weather). Standalone CLI run via cron on
+the VPS. Polls 4 health surfaces × 2 WS-collectors + 3 health
+surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3, 2026-05-18)
+= 15 total alert classes; sends Telegram alerts via the existing
+``bot.notifier.TelegramNotifier`` (no Telegram client
 re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
@@ -124,6 +126,14 @@ WEATHER_BRONZE_ROOT = "/var/lib/kalshi-weather-collector"
 WEATHER_COLLECTOR_UNIT = "kalshi-weather-collector"
 WEATHER_SIDECAR_PATH = "/var/lib/kalshi-weather-collector/bronze_health.json"
 WEATHER_MONITOR_STATE_PATH = "/var/lib/kalshi-weather-collector/monitor_state.json"
+
+# D1.11.a ESPN-side defaults (2026-05-19, ticket 86ba0ppy0). Mirror
+# the Weather shape exactly — both are HTTP-poll sources with the same
+# disk + collector_active + dropped_frames subset (no ws_reconnects).
+ESPN_BRONZE_ROOT = "/var/lib/kalshi-espn-collector"
+ESPN_COLLECTOR_UNIT = "kalshi-espn-collector"
+ESPN_SIDECAR_PATH = "/var/lib/kalshi-espn-collector/bronze_health.json"
+ESPN_MONITOR_STATE_PATH = "/var/lib/kalshi-espn-collector/monitor_state.json"
 
 # B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
 # `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
@@ -511,9 +521,9 @@ def _save_state(
 
 def main() -> int:
     """Entry point. Runs collector checks (4) × 2 WS-collector tiers +
-    collector checks (3) × 1 weather-collector tier + bot checks (1) ×
-    1 bot tier = 12 total check dispatches per tick; sends Telegram
-    alerts as needed.
+    collector checks (3) × 2 HTTP-poll-collector tiers + bot checks
+    (1) × 1 bot tier = 15 total check dispatches per tick; sends
+    Telegram alerts as needed.
 
     D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
     collector loop to poll BOTH kalshi-collector AND kalshi-coinbase-
@@ -521,24 +531,22 @@ def main() -> int:
 
     B3-fu3 (ticket 86b9zxb4c, 2026-05-18) extended to TRIPLE-TIER
     dispatch: kalshi-bot is the 3rd tier with a single new check
-    function (``check_insert_evaluated_opportunity_failures``) that
-    alerts on `insert_evaluated_opportunity failed` WARNINGs in the
-    bot journal. Post-B3-fu2 narrow (LPNE + dc_shadow_no_side
-    `except` clauses scoped to ``sqlite3.OperationalError``) makes
-    any future WARN a real-signal — genuine DB error or
-    sister-strategy regression.
+    function (``check_insert_evaluated_opportunity_failures``).
 
     D1.8 (ticket 86ba0duck, 2026-05-18) extended to FOUR-TIER
     dispatch: kalshi-weather-collector is the 4th tier (first non-WS
     bronze source). Subset of the WS-collector checks — disk +
-    collector_active + dropped_frames; NO ws_reconnects because HTTP
-    polling has no persistent WS connection, and a log-marker filter
-    would never match (always-OK false negative).
+    collector_active + dropped_frames; NO ws_reconnects.
+
+    D1.11.a (ticket 86ba0ppy0, 2026-05-19) extended to FIVE-TIER
+    dispatch: kalshi-espn-collector is the 5th tier (second non-WS
+    bronze source). Same HTTP-poll subset as weather.
 
     Per-tier dedup-key prefixes (``d1_6_<check>`` for Kalshi
     collector / ``d2_5_<check>`` for Coinbase collector /
     ``b3_fu3_<check>`` for bot tier / ``d1_8_<check>`` for weather
-    collector) keep alert dedup independent across tiers — a Kalshi
+    collector / ``d1_11_<check>`` for ESPN collector) keep alert
+    dedup independent across tiers — a Kalshi
     disk-pressure alert does NOT dedup-suppress a Coinbase or weather
     disk-pressure alert (their underlying mount points are
     structurally separate per the Option B isolation posture), and
@@ -693,11 +701,38 @@ def main() -> int:
             state_path=Path(WEATHER_MONITOR_STATE_PATH),
         )),
     ]
+    # D1.11.a (2026-05-19, ticket 86ba0ppy0): ESPN collector tier.
+    # Same HTTP-poll subset as weather.
+    _espn_bronze_root_env = os.environ.get(
+        "ESPN_BRONZE_ROOT", "",
+    ).strip()
+    if _espn_bronze_root_env:
+        _espn_default_sidecar = str(
+            Path(_espn_bronze_root_env).parent / "bronze_health.json"
+        )
+    else:
+        _espn_default_sidecar = ESPN_SIDECAR_PATH
+    _espn_sidecar_resolved = os.environ.get(
+        "ESPN_HEALTH_SIDECAR_PATH", _espn_default_sidecar,
+    ).strip() or _espn_default_sidecar
+    espn_checks = [
+        ("disk", lambda: check_disk(
+            path=ESPN_BRONZE_ROOT,
+        )),
+        ("collector_active", lambda: check_collector_active(
+            unit=ESPN_COLLECTOR_UNIT,
+        )),
+        ("dropped_frames", lambda: check_dropped_frames(
+            sidecar_path=Path(_espn_sidecar_resolved),
+            state_path=Path(ESPN_MONITOR_STATE_PATH),
+        )),
+    ]
     tiers = [
         ("kalshi-collector", "d1_6", kalshi_checks),
         ("kalshi-coinbase-collector", "d2_5", coinbase_checks),
         ("kalshi-bot", "b3_fu3", bot_checks),
         ("kalshi-weather-collector", "d1_8", weather_checks),
+        ("kalshi-espn-collector", "d1_11", espn_checks),
     ]
     for tier_name, dedup_prefix, checks in tiers:
         for check_name, check_fn in checks:

@@ -4,10 +4,11 @@
 #   - /etc/systemd/system/kalshi-collector.service        (D1.5, 86b9ypna4)
 #   - /etc/systemd/system/kalshi-coinbase-collector.service (D2.5, 86b9znq4w)
 #   - /etc/systemd/system/kalshi-weather-collector.service (D1.8, 86ba0duck)
+#   - /etc/systemd/system/kalshi-espn-collector.service   (D1.11.a, 86ba0ppy0)
 #
 # Source of truth = ops/*.service in this directory. Re-run this
 # script after any edit to any unit file. The script is idempotent —
-# re-running just re-installs the same content for all four.
+# re-running just re-installs the same content for all five.
 #
 # Bit 2.0.5.1 of repo modularization plan
 # (kb/decisions/repo-modularization-plan-may05.md). Created in
@@ -34,6 +35,12 @@
 # no CPUAffinity, 128M cap, dedicated .env.weather-collector).
 # Four-unit parallel-array form; the length-mismatch guard now expects N=4.
 #
+# D1.11.a (2026-05-19, ticket 86ba0ppy0) extends the installer further
+# to install kalshi-espn-collector.service — the ESPN bronze collector
+# unit (second non-WS source; HTTP poll at 60-second cadence across 24
+# leagues, no CPUAffinity, 256M cap, dedicated .env.espn-collector).
+# Five-unit parallel-array form; the length-mismatch guard now expects N=5.
+#
 # This script does NOT restart the bot or collectors — operator decides
 # when. It WILL prompt for sudo password on the cp / daemon-reload /
 # enable steps; only `sudo -n /bin/systemctl restart kalshi-bot` is
@@ -41,7 +48,7 @@
 # design. A `tty -s` guard fails loudly if invoked via non-interactive
 # ssh instead of hanging on the password prompt forever.
 #
-# PREREQUISITE NOTE (post-D1.8): the script validates ALL FOUR units
+# PREREQUISITE NOTE (post-D1.11.a): the script validates ALL FIVE units
 # (incl. their env-files) BEFORE any `sudo cp` lands. First-time
 # install of any newly-added unit therefore requires its dedicated
 # home-rooted env-file to be provisioned per the matching ops/CLAUDE.md
@@ -52,6 +59,8 @@
 #                              (ops/CLAUDE.md "D2.5 Coinbase collector deploy")
 #   - kalshi-weather-collector → /home/botuser/.env.weather-collector
 #                              (ops/CLAUDE.md "D1.8 weather collector deploy")
+#   - kalshi-espn-collector  → /home/botuser/.env.espn-collector
+#                              (ops/CLAUDE.md "D1.11.a ESPN collector deploy")
 # The two-pass design (validate-ALL then install-ALL) prevents half-
 # installed state — a routine re-install for a bot-only systemd edit
 # still requires every collector env-file present. If the operator
@@ -80,12 +89,14 @@ UNIT_NAMES=(
     "kalshi-collector"
     "kalshi-coinbase-collector"
     "kalshi-weather-collector"
+    "kalshi-espn-collector"
 )
 UNIT_WRAPPERS=(
     "$REPO_ROOT/start.sh"
     "$REPO_ROOT/collector-start.sh"
     "$REPO_ROOT/coinbase-collector-start.sh"
     "$REPO_ROOT/weather-collector-start.sh"
+    "$REPO_ROOT/espn-collector-start.sh"
 )
 # Env-file paths that the unit's EnvironmentFile= directive references.
 # Bot: repo-rooted .env (existing). Kalshi collector: home-rooted
@@ -96,11 +107,16 @@ UNIT_WRAPPERS=(
 # .env.weather-collector (D1.8 — same isolation; no API key needed
 # since Open-Meteo is keyless, but the env file still carries bronze
 # root + rclone remote + bucket knobs that should survive deploys).
+# ESPN collector: home-rooted .env.espn-collector (D1.11.a — same
+# isolation; no API key since site.api.espn.com is keyless, but the
+# env file carries bronze root + rclone remote + bucket + poll
+# interval knobs).
 UNIT_ENV_FILES=(
     "$REPO_ROOT/.env"
     "/home/botuser/.env.collector"
     "/home/botuser/.env.coinbase-collector"
     "/home/botuser/.env.weather-collector"
+    "/home/botuser/.env.espn-collector"
 )
 # Expected directive lines per unit. Each entry is the literal
 # `Key=Value` line that must appear at column 0 in the source unit.
@@ -112,8 +128,10 @@ UNIT_EXPECTED_EXECSTART=(
     "ExecStart=$REPO_ROOT/collector-start.sh"
     "ExecStart=$REPO_ROOT/coinbase-collector-start.sh"
     "ExecStart=$REPO_ROOT/weather-collector-start.sh"
+    "ExecStart=$REPO_ROOT/espn-collector-start.sh"
 )
 UNIT_EXPECTED_WORKINGDIR=(
+    "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
     "WorkingDirectory=$REPO_ROOT"
@@ -124,6 +142,7 @@ UNIT_EXPECTED_ENVFILE=(
     "EnvironmentFile=/home/botuser/.env.collector"
     "EnvironmentFile=/home/botuser/.env.coinbase-collector"
     "EnvironmentFile=/home/botuser/.env.weather-collector"
+    "EnvironmentFile=/home/botuser/.env.espn-collector"
 )
 
 # Length-mismatch guard — protects against future edits adding to one
@@ -196,6 +215,16 @@ for i in "${!UNIT_NAMES[@]}"; do
             echo "      See ops/CLAUDE.md \"D1.8 weather collector deploy\" +"
             echo "      feedback_vps_sudoers_collector_gap_may17 (sudoers NOPASSWD extension"
             echo "      for kalshi-weather-collector)."
+        elif [ "$name" = "kalshi-espn-collector" ]; then
+            echo "      D1.11.a operator runbook: provision /home/botuser/.env.espn-collector"
+            echo "      with ESPN_BRONZE_ROOT (recommended"
+            echo "      /var/lib/kalshi-espn-collector/bronze) / RCLONE_REMOTE /"
+            echo "      S3_BUCKET / ESPN_POLL_INTERVAL_SECONDS (default 60). No PEM"
+            echo "      or KEY_ID needed at D1.11.a (site.api.espn.com is free + keyless;"
+            echo "      the bot has polled it for ~year without throttling)."
+            echo "      See ops/CLAUDE.md \"D1.11.a ESPN collector deploy\" +"
+            echo "      feedback_vps_sudoers_collector_gap_may17 (sudoers NOPASSWD extension"
+            echo "      for kalshi-espn-collector)."
         else
             echo "      Copy from .env.example and populate credentials, then re-run install.sh."
         fi
@@ -251,8 +280,9 @@ echo "Done."
 for name in "${UNIT_NAMES[@]}"; do
     echo "  Verify ${name}: systemctl cat ${name} | head -20"
 done
-echo "Restart hints (post-D2.5 deploy.yml auto-restarts kalshi-collector + kalshi-coinbase-collector on path-affecting deploys; D1.8 weather collector is REQUIRES-APPROVAL at ship — no path-aware restart block yet, file as D1.8-fu2 if desired; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
+echo "Restart hints (post-D2.5 deploy.yml auto-restarts kalshi-collector + kalshi-coinbase-collector on path-affecting deploys; D1.8 weather collector + D1.11.a ESPN collector are REQUIRES-APPROVAL at ship — no path-aware restart block yet, file as fu if desired; manual restart only needed for first-install / post-stop resume / out-of-band hotfix):"
 echo "  Bot                : sudo -n /bin/systemctl restart kalshi-bot"
 echo "  Kalshi collector   : sudo -n /bin/systemctl restart kalshi-collector  (NOPASSWD assumes operator has extended /etc/sudoers.d/botuser-systemctl-restart to include kalshi-collector; see feedback_vps_sudoers_collector_gap_may17)"
 echo "  Coinbase collector : sudo -n /bin/systemctl restart kalshi-coinbase-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-coinbase-collector; see ops/CLAUDE.md D2.5 deploy section)"
 echo "  Weather collector  : sudo -n /bin/systemctl restart kalshi-weather-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-weather-collector; see ops/CLAUDE.md D1.8 deploy section)"
+echo "  ESPN collector     : sudo -n /bin/systemctl restart kalshi-espn-collector  (NOPASSWD assumes operator has further extended sudoers to include kalshi-espn-collector; see ops/CLAUDE.md D1.11.a deploy section)"

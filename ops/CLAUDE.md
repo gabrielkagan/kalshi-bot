@@ -354,12 +354,57 @@ Three alert classes with day-stable cross-process dedup via JSON sidecar at `./p
 
 Cron convention: always exits 0 (cron's mail-spool reservation; signal goes via Telegram, not exit code).
 
+## D1.11.a ESPN collector deploy (REQUIRES-APPROVAL discipline)
+
+`ops/kalshi-espn-collector.service` (SHIPPED 2026-05-19, ticket `86ba0ppy0`) deploys the ESPN bronze collector as a FIFTH parallel systemd unit on the bot VPS. Second non-WS bronze source after D1.8 weather. Key isolation knobs (pinned by `tests/contracts/test_kalshi_espn_collector_systemd_unit.py`): NO `CPUAffinity` (5 tenants on 2-vCPU box; ESPN floats on either vCPU), `Nice=10`, `MemoryMax=256M` + `MemorySwapMax=0` (same as Coinbase; `ESPNArchiver.poll_once` is sequential single-`Session` so peak in-flight is 1 response × ~50 KB + 24 BronzeWriter buffers × ~8 KB ≈ ~250 KB working set — 256M matches Coinbase precedent rather than right-sizing tightly), `LimitNOFILE=512`, `Restart=on-failure` + `RestartSec=10s`, `EnvironmentFile=/home/botuser/.env.espn-collector`.
+
+### Operator runbook: provision `/home/botuser/.env.espn-collector`
+
+```bash
+cat > /home/botuser/.env.espn-collector <<'ENV'
+ESPN_BRONZE_ROOT=/var/lib/kalshi-espn-collector/bronze
+RCLONE_REMOTE=s3prod
+S3_BUCKET=kalshi-bot-archive
+ESPN_POLL_INTERVAL_SECONDS=60
+ENV
+chmod 600 /home/botuser/.env.espn-collector
+chown botuser:botuser /home/botuser/.env.espn-collector
+
+# No PEM / no KEY_ID — site.api.espn.com is free + keyless.
+
+sudo mkdir -p /var/lib/kalshi-espn-collector/bronze
+sudo chown -R botuser:botuser /var/lib/kalshi-espn-collector
+sudo chmod 750 /var/lib/kalshi-espn-collector
+
+bash ops/install.sh   # 5-unit installer post-D1.11.a
+
+sudo systemctl start kalshi-espn-collector
+journalctl -u kalshi-espn-collector -n 50
+rclone lsf s3prod:kalshi-bot-archive/bronze/espn/nba/ | head
+```
+
+### Sudoers NOPASSWD extension (pre-deploy prerequisite)
+
+```bash
+sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
+# Add: botuser ALL=(root) NOPASSWD: /bin/systemctl restart kalshi-espn-collector
+```
+
+### Off-switch + health monitoring
+
+`sudo systemctl stop kalshi-espn-collector` → bot + Kalshi/Coinbase/Weather collectors all unaffected. `scripts/ops/collector_health_monitor.py` extends to FIVE-TIER dispatch with dedup prefix `d1_11_*`; same HTTP-poll subset as weather (disk + collector_active + dropped_frames; NO ws_reconnects).
+
+### LEAGUES_ESPN drift discipline
+
+`collector/espn_archiver.py` defines `LEAGUES_ESPN` (24 entries at D1.11.a ship) mirroring `bot.engines.sports_data.LEAGUES` enabled+espn-eligible subset. Contract test `tests/contracts/test_collector_espn_archiver.py::test_leagues_espn_mirrors_bot_leagues` fails RED on drift — operator must update both sides + `sudo -n /bin/systemctl restart kalshi-espn-collector` so the new channel registers as a BronzeWriter on next boot.
+
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
 - `kalshi-collector.service` — D1.5 collector systemd unit, source of truth
 - `kalshi-coinbase-collector.service` — D2.5 Coinbase collector systemd unit, source of truth (ticket `86b9znq4w`, 2026-05-18)
 - `kalshi-weather-collector.service` — D1.8 weather collector systemd unit, source of truth (ticket `86ba0duck`, 2026-05-18)
-- `install.sh` — 4-unit install + reload (validates + enables ALL FOUR — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector)
+- `kalshi-espn-collector.service` — D1.11.a ESPN collector systemd unit, source of truth (ticket `86ba0ppy0`, 2026-05-19)
+- `install.sh` — 5-unit install + reload (validates + enables ALL FIVE — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector + kalshi-espn-collector)
 - `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
 - `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 
