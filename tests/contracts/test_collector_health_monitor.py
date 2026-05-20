@@ -358,3 +358,263 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         f"expected: {expected_http_checks}. The D1.11.a ESPN tier "
         f"subset (NO ws_reconnects) must mirror D1.8 weather subset."
     )
+
+
+# ── RCA-F boot-grace pins (umbrella `86ba12rf0`, ticket `86ba12xr6`) ─────────
+
+
+def test_check_dropped_frames_accepts_unit_and_boot_grace_kwargs():
+    """``check_dropped_frames`` exposes ``unit`` + ``boot_grace_seconds`` kwargs.
+
+    Both are required so the caller (the main() per-tier dispatch loop)
+    can pass the per-collector unit name + grace-period override. Pinned
+    so a future signature refactor that drops them silently disables
+    the boot-grace surface.
+    """
+    import inspect
+    from scripts.ops.collector_health_monitor import check_dropped_frames
+
+    sig = inspect.signature(check_dropped_frames)
+    assert "unit" in sig.parameters, (
+        "check_dropped_frames must accept `unit` kwarg so the dispatch "
+        "loop can pass per-collector unit names (kalshi-collector, "
+        "kalshi-coinbase-collector, etc.)."
+    )
+    assert "boot_grace_seconds" in sig.parameters, (
+        "check_dropped_frames must accept `boot_grace_seconds` kwarg "
+        "so the boot-grace window is tunable (default 1200s = 20 min)."
+    )
+
+
+def test_default_boot_grace_seconds_is_1200():
+    """``DEFAULT_BOOT_GRACE_SECONDS = 1200`` matches the ~17-min boot window.
+
+    Boot sequence per umbrella ticket: salvage (1min) + REST snapshot
+    (10 min for 754K-ticker pagination) + per-conn wire-up (60s × 7
+    conns ≈ 7 min) ≈ 17 min. 1200s (20 min) gives a small safety margin
+    above the observed worst-case + accounts for boot-time jitter under
+    CPU load.
+    """
+    from scripts.ops.collector_health_monitor import DEFAULT_BOOT_GRACE_SECONDS
+    assert DEFAULT_BOOT_GRACE_SECONDS == 1200, (
+        f"DEFAULT_BOOT_GRACE_SECONDS=1200 covers the observed ~17-min "
+        f"boot window + safety margin; got {DEFAULT_BOOT_GRACE_SECONDS}. "
+        f"A tighter value would re-introduce STALE false-positives "
+        f"during boot; a looser value would mask real wedged-drain "
+        f"events during the grace window."
+    )
+
+
+def test_check_dropped_frames_suppresses_stale_alert_during_boot_grace(
+    tmp_path, monkeypatch,
+):
+    """STALE alert is SUPPRESSED when the collector unit's uptime is below
+    ``boot_grace_seconds`` — the sidecar's staleness is explained by the
+    in-progress boot.
+
+    Without this suppression, every collector restart fires a STALE
+    Telegram alert at the next monitor tick (~5 min after the prior
+    sidecar's last write). On 2026-05-19 this happened 3+ times in 5h
+    (umbrella `86ba12rf0`) — pure false-positive noise.
+    """
+    import time as _time
+    from scripts.ops import collector_health_monitor as mod
+
+    # Stale sidecar (mtime well past the 120s threshold).
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    sidecar.write_text('{"schema_version": 1, "total_dropped_frames": 0}')
+    old_mtime = _time.time() - 600  # 10 min ago
+    os_utime_supports_ns = True
+    try:
+        import os
+        os.utime(sidecar, (old_mtime, old_mtime))
+    except OSError:
+        os_utime_supports_ns = False
+
+    # Patch the uptime helper to report the unit as freshly-booted
+    # (uptime well below the grace window).
+    monkeypatch.setattr(
+        mod, "_collector_uptime_seconds",
+        lambda _unit: 300.0,  # 5 min — below the 1200s grace
+    )
+
+    result = mod.check_dropped_frames(
+        sidecar_path=sidecar, state_path=state,
+        unit="kalshi-collector", boot_grace_seconds=1200,
+    )
+    assert result is None, (
+        f"STALE alert should be SUPPRESSED during boot grace (uptime=300s "
+        f"< boot_grace_seconds=1200s); got alert={result!r}. The grace "
+        f"closes the false-positive class flagged by ticket 86ba12xr6."
+    )
+
+
+def test_check_dropped_frames_fires_stale_alert_after_boot_grace(
+    tmp_path, monkeypatch,
+):
+    """STALE alert FIRES when the collector unit has been up longer than
+    the grace window AND the sidecar is stale — distinguishes real
+    wedged-drain from in-progress-boot.
+    """
+    import os
+    import time as _time
+    from scripts.ops import collector_health_monitor as mod
+
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    sidecar.write_text('{"schema_version": 1, "total_dropped_frames": 0}')
+    old_mtime = _time.time() - 600
+    os.utime(sidecar, (old_mtime, old_mtime))
+
+    # Unit up for 30 min — well past the 20-min grace.
+    monkeypatch.setattr(
+        mod, "_collector_uptime_seconds",
+        lambda _unit: 1800.0,
+    )
+
+    result = mod.check_dropped_frames(
+        sidecar_path=sidecar, state_path=state,
+        unit="kalshi-collector", boot_grace_seconds=1200,
+    )
+    assert result is not None, (
+        "STALE alert MUST fire post-grace when the sidecar is "
+        "actually stale — otherwise wedged-drain events would silently "
+        "go un-alerted forever."
+    )
+    assert "STALE" in result
+
+
+def test_check_dropped_frames_fires_stale_alert_when_uptime_unknown(
+    tmp_path, monkeypatch,
+):
+    """When ``_collector_uptime_seconds`` returns None (systemctl absent /
+    test env), the grace check fail-opens and the STALE alert fires
+    normally.
+
+    Fail-open posture: if we can't confirm we're in the grace window,
+    treat as "post-grace" and alert. Better to ALERT on a real wedged-
+    drain in a test/devbox where systemctl is missing than to silently
+    skip the alert.
+    """
+    import os
+    import time as _time
+    from scripts.ops import collector_health_monitor as mod
+
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    sidecar.write_text('{"schema_version": 1, "total_dropped_frames": 0}')
+    old_mtime = _time.time() - 600
+    os.utime(sidecar, (old_mtime, old_mtime))
+
+    # Helper returns None — uptime unknown.
+    monkeypatch.setattr(
+        mod, "_collector_uptime_seconds",
+        lambda _unit: None,
+    )
+
+    result = mod.check_dropped_frames(
+        sidecar_path=sidecar, state_path=state,
+    )
+    assert result is not None, (
+        "When uptime is unknown, the grace check must fail-OPEN "
+        "(treat as post-grace) so a real wedged-drain still alerts."
+    )
+    assert "STALE" in result
+
+
+def test_main_passes_per_tier_unit_to_check_dropped_frames():
+    """Every tier dispatcher MUST pass ``unit=<tier_unit>`` to
+    check_dropped_frames so the boot-grace check queries the right
+    systemd unit's ``ActiveEnterTimestamp``.
+
+    R2-M1 fix (2026-05-20): without this regression guard, a future
+    refactor that drops the ``unit=`` kwarg from any tier's closure
+    would silently re-introduce R1-M1 cross-coupling (Coinbase /
+    Weather / ESPN STALE alerts suppressed during Kalshi's 20-min boot
+    window instead of their own).
+    """
+    import inspect
+    from scripts.ops import collector_health_monitor as mod
+    src = inspect.getsource(mod.main)
+
+    # Each tier's check_dropped_frames invocation must include
+    # unit=<TIER>_COLLECTOR_UNIT (or DEFAULT_COLLECTOR_UNIT for Kalshi).
+    # We grep the source rather than mock-recording calls because the
+    # dispatcher closures are lambdas that resolve at call time —
+    # easier to pin the literal source than monkey-patch the lookup.
+    expected_unit_kwargs = [
+        "unit=DEFAULT_COLLECTOR_UNIT",
+        "unit=COINBASE_COLLECTOR_UNIT",
+        "unit=WEATHER_COLLECTOR_UNIT",
+        "unit=ESPN_COLLECTOR_UNIT",
+    ]
+    for kwarg in expected_unit_kwargs:
+        assert kwarg in src, (
+            f"Expected {kwarg!r} in main()'s tier dispatcher source — "
+            f"missing it would cross-couple the boot-grace check to the "
+            f"wrong tier's unit (R1-M1 / R2-M1 regression class)."
+        )
+
+
+def test_check_dropped_frames_schema_alert_fires_during_boot_grace(
+    tmp_path, monkeypatch,
+):
+    """SCHEMA-mismatch alert MUST fire during boot grace.
+
+    R1-C1 fix (2026-05-20): the boot-grace branch must skip ONLY the
+    STALE alert. SCHEMA + DROPS checks below read the file's CONTENT
+    (not its mtime) and would silently regress observability for 20-
+    min windows if short-circuited.
+
+    Setup: stale sidecar with WRONG schema_version, unit freshly booted
+    (uptime within grace). Expect: SCHEMA alert fires (NOT silent).
+    """
+    import os
+    import time as _time
+    from scripts.ops import collector_health_monitor as mod
+
+    sidecar = tmp_path / "bronze_health.json"
+    state = tmp_path / "monitor_state.json"
+    # Schema-mismatch sidecar (schema_version=99, not 1).
+    sidecar.write_text('{"schema_version": 99, "total_dropped_frames": 0}')
+    old_mtime = _time.time() - 600  # 10 min ago (also triggers STALE)
+    os.utime(sidecar, (old_mtime, old_mtime))
+
+    # Unit freshly booted — STALE would be skipped by grace.
+    monkeypatch.setattr(
+        mod, "_collector_uptime_seconds",
+        lambda _unit: 300.0,  # 5 min — within grace
+    )
+
+    result = mod.check_dropped_frames(
+        sidecar_path=sidecar, state_path=state,
+        unit="kalshi-collector", boot_grace_seconds=1200,
+    )
+    assert result is not None, (
+        "SCHEMA alert MUST fire during boot grace — the grace skips "
+        "ONLY the STALE alert. R1-C1 regression guard: a short-circuit "
+        "`return None` inside the grace branch would silently disable "
+        "SCHEMA detection for 20-min windows."
+    )
+    assert "SCHEMA" in result, (
+        f"Expected SCHEMA alert; got {result!r}. The grace-branch fix "
+        f"must let control flow continue to the SCHEMA + DROPS checks."
+    )
+
+
+def test_collector_uptime_seconds_returns_none_for_invalid_unit():
+    """``_collector_uptime_seconds(unit)`` returns None for a unit that
+    doesn't exist, NOT an exception.
+
+    The grace check fail-opens on None — silent-crash semantics inside
+    the helper would propagate to the cron caller, which (per
+    `feedback_monitor_the_monitor`) must always exit 0.
+    """
+    from scripts.ops.collector_health_monitor import _collector_uptime_seconds
+    result = _collector_uptime_seconds("definitely-not-a-real-unit-86ba12xr6")
+    assert result is None, (
+        f"_collector_uptime_seconds must return None for invalid units; "
+        f"got {result!r}. The cron-caller relies on None-safe behavior "
+        f"so check_dropped_frames can fail-open to STALE alerts."
+    )

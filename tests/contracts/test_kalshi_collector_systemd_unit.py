@@ -199,6 +199,31 @@ def test_service_nice_is_10():
     )
 
 
+def test_service_memory_high_is_400m():
+    """``MemoryHigh=400M`` soft cgroup throttle before MemoryMax kill.
+
+    Added 2026-05-20 (umbrella ``86ba12rf0``) after the 2026-05-19
+    unexplained collector exits at 22:06 / 22:26 / 00:04 UTC correlated
+    with peak memory at 472M / 512M cap (92%). MemoryHigh triggers
+    kernel-side throttling at 78% of MemoryMax, surfacing memory
+    pressure in cgroup counters BEFORE the hard SIGKILL.
+
+    Trade-off: throttling under MemoryHigh slows the collector
+    (intentionally) — drain rate drops, queues fill faster, drops
+    increase. Strictly preferable to a hard SIGKILL that loses all
+    in_flight chunks (the B0/B1 salvage path recovers most, but not
+    all, and adds boot latency).
+    """
+    text = _read_unit()
+    assert _directive(text, "MemoryHigh") == "400M", (
+        "MemoryHigh=400M — D0.3 §6 isolation enhancement (ticket "
+        "86ba12rf0). Soft throttle at 78% of MemoryMax provides a "
+        "graceful-degradation warning before the hard SIGKILL at "
+        "512M. Removing this directive without a replacement memory-"
+        "pressure surface is a regression."
+    )
+
+
 def test_service_memory_max_is_512m():
     """``MemoryMax=512M`` kernel-kills the collector before it OOMs the 2GB box.
 

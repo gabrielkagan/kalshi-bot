@@ -26,6 +26,17 @@ RestartSec=10s
 # now floats both processes across both vCPUs. See
 # kb/decisions/collector-queue-saturation-fix-plan.md for RCA.
 Nice=10
+# MemoryHigh=400M (78% of MemoryMax) — soft cgroup throttle that logs a
+# pressure warning + slows the collector via kernel throttling BEFORE
+# the hard MemoryMax=512M SIGKILL. Pinned by
+# tests/contracts/test_kalshi_collector_systemd_unit.py.
+# Added 2026-05-20 (umbrella 86ba12rf0): the 2026-05-19 unexplained
+# collector exits at 22:06 / 22:26 / 00:04 UTC correlated with peak
+# memory at 472M / 512M (92%) — possible kernel OOM cascade from
+# combined bot+collector memory pressure on the 2GB VPS. MemoryHigh
+# fires a soft warning at 400M that surfaces in cgroup pressure
+# counters BEFORE the hard kill.
+MemoryHigh=400M
 MemoryMax=512M
 MemorySwapMax=0
 LimitNOFILE=4096

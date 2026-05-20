@@ -159,6 +159,82 @@ DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
 # rotation.
 DEFAULT_SIDECAR_STALE_SECONDS = 120
 
+# Boot-grace window (umbrella `86ba12rf0` / RCA-F `86ba12xr6`,
+# 2026-05-20). The collector's boot sequence is dominated by a ~10-min
+# REST snapshot (754K-ticker pagination) + ~7-min per-conn wire-up
+# (60s/conn × 7 conns). During this window the drain thread isn't
+# running yet, so bronze_health.json is legitimately stale — alerting
+# on the 120s threshold here is a false-positive that fires every
+# deploy / collector restart (~3 times today on 2026-05-19, per
+# umbrella ticket). The grace skips ONLY the STALE alert until the
+# unit's `ActiveEnterTimestamp` is at least this many seconds old.
+# SCHEMA + DROPS checks remain active throughout — they read the
+# file's CONTENT, not its mtime, and bug classes there (version-skew,
+# wedged-but-fresh-sidecar drain) deserve to alert even during boot.
+DEFAULT_BOOT_GRACE_SECONDS = 1200
+
+
+def _systemctl_show_property(unit: str, prop: str) -> Optional[str]:
+    """Read a single systemctl ``show`` property; return value or None.
+
+    Pure helper. Used by ``_collector_uptime_seconds`` (boot-grace
+    check). Returns None on subprocess failure; the caller decides
+    whether to treat None as fail-open (continue with other checks) or
+    fail-quiet (skip the dependent check).
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", unit, "--property=" + prop],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    # Output shape: "Key=Value\n" (trailing newline). Strip + split once.
+    line = result.stdout.strip()
+    if "=" not in line:
+        return None
+    _, _, value = line.partition("=")
+    return value
+
+
+def _collector_uptime_seconds(unit: str) -> Optional[float]:
+    """Return seconds since the unit's ActiveEnterTimestamp, or None.
+
+    Used by ``check_dropped_frames`` to skip the STALE-sidecar alert
+    during the collector's ~17-min boot window. Returns None on any
+    systemctl-show failure — caller treats as "no grace, run normal
+    check" (fail-open posture matches the cron framework's bias).
+
+    ActiveEnterTimestampMonotonic is monotonic-clock μs since boot.
+    Converting to wall-clock requires subtracting against the kernel's
+    BootTime, but we want age-since-active-entered which is simpler:
+    the difference between systemd's reported ``ActiveEnterTimestamp``
+    (UTC wall-clock) and ``time.time()``.
+    """
+    ts_str = _systemctl_show_property(unit, "ActiveEnterTimestamp")
+    if not ts_str:
+        return None
+    # systemctl emits "Wed 2026-05-20 00:04:44 UTC" (or local TZ if
+    # `set-default-timezone` differs from UTC; the VPS runs UTC).
+    # Strptime with explicit UTC handling.
+    try:
+        import datetime as _dt
+        # Common systemctl format: "Day YYYY-MM-DD HH:MM:SS TZ"
+        # Split off the leading day-of-week (variable length) + parse rest.
+        parts = ts_str.split(maxsplit=1)
+        if len(parts) != 2:
+            return None
+        tail = parts[1]  # "2026-05-20 00:04:44 UTC"
+        active_ts = _dt.datetime.strptime(
+            tail, "%Y-%m-%d %H:%M:%S %Z",
+        ).replace(tzinfo=_dt.timezone.utc)
+        active_epoch = active_ts.timestamp()
+        return time.time() - active_epoch
+    except (ValueError, ImportError):
+        return None
+
 
 def check_disk(
     path: str = DEFAULT_BRONZE_ROOT,
@@ -327,6 +403,8 @@ def check_dropped_frames(
     state_path: Path = Path(DEFAULT_MONITOR_STATE_PATH),
     threshold: int = DEFAULT_DROPPED_FRAMES_THRESHOLD,
     stale_after_seconds: int = DEFAULT_SIDECAR_STALE_SECONDS,
+    unit: str = DEFAULT_COLLECTOR_UNIT,
+    boot_grace_seconds: int = DEFAULT_BOOT_GRACE_SECONDS,
 ) -> Optional[str]:
     """Return alert string if BronzeArchiver drops cross ``threshold``
     cumulatively-since-last-alert, else None. D1.6 fu observability for
@@ -380,6 +458,16 @@ def check_dropped_frames(
             (default 100).
         stale_after_seconds: alert if sidecar mtime older than this
             (default 120s ≈ 2 monitor ticks).
+        unit: systemd unit name to query for boot-grace uptime
+            (default ``kalshi-collector``). Dispatcher closures for
+            Coinbase / Weather / ESPN MUST pass their respective unit
+            names; otherwise the boot-grace check cross-couples to
+            Kalshi's uptime (R1-M1 fix, 2026-05-20).
+        boot_grace_seconds: skip the STALE alert if the unit's
+            ActiveEnterTimestamp is younger than this (default 1200s
+            ≈ 20 min, covers the observed ~17-min boot window with
+            safety margin). SCHEMA + DROPS checks remain active
+            during the grace.
 
     Returns:
         Alert string (Markdown for Telegram) or None.
@@ -395,21 +483,35 @@ def check_dropped_frames(
         return None
 
     # STALE check (before reading content — a stale file's content may
-    # also be uninformative).
+    # also be uninformative). RCA-F `86ba12xr6` (2026-05-20): skip the
+    # STALE alert during the collector's ~17-min boot window. The drain
+    # thread + sidecar writer don't run until AFTER all archivers are
+    # wired (boot sequence: salvage → REST snapshot 10 min → 60s/conn ×
+    # 7 conns wire-up = ~17 min total). Alerting STALE during boot fires
+    # a false-positive on every deploy + every restart cycle.
+    #
+    # CRITICAL: the grace SKIPS ONLY the STALE alert (R1-C1 fix). SCHEMA
+    # + DROPS checks below MUST still run during boot grace — they read
+    # the file's CONTENT (not its mtime), and would silently regress
+    # observability for 20-min windows if short-circuited here.
     try:
         mtime = sidecar_path.stat().st_mtime
     except OSError:
         return None
     age = time.time() - mtime
     if age > stale_after_seconds:
-        return (
-            f"*COLLECTOR BRONZE_HEALTH STALE* — sidecar {sidecar_path} "
-            f"not written in {int(age)}s (threshold {stale_after_seconds}s; "
-            f"next monitor tick fires alert within 5min of staleness onset). "
-            f"Collector drain thread may be wedged or process dead. "
-            f"Check: `systemctl status kalshi-collector` + "
-            f"`journalctl -u kalshi-collector --since '5 min ago' | tail`."
-        )
+        uptime = _collector_uptime_seconds(unit)
+        in_boot_grace = uptime is not None and uptime < boot_grace_seconds
+        if not in_boot_grace:
+            return (
+                f"*COLLECTOR BRONZE_HEALTH STALE* — sidecar {sidecar_path} "
+                f"not written in {int(age)}s (threshold {stale_after_seconds}s; "
+                f"next monitor tick fires alert within 5min of staleness onset). "
+                f"Collector drain thread may be wedged or process dead. "
+                f"Check: `systemctl status kalshi-collector` + "
+                f"`journalctl -u kalshi-collector --since '5 min ago' | tail`."
+            )
+        # In boot grace — drop through to SCHEMA + DROPS checks below.
 
     try:
         sidecar_data = json.loads(sidecar_path.read_text())
@@ -583,6 +685,7 @@ def main() -> int:
         ("dropped_frames", lambda: check_dropped_frames(
             sidecar_path=Path(DEFAULT_SIDECAR_PATH),
             state_path=Path(DEFAULT_MONITOR_STATE_PATH),
+            unit=DEFAULT_COLLECTOR_UNIT,
         )),
     ]
     # R4-M2 + R5-M1: resolve the Coinbase sidecar path at call time
@@ -634,6 +737,7 @@ def main() -> int:
         ("dropped_frames", lambda: check_dropped_frames(
             sidecar_path=Path(_coinbase_sidecar_resolved),
             state_path=Path(COINBASE_MONITOR_STATE_PATH),
+            unit=COINBASE_COLLECTOR_UNIT,
         )),
     ]
 
@@ -699,6 +803,7 @@ def main() -> int:
         ("dropped_frames", lambda: check_dropped_frames(
             sidecar_path=Path(_weather_sidecar_resolved),
             state_path=Path(WEATHER_MONITOR_STATE_PATH),
+            unit=WEATHER_COLLECTOR_UNIT,
         )),
     ]
     # D1.11.a (2026-05-19, ticket 86ba0ppy0): ESPN collector tier.
@@ -725,6 +830,7 @@ def main() -> int:
         ("dropped_frames", lambda: check_dropped_frames(
             sidecar_path=Path(_espn_sidecar_resolved),
             state_path=Path(ESPN_MONITOR_STATE_PATH),
+            unit=ESPN_COLLECTOR_UNIT,
         )),
     ]
     tiers = [

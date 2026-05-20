@@ -934,6 +934,7 @@ RestartSec=10s
 # pin saturated at 90% CPU under 754K+ tickers; collector now floats
 # both vCPUs with Nice=10 as the priority-isolation knob.
 Nice=10                          # I/O-bound polite background; load-bearing isolation
+MemoryHigh=400M                  # soft cgroup throttle at 78% (added 2026-05-20)
 MemoryMax=512M                   # OOM the collector before it OOMs the box
 MemorySwapMax=0
 LimitNOFILE=4096                 # 6 WS conns + rotation + rclone fd headroom
@@ -957,6 +958,7 @@ Structurally:
 | Separate state file (`collector_state.db`) | No SQLite write contention |
 | Separate disk path (`bronze_buffer/`) | I/O isolation |
 | `Nice=10` (collector) vs `Nice=0` (bot) | CPU contention bounded via priority — CPUAffinity retired 2026-05-19 ticket 86ba12rv6 |
+| `MemoryHigh=400M` | Soft cgroup throttle before hard kill — surfaces memory pressure in cgroup counters at 78% of MemoryMax (added 2026-05-20 ticket 86ba12rf0) |
 | `MemoryMax=512M` | RAM exhaustion of collector cannot OOM bot |
 
 The off-switch is `sudo systemctl stop kalshi-collector` — bot trading unaffected. Inverse off-switch: bot crash, collector keeps capturing.
