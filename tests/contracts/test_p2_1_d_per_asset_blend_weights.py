@@ -57,6 +57,11 @@ CONSTANTS_PY = REPO_ROOT / "bot" / "constants.py"
 #   sweep on live shadow data accumulated 2026-05-10 → 2026-05-13 (DOGE
 #   n=1710 / HYPE n=1469). Both argmins interior — no corner pull needed.
 #   See kb/findings/p2-3-b-live-promotion-blend-weights-may14.md.
+# - BNB: P2.4 live promotion 2026-05-19, ClickUp 86b9zmj37, B.1-equivalent
+#   Brier sweep on live shadow data accumulated 2026-05-17 → 2026-05-19
+#   (n=721). Argmin interior at w=0.20 — matches ETH pattern (raw model
+#   beats market by ~10% Brier; BNB is well-calibrated, opposite of HYPE/DOGE).
+#   See kb/decisions/p2-4-bnb-live-promotion-plan.md.
 EXPECTED_PER_ASSET_BLEND_W: dict[str, float] = {
     "BTC": 0.10,
     "ETH": 0.20,
@@ -64,6 +69,7 @@ EXPECTED_PER_ASSET_BLEND_W: dict[str, float] = {
     "XRP": 0.90,
     "HYPE": 0.80,
     "DOGE": 0.60,
+    "BNB": 0.20,
 }
 
 # v1.1 CURRENT pointer target for atomic deploy. Train_id format:

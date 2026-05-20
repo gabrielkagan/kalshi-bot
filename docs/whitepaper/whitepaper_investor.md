@@ -45,7 +45,7 @@ This is a quantitative trading platform that operates on **Kalshi**, the only U.
 
 What's unusual about this project — and the reason it merits an investor whitepaper rather than a paragraph in a pitch deck — is that it has accidentally become **two assets**:
 
-1. **A live trading business** running on Kalshi's 15-minute crypto contracts (BTC, ETH, SOL, XRP, HYPE, DOGE; BNB in T1 shadow observation as of 2026-05-17 — same disciplined path HYPE/DOGE walked from T1 shadow 2026-05-10 → T4 live 2026-05-14), augmented by six conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown) and a multi-vertical research pipeline (SPX intraday, weather, sports — all currently observation-only).
+1. **A live trading business** running on Kalshi's 15-minute crypto contracts (BTC, ETH, SOL, XRP, HYPE, DOGE, BNB — all seven live post P2.4 promotion 2026-05-19; HYPE/DOGE walked T1 shadow 2026-05-10 → T4 live 2026-05-14, BNB walked T1 shadow 2026-05-17 → T4 live 2026-05-19), augmented by six conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown) and a multi-vertical research pipeline (SPX intraday, weather, sports — all currently observation-only).
 2. **A proprietary data archive** — the "Data Corpus." As of **May 17, 2026** the system began capturing every WebSocket frame Kalshi emits, byte-exact, into a permanent immutable archive in cloud object storage. This is a different kind of asset: it has no edge to degrade, it appreciates without effort, and it cannot be retroactively created. Bloomberg's terminal business generates roughly **$10 billion per year** primarily from this kind of asset[^bloomberg-rev]; Renaissance Technologies' multi-decade tick archive is the most-cited single contributor to their durable edge.[^rentec] The corpus is small today and will be small a year from now in absolute terms. But the day it stops being optional research infrastructure and becomes a balance-sheet asset is determined entirely by how early we started capturing — and we have started.
 
 [^bloomberg-rev]: Bloomberg L.P. revenue is privately held; Terminal revenue estimated at ~$10B/yr (~85% of LP revenue) per public market commentary. Source: [The Terminalist](https://theterminalist.substack.com/p/bloombergs-7-powers-and-why-the-terminal); [Wikipedia](https://en.wikipedia.org/wiki/Bloomberg_Terminal).
@@ -59,7 +59,7 @@ The third structural fact is that the entire platform is **operated by one perso
 > **Live trading snapshot (auto-updated, last refresh {{GENERATED_AT}}):**
 >
 > - **{{LIVE_SETTLED}}** settled trades since 2026-02-22 — {{LIVE_WINS}}W / {{LIVE_LOSSES}}L / {{LIVE_BREAKEVENS}} BE; win rate {{LIVE_WR}}
-> - Six live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE)
+> - Seven live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE, BNB)
 > - Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
 > - {{WEATHER_CITY_COUNT}} weather cities, {{SPORTS_LEAGUE_COUNT}} sports leagues, and S&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
 > - Hourly crypto disabled since Apr 18 after a correlated multi-strike loss event; re-enable path preserved behind two environment variables
@@ -100,7 +100,7 @@ The microstructure properties that make these contracts attractive for systemati
 
 ## 1.2 What the bot actually does
 
-For every active 15-minute contract — across six live-trading cryptocurrencies plus BNB in T1 shadow observation (2026-05-17, ticket 86b9zmj0c — full evaluation pipeline writes diagnostic rows, zero live orders until T4 promotion), multiple strike prices per asset, every fifteen minutes, 24/7 — the bot performs the following sequence:
+For every active 15-minute contract — across seven live-trading cryptocurrencies (BTC, ETH, SOL, XRP, HYPE, DOGE, BNB — BNB T4-promoted 2026-05-19 via P2.4 sibling to P2.3 HYPE/DOGE), multiple strike prices per asset, every fifteen minutes, 24/7 — the bot performs the following sequence:
 
 1. **Observe**. Real-time spot-price feeds from Coinbase and Kraken via WebSocket; cross-exchange feeds for lead-lag detection from Bybit (Binance is geo-blocked from the production VPS); implied volatility from Deribit (DVOL index for BTC and ETH every 60 seconds); orderbook state from Kalshi via WebSocket (real-time fills, orderbook deltas, market lifecycle events).
 2. **Estimate**. Per-asset volatility computed from a Realized Kernel estimator with adaptive bandwidth (Barndorff-Nielsen, Hansen, Lunde, Shephard 2008[^bnhls]), conditioned by an EGARCH(1,1) model (Nelson 1991[^nelson-egarch]) fit by maximum likelihood with Student-t innovations, blended dynamically using forecast-quality-weighted Bates-Granger combination weights (Bates & Granger 1969[^bates-granger]). Per-asset Normal Inverse Gaussian (NIG) distribution (Barndorff-Nielsen 1997[^bn-nig]) fit by MLE on seven days of returns produces a raw probability that the asset stays above the contract threshold. The KS-test fit improvement over Student-t is large (BTC NIG p-value ≈ 0.11 vs. Student-t effectively 0; ETH ≈ 0.42 vs. effectively 0).
@@ -130,7 +130,7 @@ This section is more interesting than it looks. The single most important qualit
 
 **Live (real capital at risk):**
 
-- **15-minute crypto, six assets.** BTC (min entry 88¢), ETH (90¢ main tier, 75–79¢ sub-tier capped at 50 contracts), SOL (86¢, taker-first due to thin orderbooks), XRP (92¢), HYPE (90¢), DOGE (85¢). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14). BNB is the 7th asset, currently in T1 shadow observation (2026-05-17, ticket 86b9zmj0c) — full evaluation pipeline writes diagnostic rows but submits zero live BNB orders until T4 promotion (earliest 2026-06-10 after ~3-4 weeks of T3 calibration data).
+- **15-minute crypto, seven assets.** BTC (min entry 88¢), ETH (90¢ main tier, 75–79¢ sub-tier capped at 50 contracts), SOL (86¢, taker-first due to thin orderbooks), XRP (92¢), HYPE (90¢), DOGE (85¢), BNB (90¢). HYPE and DOGE promoted to live trading on 2026-05-14 via the P2.3 expansion sweep (B.1 Brier sweep on T1 shadow data accumulated 2026-05-10 through 2026-05-14). BNB promoted to live trading on 2026-05-19 via the P2.4 sibling sweep (B.1-equivalent Brier sweep on T1 shadow data accumulated 2026-05-17 through 2026-05-19, n=721 settled; argmin matches ETH pattern at w=0.20 — BNB's raw model is well-calibrated, opposite of HYPE/DOGE which needed heavy market blend).
 - **Six conditional overlays.** Decided contracts (four live tiers identifying near-certain outcomes via extreme z-scores), terminal momentum (96/98/99¢ trades in the final 1–5 minutes), low-price near-expiry (BTC 80–87¢ in the final 10–120 seconds), weekend discount (Sat/Sun 90¢+ at STC ≤ 600s), overnight discount (weekday 04–11 UTC 89¢+ at STC ≤ 600s), loss-burst cooldown (per-asset 2-hour lockout after any 15M loss; +$441/30d counterfactual at last measurement).
 - **P4.1 band-calibrated sizing.** Promoted 2026-05-17. Kelly sizing on 15M trades now receives a band-stratified calibrated probability (42-cell hierarchical-shrunk empirical lookup) rather than the raw model probability — this only changes Kelly magnitudes, not trade selection. Soak through 2026-05-31.
 
@@ -419,7 +419,7 @@ This is a discrete approximation of the Grossman-Zhou (1993) result that drawdow
 
 [^girs]: Goetzmann, W. N., Ingersoll, J. E., & Ross, S. A. (2003). "High-Water Marks and Hedge Fund Management Contracts." *Journal of Finance* 58(4): 1685–1718.
 
-Per-asset caps are tighter than the global Kelly cap: BTC 15%, ETH 20%, SOL 15%, XRP 15%, HYPE 10%, DOGE 10%. SPX uses eighth-Kelly (0.125); the weather YES-side simulation used quarter-Kelly (0.25); weather NO was 1-contract verification-mode prior to the May 16 kill.
+Per-asset caps are tighter than the global Kelly cap: BTC 15%, ETH 20%, SOL 15%, XRP 15%, HYPE 10%, DOGE 10%, BNB 10%. SPX uses eighth-Kelly (0.125); the weather YES-side simulation used quarter-Kelly (0.25); weather NO was 1-contract verification-mode prior to the May 16 kill.
 
 ## 4.3 Edge-detection guards
 
@@ -427,7 +427,7 @@ Before any trade is placed, five independent checks must pass:
 
 1. The model's estimated probability is high enough to justify the contract price.
 2. The fee-adjusted edge exceeds the price-dependent minimum (0.25% at 80–90¢, dipping to 0.20% at 91–92¢, climbing to 1.0% at 97¢+) — V-shaped because near-100¢ entries have asymmetric loss distributions.
-3. The contract price is within hard per-asset bounds (BTC 88¢+, ETH 90¢+ main / 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+, HYPE 90¢+, DOGE 85¢+).
+3. The contract price is within hard per-asset bounds (BTC 88¢+, ETH 90¢+ main / 75–79¢ capped sub-tier, SOL 86¢+, XRP 92¢+, HYPE 90¢+, DOGE 85¢+, BNB 90¢+).
 4. The z-score is not extreme (|z| > 25 rejects — preserves valid high-conviction trades while blocking obvious data-corruption inputs).
 5. Model-market discrepancy guard — if the model says ≥90% but the market is below 75¢, the model is suspected of missing material information and the trade is refused.
 

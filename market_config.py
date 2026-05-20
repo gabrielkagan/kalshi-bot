@@ -79,10 +79,11 @@ class MarketTypeConfig:
         scalar ``market_blend_w`` when no per-asset override is configured
         (or when ``asset`` is None / not in the override map).
 
-        Post-P2.1.d (2026-05-13) + P2.3 (2026-05-14) the 15M MarketConfig
-        pins ``market_blend_w_by_asset`` to MARKET_BLEND_W_BY_ASSET for all
-        6 production 15M assets (BTC/ETH/SOL/XRP/HYPE/DOGE); unknown
-        assets + hourly/spx/weather/sports all use the scalar fallback."""
+        Post-P2.1.d (2026-05-13) + P2.3 (2026-05-14) + P2.4 (2026-05-19) the
+        15M MarketConfig pins ``market_blend_w_by_asset`` to
+        MARKET_BLEND_W_BY_ASSET for all 7 production 15M assets
+        (BTC/ETH/SOL/XRP/HYPE/DOGE/BNB); unknown assets + hourly/spx/weather/sports
+        all use the scalar fallback."""
         if self.market_blend_w_by_asset and asset:
             return self.market_blend_w_by_asset.get(asset, self.market_blend_w)
         return self.market_blend_w
@@ -102,8 +103,8 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         max_risk_per_trade=0.25,
         kelly_fraction=1.0,
         market_blend_w=0.40,
-        # P2.1.d (2026-05-13) + P2.3 (2026-05-14): per-asset weights for all
-        # 6 production 15M assets — operator-confirmed argmaxes with
+        # P2.1.d (2026-05-13) + P2.3 (2026-05-14) + P2.4 (2026-05-19): per-asset
+        # weights for all 7 production 15M assets — operator-confirmed argmaxes with
         # interior-pull discipline. Sourced from
         # bot.constants.MARKET_BLEND_W_BY_ASSET; validated lock-step at
         # startup in validate_market_configs(). Unknown assets fall back to
@@ -141,7 +142,7 @@ MARKET_CONFIGS: Dict[str, MarketTypeConfig] = {
         cal_engine_state_path="hourly_calibration_state.json",
         fee_multiplier_taker=0.07,
         fee_multiplier_maker=0.0,  # Kalshi charges $0 on maker fills
-        excluded_assets=frozenset({"SOL", "XRP", "HYPE", "DOGE", "BNB"}),  # BTC+ETH only; HYPE/DOGE/BNB T1 shadow until T4 — lock-step with bot/constants.py:HOURLY_EXCLUDED_ASSETS (BNB T1 ticket 86b9zmj0c, 2026-05-17; assertion below will crash startup on mismatch)
+        excluded_assets=frozenset({"SOL", "XRP", "HYPE", "DOGE", "BNB"}),  # BTC+ETH only; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19) — lock-step with bot/constants.py:HOURLY_EXCLUDED_ASSETS (assertion below will crash startup on mismatch)
         min_stc_entry=600,                 # 10 min minimum
         max_stc_entry=1800,                # 30 min maximum
         max_positions_per_window=2,

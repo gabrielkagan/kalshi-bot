@@ -62,6 +62,7 @@ import bot.constants  # Bit 9.3-iii.c kill-switch fix (2026-05-11): WEATHER_NO_S
 from bot.constants import (
     ADDON_ENABLED, ADDON_MAX_ENTRY_PRICE, ADDON_MIN_PRICE_IMPROVEMENT, ADDON_MIN_SECONDS_SINCE_FILL,
     ADDON_MIN_STC_REMAINING, ADDON_SIZE_FRACTION, BRACKET_NO_ASSUMED_PROB, BRACKET_NO_YES_MAX,
+    BNB_MIN_ENTRY_PRICE,
     BRACKET_NO_YES_MIN, BTC_ESCALATION_WAIT_OVERRIDE, BTC_MIN_ENTRY_PRICE, DC_IOC_MAX_RETRIES,
     DC_IOC_RETRY_DELAY, DC_PRICE_TOLERANCE_MAX, DC_PRICE_TOLERANCE_START_RETRY, DECIDED_CONTRACT_MIN_PRICE,
     DECIDED_CONTRACT_T2_MAX_PRICE, DIP_ADDON_ENABLED, DIP_ADDON_MAX_TOTAL_RISK, DIP_ADDON_MIN_DROP_CENTS,
@@ -2108,6 +2109,8 @@ class OrderExecutor:
             _esc_floor = HYPE_MIN_ENTRY_PRICE
         elif _esc_asset == "DOGE":
             _esc_floor = DOGE_MIN_ENTRY_PRICE
+        elif _esc_asset == "BNB":
+            _esc_floor = BNB_MIN_ENTRY_PRICE
         if best_ask < _esc_floor or best_ask > ESCALATION_MAX_ENTRY:
             logging.warning(
                 f"Escalation aborted: price {best_ask}¢ out of range "
@@ -3208,6 +3211,8 @@ class OrderExecutor:
                 _floor = HYPE_MIN_ENTRY_PRICE
             elif _asset == "DOGE":
                 _floor = DOGE_MIN_ENTRY_PRICE
+            elif _asset == "BNB":
+                _floor = BNB_MIN_ENTRY_PRICE
         if price < _floor:
             logging.warning("Maker price %dc below %s floor %dc for %s — skipping",
                             price, _asset, _floor, ticker)
@@ -4639,6 +4644,7 @@ class OrderExecutor:
             "BTC": BTC_MIN_ENTRY_PRICE, "ETH": ETH_MIN_ENTRY_PRICE,
             "SOL": SOL_MIN_ENTRY_PRICE, "XRP": XRP_MIN_ENTRY_PRICE,
             "HYPE": HYPE_MIN_ENTRY_PRICE, "DOGE": DOGE_MIN_ENTRY_PRICE,
+            "BNB": BNB_MIN_ENTRY_PRICE,
         }
         _fill_asset = order["asset"]
         _fill_floor = _ASSET_FLOOR_MAP.get(_fill_asset, MIN_ENTRY_PRICE)

@@ -30,7 +30,7 @@ SERIES_TICKERS = {
     "XRP": "KXXRP15M",
     "HYPE": "KXHYPE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
     "DOGE": "KXDOGE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
-    "BNB": "KXBNB15M",        # T1 onboarding 2026-05-17 (86b9zmj0c) — shadow observation
+    "BNB": "KXBNB15M",        # T4 LIVE 2026-05-19 (P2.4, 86b9zmj37)
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -79,18 +79,25 @@ XRP_15M_SHADOW = False            # XRP 15M promoted to live at 92c+ (data: 41W/
 # evaluated_opportunities deferred 2-4 weeks post-promote (separate Bit).
 HYPE_15M_SHADOW = False           # HYPE 15M live (T4 promoted 2026-05-14, floor 90c, max_risk 0.10)
 DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor 85c, max_risk 0.10)
-# T1 onboarding (2026-05-17, ticket 86b9zmj0c — umbrella 86b9zmhyk): BNB 15M shadow
-# observation. Bot subscribes to Coinbase BNB-USD + Kalshi KXBNB15M/KXBNBD feeds,
-# runs the full scan→evaluate pipeline writing diagnostic rows, but submits ZERO
-# live orders for BNB. Kill-switch clauses preserved at TM/WKND/OVN/DC strategy
-# eligibility sites in bot/scanner/__init__.py — flipping BNB_15M_SHADOW=False
-# at T4 promotion will unblock BNB across all 4 strategies in lock-step. T4
-# prerequisites (BNB_MIN_ENTRY_PRICE, BNB_MAX_RISK_PER_TRADE, TM_ASSET_RISK_CAPS["BNB"],
-# NBBO_FALLBACK_GATES, MARKET_BLEND_W_BY_ASSET["BNB"]) deliberately NOT wired
-# in T1 — graceful .get(...) fallbacks operate while the asset is shadow-only.
-# Plan: agent_docs/bnb-t1-plan-may17.md. Regression lock:
+# T1 onboarding (2026-05-17, ticket 86b9zmj0c — umbrella 86b9zmhyk): BNB 15M shadow.
+# T4 LIVE PROMOTION (2026-05-19, ticket 86b9zmj37 / P2.4 — sibling to P2.3 HYPE/DOGE
+# 86b9xv66a, 2026-05-14). 5 T4 prereqs wired: BNB_MIN_ENTRY_PRICE=90 (per-tier WR
+# analysis n=272 at 90c+ 100% WR; 85-89c is sub-fee EV at +0.08c naive),
+# BNB_MAX_RISK_PER_TRADE=0.10 (HYPE/DOGE conservative-new-asset precedent),
+# TM_ASSET_RISK_CAPS["BNB"] (mechanical mirror), MARKET_BLEND_W_BY_ASSET["BNB"]=0.20
+# (B.1-equivalent Brier sweep argmin at n=721 — matches ETH pattern; raw model beats
+# market by ~10% Brier), NBBO_FALLBACK_GATES["BNB"]=(90, 99, 300.0) (analog default
+# mirror of ETH; post-T4 refinement follow-up when NBBO-fallback observations accumulate).
+# MIN_ENTRY_PRICE + MAX_RISK_PER_TRADE constants wired into the elif chains
+# (scanner per-asset floor + 15M sizer cap + DC asset cap; executor mirrors at
+# escalation floor ~:2097 + maker floor ~:3197 + sub-floor-fill telemetry map
+# ~:4638 — same shape as HYPE/DOGE P2.3 lockstep). Kill-switch clauses
+# preserved at TM/WKND/OVN/DC strategy eligibility sites in bot/scanner/__init__.py —
+# flipping BNB_15M_SHADOW=True reverts to shadow in lock-step. Hourly stays in
+# HOURLY_EXCLUDED_ASSETS (15M-only promotion; matches HYPE/DOGE P2.3 post-T4
+# state). Plan: kb/decisions/p2-4-bnb-live-promotion-plan.md. Regression lock:
 # tests/integration/test_bnb_onboarding_t1.py.
-BNB_15M_SHADOW = True             # BNB 15M T1 shadow observation (T4 promotion ticket: 86b9zmj37)
+BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); flip to True for kill-switch revert
 
 # T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend
 # edge-gated subset since 2026-05-10. HYPE conservative pick (borderline EV
@@ -99,9 +106,16 @@ BNB_15M_SHADOW = True             # BNB 15M T1 shadow observation (T4 promotion 
 # n=445, WR 95.5%). See kb/findings/p2-3-b-live-promotion-price-tier-analysis-may14.md.
 HYPE_MIN_ENTRY_PRICE = 90         # cents (data: 90+ WR 94.4% n=250 post-blend; conservative borderline-EV pick)
 DOGE_MIN_ENTRY_PRICE = 85         # cents (data: 85+ WR 95.5% n=445 PnL +1.93c/trade; matches SOL floor pattern)
+# P2.4 BNB live promotion 2026-05-19 (ticket 86b9zmj37). Per-tier WR analysis on
+# evaluated_opportunities n=564 YES-side settled: 85-89c is +0.08c naive (sub-fee EV);
+# 90c+ is +7.60c at 100% WR n=272 (exceeds HYPE n=250 precedent). 100% WR is
+# directional-regime-conditioned; 14d post-promotion soak monitor in plan doc rollback rule.
+# See kb/decisions/p2-4-bnb-live-promotion-plan.md § RCA #1.
+BNB_MIN_ENTRY_PRICE = 90          # cents (data: 90+ WR 100% n=272 P2.4 sweep; 85-89c is sub-fee EV)
 
 HYPE_MAX_RISK_PER_TRADE = 0.10    # HYPE: conservative new-asset start (below live 4 at 0.15-0.20)
 DOGE_MAX_RISK_PER_TRADE = 0.10    # DOGE: conservative new-asset start
+BNB_MAX_RISK_PER_TRADE = 0.10     # BNB: conservative new-asset start (P2.4 2026-05-19, matches HYPE/DOGE precedent)
 
 XRP_SHADOW_MIN_PRICE = 88         # Shadow tier: 88c+ subset (86-87c is 84% WR but PnL-negative)
 
@@ -369,7 +383,7 @@ HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR 
 
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
 
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB T1 shadow until T4 promotion (BNB T1 ticket 86b9zmj0c, 2026-05-17)
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted for any of the three)
 
 # NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
 #   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
@@ -380,7 +394,7 @@ HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+
 # (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
 # thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
 # downside. Revisit per-asset if fills produce divergent live PnL.
-HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB"}  # NO-side safety belt: HYPE/DOGE/BNB excluded until T4. Existing BTC/ETH/SOL/XRP unblocked per data above. (BNB T1 ticket 86b9zmj0c, 2026-05-17)
+HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB"}  # NO-side safety belt: HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted). Existing BTC/ETH/SOL/XRP unblocked per data above.
 
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
@@ -1020,7 +1034,7 @@ HOURLY_DYNAMIC_CAP_SCHEDULE = [
     (0,    0.999), # < 1 min
 ]
 
-MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for non-15M product types and any unknown asset (via `.get(asset, MARKET_BLEND_W)`). P2.1.d (2026-05-13) + P2.3 (2026-05-14, 86b9xv66a) superseded for all 6 production 15M assets via MARKET_BLEND_W_BY_ASSET.
+MARKET_BLEND_W = 0.40             # legacy 15M scalar — kept as fallback for non-15M product types and any unknown asset (via `.get(asset, MARKET_BLEND_W)`). P2.1.d (2026-05-13) + P2.3 (2026-05-14, 86b9xv66a) + P2.4 (2026-05-19, 86b9zmj37) superseded for all 7 production 15M assets via MARKET_BLEND_W_BY_ASSET.
 
 # ─── 15M per-asset market blend weights (P2.1.d, 2026-05-13) ────────────────
 # Each value chosen from the 4-asset × 6-weight sim PnL sweep in P2.1.c-fu1
@@ -1046,6 +1060,13 @@ MARKET_BLEND_W_BY_ASSET: dict = {
     # kb/findings/p2-3-b-live-promotion-blend-weights-may14.md.
     "HYPE": 0.80,
     "DOGE": 0.60,
+    # P2.4 BNB live promotion (2026-05-19, ClickUp 86b9zmj37). B.1-equivalent
+    # full-population Brier sweep on shadow data since 2026-05-17 (n=721).
+    # Interior argmin at w=0.20 (matches ETH pattern); plateau 0.10-0.30.
+    # OPPOSITE of HYPE/DOGE shape — BNB's raw model is well-calibrated
+    # (mean_pred 0.818 vs win_rate 0.812), so low market blend preserves
+    # the model's edge. Plan doc: kb/decisions/p2-4-bnb-live-promotion-plan.md.
+    "BNB": 0.20,
 }
 
 ENDGAME_BLEND_PRICE = 96         # don't blend at or above this price (preserve endgame edge)
@@ -1318,6 +1339,7 @@ TM_ASSET_RISK_CAPS = {
     "XRP": XRP_MAX_RISK_PER_TRADE,        # 0.15
     "HYPE": HYPE_MAX_RISK_PER_TRADE,      # 0.10 (P2.3 live promotion 2026-05-14)
     "DOGE": DOGE_MAX_RISK_PER_TRADE,      # 0.10 (P2.3 live promotion 2026-05-14)
+    "BNB": BNB_MAX_RISK_PER_TRADE,        # 0.10 (P2.4 live promotion 2026-05-19)
 }
 
 # ── TM half-Kelly cal_mlp shadow (Sim C, ticket 86ba0v7fc, 2026-05-19) ─────
@@ -1805,6 +1827,7 @@ NBBO_FALLBACK_GATES = {
     "ETH": (90, 99, 300.0),     # 90c matches ETH_MIN_ENTRY_PRICE; raised from 85c (data: 85-89c 86.2% WR, negative EV)
     "SOL": (90, 99, 300.0),     # Raised from 86→90: NBBO sub-90c = 85.7% WR -$319; orderbook trades unaffected (+$470)
     "XRP": (92, 99, 300.0),     # 180-300s validated; will evaluate 300-600s after 1 week NBBO data
+    "BNB": (90, 99, 300.0),     # P2.4 2026-05-19: analog default mirror of ETH (same 85-89c sub-fee shape; n=272 at 90c+). No direct NBBO observations — post-T4 follow-up to refine.
 }
 
 # ─── Adaptive Escalation ─────────────────────────────────────────────────

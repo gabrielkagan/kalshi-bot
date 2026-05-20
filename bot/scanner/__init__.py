@@ -84,6 +84,8 @@ from bot.constants import (
     BRACKET_NO_KILL_THRESHOLD,
     BRACKET_NO_MAX_CONCURRENT,
     BNB_15M_SHADOW,
+    BNB_MAX_RISK_PER_TRADE,
+    BNB_MIN_ENTRY_PRICE,
     BRACKET_NO_MIN_STC,
     BRACKET_NO_YES_MAX,
     BRACKET_NO_YES_MIN,
@@ -481,9 +483,13 @@ class OpportunityScanner:
         # scalar at startup; no duplicate scanner check needed.
         # P2.3 live promotion (2026-05-14, 86b9xv66a) extended this to 6
         # keys: HYPE 0.80 + DOGE 0.60 from B.1 Brier sweep on shadow data.
+        # P2.4 live promotion (2026-05-19, 86b9zmj37) extended this to 7
+        # keys: + BNB 0.20 from B.1-equivalent Brier sweep on n=721 shadow
+        # data (interior argmin matches ETH pattern; raw model beats market
+        # by ~10% Brier).
         _expected_per_asset_blend = {
             "BTC": 0.10, "ETH": 0.20, "SOL": 0.80, "XRP": 0.90,
-            "HYPE": 0.80, "DOGE": 0.60,
+            "HYPE": 0.80, "DOGE": 0.60, "BNB": 0.20,
         }
         assert MARKET_BLEND_W_BY_ASSET == _expected_per_asset_blend, (
             f"MARKET_BLEND_W_BY_ASSET misconfigured: {MARKET_BLEND_W_BY_ASSET} "
@@ -2711,6 +2717,8 @@ class OpportunityScanner:
                         _asset_floor = HYPE_MIN_ENTRY_PRICE
                     elif asset == "DOGE":
                         _asset_floor = DOGE_MIN_ENTRY_PRICE
+                    elif asset == "BNB":
+                        _asset_floor = BNB_MIN_ENTRY_PRICE
                 if _pt in (None, "15m") and best_ask < _asset_floor:
                     # ── LPNE intercept: BTC 80-87c near-expiry ──────────────
                     # Data: BTC 80-87c at STC<=120s = 97.6% WR (42 obs), p=0.031.
@@ -3023,9 +3031,9 @@ class OpportunityScanner:
                 _old_system_prob = max(0.01, min(_dyn_cap, calibrated_prob_raw + ofa_adjustment))
                 if best_ask < ENDGAME_BLEND_PRICE:
                     _mkt = best_ask / 100.0
-                    # P2.1.d + P2.3: per-asset blend weight for all 6 production
-                    # 15M assets; unknown assets fall back to MARKET_BLEND_W
-                    # (legacy 0.40) via dict.get default.
+                    # P2.1.d + P2.3 + P2.4: per-asset blend weight for all 7
+                    # production 15M assets; unknown assets fall back to
+                    # MARKET_BLEND_W (legacy 0.40) via dict.get default.
                     _cf_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                     _old_system_prob = (1.0 - _cf_blend_w) * _old_system_prob + _cf_blend_w * _mkt
 
@@ -3255,9 +3263,9 @@ class OpportunityScanner:
                     try:
                         _cp = _cf["cal_pipeline"]
                         if now - self._shadow_cal_last_log.get(asset, 0) >= 300:
-                            # P2.1.d + P2.3: log the per-asset effective blend
-                            # weight for all 6 production 15M assets; unknown
-                            # assets fall back via dict.get.
+                            # P2.1.d + P2.3 + P2.4: log the per-asset effective
+                            # blend weight for all 7 production 15M assets;
+                            # unknown assets fall back via dict.get.
                             _log_blend_w = MARKET_BLEND_W_BY_ASSET.get(asset, MARKET_BLEND_W)
                             logging.info(
                                 "shadow_cal_pipeline %s: prob=%.4f edge=%.4f fee_edge=%.4f "
@@ -4317,6 +4325,10 @@ class OpportunityScanner:
                                     _dc_asset_max = int((_dc_balance * DOGE_MAX_RISK_PER_TRADE) / best_ask)
                                     if _dc_position > _dc_asset_max >= 1:
                                         _dc_position = _dc_asset_max
+                                elif asset == "BNB":
+                                    _dc_asset_max = int((_dc_balance * BNB_MAX_RISK_PER_TRADE) / best_ask)
+                                    if _dc_position > _dc_asset_max >= 1:
+                                        _dc_position = _dc_asset_max
                                 # EV with assumed win prob — calibrated from 14-day settlement data:
                                 # T1: 92/92 (100%) at 95-98c → 0.99 (unchanged)
                                 # T1B: 47/47 (100%) at 95-98c → 0.98 (was 0.97, unlocks 97c)
@@ -4892,6 +4904,12 @@ class OpportunityScanner:
                         logging.info("ASSET_CAP: DOGE raw=%d capped=%d balance=$%.2f",
                                      sizing["contracts"], _doge_max, _sizing_balance / 100)
                         sizing["contracts"] = _doge_max
+                elif asset == "BNB" and _pt in (None, "15m"):
+                    _bnb_max = int((_sizing_balance * BNB_MAX_RISK_PER_TRADE) / best_ask)
+                    if sizing["contracts"] > _bnb_max >= 1:
+                        logging.info("ASSET_CAP: BNB raw=%d capped=%d balance=$%.2f",
+                                     sizing["contracts"], _bnb_max, _sizing_balance / 100)
+                        sizing["contracts"] = _bnb_max
 
                 # ETH sub-80c position cap: clamp to [20, 50] contracts
                 # Half-Kelly at 75c/87% WR = 322-645 contracts — uncapped is reckless.
@@ -6186,12 +6204,12 @@ class OpportunityScanner:
                             config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
-                # ── BNB KILL-SWITCH GATE (15M only — T1 shadow 2026-05-17, ticket 86b9zmj0c) ──
-                # ACTIVE (BNB_15M_SHADOW=True): every BNB 15M candidate gets logged with
-                # filter_stage='bnb_shadow' for T3 data accumulation, then skipped from
-                # live routing. At T4 promotion (ticket 86b9zmj37), flip
-                # BNB_15M_SHADOW=False in bot/constants.py to unblock live routing; this
-                # gate becomes DEAD but is preserved as the revert kill-switch.
+                # ── BNB KILL-SWITCH GATE (15M only — POST-PROMOTE P2.4 2026-05-19, ticket 86b9zmj37) ──
+                # POST-PROMOTE (P2.4, 86b9zmj37): this gate is DEAD when BNB_15M_SHADOW=False
+                # (current state). Preserved as the kill-switch — flip BNB_15M_SHADOW=True
+                # in bot/constants.py to revert to shadow observation. When the gate fires,
+                # every BNB 15M candidate gets logged with filter_stage='bnb_shadow' and
+                # skipped from live routing. (Original T1 onboarding: 2026-05-17, 86b9zmj0c.)
                 if BNB_15M_SHADOW and asset == "BNB" and window.get("product_type") in (None, "15m"):
                     _dedup_key = (ticker, "bnb_shadow")
                     if _dedup_key not in self._eval_opp_seen:

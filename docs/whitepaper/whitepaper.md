@@ -46,7 +46,7 @@ header-includes:
 
 This is the technical whitepaper. It is the deepest of the three companion documents (the others are a layperson summary and an investor whitepaper) and is intended for readers who want every implementation detail — the volatility math, the calibration pipeline architecture, the testing infrastructure, the data-corpus internals, the agentic-engineering operating model, and the roadmap. Citations are inline footnotes; primary references are listed at the end.
 
-The system is a quantitative trading platform that operates on **Kalshi**, the only CFTC-regulated Designated Contract Market for event contracts in the United States.[^kalshi-dcm] The primary live business is short-duration cryptocurrency contracts (15-minute windows on BTC, ETH, SOL, XRP, HYPE, DOGE), augmented by conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend and overnight discount entries, loss-burst cooldown). BNB is in T1 shadow observation as of 2026-05-17 (evaluation pipeline accumulates diagnostic rows; zero live BNB orders until T4 promotion ~3-4 weeks post-T1). Adjacent verticals — S&P 500 intraday, weather temperature across 19 U.S. cities, sports comebacks across 28 leagues — run in observation mode. Hourly crypto is currently disabled, with the re-enable path preserved.
+The system is a quantitative trading platform that operates on **Kalshi**, the only CFTC-regulated Designated Contract Market for event contracts in the United States.[^kalshi-dcm] The primary live business is short-duration cryptocurrency contracts (15-minute windows on BTC, ETH, SOL, XRP, HYPE, DOGE, BNB — all seven live post P2.4 promotion 2026-05-19), augmented by conditional overlays (decided contracts, terminal momentum, low-price near-expiry, weekend and overnight discount entries, loss-burst cooldown). Adjacent verticals — S&P 500 intraday, weather temperature across 19 U.S. cities, sports comebacks across 28 leagues — run in observation mode. Hourly crypto is currently disabled, with the re-enable path preserved.
 
 [^kalshi-dcm]: Kalshi was granted DCM status by the CFTC in November 2020 and publicly launched in 2021. Per the CEA, DCM operators must satisfy 23 Core Principles covering surveillance, financial integrity, position-reporting, anti-manipulation, and rulebook compliance. Sources: [Kalshi Market Integrity](https://kalshi.com/market-integrity/regulation); [Britannica](https://www.britannica.com/money/Kalshi-Inc); [CRS IF13187](https://www.congress.gov/crs-product/IF13187).
 
@@ -54,12 +54,12 @@ Two additional first-class assets coexist with the trading system: a **Data Corp
 
 ## 1.2 Operational state at time of writing
 
-> **Production state, 2026-05-17:**
+> **Production state, 2026-05-19:**
 >
 > - `OBSERVATION_MODE = False` — live trading with real capital, continuous since 2026-02-22.
 > - `kalshi-bot.service` active on DigitalOcean (45.55.181.30), Ubuntu 24.04, 2 vCPU, 2 GB RAM, no swap.
 > - `kalshi-collector.service` active since 2026-05-17 09:57:59 UTC after an operator-initiated restart; bronze day-zero (first non-empty chunk in S3) was ~09:52 UTC during an earlier run cycle on the same day.
-> - Six 15M live assets: BTC (88¢+), ETH (90¢+ main tier with a 75–79¢ sub-tier capped at 50 contracts), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+).
+> - Seven 15M live assets: BTC (88¢+), ETH (90¢+ main tier with a 75–79¢ sub-tier capped at 50 contracts), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+), BNB (90¢+).
 > - P4.1 band-calibrated sizing live; soak through 2026-05-31.
 > - ~6,506 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
 
@@ -398,7 +398,7 @@ Auto-promotion: the engine recomputes its Brier score on a holdout set at each m
 
 - **Inputs**: 8 continuous features (`market_price`, `prob_breakeven_gap`, `seconds_to_close`, `time_decayed_proximity`, `hour_sin`, `hour_cos`, `spot_distance_to_strike_sigma`, `abs_spot_distance_to_strike_sigma`) + categorical embeddings (`price_tier`, `stc_bucket`, `vol_regime_int`, `side_int`).
 - **Architecture**: small MLP (3 hidden layers, sizes 64-32-16), ReLU activations, sigmoid output. Per-asset weight files for BTC/ETH/SOL/XRP under the `v1.1_production` recipe (cfg_fp `345978797274721f`).
-- **Serving scope**: BTC/ETH/SOL/XRP only. HYPE and DOGE bypass cal_mlp entirely — they were promoted to live trading via a Brier-sweep raw_prob direct-promote on 2026-05-14 (cal_mlp training arc retired for the HYPE/DOGE cohort). A four-feature `replay_v1` recipe exists in the training tooling (`scripts/cal_mlp/`) for historical-replay backfill scoring during the pre-promotion T1 shadow phase, but is not wired into live serving for any asset.
+- **Serving scope**: BTC/ETH/SOL/XRP only. HYPE, DOGE, and BNB bypass cal_mlp entirely — HYPE/DOGE were promoted to live trading via a Brier-sweep raw_prob direct-promote on 2026-05-14 (cal_mlp training arc retired for the HYPE/DOGE cohort); BNB was promoted via the same path on 2026-05-19 (P2.4, 86b9zmj37). A four-feature `replay_v1` recipe exists in the training tooling (`scripts/cal_mlp/`) for historical-replay backfill scoring during the pre-promotion T1 shadow phase, but is not wired into live serving for any asset.
 - **Mondrian conformal wrapper**: prediction sets at each of `(price_tier × stc_bucket × vol_regime × side)` partition are computed for finite-sample coverage. This is a stronger guarantee than marginal coverage[^vovk-tech].
 - **Sigma winsorization**: `spot_distance_to_strike_sigma` blows up to ±3,000+ as the time denominator approaches zero (terminal STC). Without clipping, z-scoring across the column inflates standard deviation 100× and collapses real signal. Fix: `features.SIGMA_WINSOR_ABS_CAP = 25.0`, applied via `features.apply_sigma_winsor(sd)`. Lock-step test pin at `tests/contracts/test_calmlp_lockstep.py`.
 - **Bundle versioning**: each trained bundle is fingerprinted by an 8-byte hash of its canonical feature set (`cfg_fp`). Current production: `345978797274721f`.
@@ -435,8 +435,9 @@ Current production weights (canonical lockstep `MARKET_BLEND_W_BY_ASSET`):
 | XRP | 0.90 | 10/90 |
 | HYPE | 0.80 | 20/80 |
 | DOGE | 0.60 | 40/60 |
+| BNB | 0.20 | 80/20 |
 
-These replaced a legacy 60/40 default in two atomic ships: P2.1.d (BTC/ETH/SOL/XRP, 2026-05-13) and P2.3 (HYPE/DOGE, 2026-05-14). Justification: a 4×6 sim-PnL sweep against cal_mlp v1.1 calibration showed different optimal weights per asset, driven by per-asset Brier improvements (BTC −13%, ETH −11%, SOL −3%, XRP −6%). High-Brier-improvement assets reward heavy model weighting; near-parity assets default to the market as the more reliable signal.
+These replaced a legacy 60/40 default in three atomic ships: P2.1.d (BTC/ETH/SOL/XRP, 2026-05-13), P2.3 (HYPE/DOGE, 2026-05-14), and P2.4 (BNB, 2026-05-19). Justification: a 4×6 sim-PnL sweep against cal_mlp v1.1 calibration showed different optimal weights per asset, driven by per-asset Brier improvements (BTC −13%, ETH −11%, SOL −3%, XRP −6%). HYPE/DOGE and BNB derived from B.1-equivalent Brier sweeps on T1 shadow data (n=1469/1710/721 respectively); BNB's argmin at w=0.20 matches ETH's pattern — its raw model is well-calibrated, beating market by ~10% Brier. High-Brier-improvement assets reward heavy model weighting; near-parity assets default to the market as the more reliable signal.
 
 **Doc-drift contract.** This constant appears in `bot/constants.py` and is referenced across eight documentation surfaces tracked by `scripts/audit/doc_drift_check.py`: `README.md`, `whitepaper.md`, `whitepaper_investor.md`, `CLAUDE.md`, `AGENTS.md`, `agent_docs/config_reference.md`, `agent_docs/calibration_pipeline.md`, and `kb/concepts/edge-thresholds.md`. Any change must ship lockstep across all eight; `make doc-drift` catches drift in CI.
 

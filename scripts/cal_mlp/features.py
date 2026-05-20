@@ -74,8 +74,12 @@ GLOBAL_MIN_ENTRY_PRICE = 75   # bot.py:219 — sub-floor opt-in via --include-su
 # T4-promoted in bot 2026-05-14 via raw_prob direct-promote; cal_mlp
 # v1.1 bundles being trained now in this Bit, awaiting Bit D's
 # Brier-head-to-head gate before CURRENT-pointer flip).
-# Future additions (no specific commit): BNB (T1 shadow as of
-# 2026-05-17), then SHIB/ADA/etc. as Kalshi rolls out new markets.
+# BNB: T1 shadow 2026-05-17 → T4 live 2026-05-19 via P2.4 (86b9zmj37,
+# sibling to P2.3). BNB does NOT have a cal_mlp v1.1 bundle yet —
+# T4 promotion went via raw_prob + MARKET_BLEND_W_BY_ASSET["BNB"]=0.20
+# direct-promote (same precedent as HYPE/DOGE). If/when a BNB cal_mlp
+# v1.1 bundle is added, this floor-list applies. Future additions
+# (no specific commit): SHIB/ADA/etc. as Kalshi rolls out new markets.
 #
 # Floor-value note: the EXT floor (75 here) is the cal_mlp EXTRACT
 # floor (rows below this are dropped pre-training). It is DELIBERATELY

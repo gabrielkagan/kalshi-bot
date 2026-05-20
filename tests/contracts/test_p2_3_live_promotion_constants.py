@@ -137,14 +137,17 @@ def test_doge_max_risk_per_trade_pinned():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Anchor 4: MARKET_BLEND_W_BY_ASSET extends to 6 assets including HYPE+DOGE
+# Anchor 4a: MARKET_BLEND_W_BY_ASSET includes HYPE+DOGE (P2.3) — historical
+# anchor; sister Anchor 4b pins the 7-key total post-P2.4 BNB ship.
 # ─────────────────────────────────────────────────────────────────────
 
 def test_market_blend_w_by_asset_includes_hype_doge():
     """MARKET_BLEND_W_BY_ASSET dict MUST include HYPE+DOGE entries with
     the B.1 sweep-derived weights (DOGE 0.60, HYPE 0.80). Sister test
     `test_p2_1_d_per_asset_blend_weights.py::test_market_blend_w_by_asset_constant_pinned`
-    was updated in the same atomic commit to expect the 6-key dict."""
+    was updated in the P2.4 commit (c1c3a49b) to expect a 7-key dict (BNB added);
+    this Anchor 4a only pins HYPE+DOGE inclusion — the 7-key total is pinned by
+    Anchor 4b (`test_market_blend_w_by_asset_has_seven_keys`)."""
     from bot.constants import MARKET_BLEND_W_BY_ASSET
     assert "HYPE" in MARKET_BLEND_W_BY_ASSET, (
         f"MARKET_BLEND_W_BY_ASSET missing HYPE key — P2.3 live "
@@ -167,12 +170,17 @@ def test_market_blend_w_by_asset_includes_hype_doge():
     )
 
 
-def test_market_blend_w_by_asset_has_six_keys():
-    """MARKET_BLEND_W_BY_ASSET MUST have exactly 6 keys after P2.3 ship:
-    the 4 P2.1.d assets + HYPE + DOGE. Locks against accidental
-    addition of a 7th asset without a Bit + sweep."""
+# ─────────────────────────────────────────────────────────────────────
+# Anchor 4b: MARKET_BLEND_W_BY_ASSET total key count (extends to 7 post-P2.4)
+# ─────────────────────────────────────────────────────────────────────
+
+def test_market_blend_w_by_asset_has_seven_keys():
+    """MARKET_BLEND_W_BY_ASSET MUST have exactly 7 keys after P2.4 ship:
+    the 4 P2.1.d assets + HYPE + DOGE (P2.3) + BNB (P2.4 2026-05-19,
+    86b9zmj37). Locks against accidental addition of an 8th asset
+    without a Bit + sweep."""
     from bot.constants import MARKET_BLEND_W_BY_ASSET
-    expected_keys = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"}
+    expected_keys = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
     actual_keys = set(MARKET_BLEND_W_BY_ASSET.keys())
     assert actual_keys == expected_keys, (
         f"MARKET_BLEND_W_BY_ASSET key set drift: got {sorted(actual_keys)} "
@@ -182,7 +190,9 @@ def test_market_blend_w_by_asset_has_six_keys():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Anchor 5: TM_ASSET_RISK_CAPS dict extended to 6 assets
+# Anchor 5: TM_ASSET_RISK_CAPS dict includes HYPE+DOGE (P2.3) — historical;
+# post-P2.4 the dict has 7 entries (BNB added at constants.py:1338 via
+# c1c3a49b). The 7-key total is implicit from the value test in Anchor 4b.
 # ─────────────────────────────────────────────────────────────────────
 
 def test_tm_asset_risk_caps_includes_hype_doge():

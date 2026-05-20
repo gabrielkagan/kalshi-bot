@@ -106,13 +106,14 @@ The edge check operates on `final_prob` which passes through these stages with o
 
 | Parameter | Value | Purpose |
 |---|---|---|
-| MARKET_BLEND_W_BY_ASSET | `{BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) + P2.3 (2026-05-14) canonical per-asset map; doc-drift contract. |
+| MARKET_BLEND_W_BY_ASSET | `{BNB:0.20,BTC:0.10,DOGE:0.60,ETH:0.20,HYPE:0.80,SOL:0.80,XRP:0.90}` | P2.1.d (2026-05-13) + P2.3 (2026-05-14) + P2.4 (2026-05-19) canonical per-asset map; doc-drift contract. |
 | MARKET_BLEND_W_BY_ASSET (15M BTC) | 0.10 | P2.1.d (2026-05-13) per-asset; cal_mlp v1.1 sweep argmax 0.0 pulled off corner |
 | MARKET_BLEND_W_BY_ASSET (15M ETH) | 0.20 | P2.1.d interior argmax |
 | MARKET_BLEND_W_BY_ASSET (15M SOL) | 0.80 | P2.1.d interior argmax |
 | MARKET_BLEND_W_BY_ASSET (15M XRP) | 0.90 | P2.1.d argmax 1.0 pulled off corner |
 | MARKET_BLEND_W_BY_ASSET (15M HYPE) | 0.80 | P2.3 2026-05-14 interior argmin from B.1 Brier sweep on T1 shadow data |
 | MARKET_BLEND_W_BY_ASSET (15M DOGE) | 0.60 | P2.3 2026-05-14 interior argmin from B.1 Brier sweep on T1 shadow data |
+| MARKET_BLEND_W_BY_ASSET (15M BNB) | 0.20 | P2.4 2026-05-19 interior argmin from B.1-equivalent Brier sweep on T1 shadow data n=721 (matches ETH pattern) |
 | MARKET_BLEND_W (legacy 15M scalar) | 0.40 | Fallback for non-15M product types and unknown assets (no longer used by any 15M production asset) |
 | MARKET_BLEND_W (hourly) | 0.40 | Same legacy default |
 | MARKET_BLEND_W (SPX) | 0.00 | No blend — CalEngine only |
