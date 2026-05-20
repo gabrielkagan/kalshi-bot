@@ -100,7 +100,7 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   the offline/test boot seam. **D1.5 SHIPPED 2026-05-16, ticket
   `86b9ypna4`** (REQUIRES-APPROVAL discipline tier) — wrote
   `ops/kalshi-collector.service` (Nice=10,
-  MemoryMax=512M, MemorySwapMax=0, LimitNOFILE=4096,
+  MemoryHigh=400M, MemoryMax=512M, MemorySwapMax=0, LimitNOFILE=4096,
   `Restart=on-failure`+`RestartSec=10s`, `EnvironmentFile=/home/botuser/.env.collector`,
   `ExecStart=/home/botuser/kalshi-bot-repo/collector-start.sh`;
   CPUAffinity=1 at ship — retired 2026-05-19 ticket `86ba12rv6`),
