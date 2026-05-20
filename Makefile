@@ -24,7 +24,7 @@ ifeq ($(wildcard pyproject.toml),)
 $(error Makefile must be invoked from the repo root (where pyproject.toml lives); current dir is $(CURDIR))
 endif
 
-.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-integration-shard-0 test-integration-shard-1 test-integration-serial test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
+.PHONY: help install install-hooks test test-unit test-contract test-contract-pytest test-contract-lint test-equivalence test-integration test-integration-shard-0 test-integration-shard-1 test-integration-serial test-research test-affected test-changed test-fast test-mutmut ast-check lint doc-drift deploy-check api-snapshot-regen data-health alpha-audit 15m-audit hourly-audit 15m-alpha no-side skill-smoke pre-commit-checks refresh-map
 
 # Override at invocation time if needed: `make PYTHON=python3.11 test`.
 # NOTE: CI runs Python 3.11 (.github/workflows/test.yml), local default
@@ -85,9 +85,12 @@ UNIT_FILES := tests/unit
 # new entries land in the contract tier automatically.
 CONTRACT_FILES := tests/contracts
 
-# Integration ignores = unit + contract + equivalence + the
+# Integration ignores = unit + contract + equivalence + research + the
 # Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
-# 86b9vfn5r — remove that ignore when the fixture lands).
+# 86b9vfn5r — remove that ignore when the fixture lands). The research
+# ignore (CT-MDP F0.1, 2026-05-20) keeps Phase-0 falsification scaffolds
+# with intentional NotImplementedError stubs out of the deploy-blocking
+# integration tier; operator runs them via `make test-research`.
 INTEGRATION_IGNORES := \
 	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
 	--ignore=tests/equivalence \
@@ -337,7 +340,7 @@ test-integration-serial:
 # in the equivalence dir changed). Equivalence stays in its own tier
 # and runs as a dedicated CI step.
 test-affected:
-	$(PYTHON) -m pytest --testmon -m "not fragile" --ignore=tests/equivalence --ignore=tests/integration/test_calmlp_sigma_winsorize.py
+	$(PYTHON) -m pytest --testmon -m "not fragile" --ignore=tests/equivalence --ignore=tests/research --ignore=tests/integration/test_calmlp_sigma_winsorize.py
 
 # Alias for the user's preferred name (per Pillar 5 remote-control
 # spec). Both names hit the same recipe so either docs / muscle memory
