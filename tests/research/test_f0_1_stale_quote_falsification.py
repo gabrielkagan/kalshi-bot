@@ -10,8 +10,10 @@ tests added at scaffold-R1 fix-up `24a21c6e` — namely
 14. impl-Bit ship `14286a11` did not change count. impl-R1 fix-up
 `968f2fe3` swapped `test_settled_trades_has_asset_and_time` (deleted)
 for `test_seven_asset_universe_pinned_in_script` (added) — still 14
-functions, all GREEN. All invariants below are now actively pinned by
-the test suite.
+functions, all GREEN. impl-R10 fix-up `efecfbc4` added
+`test_full_pipeline_handles_zero_sigma_events_for_one_asset` (regression
+for the CRITICAL early-return KeyError) — taking the count to 15. All
+invariants below are now actively pinned by the test suite.
 
 Invariants pinned here:
 
