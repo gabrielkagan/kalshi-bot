@@ -11,7 +11,11 @@ of 1011 reconnect alerts. This Bit adds the symmetric positive observable:
 
   1. BronzeArchiver.get_health_snapshot() returns a per-archiver health
      dict with conn_id, dropped_frames, write_queue_size,
-     write_queue_maxsize, write_worker_alive, collector_seq.
+     write_queue_maxsize, write_worker_alive, collector_seq,
+     ack_frames_processed (D1.3-fu5 additive 2026-05-17), and
+     write_queue_peak_size (ticket 86ba1xraq additive 2026-05-21).
+     Eight keys total post-86ba1xraq; schema_version STAYS at 1 — every
+     extension so far has been additive backward-compat.
   2. collector.main_loop writes an aggregated JSON sidecar to
      COLLECTOR_HEALTH_SIDECAR_PATH (default
      /var/lib/kalshi-collector/bronze_health.json) on every drain-thread
@@ -23,7 +27,7 @@ of 1011 reconnect alerts. This Bit adds the symmetric positive observable:
 
 Pins:
 
-  1. BronzeArchiver.get_health_snapshot exists + returns the 6 required
+  1. BronzeArchiver.get_health_snapshot exists + returns the 8 required
      keys with correct types.
   2. write_bronze_health_sidecar(archivers, path) writes valid JSON
      matching the schema (schema_version, written_at ISO-8601,
@@ -86,6 +90,7 @@ def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
         "conn_id", "dropped_frames", "write_queue_size",
         "write_queue_maxsize", "write_worker_alive", "collector_seq",
         "ack_frames_processed",  # D1.3-fu5 observability addition
+        "write_queue_peak_size",  # ticket 86ba1xraq 2026-05-21 peak HWM
     }
     missing = required - set(snap.keys())
     assert not missing, (
@@ -162,14 +167,21 @@ def test_write_bronze_health_sidecar_creates_valid_json(monkeypatch, tmp_path):
     assert data["total_queue_size"] == 0
     # D1.3-fu5: ack_frames_processed flows end-to-end through the JSON
     # file (not just present in the in-memory snapshot dict).
-    # Regression-guard against an aggregator strip in
-    # write_bronze_health_sidecar.
+    # 86ba1xraq (2026-05-21): same JSON-flow-through guard for the new
+    # write_queue_peak_size field. Both are regression-guards against an
+    # aggregator strip in write_bronze_health_sidecar — silent omission
+    # would surface as missing observability rather than crash.
     for a in data["archivers"]:
         assert "ack_frames_processed" in a, (
             f"archiver {a.get('conn_id')!r} missing ack_frames_processed "
             f"in serialized JSON; D1.3-fu5 observability surface broken."
         )
         assert a["ack_frames_processed"] == 0  # fresh archivers
+        assert "write_queue_peak_size" in a, (
+            f"archiver {a.get('conn_id')!r} missing write_queue_peak_size "
+            f"in serialized JSON; 86ba1xraq observability surface broken."
+        )
+        assert a["write_queue_peak_size"] == 0  # fresh archivers
 
 
 def test_write_bronze_health_sidecar_atomic_replace(monkeypatch, tmp_path):

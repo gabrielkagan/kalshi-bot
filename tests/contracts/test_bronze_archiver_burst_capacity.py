@@ -150,10 +150,29 @@ def test_default_write_queue_maxsize_is_50000():
     on conn C during the hourly REST-refresh-induced reconnect cascade.
     The new value gives 4.4× margin over the measured peak burst.
 
-    A future-Bit decision to change this constant should update this
-    pin AND the kbf-decisions/bit-collector-reconnect-drop-elimination-plan.md
-    citation AND the agent_docs/bot_layout.md sister-doc lockstep entry
-    — three sites total, plus this pin.
+    A future-Bit decision to change this constant must lockstep-update
+    the following sites (8 surfaces total at the time this Bit shipped):
+
+      1. The inline constant comment in collector/ws_connection.py
+         (rationale block above _DEFAULT_WRITE_QUEUE_MAXSIZE).
+      2. The kwarg docstring in BronzeArchiver.__init__ (kwarg
+         "write_queue_maxsize" Args block).
+      3. The init-time peak-counter comment block (above
+         self._write_queue_peak = 0 — currently cites the value
+         indirectly via the lockstep claim).
+      4. The get_health_snapshot() docstring (Snapshot keys block).
+      5. The start() docstring (Re-entrancy semantics paragraph).
+      6. agent_docs/bot_layout.md — the ws_connection.py entry (current
+         value cite) AND the main_loop.py entry (8-key snapshot mention).
+      7. tests/contracts/test_bronze_health_sidecar.py — both the module
+         docstring AND the required-set in
+         test_bronze_archiver_get_health_snapshot_returns_required_keys.
+      8. kb/decisions/bit-collector-reconnect-drop-elimination-plan.md
+         — the plan-doc value cite + risk-analysis arithmetic.
+
+    Plus THIS pin. Coinbase side (collector/coinbase_archiver.py) is
+    intentionally diverged from Kalshi post-86ba1xraq — re-symmetrize
+    only if a future Coinbase load measurement justifies it.
     """
     from collector.ws_connection import _DEFAULT_WRITE_QUEUE_MAXSIZE
     assert _DEFAULT_WRITE_QUEUE_MAXSIZE == 50_000, (
@@ -166,8 +185,13 @@ def test_default_write_queue_maxsize_is_50000():
 
 def test_default_write_queue_maxsize_propagates_to_archiver():
     """``BronzeArchiver()`` constructed without explicit kwarg uses the
-    module-level default. Defense against a subtle refactor that reads
-    a stale default from somewhere else."""
+    module-level default. inspect.signature returns the EVALUATED
+    default expression — so the test catches divergence between the
+    kwarg default and the module-level constant whether the kwarg uses
+    a literal (e.g., `write_queue_maxsize=12345`) or a different
+    constant (e.g., `write_queue_maxsize=SOME_OTHER_CONSTANT`). It does
+    NOT distinguish those two failure modes from each other (both
+    surface as a value mismatch), but either case is caught."""
     from collector.ws_connection import _DEFAULT_WRITE_QUEUE_MAXSIZE
     sig = inspect.signature(__import__(
         "collector.ws_connection", fromlist=["BronzeArchiver"]
@@ -231,13 +255,17 @@ def test_archiver_absorbs_30k_burst_at_default_maxsize_without_drops(
         f"changed the put_nowait semantics. See ticket 86ba1xraq RCA."
     )
 
-    # Sanity: the queue should hold (almost) all 30K — at minimum,
-    # qsize() ≥ BURST_SIZE - 1 (the ack handled inline doesn't enqueue).
-    assert archiver._write_queue.qsize() >= BURST_SIZE - 1, (
+    # Sanity: the queue should hold exactly BURST_SIZE — the _bind_sid
+    # ack fires BEFORE the loop (not inside it) and acks are handled
+    # inline without enqueueing (D1.3-fu5), so every data-frame put
+    # 1:1 corresponds to a qsize increment. qsize() is documented racy
+    # under concurrent producer/consumer but the worker is unstarted so
+    # only the producer (this thread) writes to it.
+    assert archiver._write_queue.qsize() == BURST_SIZE, (
         f"queue qsize={archiver._write_queue.qsize()} after injecting "
-        f"{BURST_SIZE} frames; worker is supposed to be unstarted (so no "
-        f"draining occurred). Lower qsize suggests frames are being routed "
-        f"elsewhere or dropped silently — investigate."
+        f"{BURST_SIZE} frames; worker is unstarted so no drain has run. "
+        f"Expected exactly {BURST_SIZE}. A lower qsize suggests frames "
+        f"are being routed elsewhere or dropped silently — investigate."
     )
 
 
@@ -275,9 +303,12 @@ def test_write_queue_peak_tracks_high_water_mark(monkeypatch):
              "msg": {"market_ticker": "T1"}},
         ))
 
-    assert archiver._write_queue_peak >= N - 1, (
+    # Worker unstarted + single producer thread → peak should track
+    # qsize 1:1 across the loop. qsize() is documented racy but with no
+    # consumer running there's no race here.
+    assert archiver._write_queue_peak == N, (
         f"_write_queue_peak={archiver._write_queue_peak} after {N} puts; "
-        f"expected ≥ {N - 1}. Peak is not tracking high-water mark — "
+        f"expected exactly {N}. Peak is not tracking high-water mark — "
         f"capacity planning instrumentation is broken."
     )
     # Sanity: peak <= maxsize (can't exceed the bound).
@@ -332,8 +363,10 @@ def test_write_queue_peak_resets_on_worker_respawn(monkeypatch):
     assert archiver._write_queue_peak == 0, (
         f"_write_queue_peak={archiver._write_queue_peak} after worker "
         f"respawn; expected 0. Missing reset would make peak observability "
-        f"misleading across collector self-restarts (the very scenario "
-        f"86ba1h0cb cap-raise was sized for)."
+        f"misleading across same-process worker re-spawn (NOT the cgroup-"
+        f"OOM-kill / systemd-restart scenario — that path starts a fresh "
+        f"process where the counter is naturally 0; this test pins the "
+        f"in-process worker-died-and-restarted code path)."
     )
 
     # Stop cleanly so the test fixture doesn't leak threads.

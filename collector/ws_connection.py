@@ -329,9 +329,19 @@ class BronzeArchiver:
         # almost always 0 between bursts. Peak surfaces the bursts that
         # would otherwise only be visible post-hoc via ``_dropped_frames``
         # > 0 (which is the very class ticket 86ba1xraq closed).
-        # Reset to 0 on worker (re)spawn alongside ``_dropped_frames`` so
-        # per-session deltas have a known floor. Mutated under
-        # ``self._lock`` in the put_nowait success path of ``_on_frame``.
+        # Thread-safety model: RESET is performed under ``self._lock`` in
+        # ``start()`` alongside ``_dropped_frames``, so the reset and the
+        # other counter resets become visible together. MUTATION on the
+        # put_nowait success path of ``_on_frame`` is INTENTIONALLY
+        # LOCK-FREE — single-producer invariant: the asyncio thread owned
+        # by ``self._wire`` is the sole writer to ``_on_frame``, and
+        # ``stop()`` joins that thread via ``WSClient.stop(join_timeout=
+        # _WORKER_JOIN_TIMEOUT_S)`` BEFORE any subsequent ``start()`` can
+        # run its reset path. Net: no two threads ever write to
+        # ``_write_queue_peak`` concurrently. qsize() is documented racy
+        # under concurrent producer/consumer, but for an HWM single-frame
+        # under-count is acceptable (peak is a trend signal, not an
+        # accounting invariant).
         self._write_queue_peak: int = 0
         # D1.3-fu5 observability counter — increments per subscribe-ack
         # processed. Post-fu5 acks bind sid synchronously and RETURN
