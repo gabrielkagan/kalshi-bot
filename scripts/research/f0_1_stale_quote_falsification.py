@@ -640,6 +640,7 @@ def main(
             'n_events_per_asset': {'BTC': int, ...},
             'n_matched_per_asset': {'BTC': int, ...},
             'regime_breakdown': {'BTC': {'vol_high': float, ...}, ...},
+            'drop_counters_per_asset': {'BTC': {'no_match': int, 'zero_dislocation': int, 'zero_size': int}, ...},
         }
     """
     threshold_dollars = 5000.0
