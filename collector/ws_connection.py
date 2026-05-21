@@ -81,8 +81,10 @@ contract). Auth + WS transport reach into ``kalshi_wire/`` only.
 """
 from __future__ import annotations
 
+import json
 import logging
 import queue
+import re
 import signal
 import threading
 from datetime import datetime, timezone
@@ -96,6 +98,72 @@ from kalshi_wire.ws_client import Frame, WSClient, build_envelope
 # Kalshi subscribe-ack message types — both carry sid + cmd_id and bind
 # to the channel that issued the originating cmd_id.
 _SUBSCRIBE_ACK_TYPES = frozenset({"subscribed", "ok"})
+
+
+# P1-B-brutalist Phase B1 slice 2 (ticket 86ba1qbf4, 2026-05-20) —
+# substring-based ack detection + sid extraction. With
+# WSClient(parse_on_demand=True) the Frame's msg_type / sid / parsed
+# fields are all None for every frame; the asyncio-thread json.loads
+# is skipped entirely (the dominant GIL-bound work at 705K-ticker
+# universal mode). The collector then uses these helpers to recover
+# the minimal fields it routes on.
+#
+# Scan window: Kalshi puts the top-level "type" field early in the
+# JSON; a 200-char window catches it without false-positives from
+# nested "type" fields deep in orderbook_delta book levels.
+#
+# Regex matches `"type"<whitespace?>:<whitespace?>"<ack-name>"` — JSON
+# spec allows arbitrary whitespace around the colon. Production Kalshi
+# frames are compact (no whitespace), but tests + future-proofing
+# benefit from tolerating the whitespace-permissive shape. Compiled
+# once at import; cost is comparable to N sequential `str.__contains__`
+# checks per frame.
+#
+# R1 hardening (2026-05-20): the alternation list is BUILT FROM
+# `_SUBSCRIBE_ACK_TYPES` so the two stay in lockstep — a future Bit
+# that extends the canonical Kalshi ack-type set need only edit the
+# frozenset and the regex follows. Restricted to the Kalshi-protocol
+# canonical pair `{subscribed, ok}` — `error` is a generic command-
+# response shape (not subscribe-ack-specific; pre-B1 routed to
+# `_unrouted` bronze for silver-side diagnostic capture; we preserve
+# that semantics by NOT matching here), and `subscriptions` is a
+# Coinbase Exchange WS shape with no analog in the Kalshi protocol.
+_ACK_SCAN_WINDOW: int = 200
+_ACK_TYPE_PATTERN: re.Pattern = re.compile(
+    r'"type"\s*:\s*"(?:' + "|".join(sorted(_SUBSCRIBE_ACK_TYPES)) + r')"'
+)
+
+# Compiled once at module import. Matches `"sid":<ws?>NNN`. Works for
+# both top-level sid (data frames + type=ok ack) and nested msg.sid
+# (type=subscribed ack) — there is only one "sid":N occurrence per
+# Kalshi frame.
+_SID_PATTERN: re.Pattern = re.compile(r'"sid"\s*:\s*(\d+)')
+
+
+def _substring_detect_ack(raw: str) -> bool:
+    """Return True iff ``raw`` is a known Kalshi ack-type frame.
+
+    Regex-scans the leading ``_ACK_SCAN_WINDOW`` characters for the
+    top-level ``"type": "<ack-name>"`` field. Cheap — single compiled
+    regex on a 200-char slice, no json.loads / no dict alloc.
+
+    Used in BronzeArchiver._on_frame when WSClient is in
+    parse_on_demand=True mode (Frame.msg_type is None for every frame).
+    """
+    return _ACK_TYPE_PATTERN.search(raw, 0, _ACK_SCAN_WINDOW) is not None
+
+
+def _substring_extract_sid(raw: str) -> Optional[int]:
+    """Extract the sid integer from ``raw`` via compiled regex.
+
+    Returns None if no ``"sid":N`` pattern matches. Cheap — single
+    regex scan, no json.loads / no dict alloc.
+
+    Used in BronzeArchiver._on_frame when WSClient is in
+    parse_on_demand=True mode (Frame.sid is None for every frame).
+    """
+    m = _SID_PATTERN.search(raw)
+    return int(m.group(1)) if m else None
 
 # D1.3-fu4 default write-queue capacity. ~10s of buffering at typical
 # steady-state per-conn load (~100-1000 frames/sec depending on subscribe
@@ -272,6 +340,14 @@ class BronzeArchiver:
         # timeout now hedges against any unforeseen residual asyncio-
         # thread block). Pinned by
         # tests/contracts/test_collector_ws_client_ping_timeout.py.
+        # P1-B-brutalist Phase B1 slice 3 (ticket 86ba1qbf4, 2026-05-20)
+        # — set parse_on_demand=True so kalshi_wire skips the per-frame
+        # json.loads (~50-100 nested dict allocs per orderbook_delta
+        # frame; the dominant GIL-bound work at 705K-ticker universal
+        # mode). BronzeArchiver compensates via the module-level
+        # _substring_detect_ack / _substring_extract_sid helpers, and
+        # _handle_subscribe_ack does a small json.loads on the (rare,
+        # small) ack body for cmd_id binding.
         if url is None:
             self._wire = WSClient(
                 api_key=api_key,
@@ -280,6 +356,7 @@ class BronzeArchiver:
                 on_session_start=self._on_session_start,
                 on_session_end=self._on_session_end,
                 ping_timeout=30.0,
+                parse_on_demand=True,
             )
         else:
             self._wire = WSClient(
@@ -290,6 +367,7 @@ class BronzeArchiver:
                 on_session_end=self._on_session_end,
                 url=url,
                 ping_timeout=30.0,
+                parse_on_demand=True,
             )
 
     # ── Health snapshot (D1.6 fu) ──────────────────────────────────────
@@ -370,7 +448,10 @@ class BronzeArchiver:
             tuple (tuples are immutable).
           - ``_handle_subscribe_ack`` does ``self._cmd_id_to_channel.get(cmd_id)``:
             single attribute lookup + single dict.get call, both atomic
-            under the GIL.
+            under the GIL. (Post P1-B-brutalist Phase B1 the method
+            also does ``json.loads(frame.raw)`` when ``frame.parsed is
+            None`` — operates on a local ``raw`` reference, does not
+            touch the lock-guarded attributes.)
         Any future change that iterates these attributes across MULTIPLE
         bytecode ops without snapshotting (e.g., a
         ``for cmd_id, channel in self._cmd_id_to_channel.items()``
@@ -487,26 +568,29 @@ class BronzeArchiver:
         the asyncio loop services its ping-pong cycle.
         """
         # Step 1: subscribe-ack — bind sid synchronously then RETURN
-        # (D1.3-fu5). type=subscribed nests sid in ``msg.sid`` (NOT at
-        # the envelope top level) while kalshi_wire.WSClient only pulls
-        # top-level ``sid`` onto ``Frame.sid``. So Frame.sid is None for
-        # the type=subscribed case — _handle_subscribe_ack does its own
-        # msg.sid lookup. type=ok puts sid at top level and Frame.sid
-        # IS populated. Either way, the binding lives in
-        # ``_handle_subscribe_ack``; the early return here skips the
-        # seq-alloc + enqueue paths that previously held the ack body
-        # (up to ~5 MB cumulative-ticker payload) in queue memory.
-        if frame.msg_type in _SUBSCRIBE_ACK_TYPES:
+        # (D1.3-fu5). Post P1-B-brutalist Phase B1 (ticket 86ba1qbf4)
+        # the wire runs in parse_on_demand=True mode so frame.msg_type
+        # is ALWAYS None and the pre-B1 `frame.msg_type in
+        # _SUBSCRIBE_ACK_TYPES` check would silently treat every ack as
+        # a data frame. Single compiled-regex scan on frame.raw[:200]
+        # recovers the ack signal cheaply (no json.loads, no dict alloc).
+        # _handle_subscribe_ack does its own
+        # small json.loads on the ack body for cmd_id binding (acks are
+        # rare + small).
+        if _substring_detect_ack(frame.raw):
             self._handle_subscribe_ack(frame)
             with self._lock:
                 self._ack_frames_processed += 1
             return
 
-        # Step 2: resolve channel for this frame's envelope.
+        # Step 2: resolve channel for this frame's envelope. Post P1-B
+        # brutalist, frame.sid is None (parse_on_demand=True); substring-
+        # extract via the cheap regex helper.
         channel: Optional[str] = None
-        if frame.sid is not None:
+        sid = _substring_extract_sid(frame.raw)
+        if sid is not None:
             with self._lock:
-                channel = self._sid_to_channel.get(frame.sid)
+                channel = self._sid_to_channel.get(sid)
 
         # Step 3: allocate seq under lock so the worker can dispatch in
         # FIFO+monotonic order.
@@ -652,19 +736,38 @@ class BronzeArchiver:
         protocol tweak that drops ``msg.channel`` from acks doesn't
         silently break sid binding.
         """
-        if not isinstance(frame.parsed, dict):
+        # P1-B-brutalist Phase B1: under parse_on_demand=True the wire
+        # skipped json.loads so frame.parsed is None. Ack bodies are
+        # small (few KB typical, up to ~5MB cumulative-ticker for
+        # subscribed acks) + rare (~1000 per boot per conn) — small
+        # enough that paying json.loads here is fine. Data frames
+        # (frequent + large) skip json.loads entirely.
+        if frame.parsed is not None:
+            parsed = frame.parsed
+        else:
+            try:
+                parsed = json.loads(frame.raw)
+            except (json.JSONDecodeError, ValueError):
+                return
+        if not isinstance(parsed, dict):
             return
-        cmd_id = frame.parsed.get("id")
+        cmd_id = parsed.get("id")
         if not isinstance(cmd_id, int):
             return
         channel = self._cmd_id_to_channel.get(cmd_id)
         if channel is None:
             return
         # Sid lookup — top-level first (type=ok shape), then msg.sid
-        # (type=subscribed shape).
+        # (type=subscribed shape). Under parse_on_demand=True frame.sid
+        # is None so we always read from the parsed (now locally-
+        # populated) dict.
         sid_value: Optional[int] = frame.sid
         if sid_value is None:
-            msg = frame.parsed.get("msg")
+            _top = parsed.get("sid")
+            if isinstance(_top, int):
+                sid_value = _top
+        if sid_value is None:
+            msg = parsed.get("msg")
             if isinstance(msg, dict):
                 _s = msg.get("sid")
                 if isinstance(_s, int):

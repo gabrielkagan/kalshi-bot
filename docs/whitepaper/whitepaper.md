@@ -107,7 +107,7 @@ These five commitments are surprisingly load-bearing. Most of the unusual archit
                                                   ─→ s3://kalshi-bot-archive/bronze/
 ```
 
-The trading bot and the data collector run as separate systemd units, in separate Python processes, with separate API keys, separate disk paths, and zero shared imports. Both consume the Kalshi WebSocket via a shared *transport-only* library `kalshi_wire/` (RSA-PSS authentication, connect/reconnect logic, frame parsing) — but the trading bot's `bot/feeds/kalshi.py` and the collector's `collector/ws_connection.py` consume it independently. This is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents drift in how Kalshi frames are interpreted across the two pipelines.
+The trading bot and the data collector run as separate systemd units, in separate Python processes, with separate API keys, separate disk paths, and zero shared imports. Both consume the Kalshi WebSocket via a shared *transport-only* library `kalshi_wire/` (RSA-PSS authentication, connect/reconnect logic, frame ingress; frame parsing is opt-in via the `parse_on_demand` kwarg — bot keeps the default `False` and gets parsed frames, collector opts in to `True` post P1-B-brutalist Phase B1 and uses substring scans on the raw bytes instead). The trading bot's `bot/feeds/kalshi.py` and the collector's `collector/ws_connection.py` consume the wire independently. This is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents drift in how Kalshi frames are received at the wire across the two pipelines (byte-identical `Frame.raw` to both — pinned by a differential test).
 
 ## 2.2 Source tree
 
@@ -166,7 +166,7 @@ kalshi-bot/
 │
 ├── kalshi_wire/                  ← shared transport (pure-leaf package)
 │   ├── auth.py                   ← RSA-PSS-SHA256 signature construction + REST header builder
-│   └── ws_client.py              ← WSClient — connect/reconnect/silence-watchdog + frame parse + 6-field envelope construction
+│   └── ws_client.py              ← WSClient — connect/reconnect/silence-watchdog + frame parse (optional via `parse_on_demand` kwarg; collector opts in to `parse_on_demand=True` post-P1-B-brutalist Phase B1 to skip parse on the asyncio thread) + 6-field envelope construction
 │
 ├── ops/                          ← deployment artifacts
 │   ├── kalshi-bot.service        ← systemd unit (live)
@@ -974,7 +974,7 @@ The original D0.3 design called for the collector to fully reimplement the Kalsh
 The amendment (2026-05-16, ticket `86b9zdhz2` D1.1.5, shipped `f560d30`) extracted a third top-level sibling package `kalshi_wire/` — peer of `bot/` and `collector/`. It houses:
 
 - **RSA-PSS-SHA256 authentication** in `kalshi_wire/auth.py` (one canonical implementation; bot's `bot/kalshi_client.py` previously had its own copy)
-- **WebSocket client** in `kalshi_wire/ws_client.py` — `WSClient` handles connect, reconnect, silence-watchdog, message decode loop, and frame parsing into the 6-field envelope above
+- **WebSocket client** in `kalshi_wire/ws_client.py` — `WSClient` handles connect, reconnect, silence-watchdog, message decode loop, and (when its `parse_on_demand` kwarg is False — the default for `bot/feeds/kalshi.py::KalshiFeed`) frame parsing into the 6-field envelope above. Post P1-B-brutalist Phase B1 (2026-05-20, ticket `86ba1qbf4`), `collector/ws_connection.py::BronzeArchiver` constructs the wire with `parse_on_demand=True` to skip the per-frame `json.loads` on the asyncio thread (the dominant GIL-bound work at 705K-ticker universal mode); the collector recovers the routing fields it needs via substring-based ack detection + sid extraction.
 
 Both `bot/feeds/kalshi.py::KalshiFeed` and `collector/ws_connection.py::BronzeArchiver` consume `kalshi_wire/`. The isolation contract is preserved by adding two new import-linter contracts: `kalshi_wire → no bot` and `kalshi_wire → no collector`. The library is structurally a pure-transport leaf.
 

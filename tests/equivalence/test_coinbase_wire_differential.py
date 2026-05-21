@@ -358,10 +358,14 @@ def test_msg_type_dispatch_key_populated_on_every_well_formed_frame(
     top-level ``channel`` field). Every well-formed frame the consumer
     receives must have ``Frame.msg_type`` set to the ``type`` value.
 
-    This pins the dispatch-key contract: post-D2.3 consumers (bot +
-    collector) rely on ``frame.msg_type`` for routing. A wire-level
-    bug that left ``msg_type=None`` despite a present ``type`` field
-    would cause both the bot and the collector to mis-route silently.
+    This pins the dispatch-key contract: post-D2.3 consumers on the
+    Coinbase side (the bot's CoinbaseFeed + the coinbase collector's
+    CoinbaseArchiver) rely on ``frame.msg_type`` for routing. A wire-
+    level bug that left ``msg_type=None`` despite a present ``type``
+    field would cause both to mis-route silently. (Unrelated to the
+    Kalshi-side P1-B-brutalist Phase B1 opt-in to ``parse_on_demand=
+    True``, which sets ``msg_type=None`` deliberately on the kalshi-
+    collector path; coinbase_wire has no equivalent flag at present.)
     """
     url = f"ws://127.0.0.1:{mock_server.port}"
     frames: List[Frame] = []

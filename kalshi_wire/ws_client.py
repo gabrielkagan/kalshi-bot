@@ -10,7 +10,12 @@ This module owns:
   - WS connect / reconnect (exponential backoff with jitter)
   - RSA-PSS handshake auth (via ``kalshi_wire.auth.make_ws_headers``)
   - Silence watchdog (force-reconnect if no frame for N seconds)
-  - Frame parse + envelope ``(sid, seq)`` gap detection
+  - Frame parse + envelope ``(sid, seq)`` gap detection — both gated
+    by the ``parse_on_demand`` constructor kwarg (default ``False``
+    preserves these; collector opts into ``True`` post P1-B-brutalist
+    Phase B1 (ticket ``86ba1qbf4``, 2026-05-20) to skip per-frame
+    ``json.loads`` on the asyncio thread, which makes seq-gap
+    detection a no-op for that consumer).
   - Thread-safe outgoing-frame queue
   - 4 sync callbacks invoked from the asyncio thread:
     * ``on_session_start()`` — fires after WS connect, BEFORE reading
@@ -72,6 +77,21 @@ class Frame:
     reconstructed from ``raw`` after the fact — Kalshi's server-side
     timestamp (inside the payload) doesn't include receipt latency.
 
+    Field population depends on the ``WSClient``'s ``parse_on_demand``
+    constructor kwarg:
+      - Default ``parse_on_demand=False`` (bot/KalshiFeed path):
+        the wire calls ``json.loads(raw)`` and populates ``parsed`` +
+        ``msg_type`` + ``sid`` + ``seq`` from the parsed dict (any
+        field absent or wrong type → None).
+      - ``parse_on_demand=True`` (collector path post P1-B-brutalist
+        Phase B1, ticket ``86ba1qbf4``, 2026-05-20): the wire SKIPS
+        ``json.loads`` entirely; ``parsed`` + ``msg_type`` + ``sid`` +
+        ``seq`` are ALL ``None`` regardless of frame contents. Only
+        ``wire_recv_ts`` + ``raw`` are populated. The consumer (today
+        only ``collector/ws_connection.py::BronzeArchiver``) must do
+        its own substring-based extraction of whatever minimal fields
+        it routes on.
+
     Fields:
         wire_recv_ts: Unix-epoch seconds with microsecond precision
             (``time.time()`` return value). Use ``build_envelope`` to
@@ -79,15 +99,20 @@ class Frame:
         raw: The full raw wire payload as a string. Bronze captures this
             verbatim — no decoding, no normalization, no field re-ordering.
         parsed: ``json.loads(raw)`` result. ``None`` if parse failed
-            (malformed frame from the wire).
+            (malformed frame from the wire), OR if the wire was
+            constructed with ``parse_on_demand=True`` (in which case
+            it is ALWAYS ``None``).
         msg_type: ``parsed["type"]`` if present, else None. Pre-extracted
-            for fast dispatch by consumers.
+            for fast dispatch by consumers. ALWAYS ``None`` under
+            ``parse_on_demand=True``.
         sid: Envelope subscription id (Kalshi assigns; channel-scoped post
-            Phase 2.10).
+            Phase 2.10). ALWAYS ``None`` under ``parse_on_demand=True``.
         seq: Per-subscription monotonic sequence number. Gaps indicate
             dropped/reordered messages (diagnosed via
             ``WS_SEQ_GAP`` log in the original KalshiFeed; this module
-            emits the same log when a gap is detected).
+            emits the same log when a gap is detected). ALWAYS ``None``
+            under ``parse_on_demand=True``, and the gap-detection log
+            becomes a no-op for that consumer.
     """
 
     wire_recv_ts: float
@@ -163,8 +188,11 @@ class WSClient:
     Consumers (bot/feeds/kalshi.py KalshiFeed, collector/ws_connection.py)
     own state — orderbook caches, sid maps, cmd_id management, blacklists.
     This client owns transport: connect, reconnect, auth handshake,
-    silence watchdog, frame parse + seq-gap detect, thread-safe send
-    queue.
+    silence watchdog, frame parse + seq-gap detect (both gated by the
+    ``parse_on_demand`` constructor kwarg — default ``False`` preserves
+    them; collector opts in to ``True`` post P1-B-brutalist Phase B1
+    to skip per-frame ``json.loads`` on the asyncio thread), thread-safe
+    send queue.
 
     Threading model (mirrors KalshiFeed's pre-extraction shape):
       - ``start()`` spawns one daemon thread that runs an asyncio event
@@ -207,6 +235,7 @@ class WSClient:
         max_backoff_s: float = 60.0,
         seq_gap_max_logs: int = 500,
         ws_max_size: int = 16 * 1024 * 1024,
+        parse_on_demand: bool = False,
         _test_skip_auth: bool = False,
     ):
         # ws_max_size: incoming-message ceiling passed to
@@ -248,6 +277,15 @@ class WSClient:
         self._max_backoff_s = max_backoff_s
         self._seq_gap_max_logs = seq_gap_max_logs
         self._ws_max_size = ws_max_size
+        # P1-B-brutalist Phase B1 (ticket 86ba1qbf4, 2026-05-20) — when
+        # True, ``_handle_raw_frame`` skips ``json.loads(raw)`` and builds
+        # ``Frame(raw=raw, wire_recv_ts=now)`` with parsed/msg_type/sid/seq
+        # all None. The consumer is responsible for substring-based parsing
+        # of whatever minimal fields it needs (ack-type / sid for routing).
+        # Eliminates the dominant GIL-bound work (~50-100 nested dict allocs
+        # per orderbook_delta frame) at 705K-ticker universal mode. Default
+        # False preserves bot/KalshiFeed's parsed-Frame consumer contract.
+        self._parse_on_demand = parse_on_demand
         # Internal flag — allow tests to skip RSA-PSS signing when pointing
         # at a mock server. Not part of the public API surface.
         self._skip_auth = _test_skip_auth
@@ -657,13 +695,19 @@ class WSClient:
                     exc_info=True)
 
     def _handle_raw_frame(self, raw: str) -> None:
-        """Parse a raw WS frame, update wire-level watchdog state, and
-        dispatch to the consumer's ``on_frame``.
+        """Parse a raw WS frame (unless ``parse_on_demand=True``), update
+        wire-level watchdog state, and dispatch to the consumer's
+        ``on_frame``.
 
         Watchdog ordering (Apr-24 silence-watchdog fix — load-bearing):
         ``_last_msg_ts`` is set BEFORE invoking the consumer callback.
         Any message from the server — even an error or unknown type we
         don't dispatch — proves the WS session is healthy.
+
+        Under ``parse_on_demand=True`` (collector path post P1-B-brutalist
+        Phase B1) ``json.loads`` is SKIPPED — Frame is constructed with
+        ``parsed/msg_type/sid/seq=None`` regardless of payload contents.
+        Watchdog + dispatch + drain semantics are unchanged.
         """
         now = time.time()
         with self._state_lock:
@@ -673,29 +717,45 @@ class WSClient:
         msg_type: Optional[str]
         sid: Optional[int]
         seq: Optional[int]
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        if self._parse_on_demand:
+            # P1-B-brutalist Phase B1 (ticket 86ba1qbf4): skip the
+            # per-frame json.loads entirely. The consumer (collector
+            # BronzeArchiver) does substring-based parsing for the
+            # minimal fields it routes on (ack-type + sid). Eliminates
+            # the dominant GIL-bound work at 705K-ticker universal mode.
+            # Seq-gap detection is unavailable in this mode (it requires
+            # a parsed sid+seq); it's a wire-level diagnostic, not a
+            # correctness invariant, and the collector doesn't trade
+            # on it.
             parsed = None
             msg_type = None
             sid = None
             seq = None
         else:
-            if isinstance(parsed, dict):
-                _t = parsed.get("type")
-                msg_type = _t if isinstance(_t, str) else None
-                _s = parsed.get("sid")
-                sid = _s if isinstance(_s, int) else None
-                _q = parsed.get("seq")
-                seq = _q if isinstance(_q, int) else None
-            else:
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
                 msg_type = None
                 sid = None
                 seq = None
+            else:
+                if isinstance(parsed, dict):
+                    _t = parsed.get("type")
+                    msg_type = _t if isinstance(_t, str) else None
+                    _s = parsed.get("sid")
+                    sid = _s if isinstance(_s, int) else None
+                    _q = parsed.get("seq")
+                    seq = _q if isinstance(_q, int) else None
+                else:
+                    msg_type = None
+                    sid = None
+                    seq = None
 
         # Seq-gap detector — wire-level diagnostic, identical to the
         # bot's pre-extraction logic. Bot dispatches still get the frame
-        # via on_frame regardless of gap state.
+        # via on_frame regardless of gap state. In parse_on_demand mode
+        # this is a no-op (sid is None).
         if sid is not None and seq is not None:
             prev = self._ws_last_seq.get(sid)
             if prev is not None and seq != prev + 1:

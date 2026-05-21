@@ -18,9 +18,17 @@ can drain. Total queue memory: up to ~22 GiB worst case. With
 restart loop. Production hit this for ~3 hours 2026-05-17 14:07-17:15 UTC
 until operator applied the band-aid (MemoryMax 1024M).
 
-Real fix (this Bit): when `frame.msg_type in _SUBSCRIBE_ACK_TYPES`, do
-the sid binding synchronously (unchanged — must stay race-free) THEN
-RETURN. Acks no longer flow into the write queue.
+Real fix (this Bit): when the frame is an ack, do the sid binding
+synchronously (unchanged — must stay race-free) THEN RETURN. Acks no
+longer flow into the write queue. The ack-detection mechanism evolved
+across Bits: D1.3-fu5 used ``frame.msg_type in _SUBSCRIBE_ACK_TYPES``;
+P1-B-brutalist Phase B1 (ticket ``86ba1qbf4``, 2026-05-20) wires the
+collector's ``WSClient`` with ``parse_on_demand=True`` (skips per-frame
+``json.loads`` on the asyncio thread), which leaves ``frame.msg_type``
+always ``None``, so the dispatch now uses
+``_substring_detect_ack(frame.raw)`` on the leading ``_ACK_SCAN_WINDOW``
+bytes. Both forms route to the same early-return — these tests pin the
+semantic invariant ("acks do NOT enqueue"), not the mechanism.
 
 Bronze coverage justification (per kb/failures/collector-oom-via-ack-queue-may17.md):
 acks are protocol metadata (subscribe-confirmation), not market data.
@@ -37,13 +45,18 @@ Pins (this file):
      skip ack frames, not all frames)
   6. Ack does NOT increment _collector_seq (otherwise unrouted partition
      has seq gaps; symmetrical to skipping the write)
-  7. AST guard: `_on_frame` has an early-return inside the
-     `if frame.msg_type in _SUBSCRIBE_ACK_TYPES:` branch
-  8. Memory-regression: enqueuing N=1000 mock-acks with 50 KB Frame.raw
-     each (smaller than production's ~5 MB but same SHAPE for fast test
-     runtime — verifies that "ack frames don't enqueue at all"; the
-     specific byte count is incidental) leaves queue size 0 (pre-fix
-     would queue all 1000)
+  7. AST guard: `_on_frame` has an early-return inside the ack branch.
+     The branch test predicate is accepted in either pre-B1 form
+     (`if frame.msg_type in _SUBSCRIBE_ACK_TYPES:`) OR post-B1 form
+     (`if _substring_detect_ack(frame.raw):`) — see the test docstring
+     for the dispatch-evolution rationale.
+  8. Memory-regression: enqueuing N=1000 mock-acks each with a 50 KB
+     Frame.raw that BEGINS with a valid `type:"ok"` JSON marker
+     (smaller than production's ~5 MB cumulative-ack body but same
+     SHAPE for fast test runtime) leaves queue size 0 (pre-fix would
+     queue all 1000). Post-B1 the ack-detection depends on the leading
+     bytes of `raw`, so the fixture must serialize a valid ack envelope
+     rather than literal filler.
   9. New _ack_frames_processed counter increments per-ack (observability)
 """
 from __future__ import annotations
@@ -270,10 +283,19 @@ def test_data_frame_after_ack_uses_next_unrouted_seq(monkeypatch):
 
 
 def test_on_frame_returns_early_inside_ack_branch():
-    """AST walk: `_on_frame` must contain an `if frame.msg_type in
-    _SUBSCRIBE_ACK_TYPES:` block whose body includes a top-level
-    `return` statement. Defense-in-depth against a future refactor
-    accidentally dropping the early-return.
+    """AST walk: `_on_frame` must contain an ack-detection branch whose
+    body includes a top-level `return` statement. Defense-in-depth
+    against a future refactor accidentally dropping the early-return.
+
+    The ack-detection mechanism evolved across Bits:
+    - Pre-P1-B (D1.3-fu5 ship through 2026-05-20):
+      ``if frame.msg_type in _SUBSCRIBE_ACK_TYPES:``
+    - Post-P1-B-brutalist Phase B1 (ticket ``86ba1qbf4``, 2026-05-20):
+      ``if _substring_detect_ack(frame.raw):`` — Frame.msg_type is
+      always None under ``WSClient(parse_on_demand=True)``.
+
+    Either form satisfies this guard; the semantic invariant is "ack
+    branch fires an early return".
     """
     src = WS_CONNECTION_PATH.read_text()
     tree = ast.parse(src)
@@ -289,16 +311,19 @@ def test_on_frame_returns_early_inside_ack_branch():
         "this AST guard's lookup is stale."
     )
 
-    # Find any `if` whose test references _SUBSCRIBE_ACK_TYPES.
+    # Find any `if` whose test predicate references the canonical
+    # ACK-types frozenset (pre-B1) OR the substring helper (post-B1).
+    _ACK_PREDICATE_MARKERS = ("_SUBSCRIBE_ACK_TYPES", "_substring_detect_ack")
     ack_branches: list[ast.If] = []
     for node in ast.walk(on_frame_func):
         if isinstance(node, ast.If):
             test_src = ast.unparse(node.test) if hasattr(ast, "unparse") else ""
-            if "_SUBSCRIBE_ACK_TYPES" in test_src:
+            if any(marker in test_src for marker in _ACK_PREDICATE_MARKERS):
                 ack_branches.append(node)
     assert ack_branches, (
-        "_on_frame contains no `if ... in _SUBSCRIBE_ACK_TYPES:` branch "
-        "— ack-handling fundamentally broken."
+        "_on_frame contains no ack-detection branch — neither pre-B1 "
+        "`_SUBSCRIBE_ACK_TYPES` nor post-B1 `_substring_detect_ack` is "
+        "referenced. Ack-handling fundamentally broken."
     )
 
     # At least one ack branch must contain a top-level Return.
@@ -327,12 +352,27 @@ def test_thousand_mock_acks_with_huge_raw_does_not_grow_queue(monkeypatch):
     a smaller 50 KB payload here to keep the test fast — the SHAPE is
     what matters, not the byte count). Pre-fix: queue grows to 1000 ×
     ~50 KB = ~50 MB. Post-fix: queue stays empty.
+
+    Fixture shape (R1 hardening 2026-05-20): the 50 KB ``raw_override``
+    is a VALID JSON envelope beginning with ``{"id":N,"type":"ok",...``
+    followed by a long filler string inside the ``msg`` object. Post
+    P1-B-brutalist Phase B1 the collector dispatches on
+    ``_substring_detect_ack(frame.raw)`` which scans only the leading
+    ``_ACK_SCAN_WINDOW=200`` bytes; the previous literal-``x*50000``
+    fixture would have been mis-classified as a data frame.
     """
     archiver, _, _ = _make_archiver(monkeypatch)
-    # 50 KB "ack body" — same SHAPE as a multi-MB cumulative ack but
-    # smaller so the test runs fast.
-    fat_raw = "x" * 50_000
+    # 50 KB "ack body" — valid JSON beginning with type:ok at the front
+    # (so _substring_detect_ack matches), followed by long filler. Same
+    # SHAPE as a multi-MB cumulative ack but smaller so the test runs
+    # fast.
+    _filler = "x" * 49_900
     for i in range(1000):
+        fat_raw = (
+            '{"id":' + str(100 + i) +
+            ',"type":"ok","sid":' + str(1000 + i) +
+            ',"seq":1,"msg":{"filler":"' + _filler + '"}}'
+        )
         archiver._on_frame(_fake_frame(
             {"id": 100 + i, "type": "ok", "sid": 1000 + i, "seq": 1,
              "msg": {"market_tickers": []}},  # parsed dict stays small

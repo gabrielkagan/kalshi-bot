@@ -261,8 +261,11 @@ def test_bot_and_collector_capture_byte_identical_frames(mock_server):
 
 def test_wire_recv_ts_captured_before_json_parse(mock_server):
     """``Frame.wire_recv_ts`` must be set BEFORE ``json.loads(raw)``
-    executes. D0.3 §2 spec: "Captured at frame ingress, BEFORE any
-    deserialization. Cannot be reconstructed from `_raw`."
+    executes (when ``parse_on_demand=False`` — the default; under
+    ``parse_on_demand=True`` the wire skips ``json.loads`` entirely
+    post P1-B-brutalist Phase B1, but the timestamp is still captured
+    at frame ingress). D0.3 §2 spec: "Captured at frame ingress,
+    BEFORE any deserialization. Cannot be reconstructed from `_raw`."
 
     Proof: for every frame, ``wire_recv_ts > 0`` AND the timestamp lies
     BEFORE the post-test ``time.time()`` snapshot. If parsing happened
