@@ -116,11 +116,21 @@ _SUBSCRIBE_ACK_TYPES = frozenset({"subscribed", "ok"})
 # spec allows arbitrary whitespace around the colon. Production Kalshi
 # frames are compact (no whitespace), but tests + future-proofing
 # benefit from tolerating the whitespace-permissive shape. Compiled
-# once at import; cost is comparable to 4 sequential `str.__contains__`
+# once at import; cost is comparable to N sequential `str.__contains__`
 # checks per frame.
+#
+# R1 hardening (2026-05-21): the alternation list is BUILT FROM
+# `_SUBSCRIBE_ACK_TYPES` so the two stay in lockstep — a future Bit
+# that extends the canonical Kalshi ack-type set need only edit the
+# frozenset and the regex follows. Restricted to the Kalshi-protocol
+# canonical pair `{subscribed, ok}` — `error` is a generic command-
+# response shape (not subscribe-ack-specific; pre-B1 routed to
+# `_unrouted` bronze for silver-side diagnostic capture; we preserve
+# that semantics by NOT matching here), and `subscriptions` is a
+# Coinbase Exchange WS shape with no analog in the Kalshi protocol.
 _ACK_SCAN_WINDOW: int = 200
 _ACK_TYPE_PATTERN: re.Pattern = re.compile(
-    r'"type"\s*:\s*"(subscribed|ok|error|subscriptions)"'
+    r'"type"\s*:\s*"(?:' + "|".join(sorted(_SUBSCRIBE_ACK_TYPES)) + r')"'
 )
 
 # Compiled once at module import. Matches `"sid":<ws?>NNN`. Works for

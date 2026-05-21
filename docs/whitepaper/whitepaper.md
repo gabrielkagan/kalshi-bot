@@ -166,7 +166,7 @@ kalshi-bot/
 │
 ├── kalshi_wire/                  ← shared transport (pure-leaf package)
 │   ├── auth.py                   ← RSA-PSS-SHA256 signature construction + REST header builder
-│   └── ws_client.py              ← WSClient — connect/reconnect/silence-watchdog + frame parse (optional via `parse_on_demand` kwarg; collector opts out post-P1-B-brutalist Phase B1) + 6-field envelope construction
+│   └── ws_client.py              ← WSClient — connect/reconnect/silence-watchdog + frame parse (optional via `parse_on_demand` kwarg; collector opts in to `parse_on_demand=True` post-P1-B-brutalist Phase B1 to skip parse on the asyncio thread) + 6-field envelope construction
 │
 ├── ops/                          ← deployment artifacts
 │   ├── kalshi-bot.service        ← systemd unit (live)

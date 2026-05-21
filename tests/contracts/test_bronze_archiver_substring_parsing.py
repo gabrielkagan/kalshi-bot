@@ -78,24 +78,42 @@ def test_substring_extract_sid_helper_exists():
 
 
 def test_substring_detect_ack_matches_known_ack_types():
-    """The helper must return True for all 4 known Kalshi ack types
-    and False for data frames.
+    """The helper must return True for the canonical Kalshi subscribe-
+    ack types (``_SUBSCRIBE_ACK_TYPES`` = ``{"subscribed", "ok"}``) and
+    False for both data frames AND non-subscribe-ack message types.
+
+    R1 hardening (2026-05-21): an earlier draft over-matched
+    ``"error"`` and ``"subscriptions"``. ``error`` is a generic
+    command-response shape (NOT a subscribe-ack); pre-B1 it routed to
+    the ``_unrouted`` bronze partition for silver-side diagnostic
+    capture, and we preserve that semantics by NOT matching here.
+    ``subscriptions`` is a Coinbase Exchange WS shape with no analog
+    in the Kalshi protocol; including it cross-contaminated the
+    Kalshi-side regex with a Coinbase pattern.
     """
     from collector.ws_connection import (  # type: ignore[attr-defined]
+        _SUBSCRIBE_ACK_TYPES,
         _substring_detect_ack,
     )
+    assert _SUBSCRIBE_ACK_TYPES == frozenset({"subscribed", "ok"}), (
+        "Canonical Kalshi subscribe-ack set drifted — update both this "
+        "test and the regex if the protocol genuinely extended."
+    )
+    # Positive cases — both canonical Kalshi ack shapes.
     assert _substring_detect_ack(
         '{"id":1,"type":"subscribed","msg":{"channel":"orderbook_delta","sid":42}}'
     )
     assert _substring_detect_ack(
         '{"id":2,"type":"ok","sid":42,"seq":1}'
     )
-    assert _substring_detect_ack(
+    # Negative cases — error + subscriptions are NOT subscribe-acks;
+    # data frames are not acks either.
+    assert not _substring_detect_ack(
         '{"id":3,"type":"error","msg":{"reason":"bad ticker"}}'
-    )
-    assert _substring_detect_ack(
+    ), "type=error must route through the data-frame path to _unrouted"
+    assert not _substring_detect_ack(
         '{"type":"subscriptions","msg":{"channels":["orderbook_delta"]}}'
-    )
+    ), "type=subscriptions is a Coinbase shape, not Kalshi"
     assert not _substring_detect_ack(
         '{"type":"orderbook_delta","sid":42,"seq":100,"msg":{"yes":[[50,100]],"no":[]}}'
     )
