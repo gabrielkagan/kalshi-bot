@@ -572,9 +572,9 @@ class BronzeArchiver:
         # the wire runs in parse_on_demand=True mode so frame.msg_type
         # is ALWAYS None and the pre-B1 `frame.msg_type in
         # _SUBSCRIBE_ACK_TYPES` check would silently treat every ack as
-        # a data frame. Substring scan on frame.raw recovers the ack
-        # signal cheaply (no json.loads, no dict alloc — just str
-        # contains on raw[:200]). _handle_subscribe_ack does its own
+        # a data frame. Single compiled-regex scan on frame.raw[:200]
+        # recovers the ack signal cheaply (no json.loads, no dict alloc).
+        # _handle_subscribe_ack does its own
         # small json.loads on the ack body for cmd_id binding (acks are
         # rare + small).
         if _substring_detect_ack(frame.raw):
