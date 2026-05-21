@@ -199,14 +199,16 @@ def test_service_nice_is_10():
     )
 
 
-def test_service_memory_high_is_400m():
-    """``MemoryHigh=400M`` soft cgroup throttle before MemoryMax kill.
+def test_service_memory_high_is_1600m():
+    """``MemoryHigh=1600M`` soft cgroup throttle before MemoryMax kill.
 
-    Added 2026-05-20 (umbrella ``86ba12rf0``) after the 2026-05-19
-    unexplained collector exits at 22:06 / 22:26 / 00:04 UTC correlated
-    with peak memory at 472M / 512M cap (92%). MemoryHigh triggers
-    kernel-side throttling at 78% of MemoryMax, surfacing memory
-    pressure in cgroup counters BEFORE the hard SIGKILL.
+    Originally added 2026-05-20 (umbrella ``86ba12rf0``) at 400M to
+    surface memory pressure on the 2GB VPS before the hard SIGKILL at
+    512M. Raised to 1600M on 2026-05-20 (ticket ``86ba1h0cb``) in
+    lockstep with the MemoryMax raise from 512M → 2048M, preserving
+    the 78% MemoryHigh-of-MemoryMax ratio. The 4× scaling matches the
+    DigitalOcean droplet resize from s-2vcpu-2gb → s-4vcpu-8gb the
+    same day.
 
     Trade-off: throttling under MemoryHigh slows the collector
     (intentionally) — drain rate drops, queues fill faster, drops
@@ -215,28 +217,36 @@ def test_service_memory_high_is_400m():
     all, and adds boot latency).
     """
     text = _read_unit()
-    assert _directive(text, "MemoryHigh") == "400M", (
-        "MemoryHigh=400M — D0.3 §6 isolation enhancement (ticket "
-        "86ba12rf0). Soft throttle at 78% of MemoryMax provides a "
+    assert _directive(text, "MemoryHigh") == "1600M", (
+        "MemoryHigh=1600M — D0.3 §6 isolation enhancement (ticket "
+        "86ba12rf0) raised in lockstep with MemoryMax 2048M (ticket "
+        "86ba1h0cb). Soft throttle at 78% of MemoryMax provides a "
         "graceful-degradation warning before the hard SIGKILL at "
-        "512M. Removing this directive without a replacement memory-"
+        "2048M. Removing this directive without a replacement memory-"
         "pressure surface is a regression."
     )
 
 
-def test_service_memory_max_is_512m():
-    """``MemoryMax=512M`` kernel-kills the collector before it OOMs the 2GB box.
+def test_service_memory_max_is_2048m():
+    """``MemoryMax=2048M`` kernel-kills the collector before it OOMs the 8GB box.
 
-    Per D0.2 §3.2: 7-8 conns × 47 MB measured = ~376 MB Python footprint;
-    512 MB cap leaves ~136 MB writer/uploader headroom. At the post-F1
-    6-conn × 15K extrapolated cap, 6 × 55 MB ≈ 330 MB; 512 MB leaves
-    ~182 MB headroom.
+    Raised from 512M → 2048M on 2026-05-20 (ticket ``86ba1h0cb``) in
+    lockstep with the droplet resize s-2vcpu-2gb → s-4vcpu-8gb the
+    same day. The 512M cap was sized against D0.2 §3.2's measured
+    47 MB/conn × 7-8 conns = ~376 MB Python footprint on the 2GB box
+    (~136 MB writer/uploader headroom). Post-resize universe-growth
+    measurement at 705K tickers (2026-05-20, vs. D0.2's ~74K baseline
+    + the runbook's 386K estimate) drove peak cgroup memory to 513M
+    during the universal-mode boot, hitting the 512M cap. The 2048M
+    cap on an 8GB physical box leaves ~5.5 GB physical headroom
+    (bot + 4 collectors all at cap ~3 GB committed vs 8GB physical).
     """
     text = _read_unit()
-    assert _directive(text, "MemoryMax") == "512M", (
-        "MemoryMax=512M — D0.3 §6 isolation. The 2 GB VPS has 0 swap; "
-        "OOM is the failure mode. 512M is sized against D0.2 §3.2's "
-        "measured per-conn RSS + writer/uploader headroom."
+    assert _directive(text, "MemoryMax") == "2048M", (
+        "MemoryMax=2048M — D0.3 §6 isolation, raised 2026-05-20 "
+        "(ticket 86ba1h0cb) from 512M in lockstep with the 8GB droplet "
+        "resize. The 8GB VPS has 0 swap; OOM is still the failure mode "
+        "but with 4× the headroom of the prior 2GB box."
     )
 
 
