@@ -168,17 +168,26 @@ def test_settle_outcome_never_used_as_feature():
 # ----- Regime conditioning (Invariant 3) ----------------------------------
 
 
-def test_cells_partition_into_vol_x_daynight_x_moneyness():
-    """8 cells per asset = vol(high/low) × day/night × moneyness(itm/otm)."""
+def test_cells_partition_into_vol_x_daynight():
+    """4 cells per asset = vol(high/low) × day/night.
+
+    Moneyness dimension retracted at impl-R1 (2026-05-21). Plan-doc § Method
+    step 4 originally specified 8 cells per asset including a moneyness
+    (itm/otm) axis via `|spot - strike| / strike < 0.005`. **Kalshi 15M
+    tickers do NOT encode strike** — empirically the trailing `-MM` segment
+    on every settled 15M ticker is the close-MINUTE (00/15/30/45), not a
+    strike index. Without strike, moneyness cannot be computed from
+    settled_trades alone; the cell partition reduces to 4 cells per asset.
+    """
     cells_fn = getattr(gamma, "enumerate_cells", None)
     assert cells_fn is not None, "enumerate_cells not yet defined (scaffold-pending)"
 
     cells = cells_fn()
-    assert len(cells) == 8, f"expected 8 cells per asset, got {len(cells)}"
-    # Spot-check label shape.
+    assert len(cells) == 4, f"expected 4 cells per asset, got {len(cells)}"
+    # Spot-check label shape (vol × day_night).
     labels = {tuple(c) for c in cells}
-    assert ("vol_high", "day", "itm") in labels
-    assert ("vol_low", "night", "otm") in labels
+    assert ("vol_high", "day") in labels
+    assert ("vol_low", "night") in labels
 
 
 # ----- AUC bounded (Invariant 4) ------------------------------------------
@@ -326,3 +335,57 @@ def test_main_returns_expected_keys():
     """
     main_fn = getattr(gamma, "main", None)
     assert main_fn is not None, "main() not yet defined (scaffold-pending)"
+
+
+def test_cv_uses_forward_chaining_temporal_split():
+    """Pipeline-level no-look-ahead pin (Invariant 2 at the CV-fold layer).
+
+    Plan-doc § Method step 5 + § Methodological invariants ¶ k-fold:
+    "Use k-fold cross-validation (k=5) for AUC estimation with strict
+    temporal ordering of folds (no look-ahead across folds — fold k
+    trains on windows with settled_at < fold-k boundary only)."
+
+    The initial impl-R1 ship used `sklearn.model_selection.KFold(shuffle=False)`
+    which is NOT forward-chaining (only 1 of 5 folds honors the temporal
+    rule). The correct primitive is `TimeSeriesSplit`. This contract
+    AST-asserts the script imports + uses `TimeSeriesSplit` so a future
+    revert to plain `KFold` fails RED.
+    """
+    import ast
+    import inspect
+
+    src = inspect.getsource(gamma)
+    tree = ast.parse(src)
+
+    # Walk imports.
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                imported_names.add(f"{module}.{alias.name}")
+
+    # The forward-chaining temporal CV primitive must be imported AND
+    # actually referenced from main()'s CV-instantiation site. We require
+    # BOTH the import + a textual `TimeSeriesSplit(` call to guard against
+    # an import without use.
+    assert (
+        "sklearn.model_selection.TimeSeriesSplit" in imported_names
+    ), (
+        "F0.5 pipeline must import `TimeSeriesSplit` from sklearn.model_selection "
+        "for forward-chaining temporal CV per plan-doc § Method step 5. Plain "
+        "`KFold` is NOT forward-chaining (only 1 of n folds honors the temporal "
+        "invariant). Imports found: "
+        f"{sorted(n for n in imported_names if n.startswith('sklearn.'))}"
+    )
+    assert "TimeSeriesSplit(" in src, (
+        "F0.5 imports TimeSeriesSplit but never instantiates it — guard "
+        "against accidental import-only revert."
+    )
+    # Defense-in-depth: forbid `KFold(` instantiation (the bug we fixed).
+    # Allow `KFold` mentions in comments / docstrings (which would not
+    # match the `(` instantiation pattern).
+    assert "KFold(" not in src, (
+        "F0.5 must NOT instantiate plain `KFold` — see impl-R1-C2; use "
+        "`TimeSeriesSplit` for forward-chaining temporal CV."
+    )

@@ -65,13 +65,22 @@ TIMESTEPS_S_DEFAULT: tuple[int, ...] = (300, 60, 30, 10)
 #: (Resolved per asset at main(); kept as a documented invariant here.)
 _VOL_WINDOW_SECONDS: float = 3600.0  # 60-min rolling realized vol
 
-#: Moneyness cutoff: |spot - strike| / strike < ITM_THRESHOLD → itm; else otm.
-ITM_THRESHOLD: float = 0.005
-
 #: Day/night band: 14:00-22:00 UTC = day (US-equities-hours overflow envelope
 #: per F0.4 precedent at `scripts/research/f0_4_cross_asset_lead_lag.py`).
 _DAY_HOUR_LOW: int = 14
 _DAY_HOUR_HIGH: int = 22
+
+# NOTE: Moneyness dimension RETRACTED at impl-R1 (2026-05-21). Plan-doc § Method
+# step 4 + § Methodological invariants ¶ 3 originally specified 8 cells per
+# asset = vol_regime × day_night × moneyness, with moneyness via
+# `|spot - strike| / strike < 0.005`. **The 15M Kalshi ticker format does NOT
+# encode strike** — empirically (verified at impl-R1) every settled 15M ticker
+# has the form `KX<ASSET>15M-<YYMMDDHHMM>-<MM>` where the trailing `<MM>`
+# mirrors the close-MINUTE (00/15/30/45), not a strike index. Hourly markets
+# carry strike in the ticker (`KXBTC-26FEB2114-B95000`); 15M markets do not.
+# Without strike, moneyness cannot be computed from `settled_trades` alone;
+# the cell partition reduces to `vol_regime × day_night = 4 cells` per asset.
+# The verdict-doc retracts the original ITM/OTM framing in § Risk register.
 
 #: Asset → 15M ticker prefix (`KX<ASSET>15M`). Mirrors `bot.constants.SERIES_TICKERS`
 #: verbatim (key-set + value equality) for the canonical 7-asset universe; the
@@ -225,30 +234,21 @@ def extract_state_features(
 # ----- Cell enumeration (Invariant 3) -------------------------------------
 
 
-def enumerate_cells() -> list[tuple[str, str, str]]:
-    """Return the 8 cells = vol_regime × day_night × moneyness."""
+def enumerate_cells() -> list[tuple[str, str]]:
+    """Return the 4 cells = vol_regime × day_night.
+
+    Moneyness dimension retracted at impl-R1 — 15M Kalshi tickers don't
+    encode strike (see module-level NOTE). Cell partition is 4 cells per
+    asset (vol × day_night), down from the originally-planned 8.
+    """
     vols = ("vol_high", "vol_low")
     daynights = ("day", "night")
-    moneyness = ("itm", "otm")
-    return [(v, d, m) for v in vols for d in daynights for m in moneyness]
+    return [(v, d) for v in vols for d in daynights]
 
 
 def _classify_daynight(ts: dt.datetime) -> str:
     """US-equities-hours overlap window 14:00-22:00 UTC = day; else night."""
     return "day" if _DAY_HOUR_LOW <= ts.hour < _DAY_HOUR_HIGH else "night"
-
-
-def _classify_moneyness(spot: float, strike: float) -> str:
-    """|spot - strike| / strike < ITM_THRESHOLD → itm; else otm.
-
-    Guards strike == 0 by treating zero-strike windows as 'otm' (cannot
-    happen for the canonical 15M strike encoding but defensive against
-    decode anomalies on edge tickers).
-    """
-    if strike <= 0:
-        return "otm"
-    distance = abs(spot - strike) / strike
-    return "itm" if distance < ITM_THRESHOLD else "otm"
 
 
 # ----- AUC computation (Invariant 4) --------------------------------------
@@ -363,28 +363,6 @@ def classify_verdict(
 # ----- Internal DB helpers -----------------------------------------------
 
 
-def _decode_strike_cents(ticker: str) -> float | None:
-    """Decode strike from a 15M ticker suffix.
-
-    Convention: `KX<ASSET>15M-<DATEHOURMIN>-<STRIKE>` where STRIKE is the
-    integer cents strike for low-price assets (HYPE/DOGE) and the full
-    dollars value for high-price assets (BTC/ETH/SOL/XRP/BNB). Returns
-    None if the suffix cannot be decoded.
-
-    Used for moneyness classification; the absolute units only matter
-    inside the |spot - strike| / strike ratio, so the same encoding works
-    across assets as long as strike + spot are read from the same source.
-    """
-    parts = ticker.split("-")
-    if len(parts) < 3:
-        return None
-    suffix = parts[-1]
-    try:
-        return float(suffix)
-    except ValueError:
-        return None
-
-
 def _load_settled_windows(
     conn: sqlite3.Connection, start_ts: str
 ) -> list[dict[str, Any]]:
@@ -396,7 +374,7 @@ def _load_settled_windows(
     """
     cur = conn.cursor()
     cur.execute(
-        "SELECT DISTINCT ticker, asset, market_result, MAX(settled_at) AS settled_at "
+        "SELECT ticker, asset, market_result, MAX(settled_at) AS settled_at "
         "FROM settled_trades "
         "WHERE product_type='15m' AND settled_at >= ? "
         "AND market_result IN ('yes','no') "
@@ -607,7 +585,6 @@ def main(
             "no_state_at_T300": 0,
             "no_spot": 0,
             "no_vol": 0,
-            "no_strike": 0,
             "window_close_before_data": 0,
         }
         sigma_medians: dict[str, float] = {}
@@ -681,11 +658,8 @@ def main(
             spot_t120 = _spot_at_time(spot_series.get(asset, []), close_dt - dt.timedelta(seconds=120))
             delta_spot_60s = (spot_t60 - spot_t120) if spot_t120 is not None else 0.0
 
-            # Cell classification.
-            strike = _decode_strike_cents(ticker)
-            if strike is None:
-                drop_counters["no_strike"] += 1
-                continue
+            # Cell classification (moneyness dimension retracted at impl-R1 —
+            # 15M Kalshi tickers don't encode strike; see module-level NOTE).
             sigma = _compute_per_asset_vol_at_time(spot_series.get(asset, []), close_dt)
             if sigma is None:
                 drop_counters["no_vol"] += 1
@@ -693,7 +667,6 @@ def main(
             sigma_median = sigma_medians.get(asset, 0.0)
             vol_regime = "vol_high" if sigma > sigma_median else "vol_low"
             daynight = _classify_daynight(close_dt)
-            moneyness = _classify_moneyness(spot_t60, strike)
 
             # Features: yes_mid + yes_spread at T-60 (and T-300 if available).
             feat_t60 = extract_state_features(
@@ -712,7 +685,8 @@ def main(
                     "ticker": ticker,
                     "asset": asset,
                     "y_w": w["y_w"],
-                    "cell": (asset, vol_regime, daynight, moneyness),
+                    "settled_at": w["settled_at"],
+                    "cell": (asset, vol_regime, daynight),
                     "feat_t60_yes_mid": feat_t60["yes_mid_cents"],
                     "feat_t60_yes_spread": feat_t60["yes_spread_cents"],
                     "feat_t60_delta_spot_60s": delta_spot_60s,
@@ -720,7 +694,6 @@ def main(
                     "feat_t300_yes_spread": feat_t300["yes_spread_cents"] if feat_t300 else None,
                     "spot_at_T60": spot_t60,
                     "spot_at_T300": spot_t300,
-                    "strike": strike,
                     "sigma": sigma,
                 }
             )
@@ -734,30 +707,40 @@ def main(
         #   strict temporal ordering of folds (no look-ahead across folds —
         #   fold k trains on windows with settled_at < fold-k boundary only)."
         #
+        # **Forward-chaining** temporal split via `TimeSeriesSplit(n_splits=5)`
+        # (impl-R1 fix; the initial impl used sklearn's plain KFold with
+        # shuffle disabled, which is NOT forward-chaining — only 1 of 5
+        # folds honors the "fold k trains on settled_at < fold-k boundary"
+        # rule). Each fold trains on the leading prefix and tests on the
+        # next contiguous block of events; the union of test indices is
+        # the trailing (n_splits/(n_splits+1)) fraction of the cell, not
+        # the full cell.
+        #
         # In-sample fit+predict would yield trivially-high AUCs on small
         # cells (n=30-44 events, 3 features → perfect separation by lbfgs).
         # k-fold CV measures the GENERALIZATION-AUC, which is the honest
         # falsification signal. Bootstrap is applied on top of the OOS
         # scores to get a CI on the OOS AUC point estimate.
         from sklearn.linear_model import LogisticRegression
-        from sklearn.model_selection import KFold
+        from sklearn.model_selection import TimeSeriesSplit
 
-        per_cell: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        per_cell: dict[tuple[str, str, str], dict[str, Any]] = {}
         rng = random.Random(42)
 
         def _oos_scores(
             X: list[list[float]], y: list[int], n_splits: int = 5
         ) -> tuple[list[float], list[int]] | None:
-            """Return OOS predicted probabilities + aligned y_true via temporal KFold.
+            """Return OOS predicted probabilities + aligned y_true via TimeSeriesSplit.
 
-            Time-ordered KFold (shuffle=False) per plan-doc temporal-folds
-            rule. Cells with both classes in every train-split are required;
-            single-class train-split returns None (cell drops to insufficient
-            with note).
+            Forward-chaining temporal CV per plan-doc § Method step 5 +
+            Invariant pin "fold k trains on windows with settled_at <
+            fold-k boundary only." Cells with both classes in every
+            train-split are required; single-class train-split returns
+            None (cell drops to insufficient with note).
             """
-            if n_splits < 2 or len(y) < n_splits:
+            if n_splits < 2 or len(y) < n_splits + 1:
                 return None
-            kf = KFold(n_splits=n_splits, shuffle=False)
+            kf = TimeSeriesSplit(n_splits=n_splits)
             oos_y: list[int] = []
             oos_score: list[float] = []
             for tr_idx, te_idx in kf.split(X):
@@ -814,8 +797,14 @@ def main(
                 for e in cell_events
             ]
 
-            # Sort cell events by settled_at to respect temporal-fold ordering.
-            order = sorted(range(n_events), key=lambda i: cell_events[i]["ticker"])
+            # Sort cell events by `settled_at` parsed-datetime to respect the
+            # plan-doc temporal-fold ordering. Ticker-name sort (impl-R1 initial)
+            # is fragile across month/year boundaries because the Kalshi date
+            # encoding `26MAY200345` sorts lexicographically, not chronologically.
+            order = sorted(
+                range(n_events),
+                key=lambda i: _parse_iso(cell_events[i]["settled_at"]),
+            )
             X_ordered = [X_t60[i] for i in order]
             y_ordered = [y_arr[i] for i in order]
 
@@ -848,6 +837,20 @@ def main(
                 }
                 continue
 
+            # Lock orientation at the POINT-AUC level (impl-R1 M4 fix). The
+            # initial impl re-flipped per-resample, which biased the lower-CI
+            # upward for cells with true AUC near 0.5 (every resample contributes
+            # ≥0.5, so CI lower-bound is always ≥0.5). Lock the sign once based
+            # on raw point-AUC, then apply the same orientation to every resample.
+            from sklearn.metrics import roc_auc_score
+
+            raw_point_auc = float(roc_auc_score(list(oos_y), list(oos_score)))
+            flip_orientation = raw_point_auc < 0.5
+
+            def _signed_auc(yv: list[int], sv: list[float]) -> float:
+                raw = float(roc_auc_score(yv, sv))
+                return (1.0 - raw) if flip_orientation else raw
+
             # Bootstrap CI on OOS scores: resample the (oos_y, oos_score)
             # paired set with replacement and recompute AUC each iteration.
             # Pairs preserve the OOS prediction structure; we don't re-fit
@@ -861,9 +864,7 @@ def main(
                     continue
                 sb = [oos_score[i] for i in idxs]
                 try:
-                    boot_aucs.append(
-                        compute_auc_with_orientation(y_true=yb, y_score=sb)
-                    )
+                    boot_aucs.append(_signed_auc(yb, sb))
                 except ValueError:
                     continue
             if len(boot_aucs) < 50:
@@ -897,7 +898,7 @@ def main(
                     ]
                     order300 = sorted(
                         range(len(t300_events)),
-                        key=lambda i: t300_events[i]["ticker"],
+                        key=lambda i: _parse_iso(t300_events[i]["settled_at"]),
                     )
                     X300o = [X_t300[i] for i in order300]
                     y300o = [y_t300[i] for i in order300]
@@ -924,7 +925,7 @@ def main(
         cells_for_verdict = [
             {
                 "asset": k[0],
-                "cell": "_".join(k[1:]),
+                "cell": f"{k[1]}_{k[2]}",
                 "status": v["status"],
                 "auc_lower": v.get("auc_lower"),
                 "auc_upper": v.get("auc_upper"),
@@ -991,11 +992,11 @@ def _format_verdict_markdown(result: Mapping[str, Any]) -> str:
     )
     lines.append(f"Bootstrap N: {result['bootstrap_n']}\n")
     lines.append("\n## Per-cell AUC + bootstrap CI\n")
-    lines.append("| Asset | Vol | DayNight | Money | n_events | AUC_T60 | AUC_lower | AUC_upper | AUC_T300 | status |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| Asset | Vol | DayNight | n_events | AUC_T60 | AUC_lower | AUC_upper | AUC_T300 | status |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for k in sorted(result["per_cell_results"].keys()):
         v = result["per_cell_results"][k]
-        asset, vol, dn, money = k
+        asset, vol, dn = k
         status = v.get("status", "?")
         n = v.get("n_events", 0)
 
@@ -1005,7 +1006,7 @@ def _format_verdict_markdown(result: Mapping[str, Any]) -> str:
             return f"{float(x):.3f}"
 
         lines.append(
-            f"| {asset} | {vol} | {dn} | {money} | {n} | "
+            f"| {asset} | {vol} | {dn} | {n} | "
             f"{_fmt(v.get('auc_T60'))} | {_fmt(v.get('auc_lower'))} | "
             f"{_fmt(v.get('auc_upper'))} | {_fmt(v.get('auc_T300'))} | {status} |"
         )
@@ -1029,6 +1030,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--bootstrap-n", type=int, default=1000, help="Bootstrap resample count"
     )
     parser.add_argument(
+        "--settle-processing-delay-s",
+        type=float,
+        default=MIN_SETTLE_PROCESSING_DELAY_S,
+        help="Buffer (s) between settled_at and T-0 window close (≥5s, default 5)",
+    )
+    parser.add_argument(
         "--out", default=None, help="Output markdown path (default: stdout)"
     )
     return parser.parse_args(argv)
@@ -1040,6 +1047,7 @@ if __name__ == "__main__":  # pragma: no cover
         db_path=args.db,
         days=args.days,
         bootstrap_n=args.bootstrap_n,
+        settle_processing_delay_s=args.settle_processing_delay_s,
         output_path=args.out,
     )
     print(result)
