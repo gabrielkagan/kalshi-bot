@@ -3,15 +3,15 @@
 TDD-first scaffold per `CLAUDE.md` extraction-bit discipline + the
 F0.1 precedent (`tests/research/test_f0_1_stale_quote_falsification.py`,
 SHIPPED PR #132 verdict SURVIVE — see plan-doc § References for the
-template lineage). Lands BEFORE implementation as **18 failing-assertion
-test functions covering 13 logical invariants** with per-invariant
-breakdown `1=4, 2=2, 3=1, 4=1, 5=1, 6=2, 7=1, 8=1, 9=1, 10=1, 11=1,
-12=1, 13=1` (Invariant 1's 4 tests are the 4 schema-pin assertions;
-Invariant 2 has paired M_stale / M_responded tests; Invariant 6 has
-paired kill/survive verdict tests; Invariants 12+13 are paired
-full-pipeline kill/survive). All tests RED at scaffold-ship (impl
-helpers do not exist yet); flip GREEN as the impl-Bit lands per
-TDD-first staging.
+template lineage). Originally landed BEFORE implementation as **18
+failing-assertion test functions covering 13 logical invariants** with
+per-invariant breakdown `1=4, 2=2, 3=1, 4=1, 5=1, 6=2, 7=1, 8=1, 9=1,
+10=1, 11=1, 12=1, 13=1` (Invariant 1's 4 tests are the 4 schema-pin
+assertions; Invariant 2 has paired M_stale / M_responded tests;
+Invariant 6 has paired kill/survive verdict tests; Invariants 12+13 are
+paired full-pipeline kill/survive). All 18 tests landed RED at
+scaffold-ship (impl helpers did not exist yet) and are GREEN
+post-impl-Bit ship.
 
 Adversarial-review prefix convention: `scaffold-R*` for the scaffold
 gate, `impl-R*` for the impl gate (per F0.1 R14 lesson — keeps

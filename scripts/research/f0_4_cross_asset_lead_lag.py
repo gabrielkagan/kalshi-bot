@@ -635,13 +635,15 @@ def _match_event_to_laggard_quotes(
             gap_to_event = (event_time - stale["_obs_dt"]).total_seconds()
             if best is None or gap_to_event < best[0]:
                 best = (gap_to_event, stale, responded)
-    else:  # pragma: no cover — dead path post-impl-Bit; preserved for API symmetry
+    else:  # pragma: no cover — unreached from _per_laggard_analysis; kept for direct callers
         # NOTE: `_per_laggard_analysis` always passes `indexed_by_ticker`, so
-        # this linear-scan fallback is unreachable from the main pipeline.
-        # Kept in the helper signature for callers that don't pre-index (e.g.,
-        # ad-hoc REPL / debugging). If a future refactor removes the indexed
-        # path, the linear scan still produces semantically-identical output
-        # (verified equivalent in impl-R1-N2 inspection).
+        # this linear-scan fallback is not exercised by the main pipeline.
+        # The branch itself IS reachable (any direct caller can omit the
+        # indexed_by_ticker kwarg, e.g., REPL / debugging) and produces
+        # semantically-identical output to the indexed path (verified at
+        # impl-R1-N2). Distinct from "dead code": the branch has callers
+        # outside the main pipeline; it just doesn't accrue coverage from
+        # the test corpus which exclusively exercises the indexed path.
         for _ticker, rows in moc_by_ticker.items():
             stale: dict[str, Any] | None = None
             responded: dict[str, Any] | None = None
