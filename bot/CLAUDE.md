@@ -205,6 +205,28 @@ insert_rejection → swallow. Pinned by
   `_DEFAULT_LOOKBACK_DAYS` must remain strictly less than the
   snapshotter's `DEFAULT_RETENTION_DAYS` (pinned by
   `tests/contracts/test_market_obs_retention_lockstep.py`).
+- **Two-phase weather settlement loop in
+  `bot/settlement.py::SettlementTracker._poll_evaluated_opportunities`
+  (ticket 86ba1xdwp, 2026-05-21).** The weather phase iterates settled
+  weather brackets, calls Open-Meteo `fetch_observed_high()` per row
+  (synchronous HTTP, 1-5s), UPDATEs `wx_actual_high_temp` on the shared
+  `StateManager.conn`, and calls `WeatherProbabilityModel._save_bias`
+  which opens its OWN sqlite3 connection. Pre-fix the loop ran a single
+  pass with an after-loop commit: the shared conn auto-BEGINs a tx on
+  the first UPDATE and holds the writer lock continuously across every
+  HTTP call until the after-loop commit. `_save_bias`'s separate conn
+  then busy-times-out at 10s, and `market_obs_snapshotter` /
+  `phantom_reconcile_monitor` / `CALMLP_POSTHOC` cascade behind. The
+  fix splits into Phase 3a (HTTP-only — collect tuples, NO DB writes)
+  and Phase 3b (DB-only — per-row UPDATE + `self._state.conn.commit()`
+  + `update_bias` AFTER the commit), so the shared conn writer lock
+  is held only during the tight UPDATE+commit window (~10-50ms per row)
+  instead of N×HTTP latency. Pinned by
+  `tests/contracts/test_settlement_weather_writer_lock_phase3.py`
+  (AST guard: two separate for-loops, no fetch+update_bias mix, per-row
+  commit present, `_wx_dirty` retired) and
+  `tests/integration/test_settlement_weather_writer_storm_regression.py`
+  (behavioral: contention probe sees max-wait < 250ms during the loop).
 
 ## Band-calibrated sizing (P4.1)
 
