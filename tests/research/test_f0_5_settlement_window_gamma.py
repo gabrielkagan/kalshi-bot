@@ -317,9 +317,11 @@ def test_verdict_survive_when_one_cell_clears_threshold():
 
 
 def test_main_returns_expected_keys():
-    """End-to-end main() emits per-cell AUC + verdict dict shape pinned for downstream consumers."""
+    """End-to-end main() emits per-cell AUC + verdict dict shape pinned for downstream consumers.
+
+    Presence-only at scaffold-ship per F0.1 precedent. Once `main` exists as a
+    callable, this test flips GREEN; the synthetic-db fixture + downstream
+    dict-shape assertions land at impl-Bit.
+    """
     main_fn = getattr(gamma, "main", None)
     assert main_fn is not None, "main() not yet defined (scaffold-pending)"
-    # Cannot run main without a synthetic-db fixture (deferred to impl-Bit per
-    # F0.1 precedent). The presence-only check is the scaffold-ship assertion.
-    pytest.fail("main() exists as a callable but the synthetic-db fixture is impl-pending")

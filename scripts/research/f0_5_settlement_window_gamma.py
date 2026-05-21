@@ -29,5 +29,17 @@ Run (post-impl):
 
 from __future__ import annotations
 
+from bot.constants import SERIES_TICKERS
+
+# Asset → 15M ticker prefix (`KX<ASSET>15M`). Mirrors `bot.constants.SERIES_TICKERS`
+# verbatim (key-set + value equality) for the canonical 7-asset universe; the
+# trailing `-` separator is appended at query time as `prefix + "-%"` to scope
+# out hourly + daily markets that share the `KX<ASSET>` root. Anti-drift contract
+# test: `tests/contracts/test_f0_5_asset_ticker_prefix_mirrors_series_tickers.py`
+# (D1.11.a `LEAGUES_ESPN` pattern). When the bot's 7-asset universe changes,
+# the contract test fails RED and the operator must update SERIES_TICKERS first.
+ASSET_TICKER_PREFIX: dict[str, str] = dict(SERIES_TICKERS)
+
+
 if __name__ == "__main__":
     raise NotImplementedError("scaffold-only; impl pending")
