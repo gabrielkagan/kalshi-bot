@@ -46,7 +46,7 @@ def synthetic_snapshot(tmp_path_factory: pytest.TempPathFactory) -> Path:
             CREATE TABLE evaluated_opportunities (
                 id INTEGER PRIMARY KEY,
                 evaluation_time TEXT NOT NULL,
-                settled_at TEXT,
+                settled_time TEXT,
                 market_result TEXT,
                 side TEXT DEFAULT 'yes',
                 market_price INTEGER,
@@ -57,9 +57,11 @@ def synthetic_snapshot(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 counterfactual_pnl INTEGER
             );
         """))
+        # Column name `settled_time` matches the real snapshot. RCA D-20 calls
+        # it `settled_at` — drift documented in the wave-5 commit + ship doc.
         conn.executemany(
             """INSERT INTO evaluated_opportunities
-               (evaluation_time, settled_at, market_result, market_price, position_size,
+               (evaluation_time, settled_time, market_result, market_price, position_size,
                 product_type, filter_stage, status, counterfactual_pnl)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
