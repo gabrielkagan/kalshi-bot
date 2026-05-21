@@ -119,7 +119,7 @@ _SUBSCRIBE_ACK_TYPES = frozenset({"subscribed", "ok"})
 # once at import; cost is comparable to N sequential `str.__contains__`
 # checks per frame.
 #
-# R1 hardening (2026-05-21): the alternation list is BUILT FROM
+# R1 hardening (2026-05-20): the alternation list is BUILT FROM
 # `_SUBSCRIBE_ACK_TYPES` so the two stay in lockstep — a future Bit
 # that extends the canonical Kalshi ack-type set need only edit the
 # frozenset and the regex follows. Restricted to the Kalshi-protocol

@@ -13,7 +13,15 @@ The bronze tape captured by ``collector/`` and the live decisions made
 by ``bot/`` MUST agree on what came over the wire. Putting auth + WS
 connect/reconnect/subscribe protocol + 6-field envelope construction
 behind a shared package eliminates the drift surface — both consumers
-parse the same bytes the same way.
+receive byte-identical ``Frame.raw`` from the wire (pinned by
+``tests/equivalence/test_kalshi_wire_differential.py``). Parsing of
+that raw payload is opt-in via the ``WSClient(parse_on_demand=...)``
+constructor kwarg: the bot keeps the default ``False`` and gets parsed
+Frames; the collector opts in to ``True`` post P1-B-brutalist Phase B1
+(ticket ``86ba1qbf4``, 2026-05-20) to skip per-frame ``json.loads`` on
+the asyncio thread for throughput at high-ticker scale, and uses
+substring scans on ``Frame.raw`` to recover the minimal fields it
+routes on.
 
 Pure-transport leaf — pinned by two import-linter forbidden contracts:
 

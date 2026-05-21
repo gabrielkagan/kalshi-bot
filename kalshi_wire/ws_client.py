@@ -10,7 +10,12 @@ This module owns:
   - WS connect / reconnect (exponential backoff with jitter)
   - RSA-PSS handshake auth (via ``kalshi_wire.auth.make_ws_headers``)
   - Silence watchdog (force-reconnect if no frame for N seconds)
-  - Frame parse + envelope ``(sid, seq)`` gap detection
+  - Frame parse + envelope ``(sid, seq)`` gap detection — both gated
+    by the ``parse_on_demand`` constructor kwarg (default ``False``
+    preserves these; collector opts into ``True`` post P1-B-brutalist
+    Phase B1 (ticket ``86ba1qbf4``, 2026-05-20) to skip per-frame
+    ``json.loads`` on the asyncio thread, which makes seq-gap
+    detection a no-op for that consumer).
   - Thread-safe outgoing-frame queue
   - 4 sync callbacks invoked from the asyncio thread:
     * ``on_session_start()`` — fires after WS connect, BEFORE reading
@@ -72,6 +77,21 @@ class Frame:
     reconstructed from ``raw`` after the fact — Kalshi's server-side
     timestamp (inside the payload) doesn't include receipt latency.
 
+    Field population depends on the ``WSClient``'s ``parse_on_demand``
+    constructor kwarg:
+      - Default ``parse_on_demand=False`` (bot/KalshiFeed path):
+        the wire calls ``json.loads(raw)`` and populates ``parsed`` +
+        ``msg_type`` + ``sid`` + ``seq`` from the parsed dict (any
+        field absent or wrong type → None).
+      - ``parse_on_demand=True`` (collector path post P1-B-brutalist
+        Phase B1, ticket ``86ba1qbf4``, 2026-05-20): the wire SKIPS
+        ``json.loads`` entirely; ``parsed`` + ``msg_type`` + ``sid`` +
+        ``seq`` are ALL ``None`` regardless of frame contents. Only
+        ``wire_recv_ts`` + ``raw`` are populated. The consumer (today
+        only ``collector/ws_connection.py::BronzeArchiver``) must do
+        its own substring-based extraction of whatever minimal fields
+        it routes on.
+
     Fields:
         wire_recv_ts: Unix-epoch seconds with microsecond precision
             (``time.time()`` return value). Use ``build_envelope`` to
@@ -79,15 +99,20 @@ class Frame:
         raw: The full raw wire payload as a string. Bronze captures this
             verbatim — no decoding, no normalization, no field re-ordering.
         parsed: ``json.loads(raw)`` result. ``None`` if parse failed
-            (malformed frame from the wire).
+            (malformed frame from the wire), OR if the wire was
+            constructed with ``parse_on_demand=True`` (in which case
+            it is ALWAYS ``None``).
         msg_type: ``parsed["type"]`` if present, else None. Pre-extracted
-            for fast dispatch by consumers.
+            for fast dispatch by consumers. ALWAYS ``None`` under
+            ``parse_on_demand=True``.
         sid: Envelope subscription id (Kalshi assigns; channel-scoped post
-            Phase 2.10).
+            Phase 2.10). ALWAYS ``None`` under ``parse_on_demand=True``.
         seq: Per-subscription monotonic sequence number. Gaps indicate
             dropped/reordered messages (diagnosed via
             ``WS_SEQ_GAP`` log in the original KalshiFeed; this module
-            emits the same log when a gap is detected).
+            emits the same log when a gap is detected). ALWAYS ``None``
+            under ``parse_on_demand=True``, and the gap-detection log
+            becomes a no-op for that consumer.
     """
 
     wire_recv_ts: float
@@ -163,8 +188,11 @@ class WSClient:
     Consumers (bot/feeds/kalshi.py KalshiFeed, collector/ws_connection.py)
     own state — orderbook caches, sid maps, cmd_id management, blacklists.
     This client owns transport: connect, reconnect, auth handshake,
-    silence watchdog, frame parse + seq-gap detect, thread-safe send
-    queue.
+    silence watchdog, frame parse + seq-gap detect (both gated by the
+    ``parse_on_demand`` constructor kwarg — default ``False`` preserves
+    them; collector opts in to ``True`` post P1-B-brutalist Phase B1
+    to skip per-frame ``json.loads`` on the asyncio thread), thread-safe
+    send queue.
 
     Threading model (mirrors KalshiFeed's pre-extraction shape):
       - ``start()`` spawns one daemon thread that runs an asyncio event

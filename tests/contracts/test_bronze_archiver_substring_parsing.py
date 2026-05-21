@@ -82,7 +82,7 @@ def test_substring_detect_ack_matches_known_ack_types():
     ack types (``_SUBSCRIBE_ACK_TYPES`` = ``{"subscribed", "ok"}``) and
     False for both data frames AND non-subscribe-ack message types.
 
-    R1 hardening (2026-05-21): an earlier draft over-matched
+    R1 hardening (2026-05-20): an earlier draft over-matched
     ``"error"`` and ``"subscriptions"``. ``error`` is a generic
     command-response shape (NOT a subscribe-ack); pre-B1 it routed to
     the ``_unrouted`` bronze partition for silver-side diagnostic

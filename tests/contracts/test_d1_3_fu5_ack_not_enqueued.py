@@ -353,7 +353,7 @@ def test_thousand_mock_acks_with_huge_raw_does_not_grow_queue(monkeypatch):
     what matters, not the byte count). Pre-fix: queue grows to 1000 ×
     ~50 KB = ~50 MB. Post-fix: queue stays empty.
 
-    Fixture shape (R1 hardening 2026-05-21): the 50 KB ``raw_override``
+    Fixture shape (R1 hardening 2026-05-20): the 50 KB ``raw_override``
     is a VALID JSON envelope beginning with ``{"id":N,"type":"ok",...``
     followed by a long filler string inside the ``msg`` object. Post
     P1-B-brutalist Phase B1 the collector dispatches on
