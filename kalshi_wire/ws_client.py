@@ -207,6 +207,7 @@ class WSClient:
         max_backoff_s: float = 60.0,
         seq_gap_max_logs: int = 500,
         ws_max_size: int = 16 * 1024 * 1024,
+        parse_on_demand: bool = False,
         _test_skip_auth: bool = False,
     ):
         # ws_max_size: incoming-message ceiling passed to
@@ -248,6 +249,15 @@ class WSClient:
         self._max_backoff_s = max_backoff_s
         self._seq_gap_max_logs = seq_gap_max_logs
         self._ws_max_size = ws_max_size
+        # P1-B-brutalist Phase B1 (ticket 86ba1qbf4, 2026-05-20) — when
+        # True, ``_handle_raw_frame`` skips ``json.loads(raw)`` and builds
+        # ``Frame(raw=raw, wire_recv_ts=now)`` with parsed/msg_type/sid/seq
+        # all None. The consumer is responsible for substring-based parsing
+        # of whatever minimal fields it needs (ack-type / sid for routing).
+        # Eliminates the dominant GIL-bound work (~50-100 nested dict allocs
+        # per orderbook_delta frame) at 705K-ticker universal mode. Default
+        # False preserves bot/KalshiFeed's parsed-Frame consumer contract.
+        self._parse_on_demand = parse_on_demand
         # Internal flag — allow tests to skip RSA-PSS signing when pointing
         # at a mock server. Not part of the public API surface.
         self._skip_auth = _test_skip_auth
@@ -673,29 +683,45 @@ class WSClient:
         msg_type: Optional[str]
         sid: Optional[int]
         seq: Optional[int]
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
+        if self._parse_on_demand:
+            # P1-B-brutalist Phase B1 (ticket 86ba1qbf4): skip the
+            # per-frame json.loads entirely. The consumer (collector
+            # BronzeArchiver) does substring-based parsing for the
+            # minimal fields it routes on (ack-type + sid). Eliminates
+            # the dominant GIL-bound work at 705K-ticker universal mode.
+            # Seq-gap detection is unavailable in this mode (it requires
+            # a parsed sid+seq); it's a wire-level diagnostic, not a
+            # correctness invariant, and the collector doesn't trade
+            # on it.
             parsed = None
             msg_type = None
             sid = None
             seq = None
         else:
-            if isinstance(parsed, dict):
-                _t = parsed.get("type")
-                msg_type = _t if isinstance(_t, str) else None
-                _s = parsed.get("sid")
-                sid = _s if isinstance(_s, int) else None
-                _q = parsed.get("seq")
-                seq = _q if isinstance(_q, int) else None
-            else:
+            try:
+                parsed = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
                 msg_type = None
                 sid = None
                 seq = None
+            else:
+                if isinstance(parsed, dict):
+                    _t = parsed.get("type")
+                    msg_type = _t if isinstance(_t, str) else None
+                    _s = parsed.get("sid")
+                    sid = _s if isinstance(_s, int) else None
+                    _q = parsed.get("seq")
+                    seq = _q if isinstance(_q, int) else None
+                else:
+                    msg_type = None
+                    sid = None
+                    seq = None
 
         # Seq-gap detector — wire-level diagnostic, identical to the
         # bot's pre-extraction logic. Bot dispatches still get the frame
-        # via on_frame regardless of gap state.
+        # via on_frame regardless of gap state. In parse_on_demand mode
+        # this is a no-op (sid is None).
         if sid is not None and seq is not None:
             prev = self._ws_last_seq.get(sid)
             if prev is not None and seq != prev + 1:
