@@ -1631,7 +1631,42 @@ class OpportunityScanner:
                 vol_est = self._ml.weather_engine.get_vol_estimate(asset, seconds_remaining)
             else:
                 _vol_start = time.perf_counter()
-                spot = self._feed.get_price(asset)
+                # Bit S.1 (86ba1wrcg, 2026-05-21): read price + WS-tick
+                # monotonic ts in lock-step so we can record staleness
+                # at evaluation. get_price_with_ts returns None when
+                # CoinbaseFeed has never seen a tick for this asset
+                # (matches the prior get_price() None-return semantics).
+                # Stage the computed staleness into the per-asset
+                # StateManager cache so EVERY downstream
+                # insert_evaluated_opportunity call in this tick
+                # auto-fills spot_staleness_seconds without needing to
+                # thread the value through 115+ call sites (mirrors the
+                # _scan_cx_gap_cache pattern). NULL when no WS tick has
+                # ever landed for this asset (warmup) — the scan tick
+                # below will hit the silent_spot_none branch and the
+                # NULL is honest.
+                _spot_pair = self._feed.get_price_with_ts(asset)
+                if _spot_pair is None:
+                    spot = None
+                    spot_staleness_seconds: Optional[float] = None
+                else:
+                    spot, _last_tick_mono = _spot_pair
+                    spot_staleness_seconds = max(
+                        0.0, time.monotonic() - _last_tick_mono
+                    )
+                if asset is not None:
+                    if spot_staleness_seconds is None:
+                        # Drop any prior tick's staleness from this
+                        # asset's cache slot so we don't auto-fill a
+                        # stale staleness measurement against a fresh
+                        # decision-time. Honest-NULL.
+                        self._state._scan_spot_staleness_cache.pop(
+                            asset, None
+                        )
+                    else:
+                        self._state._scan_spot_staleness_cache[asset] = (
+                            spot_staleness_seconds
+                        )
                 if spot is None or spot <= 0:
                     # Trace row — Coinbase price feed gap or restart warmup.
                     # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
@@ -1644,7 +1679,9 @@ class OpportunityScanner:
                             rejection_reason=f"spot={spot} from feed",
                             spot_price=spot if spot is not None else None,
                             seconds_to_close=window.get("seconds_to_close"),
-                            product_type=_pt or "15m", config_snapshot_id=self._ml.config_snapshot_id)
+                            product_type=_pt or "15m",
+                            spot_staleness_seconds=spot_staleness_seconds,
+                            config_snapshot_id=self._ml.config_snapshot_id)
                     except sqlite3.OperationalError:
                         logging.debug(
                             "silent_spot_none trace insert failed",
