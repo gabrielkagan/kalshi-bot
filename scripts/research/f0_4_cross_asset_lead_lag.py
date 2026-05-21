@@ -1,9 +1,11 @@
 """F0.4 — Cross-Asset Lead-Lag Falsification (CT-MDP Attack #4, Phase 0).
 
-Scaffold-only stub. All algorithmic helpers (`compute_lead_edge`,
+Scaffold-only stub. Primary algorithmic helpers (`compute_lead_edge`,
 `bootstrap_lead_edge_ci`, `bonferroni_adjusted_ci`, `classify_verdict`,
-`survival_diagnostics`, `main`) don't yet exist — tests RED on
-AttributeError at attribute-lookup time when referencing
+`survival_diagnostics`, `main`) — plus the data-shaping helpers
+(`select_m_stale`, `select_m_responded`, `_parse_iso`,
+`validate_lead_edge`, `compute_event_lead_edge`) — all pending impl;
+tests RED on AttributeError at attribute-lookup time when referencing
 `lead_lag.<name>`. The failing-assertion test suite at
 `tests/research/test_f0_4_cross_asset_lead_lag.py` pins the
 methodological invariants for the impl-Bit follow-up.

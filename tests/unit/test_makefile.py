@@ -105,9 +105,9 @@ BIT_13_3_TARGETS = ("refresh-map",)
 # deploy-blocking; runs locally during falsification work. May carry
 # intentional NotImplementedError stubs during the scaffold-first phase
 # per CLAUDE.md TDD-first discipline.
-CT_MDP_F0_1_TARGETS = ("test-research",)
+CT_MDP_F_TARGETS = ("test-research",)
 
-ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS + BIT_12_4_TARGETS + BIT_13_3_TARGETS + CT_MDP_F0_1_TARGETS
+ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS + BIT_12_4_TARGETS + BIT_13_3_TARGETS + CT_MDP_F_TARGETS
 
 # Bit 11.3 (Sprint 11, 2026-05-11) — explicit (target -> script) mapping
 # pinned by test_bit_11_3_targets_point_to_real_scripts. Catches typos
