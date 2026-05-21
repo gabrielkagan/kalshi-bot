@@ -89,7 +89,7 @@ CONTRACT_FILES := tests/contracts
 # Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
 # 86b9vfn5r — remove that ignore when the fixture lands). The research
 # ignore (Phase-0 CT-MDP falsifications: F0.1 2026-05-20, F0.4 2026-05-21,
-# ...) keeps the falsification scaffolds with intentional
+# F0.5 2026-05-21, ...) keeps the falsification scaffolds with intentional
 # NotImplementedError stubs out of the deploy-blocking integration tier;
 # operator runs them via `make test-research`.
 INTEGRATION_IGNORES := \

@@ -61,12 +61,20 @@ def test_settled_trades_required_columns_exposed():
 
 
 def test_moc_required_columns_exposed():
-    """moc must expose ticker, observation_time, yes_bid/ask, bid/ask_depth."""
+    """moc must expose ticker, observation_time, yes_bid/ask, no_bid/ask, bid/ask_depth, source, cache_age_ms.
+
+    Mirrors the canonical schema in `bot/snapshots/market_observations_snapshotter.py`
+    `_DDL` block: id + ticker + observation_time + yes_bid_cents + yes_ask_cents +
+    no_bid_cents + no_ask_cents + bid_depth + ask_depth + source + cache_age_ms.
+    `source` is needed to distinguish moc-write provenance (ws_book / ws_orderbook_delta);
+    `cache_age_ms` is the freshness signal F0.1's stale-quote analysis depends on.
+    """
     required = {
         "ticker", "observation_time",
         "yes_bid_cents", "yes_ask_cents",
         "no_bid_cents", "no_ask_cents",
         "bid_depth", "ask_depth",
+        "source", "cache_age_ms",
     }
     cols = getattr(gamma, "MOC_REQUIRED_COLUMNS", None)
     assert cols is not None, "MOC_REQUIRED_COLUMNS not yet defined (scaffold-pending)"
@@ -90,9 +98,12 @@ def test_eval_opps_spot_columns_exposed():
 def test_seven_asset_universe_pinned_with_15m_prefix():
     """7-asset universe pinned in-script with the 15M-specific ticker prefix.
 
-    Mirrors bot/constants.py:MARKET_PREFIX lines 27-33 (KX<ASSET>15M).
-    The 15M-specific prefix scopes-out hourly + daily markets — F0.5 is a
-    terminal-condition HJB on 15M windows only per umbrella plan-doc § Attack #5.
+    Mirrors `bot.constants.SERIES_TICKERS` (values are `"KXBTC15M"`,
+    `"KXETH15M"`, ..., `"KXBNB15M"`; the LIKE pattern is constructed as
+    `SERIES_TICKERS[asset] + "-%"` — the trailing hyphen separator is
+    appended at query time before the strike suffix). The 15M-specific
+    prefix scopes-out hourly + daily markets — F0.5 is a terminal-condition
+    HJB on 15M windows only per umbrella plan-doc § Attack #5.
     """
     expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
     prefix_map = getattr(gamma, "ASSET_TICKER_PREFIX", None)
@@ -114,11 +125,16 @@ def test_sample_state_at_t_minus_x_excludes_post_event_rows():
     sample_fn = getattr(gamma, "sample_state_at_timestep", None)
     assert sample_fn is not None, "sample_state_at_timestep not yet defined (scaffold-pending)"
 
+    # Synthetic moc rows use the canonical schema columns (yes_bid_cents +
+    # yes_ask_cents). mid is derived inline as (yes_bid + yes_ask) / 2 by
+    # any downstream consumer that needs it — moc table itself does NOT
+    # store mid_cents (see `bot/snapshots/market_observations_snapshotter.py`
+    # `_DDL`).
     rows = sample_fn(
         moc_rows=[
-            {"observation_time": "2026-05-20T09:58:00Z", "mid_cents": 50},
-            {"observation_time": "2026-05-20T09:59:30Z", "mid_cents": 55},
-            {"observation_time": "2026-05-20T10:00:30Z", "mid_cents": 60},
+            {"observation_time": "2026-05-20T09:58:00Z", "yes_bid_cents": 48, "yes_ask_cents": 52},
+            {"observation_time": "2026-05-20T09:59:30Z", "yes_bid_cents": 53, "yes_ask_cents": 57},
+            {"observation_time": "2026-05-20T10:00:30Z", "yes_bid_cents": 58, "yes_ask_cents": 62},
         ],
         window_close="2026-05-20T10:00:00Z",
         timestep_s=60,
@@ -142,10 +158,10 @@ def test_settle_outcome_never_used_as_feature():
     # from post-close data. The function must reject it.
     with pytest.raises(ValueError, match="look-ahead|post.close|label.leak"):
         extract_features(
-            moc_row_at_t_xs={"observation_time": "2026-05-20T09:59:00Z", "mid_cents": 55},
+            moc_row_at_t_xs={"observation_time": "2026-05-20T09:59:00Z", "yes_bid_cents": 53, "yes_ask_cents": 57},
             window_close="2026-05-20T10:00:00Z",
             timestep_s=60,
-            tainted_post_close_row={"observation_time": "2026-05-20T10:00:30Z", "mid_cents": 60},
+            tainted_post_close_row={"observation_time": "2026-05-20T10:00:30Z", "yes_bid_cents": 58, "yes_ask_cents": 62},
         )
 
 
