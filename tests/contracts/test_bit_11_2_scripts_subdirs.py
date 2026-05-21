@@ -148,6 +148,7 @@ SCRIPTS_ROOT_DIR_ALLOWLIST = frozenset(
         "ops",
         "cal_mlp",
         "git_hooks",
+        "research",  # CT-MDP F0.1 (2026-05-20) — falsification spikes
         "__pycache__",
     }
 )
@@ -348,7 +349,7 @@ def _grep_scripts_paths_in(file_paths):
         r"scripts/(\{[^}]+\}|[A-Za-z_0-9][A-Za-z_0-9/]*)\.(?:py|sh)"
     )
     META_PLACEHOLDERS = {"scripts/X.py", "scripts/X.sh"}
-    SUBDIRS = {"audit", "backfill", "ops", "cal_mlp", "git_hooks"}
+    SUBDIRS = {"audit", "backfill", "ops", "cal_mlp", "git_hooks", "research"}
     for fp in file_paths:
         try:
             text = fp.read_text(encoding="utf-8", errors="replace")

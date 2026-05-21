@@ -140,9 +140,9 @@ def test_no_tests_root_test_files():
     """Bit 12.2 invariant — no `test_*.py` directly under tests/.
 
     Sprint 12 Bit 12.2 reorganized tests/ into tier subdirs
-    (unit/integration/contracts/equivalence/regression/hooks). This pin
-    catches a future drift where a file lands at tests/ root and bypasses
-    tier classification.
+    (unit/integration/contracts/equivalence/regression/hooks/research). This
+    pin catches a future drift where a file lands at tests/ root and
+    bypasses tier classification.
     """
     pattern = os.path.join(PROJECT_ROOT, "tests", "test_*.py")
     matches = glob.glob(pattern)

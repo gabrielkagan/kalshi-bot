@@ -86,7 +86,7 @@ operator-invoked.
   modularization)
 - `scripts/` — operator audit + alpha-research + ops scripts
 - `tests/` — pytest suite (tiered: unit / contract / equivalence /
-  integration per Pillar 5)
+  integration / research per Pillar 5)
 - `tests/contracts/public_api.json` — Pillar 1 public-surface
   snapshot (regen via `make api-snapshot-regen`)
 - `agent_docs/` — durable agent-facing docs (tracked in git)

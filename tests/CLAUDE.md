@@ -21,6 +21,7 @@ tests/
   integration/   # Tier 4 — everything else, real DB, broad behavioral suite
   regression/    # Sprint-1 legacy bucket (8 files pinned by test_no_root_test_files.py)
   hooks/         # Test infrastructure (pre-commit hook tests)
+  research/      # Falsification spike tests + cross-system research (paired with scripts/research/)
   fixtures/      # Shared fixture data (non-test files)
 ```
 
@@ -29,6 +30,7 @@ tests/
 - AST guards, public_api snapshots, import-linter contracts → `tests/contracts/`
 - Engine equivalence snapshots → `tests/equivalence/` (Pillar 3 isolation; regen is human-only)
 - Bug-fix regression tests → mirror the feature being tested in `tests/integration/` and name `test_<bug_keyword>_regression`; reserve `tests/regression/` for the 8 Sprint-1 files
+- Falsification spike tests / cross-system research tests → `tests/research/` (paired with the script at `scripts/research/`)
 - Everything else (behavioral, multi-module, real-DB) → `tests/integration/`
 
 ## Run
@@ -47,7 +49,8 @@ the same targets in `.github/workflows/test.yml` + `deploy.yml`.
 | `make test-integration-shard-0` | <30s (~11s actual; ~half the corpus) | Bit-9: pytest-shard `--shard-id=0 --num-shards=2` + xdist. Hash-balanced split of the broad behavioral suite. | Auto-runs as part of `make test`; in CI runs as its own GH job concurrent with shard-1. |
 | `make test-integration-shard-1` | <30s (~11s actual; ~half the corpus) | Bit-9: pytest-shard `--shard-id=1 --num-shards=2` + xdist. | Same — own GH job concurrent with shard-0. |
 | `make test-integration-serial` | <20s (~16s actual) | 11 @serial-marked timing-sensitive tests (subprocess/threading-Barrier/SIGALRM/daemon-thread-log-race) run in a single worker. Bit-5 (CI perf umbrella 86b9zjtzk); count grew via Bit-7 fix-forwards. | Auto-runs as part of `make test`. |
-| `make test` | ~2min (sum of above) | All tiers + serial-marked tests in order, fail-fast on the cheapest. | Before pushing to main. |
+| `make test-research` | varies | Falsification spike tests + cross-system research (paired with `scripts/research/`). NOT in `test-integration` (integration ignores `tests/research/` via `INTEGRATION_IGNORES`); may carry intentional `NotImplementedError` stubs during the scaffold-first phase of a research/falsification Bit per TDD-first discipline. NOT deploy-blocking. | During Phase 0 falsification work. |
+| `make test` | ~2min (sum of above) | All tiers + serial-marked tests in order, fail-fast on the cheapest. Does NOT include `test-research` (intentionally — scaffold stubs would block). | Before pushing to main. |
 
 ### Incremental (testmon)
 
