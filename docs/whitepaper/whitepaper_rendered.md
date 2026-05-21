@@ -107,7 +107,7 @@ These five commitments are surprisingly load-bearing. Most of the unusual archit
                                                   ─→ s3://kalshi-bot-archive/bronze/
 ```
 
-The trading bot and the data collector run as separate systemd units, in separate Python processes, with separate API keys, separate disk paths, and zero shared imports. Both consume the Kalshi WebSocket via a shared *transport-only* library `kalshi_wire/` (RSA-PSS authentication, connect/reconnect logic, frame parsing) — but the trading bot's `bot/feeds/kalshi.py` and the collector's `collector/ws_connection.py` consume it independently. This is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents drift in how Kalshi frames are interpreted across the two pipelines.
+The trading bot and the data collector run as separate systemd units, in separate Python processes, with separate API keys, separate disk paths, and zero shared imports. Both consume the Kalshi WebSocket via a shared *transport-only* library `kalshi_wire/` (RSA-PSS authentication, connect/reconnect logic, frame ingress; frame parsing is opt-in via the `parse_on_demand` kwarg — bot keeps the default `False` and gets parsed frames, collector opts in to `True` post P1-B-brutalist Phase B1 and uses substring scans on the raw bytes instead). The trading bot's `bot/feeds/kalshi.py` and the collector's `collector/ws_connection.py` consume the wire independently. This is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents drift in how Kalshi frames are received at the wire across the two pipelines (byte-identical `Frame.raw` to both — pinned by a differential test).
 
 ## 2.2 Source tree
 

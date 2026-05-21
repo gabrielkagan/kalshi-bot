@@ -448,7 +448,10 @@ class BronzeArchiver:
             tuple (tuples are immutable).
           - ``_handle_subscribe_ack`` does ``self._cmd_id_to_channel.get(cmd_id)``:
             single attribute lookup + single dict.get call, both atomic
-            under the GIL.
+            under the GIL. (Post P1-B-brutalist Phase B1 the method
+            also does ``json.loads(frame.raw)`` when ``frame.parsed is
+            None`` — operates on a local ``raw`` reference, does not
+            touch the lock-guarded attributes.)
         Any future change that iterates these attributes across MULTIPLE
         bytecode ops without snapshotting (e.g., a
         ``for cmd_id, channel in self._cmd_id_to_channel.items()``
