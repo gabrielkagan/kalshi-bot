@@ -172,12 +172,19 @@ def _substring_extract_sid(raw: str) -> Optional[int]:
 # frames within ~30s window; producer ~1000/s outpaced worker ~957/s
 # for the duration, against a 10K cap). 50_000 ≈ ~50s of buffering at
 # typical per-conn load (~100-1000 frames/sec); gives 4.4× margin over
-# the measured peak burst. Worst-case memory: 7 archivers × 50_000 ×
-# ~500B avg frame ≈ 175 MB cumulative — well under the 2 GB MemoryMax
-# cap-raise (2026-05-21). Set high enough to absorb the post-reconnect
-# data flood that Kalshi pushes ~3-4 min after we re-subscribe; low
-# enough that a sustained producer/consumer rate gap still bounds RAM
-# instead of growing unbounded.
+# the measured peak burst. Worst-case memory at CURRENT universe size:
+# 7 archivers × 50_000 × ~500B avg frame ≈ 175 MB cumulative — well
+# under the 2 GB MemoryMax cap-raise (2026-05-21). At 2× universe
+# growth + 1KB/frame average the worst case rises to ~350 MB, which
+# would tighten the MemoryHigh=1600M headroom to ~61 MB margin against
+# the measured 1189 MB baseline — see `kb/decisions/bit-collector-
+# reconnect-drop-elimination-plan.md` §"Risk analysis" for the full
+# 2×-universe scenario + mitigations (peak instrumentation as early
+# warning; followup F1 cron alert; possible further bump to 75_000).
+# Set high enough to absorb the post-reconnect data flood that Kalshi
+# pushes ~3-4 min after we re-subscribe; low enough that a sustained
+# producer/consumer rate gap still bounds RAM instead of growing
+# unbounded.
 _DEFAULT_WRITE_QUEUE_MAXSIZE = 50_000
 
 # Sentinel posted to ``_write_queue`` by ``stop()`` to signal the worker
