@@ -248,7 +248,7 @@ collector/{main_loop,ws_connection,rest_snapshot,writer,uploader,subscription_ma
 kalshi_wire/                   -- shared Kalshi WS transport library (top-level SIBLING to bot/ and collector/, D1.1.5 SHIPPED 2026-05-16, ticket 86b9zdhz2; ZERO bot.* / collector.* imports; consumed by both)
 kalshi_wire/{auth,ws_client}.py
                                -- auth.py: RSA-PSS-SHA256 sign + REST/WS header helpers; ws_client.py: WSClient (asyncio thread + connect/reconnect + silence watchdog + send queue) + Frame dataclass + build_envelope() (D0.3 §2 6-field bronze envelope)
-collector-start.sh             -- wrapper invoked by ops/kalshi-collector.service (D1.5 SHIPPED; parallel to start.sh; sources /home/botuser/.env.collector; `python -m collector`)
+collector-start.sh             -- wrapper invoked by ops/kalshi-collector.service (D1.5 SHIPPED; parallel to start.sh; sources /home/botuser/.env.collector; `python -O -m collector` post P1-A-fu2 86ba1qgbp 2026-05-20 — -O activates P1-A `_VALIDATE_ENVELOPE=__debug__` gate)
 ops/kalshi-collector.service   -- D1.5 systemd unit (SHIPPED 2026-05-16, ticket 86b9ypna4; Nice=10, MemoryHigh=400M, MemoryMax=512M, dedicated EnvironmentFile=/home/botuser/.env.collector — CPUAffinity retired 2026-05-19 ticket 86ba12rv6; MemoryHigh added 2026-05-20 ticket 86ba12rf0)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template

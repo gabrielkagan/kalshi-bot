@@ -131,18 +131,28 @@ def test_sources_dedicated_collector_env_file():
 
 
 def test_exec_python_m_collector():
-    """``exec python3 -m collector`` — NOT `-m bot`, NOT a bare script."""
+    """``exec python3 [flags...] -m collector`` — NOT `-m bot`, NOT a bare script.
+
+    P1-A-fu2 (ticket 86ba1qgbp, 2026-05-20) loosened the python3-to-`-m`
+    portion to allow short flags (e.g., `-O`) between. The strict
+    pin on the `-O` flag itself lives in the sister test
+    `tests/contracts/test_collector_start_sh_uses_O_flag.py::
+    test_python3_invoked_with_O_flag`. This test continues to pin:
+      - exec semantics (bash → python via PID 1 replacement)
+      - module invocation (`-m collector`)
+      - no `-m bot` (sacred-boundary)
+    """
     text = _read()
     assert re.search(
-        r"^exec\s+python3\s+-m\s+collector\b", text, re.M
+        r"^exec\s+python3(\s+-\w+)*\s+-m\s+collector\b", text, re.M
     ), (
-        "Missing `exec python3 -m collector`. The `exec` is what makes "
-        "python3 replace bash as PID 1 of the systemd cgroup — without "
-        "it, signals from systemd hit bash, not python."
+        "Missing `exec python3 [flags...] -m collector`. The `exec` is "
+        "what makes python3 replace bash as PID 1 of the systemd cgroup "
+        "— without it, signals from systemd hit bash, not python."
     )
     # Negative pin: must NOT invoke the bot.
     assert not re.search(
-        r"^exec\s+python3\s+-m\s+bot\b", text, re.M
+        r"^exec\s+python3(\s+-\w+)*\s+-m\s+bot\b", text, re.M
     ), (
         "collector-start.sh execs `python3 -m bot` — that's start.sh's "
         "entrypoint, not the collector's. Sacred-boundary violation "
