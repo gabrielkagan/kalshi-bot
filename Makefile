@@ -88,9 +88,10 @@ CONTRACT_FILES := tests/contracts
 # Integration ignores = unit + contract + equivalence + research + the
 # Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
 # 86b9vfn5r — remove that ignore when the fixture lands). The research
-# ignore (CT-MDP F0.1, 2026-05-20) keeps Phase-0 falsification scaffolds
-# with intentional NotImplementedError stubs out of the deploy-blocking
-# integration tier; operator runs them via `make test-research`.
+# ignore (Phase-0 CT-MDP falsifications: F0.1 2026-05-20, F0.4 2026-05-21,
+# ...) keeps the falsification scaffolds with intentional
+# NotImplementedError stubs out of the deploy-blocking integration tier;
+# operator runs them via `make test-research`.
 INTEGRATION_IGNORES := \
 	$(addprefix --ignore=,$(UNIT_FILES) $(CONTRACT_FILES)) \
 	--ignore=tests/equivalence \
