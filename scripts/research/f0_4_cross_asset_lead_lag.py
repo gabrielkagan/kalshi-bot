@@ -239,9 +239,18 @@ def validate_lead_edge(*, lead_edge_cents: float) -> None:
 
     A laggard mid moving > 25¢ in 30s from a single BTC σ-event is
     implausible (binary range is 0-100) and likely indicates a methodology
-    bug (e.g., comparing across ticker expiries). Surfacing the bug as
-    an ERROR — rather than silently swallowing the outlier event — is
-    the anti-fantasy posture per the plan-doc.
+    bug (e.g., comparing across ticker expiries). This primitive always
+    raises on outliers — it's the unit-test-pinned "anti-fantasy clamp"
+    contract per plan-doc § Method.
+
+    Caller policy on the raise differs from the primitive's contract:
+    the main pipeline (`_per_laggard_analysis`) catches the ValueError
+    and counts the event as an `anti_fantasy_skip` drop (rather than
+    aborting the whole run), then surfaces the outlier rate + first-20
+    event details in the verdict-doc per impl-R1-T1. Direct callers
+    constructing events outside the main pipeline (unit tests / REPL)
+    propagate the raise. See plan-doc § Method anti-fantasy clamp +
+    § Kill threshold (formal) row 3 for the layered contract.
     """
     if abs(lead_edge_cents) > MAX_PLAUSIBLE_EDGE_CENTS:
         raise ValueError(
