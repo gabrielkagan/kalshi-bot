@@ -52,9 +52,17 @@ import pytest
 
 
 def test_bronze_archiver_get_health_snapshot_returns_required_keys(monkeypatch):
-    """Per-archiver snapshot must expose the 7 keys the sidecar aggregator
+    """Per-archiver snapshot must expose the 8 keys the sidecar aggregator
     + the monitor's check_dropped_frames depend on (6 D1.6-fu base keys +
-    `ack_frames_processed` added in D1.3-fu5 as additive backward-compat).
+    `ack_frames_processed` added in D1.3-fu5 as additive backward-compat +
+    `write_queue_peak_size` added in ticket 86ba1xraq 2026-05-21 as
+    additive backward-compat). Schema_version STAYS at 1 — all extensions
+    so far have been additive.
+
+    Existing-key pin uses set-difference (`required - set(snap.keys())`)
+    rather than set-equality so future additive keys don't FAIL this
+    test, only the schema-skew reject test at the bottom of the file
+    bumps when `schema_version` actually changes.
     """
     from collector import ws_connection as wc
 
