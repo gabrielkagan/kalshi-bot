@@ -1190,36 +1190,52 @@ class SettlementTracker:
                 except Exception:
                     logging.warning("tm_sweep_shadow settle failed for %s", ticker, exc_info=True)
 
-        # Weather: fetch actual temps (API calls — after lock released)
-        _wx_dirty = False
+        # Weather: two-phase to avoid holding the shared-conn writer lock across
+        # HTTP latency. Pre-2026-05-21 the inline form (single loop, after-loop
+        # commit) cascaded the daily 11:04-11:07 UTC writer-storm — ticket
+        # 86ba1xdwp. See kb/decisions/settlement-weather-writer-storm-plan-may21.md.
+        _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
+        _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Phase 3a: HTTP-only — no DB writes, so the shared conn never
+        # auto-BEGINs a tx during synchronous fetch_observed_high calls.
+        _wx_observations: list = []  # (opp_id, ticker, _wx_city, _market_date, _obs_high, forecast_mean)
         for (opp_id, ticker, row) in _weather_updates:
             try:
                 _wx_city = row["asset"].replace("_TEMP", "")
                 _market_date = self._parse_weather_market_date(ticker)
-                if _market_date:
-                    _today = datetime.datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    if _market_date < _today:
-                        _wx_eng = getattr(self._ml, "weather_engine", None) if self._ml else None
-                        if _wx_eng:
-                            _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
-                            if _obs_high is not None:
-                                self._state.conn.execute(
-                                    "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
-                                    (_obs_high, opp_id))
-                                _wx_dirty = True
-                                logging.info("weather_observed_temp: %s %s %.1fF",
-                                             _wx_city, _market_date, _obs_high)
-                                forecast_mean = row.get("spot_price")
-                                if forecast_mean:
-                                    _wx_eng._model.update_bias(
-                                        _wx_city, _obs_high, forecast_mean,
-                                        market_date=_market_date)
-                                    logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
-                                                 _wx_city, _market_date, _obs_high, forecast_mean)
+                if not _market_date or _market_date >= _today:
+                    continue
+                if _wx_eng is None:
+                    continue
+                _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
+                if _obs_high is None:
+                    continue
+                forecast_mean = row.get("spot_price")
+                _wx_observations.append(
+                    (opp_id, ticker, _wx_city, _market_date, _obs_high, forecast_mean))
             except Exception as e:
                 logging.warning("weather_observed_temp fetch failed for %s: %s", ticker, e)
-        if _wx_dirty:
-            self._state.conn.commit()
+
+        # Phase 3b: DB-only — per-row commit releases the writer lock before
+        # update_bias's separate-conn INSERT, breaking the cascade with
+        # market_obs_snapshotter / phantom_reconcile / posthoc / save_bias.
+        for (opp_id, ticker, _wx_city, _market_date, _obs_high, forecast_mean) in _wx_observations:
+            try:
+                self._state.conn.execute(
+                    "UPDATE evaluated_opportunities SET wx_actual_high_temp=? WHERE id=?",
+                    (_obs_high, opp_id))
+                self._state.conn.commit()
+                logging.info("weather_observed_temp: %s %s %.1fF",
+                             _wx_city, _market_date, _obs_high)
+                if forecast_mean:
+                    _wx_eng._model.update_bias(
+                        _wx_city, _obs_high, forecast_mean,
+                        market_date=_market_date)
+                    logging.info("weather_bias_update: %s %s actual=%.1fF forecast=%.1fF",
+                                 _wx_city, _market_date, _obs_high, forecast_mean)
+            except Exception as e:
+                logging.warning("weather_observed_temp write failed for %s: %s", ticker, e)
 
         # Backfill wx_actual_high_temp for settled weather entries that missed it
         self._backfill_weather_actual_temps()
