@@ -104,6 +104,18 @@ class CoinbaseFeed:
 
     def __init__(self, persist_path: str = SPOT_BUFFER_PERSIST_PATH):
         self._prices: Dict[str, float] = {}
+        # Bit S.1 (86ba1wrcg, 2026-05-21): per-asset monotonic timestamp of
+        # the last WS tick that wrote `_prices[asset]`. Time base is
+        # `time.monotonic()` (no NTP/leap-second jumps; process-wide clock).
+        # **Atomicity contract**: BOTH `_prices[asset] = price` AND
+        # `_price_ts[asset] = time.monotonic()` are written under a single
+        # `with self._lock:` acquisition in `_on_frame`. Readers via
+        # `get_price_with_ts()` acquire the same lock so they see both
+        # writes atomically or neither — staleness = `now - ts` is
+        # well-defined. Empty until the first WS tick lands per asset.
+        # Spot-staleness umbrella `86ba1wrad` instrumentation — no
+        # behavior change, just observability for downstream S.3 gate.
+        self._price_ts: Dict[str, float] = {}
         self._buffers: Dict[str, deque] = {
             asset: deque(maxlen=PRICE_BUFFER_SIZE) for asset in ASSETS
         }
@@ -315,6 +327,28 @@ class CoinbaseFeed:
         with self._lock:
             return self._prices.get(asset)
 
+    def get_price_with_ts(self, asset: str) -> Optional[Tuple[float, float]]:
+        """Return `(price, last_tick_monotonic_ts)` or None.
+
+        Bit S.1 (86ba1wrcg). Lock-step read of `_prices[asset]` +
+        `_price_ts[asset]`. Returns None when the asset has never
+        received a WS tick. Both values land atomically in the WS
+        frame handler under `self._lock`, so a non-None price implies
+        a non-None timestamp.
+
+        Spot staleness at evaluation = `time.monotonic() - ts`.
+        """
+        with self._lock:
+            price = self._prices.get(asset)
+            if price is None:
+                return None
+            ts = self._price_ts.get(asset)
+            if ts is None:
+                # Defensive: shouldn't happen given lock-step writes, but
+                # honest-NULL the staleness rather than emit a fake ts.
+                return None
+            return (price, ts)
+
     def get_all_prices(self) -> Dict[str, Optional[float]]:
         with self._lock:
             return {a: self._prices.get(a) for a in ASSETS}
@@ -435,6 +469,7 @@ class CoinbaseFeed:
             return
         with self._lock:
             self._prices[asset] = price
+            self._price_ts[asset] = time.monotonic()
 
     # ── Sampler thread (1-second snapshot + periodic persist) ─────────────
 

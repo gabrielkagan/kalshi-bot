@@ -26,18 +26,25 @@ RestartSec=10s
 # now floats both processes across both vCPUs. See
 # kb/decisions/collector-queue-saturation-fix-plan.md for RCA.
 Nice=10
-# MemoryHigh=400M (78% of MemoryMax) — soft cgroup throttle that logs a
+# MemoryHigh=1600M (78% of MemoryMax) — soft cgroup throttle that logs a
 # pressure warning + slows the collector via kernel throttling BEFORE
-# the hard MemoryMax=512M SIGKILL. Pinned by
+# the hard MemoryMax=2048M SIGKILL. Pinned by
 # tests/contracts/test_kalshi_collector_systemd_unit.py.
-# Added 2026-05-20 (umbrella 86ba12rf0): the 2026-05-19 unexplained
-# collector exits at 22:06 / 22:26 / 00:04 UTC correlated with peak
-# memory at 472M / 512M (92%) — possible kernel OOM cascade from
-# combined bot+collector memory pressure on the 2GB VPS. MemoryHigh
-# fires a soft warning at 400M that surfaces in cgroup pressure
-# counters BEFORE the hard kill.
-MemoryHigh=400M
-MemoryMax=512M
+# Originally added 2026-05-20 (umbrella 86ba12rf0) at 400M for the 2GB
+# VPS; raised to 1600M same day (ticket 86ba1h0cb) in lockstep with
+# the MemoryMax 512M → 2048M raise and the droplet resize from
+# s-2vcpu-2gb → s-4vcpu-8gb. Preserves the 78% ratio so the soft
+# throttle still fires meaningfully ahead of the hard kill.
+MemoryHigh=1600M
+# MemoryMax=2048M — raised from 512M on 2026-05-20 (ticket 86ba1h0cb)
+# in lockstep with the s-2vcpu-2gb → s-4vcpu-8gb droplet resize. The
+# 512M cap was sized against D0.2 §3.2's 47 MB/conn × 7-8 conns ≈
+# 376 MB Python footprint on the 2GB box. Post-resize universe growth
+# (705K tickers measured 2026-05-20, vs the runbook's 386K estimate)
+# pushed peak cgroup memory to 513M during the universal-mode boot,
+# crossing the prior 512M cap. The 2048M cap on the 8GB box leaves
+# ~5.5GB physical headroom even with bot + all 4 collectors at cap.
+MemoryMax=2048M
 MemorySwapMax=0
 LimitNOFILE=4096
 
