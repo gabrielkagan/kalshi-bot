@@ -160,6 +160,16 @@ class StateManager:
         # See kb/concepts/feature-engineering-phase1.md.
         self._scan_ms_cache: Dict[str, Dict[str, Any]] = {}
         self._scan_cx_gap_cache: Dict[str, float] = {}
+        # Bit S.1 (86ba1wrcg, 2026-05-21): per-asset Coinbase WS spot
+        # staleness in seconds, computed once per scan tick from
+        # CoinbaseFeed.get_price_with_ts. Read by
+        # insert_evaluated_opportunity to auto-fill spot_staleness_seconds
+        # across ALL 115+ call sites in bot/scanner/__init__.py — mirrors
+        # _scan_cx_gap_cache pattern. Missing entry → NULL (asset wasn't
+        # processed via the Coinbase scan-path `else` branch this tick;
+        # reach: `_pt in (None, "15m", "hourly")` — SPX/weather/sports
+        # route through other engines and skip the cache write).
+        self._scan_spot_staleness_cache: Dict[str, float] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute
@@ -857,6 +867,23 @@ class StateManager:
             ("tm_shadow_kelly_prob", "REAL"),
             ("tm_shadow_kelly_fraction", "REAL"),
             ("tm_shadow_kelly_bound_hit", "TEXT"),
+            # Bit S.1 (86ba1wrcg, 2026-05-21): Coinbase WS spot staleness
+            # at evaluation time. Seconds since the last WS ticker frame
+            # populated CoinbaseFeed._prices[asset]. Populated on every
+            # Coinbase scan-path insert (candidate, decided_contract*,
+            # insufficient_edge, price_out_of_range, silent_spot_none,
+            # all 115+ sites) via the per-asset
+            # `_scan_spot_staleness_cache` auto-fill — same pattern as
+            # `_scan_cx_gap_cache`. NULL on (a) non-Coinbase scan paths
+            # (SPX/weather/sports route through other engines + don't
+            # populate the cache; hourly DOES populate because it falls
+            # through the same Coinbase `else` branch as 15M),
+            # (b) the warmup case where CoinbaseFeed has never seen a
+            # tick for the asset (cache slot popped),
+            # (c) backfill / test callers that pass neither the kwarg
+            # nor the cache. Observability-only — S.3 (ticket
+            # 86ba1wrka under umbrella 86ba1wrad) is the production gate.
+            ("spot_staleness_seconds", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2457,7 +2484,26 @@ class StateManager:
                                      tm_shadow_kelly_ct: Optional[int] = None,
                                      tm_shadow_kelly_prob: Optional[float] = None,
                                      tm_shadow_kelly_fraction: Optional[float] = None,
-                                     tm_shadow_kelly_bound_hit: Optional[str] = None):
+                                     tm_shadow_kelly_bound_hit: Optional[str] = None,
+                                     # Bit S.1 (86ba1wrcg, 2026-05-21): Coinbase
+                                     # WS spot staleness at evaluation. Seconds
+                                     # since the last WS tick populated
+                                     # CoinbaseFeed._prices[asset], measured via
+                                     # `time.monotonic()`. Auto-filled from
+                                     # `_scan_spot_staleness_cache[asset]` so
+                                     # every Coinbase-path insert site
+                                     # (candidate / decided_contract* /
+                                     # insufficient_edge / price_out_of_range /
+                                     # silent_spot_none / all 115+ sites) gets
+                                     # a value without per-call threading.
+                                     # Explicit caller kwarg wins.
+                                     # NULL only for non-Coinbase scan paths
+                                     # (SPX/weather/sports use other engines;
+                                     # hourly shares the Coinbase branch with
+                                     # 15M so hourly rows also carry staleness),
+                                     # warmup (cache slot popped), or backfill
+                                     # /test callers that supply neither input.
+                                     spot_staleness_seconds: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2492,6 +2538,16 @@ class StateManager:
         # Phase 1 cross-exchange gap (per-asset).
         if spot_coinbase_kraken_gap_bps is None and asset is not None:
             spot_coinbase_kraken_gap_bps = self._scan_cx_gap_cache.get(asset)
+        # Bit S.1 (86ba1wrcg, 2026-05-21): auto-fill spot staleness from
+        # per-asset scanner cache. Mirrors the _scan_cx_gap_cache pattern
+        # above — populated once per tick at the Coinbase scan-path site
+        # in bot/scanner/__init__.py (covers `_pt in (None, "15m",
+        # "hourly")`); missing entry → NULL (asset wasn't in the
+        # Coinbase scan path this tick; SPX/weather/sports use other
+        # engines and have no staleness equivalent here). Explicit kwarg
+        # from a caller wins.
+        if spot_staleness_seconds is None and asset is not None:
+            spot_staleness_seconds = self._scan_spot_staleness_cache.get(asset)
         # Per-level orderbook ladder (Apr 25): auto-fill from cache via
         # _get_fresh_ob_ladder (returns None on stale entries — honest).
         if orderbook_levels_json is None:
@@ -2823,8 +2879,9 @@ class StateManager:
                      data_provenance, bot_state_snapshot_json,
                      config_snapshot_id,
                      tm_shadow_kelly_ct, tm_shadow_kelly_prob,
-                     tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
+                     spot_staleness_seconds)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3000,7 +3057,15 @@ class StateManager:
                     tm_shadow_kelly_ct=COALESCE(evaluated_opportunities.tm_shadow_kelly_ct, excluded.tm_shadow_kelly_ct),
                     tm_shadow_kelly_prob=COALESCE(evaluated_opportunities.tm_shadow_kelly_prob, excluded.tm_shadow_kelly_prob),
                     tm_shadow_kelly_fraction=COALESCE(evaluated_opportunities.tm_shadow_kelly_fraction, excluded.tm_shadow_kelly_fraction),
-                    tm_shadow_kelly_bound_hit=COALESCE(evaluated_opportunities.tm_shadow_kelly_bound_hit, excluded.tm_shadow_kelly_bound_hit)
+                    tm_shadow_kelly_bound_hit=COALESCE(evaluated_opportunities.tm_shadow_kelly_bound_hit, excluded.tm_shadow_kelly_bound_hit),
+                    -- Bit S.1 (86ba1wrcg, 2026-05-21): COALESCE preserves
+                    -- the FIRST staleness reading. The scan tick that
+                    -- emits the candidate row captures the freshest
+                    -- decision-time value; any subsequent rejection/
+                    -- shadow UPSERT for the same (ticker, filter_stage,
+                    -- side) tuple should NOT overwrite with a later
+                    -- read. (Mirrors config_snapshot_id pattern.)
+                    spot_staleness_seconds=COALESCE(evaluated_opportunities.spot_staleness_seconds, excluded.spot_staleness_seconds)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3063,7 +3128,8 @@ class StateManager:
                   data_provenance, bot_state_snapshot_json,
                   config_snapshot_id,
                   tm_shadow_kelly_ct, tm_shadow_kelly_prob,
-                  tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit))
+                  tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
+                  spot_staleness_seconds))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.

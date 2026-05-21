@@ -206,6 +206,28 @@ insert_rejection → swallow. Pinned by
   `_DEFAULT_LOOKBACK_DAYS` must remain strictly less than the
   snapshotter's `DEFAULT_RETENTION_DAYS` (pinned by
   `tests/contracts/test_market_obs_retention_lockstep.py`).
+- **Two-phase weather settlement loop in
+  `bot/settlement.py::SettlementTracker._poll_evaluated_opportunities`
+  (ticket 86ba1xdwp, 2026-05-21).** The weather phase iterates settled
+  weather brackets, calls Open-Meteo `fetch_observed_high()` per row
+  (synchronous HTTP, 1-5s), UPDATEs `wx_actual_high_temp` on the shared
+  `StateManager.conn`, and calls `WeatherProbabilityModel._save_bias`
+  which opens its OWN sqlite3 connection. Pre-fix the loop ran a single
+  pass with an after-loop commit: the shared conn auto-BEGINs a tx on
+  the first UPDATE and holds the writer lock continuously across every
+  HTTP call until the after-loop commit. `_save_bias`'s separate conn
+  then busy-times-out at 10s, and `market_obs_snapshotter` /
+  `phantom_reconcile_monitor` / `CALMLP_POSTHOC` cascade behind. The
+  fix splits into Phase 3a (HTTP-only — collect tuples, NO DB writes)
+  and Phase 3b (DB-only — per-row UPDATE + `self._state.conn.commit()`
+  + `update_bias` AFTER the commit), so the shared conn writer lock
+  is held only during the tight UPDATE+commit window (~10-50ms per row)
+  instead of N×HTTP latency. Pinned by
+  `tests/contracts/test_settlement_weather_writer_lock_phase3.py`
+  (AST guard: two separate for-loops, no fetch+update_bias mix, per-row
+  commit present, `_wx_dirty` retired) and
+  `tests/integration/test_settlement_weather_writer_storm_regression.py`
+  (behavioral: contention probe sees max-wait < 250ms during the loop).
 
 ## Band-calibrated sizing (P4.1)
 
@@ -287,6 +309,67 @@ Splitting → new column gets silently dropped at write time (the prior
 a tracked env var or constant changes mid-process, the current snapshot
 becomes stale; Phase-2 adds a periodic re-hash + INSERT OR IGNORE per scan
 tick if the hash changed.
+
+## `spot_staleness_seconds` schema chain (Bit S.1, ticket 86ba1wrcg, 2026-05-21)
+
+Per-asset Coinbase WS spot staleness measured at scan-tick evaluation time
+— observability for downstream Bit S.3 (production gate, ticket
+`86ba1wrka` under umbrella `86ba1wrad`).
+
+The cache-driven auto-fill pattern (mirrors `_scan_cx_gap_cache`) covers
+the 115+ `insert_evaluated_opportunity` call sites without per-site kwarg
+threading. Schema-chain sites that ship in ONE commit:
+
+1. `bot/feeds/coinbase.py` — `__init__` adds `self._price_ts: Dict[str, float]`;
+   the WS frame handler `_on_frame` writes `_price_ts[asset] = time.monotonic()`
+   in the SAME `with self._lock:` block as `_prices[asset] = price`
+   (atomicity contract); new method `get_price_with_ts(asset)` returns
+   `Optional[Tuple[float, float]]`.
+2. `bot/state.py::__init__` — `self._scan_spot_staleness_cache: Dict[str, float] = {}`
+   (per-asset, populated by scanner each tick, read by
+   `insert_evaluated_opportunity` for auto-fill).
+3. `bot/state.py::_create_tables` migration loop — appends
+   `("spot_staleness_seconds", "REAL")` ALTER. AFTER `_calmlp_migrate_schema`
+   reserved cids, so the column lands at cid=141 (between
+   `tm_shadow_kelly_bound_hit`=140 and `cal_mlp_p_mean`=142).
+4. `bot/state.py::insert_evaluated_opportunity` — kwarg
+   `spot_staleness_seconds: Optional[float] = None`; INSERT column +
+   VALUES placeholder + value-tuple position; auto-fill block
+   `if spot_staleness_seconds is None and asset is not None:
+   spot_staleness_seconds = self._scan_spot_staleness_cache.get(asset)`;
+   COALESCE in ON CONFLICT DO UPDATE so the FIRST staleness reading
+   survives subsequent UPSERTs (decision-time freshness preserved).
+5. `bot/scanner/__init__.py` — the Coinbase scan-path `else` branch
+   inside the per-window asset loop in `scan()` (reach:
+   `_pt in (None, "15m", "hourly")` — SPX/weather are excluded earlier
+   in the if/elif chain; sports run in a separate engine) replaces
+   `self._feed.get_price(asset)` with
+   `_spot_pair = self._feed.get_price_with_ts(asset)` and writes
+   `self._state._scan_spot_staleness_cache[asset] = spot_staleness_seconds`
+   (or pops the slot on warmup-NULL — never auto-fill a stale prior
+   tick's reading against a fresh decision). Hourly markets pick up
+   staleness too because they share this branch with 15M.
+6. `tests/fixtures/state_db_schema_baseline.txt` — bump
+   `evaluated_opportunities` from 148 → 149 cols; insert
+   `spot_staleness_seconds REAL` at cid=141 (re-numbered cal_mlp_*
+   downstream by +1).
+7. `tests/contracts/test_spot_staleness_instrumentation.py` — 19
+   contract pins (AST + behavioral) covering: init dict + method
+   signature + get_price_with_ts behavior (none + tuple) +
+   get_price backward-compat + WS frame lock-step + schema column +
+   column type + signature kwarg + persist round-trip + default NULL +
+   scanner get_price_with_ts call site + scanner kwarg pass +
+   silent_spot_none regression + cache init + cache auto-fill +
+   explicit-kwarg-wins + scanner cache write + on_frame behavioral.
+8. `agent_docs/db_schema.md` — entry under `evaluated_opportunities`.
+
+Splitting → staleness data goes silently NULL on whichever site got
+missed. S.1 R1 fix-up 2026-05-21 caught this exact class: initial
+implementation only updated the `silent_spot_none` site, and the
+24h-soak query would have returned all-NULL on candidate/decided rows.
+Per-asset cache + auto-fill closes the class. Precedent for the cache
+pattern: `_scan_cx_gap_cache` (per-asset Coinbase-Kraken gap, Apr 23
+phase-1 features).
 
 ## Engine → CalEngine wiring (one-commit rule)
 
