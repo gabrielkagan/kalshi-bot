@@ -695,13 +695,19 @@ class WSClient:
                     exc_info=True)
 
     def _handle_raw_frame(self, raw: str) -> None:
-        """Parse a raw WS frame, update wire-level watchdog state, and
-        dispatch to the consumer's ``on_frame``.
+        """Parse a raw WS frame (unless ``parse_on_demand=True``), update
+        wire-level watchdog state, and dispatch to the consumer's
+        ``on_frame``.
 
         Watchdog ordering (Apr-24 silence-watchdog fix — load-bearing):
         ``_last_msg_ts`` is set BEFORE invoking the consumer callback.
         Any message from the server — even an error or unknown type we
         don't dispatch — proves the WS session is healthy.
+
+        Under ``parse_on_demand=True`` (collector path post P1-B-brutalist
+        Phase B1) ``json.loads`` is SKIPPED — Frame is constructed with
+        ``parsed/msg_type/sid/seq=None`` regardless of payload contents.
+        Watchdog + dispatch + drain semantics are unchanged.
         """
         now = time.time()
         with self._state_lock:
