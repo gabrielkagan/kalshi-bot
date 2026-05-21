@@ -24,6 +24,26 @@ Five separate database contention incidents across March 2-16, 2026. Multiple th
 **Root cause:** 91 individual `conn.commit()` calls per cycle, one per row. Each commit acquires and releases the write lock, multiplying the contention window. supabase_sync runs 165 queries every 10s -- the collision rate was enormous.
 **Fix:** Accumulated all writes, single `conn.commit()` at end of batch. Rule: never commit inside a loop -- always batch.
 
+**Carveout (2026-05-21, ticket 86ba1xdwp — settlement weather writer-storm).**
+The "never commit inside a loop" rule applies when the loop body is FAST
+(CPU-only / local DB work). When the loop body contains slow synchronous
+I/O — specifically the Phase 3 weather sub-block of
+`SettlementTracker._poll_evaluated_opportunities`, which interleaves
+Open-Meteo `fetch_observed_high()` HTTP calls (1-5s each) with
+`UPDATE evaluated_opportunities SET wx_actual_high_temp=...` writes — a
+single end-of-loop commit holds the writer lock continuously across all
+HTTP latency and busy-times-out every separate-conn writer in the bot
+(`weather_engine._save_bias`, `market_obs_snapshotter`,
+`phantom_reconcile_monitor`, `CALMLP_POSTHOC`). The Bit 86ba1xdwp fix
+splits the weather phase into Phase 3a (HTTP-only, collect) and
+Phase 3b (DB-only, per-row UPDATE + commit + bias update). The per-row
+commit is REQUIRED in that sub-block to release the lock between rows
+and is the OPPOSITE of Incident 3's batch-commit rule. The
+Phase 2 fast-DB-writes block in the same method still follows the
+batch rule (≤50-row chunks). Pinned by
+`tests/contracts/test_settlement_weather_writer_lock_phase3.py` +
+`tests/integration/test_settlement_weather_writer_storm_regression.py`.
+
 ## Incident 4: WAL Checkpoint TRUNCATE Deadlock (Mar 16)
 **Symptom:** 11,258 "database is locked" errors in 12 hours.
 **Root cause:** `PRAGMA wal_checkpoint(TRUNCATE)` requires an exclusive lock that blocks ALL readers and writers. Deadlock triangle: checkpoint waits for supabase_sync reader to finish, reader holds shared lock, settlement writer waits for checkpoint's exclusive lock. supabase_sync runs 192 SELECTs every 30s -- TRUNCATE could never acquire exclusive access cleanly.
@@ -36,7 +56,7 @@ Five separate database contention incidents across March 2-16, 2026. Multiple th
 
 ## Permanent Rules (from these incidents)
 1. Every `sqlite3.connect()` MUST include `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=10000`
-2. Never `conn.commit()` inside a loop -- accumulate writes, commit once
+2. Never `conn.commit()` inside a loop -- accumulate writes, commit once (carveout: see Incident 3 note for the slow-I/O-in-loop class introduced by Bit 86ba1xdwp 2026-05-21)
 3. Never use `wal_checkpoint(TRUNCATE)` -- use `PASSIVE` only
 4. Keep write batches <=50 rows per commit
 5. Cross-thread connections MUST use `check_same_thread=False`
