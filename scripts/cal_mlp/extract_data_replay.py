@@ -9,7 +9,7 @@ Why a separate module
 demands 32 source columns (REQUIRED_SOURCE_COLS) — most are bot-state
 features (market_price, NBBO, vol_regime, momentum, balance, depth, etc.).
 The Phase 2 replay backfill table `historical_replay_calmlp` (Mac-only,
-written by `scripts/backfill/hype_doge_replay_backfill.py`, ticket
+written by `scripts/backfill/crypto_replay_backfill.py`, ticket
 `86b9wy7v3`, harness shipped at `fe75cf0`) has 20 columns post-P2.3.b-fu2
 (19 pre-fu2 + `threshold REAL` added 2026-05-13 ticket `86b9xtam7` to preserve
 sub-cent strike precision for DOGE) by design because the harness explicitly
@@ -201,7 +201,7 @@ REPLAY_REQUIRED_SOURCE_COLS = (
 # is NULL (HYPE legacy path stays intact).
 REPLAY_OPTIONAL_SOURCE_COLS = ('threshold',)
 
-REPLAY_ASSET_CHOICES = ('HYPE', 'DOGE')
+REPLAY_ASSET_CHOICES = ('HYPE', 'DOGE', 'BNB')
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +341,7 @@ def _check_schema(conn: sqlite3.Connection, db_path: str) -> set[str]:
     if not cols:
         raise Phase2SchemaError(
             f"{REPLAY_TABLE} table missing in {db_path}. Was Phase 2 backfill "
-            f"(scripts/backfill/hype_doge_replay_backfill.py) run against this DB?"
+            f"(scripts/backfill/crypto_replay_backfill.py) run against this DB?"
         )
     missing = [c for c in REPLAY_REQUIRED_SOURCE_COLS if c not in cols]
     if missing:

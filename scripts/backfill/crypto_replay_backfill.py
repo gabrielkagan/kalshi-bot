@@ -1,12 +1,13 @@
-"""86b9wy7v3 Phase 2 — HYPE/DOGE prediction-pipeline replay backfill.
+"""86b9wy7v3 Phase 2 — HYPE/DOGE/BNB prediction-pipeline replay backfill.
 
-Pulls historical Kalshi KX{HYPE,DOGE}15M settled markets + historical 1-min
-spot klines (Bybit for HYPE, Binance.com for DOGE), runs the bot's
-ProbabilityEngine cascade against each market's open_time evaluation moment,
-pairs the model output with the realized YES/NO settlement, and writes to a
-new ``historical_replay_calmlp`` table. Output is consumed by sister ticket
-``86b9wy15n`` (calibration health check) which is sample-size-blocked on the
-2-day T1 live shadow corpus.
+Pulls historical Kalshi KX{HYPE,DOGE,BNB}15M settled markets + historical 1-min
+spot klines (Coinbase Exchange — Bybit/Binance.com geo-blocked from US), runs
+the bot's ProbabilityEngine cascade against each market's open_time evaluation
+moment, pairs the model output with the realized YES/NO settlement, and writes
+to ``historical_replay_calmlp``. Output is consumed by the cal_mlp v1.1 retrain
+umbrella (`86ba0jmyq`) — Bit F covers BNB onboarding (`86ba1wpck`), Bit G the
+HYPE/DOGE corpus extend (`86ba1wpgf`), Bit H the head-to-head verdict
+(`86ba1wpjp`).
 
 Phase 1 (POSITIVE) earned the build budget: 4,911 pre-T1 settled markets per
 asset (Mar 18 → May 10), 21× the live T1 corpus. See
@@ -14,13 +15,20 @@ asset (Mar 18 → May 10), 21× the live T1 corpus. See
 
 Architecture (load-bearing — see test ``tests/integration/test_hype_doge_replay_backfill.py``):
 
-- NEW table ``historical_replay_calmlp`` (NOT writing to evaluated_opportunities
+- ``historical_replay_calmlp`` table (NOT writing to evaluated_opportunities
   — that would contaminate production audits + Wilson CIs).
 - PK ``(ticker, evaluation_time)`` for idempotent INSERT OR REPLACE re-runs.
-- CHECK constraints on ``result`` ∈ {'yes','no'} and ``asset`` ∈ {'HYPE','DOGE'}
-  (widen in the same commit if Phase 2.5 expands scope).
+- CHECK constraints on ``result`` ∈ {'yes','no'} and ``asset`` ∈
+  {'HYPE','DOGE','BNB'} (BNB added Bit F 2026-05-21).
 - ``data_provenance='replay_phase2_v1'`` stamps every row so consumers can
   filter / re-backfill if the harness changes.
+- ``spot_staleness_seconds`` (Bit F, 2026-05-21): per-row AUDIT column —
+  seconds between the warmup-tail candle's open_ts and the eval_ts. NOT a
+  recipe feature; ``compute_cfg_fp_replay`` rotates from the
+  pre-Bit-F `9347942aaba71146` via the BNB-key addition to ASSET_FLOORS_REPLAY
+  (NOT via this audit column — confirmed by `tests/contracts/test_p2_1_a_3_corpus_snapshots.py`).
+  Captures Coinbase 1-min REST gap regime; BNB has 34% trade-less minutes,
+  HYPE 10%, DOGE <1%. See `kb/decisions/bit-f-bnb-replay-backfill-plan.md`.
 
 Methodology gotchas (DO NOT VIOLATE):
 
@@ -87,8 +95,10 @@ from bot.helpers.derived_features import (  # noqa: E402
 REPLAY_TABLE = "historical_replay_calmlp"
 REPLAY_PROVENANCE = "replay_phase2_v1"
 
-# Phase 2 v1 scope. Widen CHECK in the same commit if expanding.
-ASSETS = ("HYPE", "DOGE")
+# Bit F (2026-05-21, ticket 86ba1wpck) widened from ("HYPE","DOGE") → 3-asset.
+# Widen CHECK in `ensure_schema()` lock-step + the standalone migration script
+# at scripts/ops/migrate_replay_table_bit_f.py.
+ASSETS = ("HYPE", "DOGE", "BNB")
 
 # Vol warmup window. Live convention is 15-min duration × 5-sec ticks =
 # 180 samples (`bot/engines/volatility.py:129` deque(maxlen=VOL_WINDOW_15MIN)).
@@ -137,7 +147,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS {REPLAY_TABLE} (
             ticker TEXT NOT NULL,
             evaluation_time TEXT NOT NULL,
-            asset TEXT NOT NULL CHECK (asset IN ('HYPE','DOGE')),
+            asset TEXT NOT NULL CHECK (asset IN ('HYPE','DOGE','BNB')),
             strike_cents INTEGER,
             threshold REAL,
             close_time TEXT,
@@ -151,6 +161,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             hour_cos REAL,
             prob_breakeven_gap REAL,
             sigma_winsorize REAL,
+            spot_staleness_seconds REAL,
             result TEXT NOT NULL CHECK (result IN ('yes','no')),
             settlement_value INTEGER,
             data_provenance TEXT NOT NULL,
@@ -159,23 +170,31 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Migration path: pre-fu2 DBs have the table without `threshold` column.
-    # SQLite's `ALTER TABLE ADD COLUMN` is idempotent here only via the
-    # explicit `PRAGMA table_info` probe (the `IF NOT EXISTS` clause on
-    # ADD COLUMN landed in 3.35.0+; we target the older 3.x SQLite shipped
-    # with system Pythons too). Race-safe via the `duplicate column` catch:
-    # the contracted use case is a single Mac-side backfill process, but a
-    # concurrent re-entry between probe and ALTER would otherwise raise.
+    # Idempotent ADD COLUMN migrations for older schemas. SQLite's
+    # `ALTER TABLE ADD COLUMN` lacks `IF NOT EXISTS` in pre-3.35.0 system
+    # Pythons; explicit PRAGMA probe + `duplicate column` catch keeps the
+    # call race-safe.
     existing_cols = {
         row[1]
         for row in conn.execute(f"PRAGMA table_info({REPLAY_TABLE})").fetchall()
     }
-    if "threshold" not in existing_cols:
-        try:
-            conn.execute(f"ALTER TABLE {REPLAY_TABLE} ADD COLUMN threshold REAL")
-        except sqlite3.OperationalError as e:
-            if "duplicate column" not in str(e).lower():
-                raise
+    for new_col, ddl in (
+        ("threshold", "REAL"),
+        # Bit F (2026-05-21, ticket 86ba1wpck) — spot staleness audit column.
+        # Note: a pre-Bit-F asset CHECK still rejects BNB inserts; the
+        # standalone migration at scripts/ops/migrate_replay_table_bit_f.py
+        # widens the CHECK (SQLite cannot ALTER a CHECK constraint in-place,
+        # so the migration must run BEFORE the first BNB INSERT).
+        ("spot_staleness_seconds", "REAL"),
+    ):
+        if new_col not in existing_cols:
+            try:
+                conn.execute(
+                    f"ALTER TABLE {REPLAY_TABLE} ADD COLUMN {new_col} {ddl}"
+                )
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
     conn.commit()
 
 
@@ -295,6 +314,13 @@ def replay_market(
     warmup = ticks[lo_idx:hi_idx]
     spot_at_eval = warmup[-1][1] if warmup else None
     blended_rv = _per_5s_vol_from_ticks(warmup, interval_secs=tick_interval_secs)
+    # Bit F (2026-05-21, ticket 86ba1wpck) — audit column. Bound by warmup
+    # search window (≤ WARMUP_SECS=1800); NULL when no warmup tick found
+    # (row also drops spot_at_eval / blended_rv to None, gets honest-NULLed
+    # by the cal_mlp pipeline downstream).
+    spot_staleness_seconds: Optional[float] = (
+        float(eval_ts - warmup[-1][0]) if warmup else None
+    )
 
     # ── ProbabilityEngine cascade (raw + calibrated; production code path) ──
     raw_prob: Optional[float] = None
@@ -376,9 +402,10 @@ def replay_market(
             spot_at_evaluation, sigma_at_evaluation,
             hour_sin, hour_cos,
             prob_breakeven_gap, sigma_winsorize,
+            spot_staleness_seconds,
             result, settlement_value,
             data_provenance, replay_run_ts
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             market["ticker"],
@@ -397,6 +424,7 @@ def replay_market(
             hour_cos,
             prob_breakeven_gap,
             sigma_winsorize_val,
+            spot_staleness_seconds,
             result,
             settlement_value,
             REPLAY_PROVENANCE,
@@ -453,15 +481,15 @@ def fetch_kalshi_settled_markets(
 def fetch_spot_klines(
     asset: str, start_ts: int, end_ts: int
 ) -> list[tuple[int, float]]:
-    """Fetch 1-min spot klines for HYPE/DOGE from Coinbase over ``[start_ts, end_ts]``.
+    """Fetch 1-min spot klines for HYPE/DOGE/BNB from Coinbase Exchange.
 
     Coinbase Exchange `/products/{asset}-USD/candles` is the canonical source:
     - Available from US (Bybit + Binance.com geo-block from Mac).
-    - Matches the bot's PRIMARY live feed (``bot/constants.py:700-701`` —
-      HYPE-USD/DOGE-USD verified live on Coinbase Exchange).
+    - Matches the bot's PRIMARY live feed (``bot/constants.py`` — *-USD
+      symbols verified live on Coinbase Exchange for all 3 assets).
 
     Args:
-        asset: "HYPE" or "DOGE"
+        asset: "HYPE", "DOGE", or "BNB" (Bit F added BNB)
         start_ts: window start (Unix epoch seconds, inclusive)
         end_ts:   window end (Unix epoch seconds, inclusive)
 
@@ -703,7 +731,8 @@ def _floor_strike_to_db_fields(
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Phase 2 HYPE/DOGE replay backfill (86b9wy7v3)."
+        description="Phase 2 HYPE/DOGE/BNB replay backfill — "
+        "BNB onboarded Bit F (86ba1wpck, 2026-05-21)."
     )
     parser.add_argument("--db", required=True, help="state.db path")
     parser.add_argument(

@@ -51,7 +51,9 @@ FEATURES_PY = CAL_MLP / "features.py"
 
 SIX_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"})
 PRODUCTION_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP"})
-REPLAY_ASSETS = frozenset({"HYPE", "DOGE"})
+# Bit F (2026-05-21, ticket 86ba1wpck) widened replay recipe to include BNB
+# (ASSET_FLOORS_REPLAY['BNB']=75). The replay-namespace anchor must mirror.
+REPLAY_ASSETS = frozenset({"HYPE", "DOGE", "BNB"})
 
 NAMESPACE_PRODUCTION = "v1.1_production"
 NAMESPACE_REPLAY = "replay_v1"
@@ -180,7 +182,7 @@ def test_resolve_recipe_replay_namespace():
         f"{tuple(features.CONT_FEATURE_COLS_REPLAY)}"
     )
     # Load-bearing exclusions (RCA F1 from P2.1.a-3 session resume + the
-    # `Methodology gotchas` section of hype_doge_replay_backfill.py).
+    # `Methodology gotchas` section of crypto_replay_backfill.py).
     for excluded in ("market_price", "prob_breakeven_gap",
                      "seconds_to_close", "time_decayed_proximity"):
         assert excluded not in cont_cols, (

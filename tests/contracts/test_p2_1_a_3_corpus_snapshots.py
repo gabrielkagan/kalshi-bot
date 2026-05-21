@@ -85,7 +85,10 @@ _PINNED_CFG_FP_ABLATION = "1969b12c6c0c39bf"
 #   - replay_phase2_v1 provenance
 # Drift-detector — any change to the replay recipe shifts this hash and
 # trips test_p2_1_a_3_compute_cfg_fp_replay_pinned.
-_PINNED_CFG_FP_REPLAY = "9347942aaba71146"
+# Bit F (2026-05-21, ticket 86ba1wpck) rotated from `9347942aaba71146` via
+# the ASSET_FLOORS_REPLAY['BNB']=75 addition. The pre-Bit-F value is
+# captured in `kb/decisions/bit-f-bnb-replay-backfill-plan.md` for audit.
+_PINNED_CFG_FP_REPLAY = "ea9c30477f844afa"
 
 
 PRODUCTION_ASSETS = ("BTC", "ETH", "SOL", "XRP")

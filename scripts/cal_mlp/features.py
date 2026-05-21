@@ -106,6 +106,10 @@ ASSET_FLOORS_EXT = {
 ASSET_FLOORS_REPLAY = {
     'HYPE': 75,
     'DOGE': 75,
+    # Bit F (2026-05-21, ticket 86ba1wpck) — BNB added to replay recipe.
+    # Rotates cfg_fp_replay from `9347942aaba71146` → new fingerprint;
+    # pin captured in tests/contracts/test_p2_1_a_3_corpus_snapshots.py.
+    'BNB': 75,
 }
 
 
@@ -424,7 +428,7 @@ def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
 # the 32 REQUIRED_SOURCE_COLS in extract_data.py; most bot-state features
 # (market_price, vol_regime, z_score, momentum/realized-vol, NBBO, balance,
 # strategy, side) are honest-NULL on replay rows by design (see
-# scripts/backfill/hype_doge_replay_backfill.py docstring "Methodology
+# scripts/backfill/crypto_replay_backfill.py docstring "Methodology
 # gotchas"). Two production-recipe features are 100% NULL in replay:
 #   - market_price        (replay's `predict()` uses entry_price_cents=0
 #                          sentinel; `market_price` not stored)

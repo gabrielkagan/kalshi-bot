@@ -24,7 +24,7 @@ Site map (verified 2026-05-12, post-Bit-9.3-iii.c which deleted bot/_impl.py):
     bot/engines/sports_engine.py           # 2 call sites
     scripts/backfill/backfill_extended_features.py
     scripts/backfill/wave1_derived_cols.py  # B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill
-    scripts/backfill/hype_doge_replay_backfill.py  # Phase 2 86b9wy7v3 2026-05-12: per-market replay_market() calls compute_hour_sin_cos + compute_derived_features + apply_sigma_winsor on historical_replay_calmlp rows
+    scripts/backfill/crypto_replay_backfill.py  # Phase 2 86b9wy7v3 2026-05-12: per-market replay_market() calls compute_hour_sin_cos + compute_derived_features + apply_sigma_winsor on historical_replay_calmlp rows
 
   Canonical helpers:
     bot/helpers/derived_features.py::compute_derived_features
@@ -361,11 +361,11 @@ def test_integration_py_has_canonical_helper_call_site():
 # ─────────────────────────────────────────────────────────────────────
 
 
-REPLAY_BACKFILL_PY = REPO_ROOT / "scripts" / "backfill" / "hype_doge_replay_backfill.py"
+REPLAY_BACKFILL_PY = REPO_ROOT / "scripts" / "backfill" / "crypto_replay_backfill.py"
 
 
 def test_replay_backfill_calls_canonical_hour_helper():
-    """``scripts/backfill/hype_doge_replay_backfill.py`` must Call
+    """``scripts/backfill/crypto_replay_backfill.py`` must Call
     ``compute_hour_sin_cos`` (not inline `sin/cos(...pi...24...)`).
 
     Mirrors ``test_integration_py_has_canonical_helper_call_site``'s
@@ -420,7 +420,7 @@ def test_replay_backfill_calls_canonical_hour_helper():
 
 
 def test_replay_backfill_calls_canonical_derived_features():
-    """``scripts/backfill/hype_doge_replay_backfill.py`` must Call
+    """``scripts/backfill/crypto_replay_backfill.py`` must Call
     ``compute_derived_features`` (not inline sigma/breakeven_gap math)."""
     if not REPLAY_BACKFILL_PY.is_file():
         pytest.fail(

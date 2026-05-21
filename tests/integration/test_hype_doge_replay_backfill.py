@@ -1,6 +1,6 @@
 """86b9wy7v3 Phase 2 — HYPE/DOGE shadow backfill via prediction-pipeline replay.
 
-Pins the contract for `scripts/backfill/hype_doge_replay_backfill.py`:
+Pins the contract for `scripts/backfill/crypto_replay_backfill.py`:
 
 - NEW table `historical_replay_calmlp` schema (cols + PK + CHECK constraints).
 - PRIMARY KEY `(ticker, evaluation_time)` with INSERT OR REPLACE idempotency.
@@ -30,7 +30,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-HARNESS_SCRIPT = REPO_ROOT / "scripts" / "backfill" / "hype_doge_replay_backfill.py"
+HARNESS_SCRIPT = REPO_ROOT / "scripts" / "backfill" / "crypto_replay_backfill.py"
 
 # Canonical helpers — the harness MUST call these (lock-step contract).
 sys.path.insert(0, str(REPO_ROOT))
@@ -113,14 +113,14 @@ def test_harness_script_exists():
     assert HARNESS_SCRIPT.is_file(), (
         f"Harness script not found at {HARNESS_SCRIPT}. "
         "Phase 2 ticket 86b9wy7v3 must ship "
-        "scripts/backfill/hype_doge_replay_backfill.py."
+        "scripts/backfill/crypto_replay_backfill.py."
     )
 
 
 def test_harness_exposes_api():
     """The harness must expose `replay_market`, `ensure_schema`, and the
     constants `REPLAY_PROVENANCE` + `REPLAY_TABLE`."""
-    from scripts.backfill import hype_doge_replay_backfill as h
+    from scripts.backfill import crypto_replay_backfill as h
     assert hasattr(h, "replay_market"), "missing replay_market()"
     assert hasattr(h, "ensure_schema"), "missing ensure_schema()"
     assert getattr(h, "REPLAY_PROVENANCE", None) == REPLAY_PROVENANCE
@@ -134,7 +134,7 @@ def test_table_created_with_expected_columns(tmp_path: Path):
     """`ensure_schema()` creates `historical_replay_calmlp` with the 19 REQUIRED
     cols (subset check; post-P2.3.b-fu2 the table has 20 cols total with the
     added `threshold REAL`)."""
-    from scripts.backfill.hype_doge_replay_backfill import ensure_schema
+    from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
     ensure_schema(conn)
@@ -150,7 +150,7 @@ def test_table_created_with_expected_columns(tmp_path: Path):
 def test_primary_key_is_ticker_evaluation_time(tmp_path: Path):
     """PK must be composite (ticker, evaluation_time) — supports INSERT OR REPLACE
     idempotency on multi-evaluation replay (one row per evaluation moment per market)."""
-    from scripts.backfill.hype_doge_replay_backfill import ensure_schema
+    from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
     ensure_schema(conn)
@@ -167,7 +167,7 @@ def test_primary_key_is_ticker_evaluation_time(tmp_path: Path):
 
 def test_result_check_constraint_rejects_invalid(tmp_path: Path):
     """`result` column must be CHECK-constrained to {'yes', 'no'} only."""
-    from scripts.backfill.hype_doge_replay_backfill import ensure_schema
+    from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
     ensure_schema(conn)
@@ -186,7 +186,7 @@ def test_asset_check_constraint_rejects_unknown(tmp_path: Path):
     If a future phase widens the replay to BTC/ETH/SOL/XRP, the CHECK gets
     widened in the same commit as the harness change (this guard catches
     accidental writes from other assets via copy-paste reuse)."""
-    from scripts.backfill.hype_doge_replay_backfill import ensure_schema
+    from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
     ensure_schema(conn)
@@ -206,7 +206,7 @@ def test_asset_check_constraint_rejects_unknown(tmp_path: Path):
 def test_replay_market_writes_one_row(tmp_path: Path, asset: str):
     """`replay_market(conn, market, ticks)` writes exactly one row to
     `historical_replay_calmlp` with the expected provenance + asset/result echo."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )
@@ -236,7 +236,7 @@ def test_replay_market_writes_one_row(tmp_path: Path, asset: str):
 
 def test_idempotent_insert_or_replace(tmp_path: Path):
     """Re-running `replay_market` on the same market does NOT duplicate the row."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )
@@ -270,7 +270,7 @@ def test_hour_sin_cos_matches_canonical(tmp_path: Path):
     `math.sin(2*pi*h/24)` written directly) breaks parity with the live-write
     distribution and re-opens the train/serve-skew surface.
     """
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )
@@ -310,7 +310,7 @@ def test_sigma_winsorize_clamps_at_cap(tmp_path: Path):
 
     Construct inputs where raw sigma > 25 (spot far from strike, tiny vol)
     so the canonical-helper clamp fires."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )
@@ -351,7 +351,7 @@ def test_prob_breakeven_gap_honest_null_v1(tmp_path: Path):
     (lock-step). The honest-NULL is acceptable because the sister 86b9wy15n
     calibration health check only needs (calibrated_prob, result) pairs —
     not the gap feature."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )
@@ -388,7 +388,7 @@ def test_warmup_window_is_bounded(tmp_path: Path):
     The replay's `sigma_at_evaluation` should reflect the second half
     only — if it reflects the first half, the bound was leaky.
     """
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         WARMUP_SECS,
         ensure_schema,
         replay_market,
@@ -446,7 +446,7 @@ def test_settlement_value_encodes_result(tmp_path: Path):
     (the YES-contract payout at settlement). The pair (result, settlement_value)
     is redundant by design — keeps both columns usable for downstream queries
     that compute calibration error vs. binary outcome OR vs. dollar PnL."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema,
         replay_market,
     )

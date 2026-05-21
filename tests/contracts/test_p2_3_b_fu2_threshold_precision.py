@@ -12,7 +12,7 @@ Root cause (`kb/findings/replay-backfill-strike-precision-bug-may13.md`):
     strike_cents values; raw_prob Brier 0.4752 vs 0.250 coinflip baseline.
 
 Fix surface:
-  - scripts/backfill/hype_doge_replay_backfill.py
+  - scripts/backfill/crypto_replay_backfill.py
       * NEW `threshold REAL` column (kept `strike_cents INTEGER` for HYPE
         back-compat; HYPE bundles correct as-is per `kb/findings/...`)
       * NEW `_floor_strike_to_db_fields(floor_strike) -> (threshold_real,
@@ -43,7 +43,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-HARNESS_SCRIPT = REPO_ROOT / "scripts" / "backfill" / "hype_doge_replay_backfill.py"
+HARNESS_SCRIPT = REPO_ROOT / "scripts" / "backfill" / "crypto_replay_backfill.py"
 EXTRACT_SCRIPT = REPO_ROOT / "scripts" / "cal_mlp" / "extract_data_replay.py"
 REPLAY_TABLE = "historical_replay_calmlp"
 
@@ -58,7 +58,7 @@ def _open(path: Path) -> sqlite3.Connection:
 def _fixture_tick_buffer(close_ts: int, base_price: float = 0.1134,
                          warmup_secs: int = 1800) -> list[tuple[int, float]]:
     """Synthesize 30-min flat-spot tick history. Mirrors the sister-test
-    pattern in tests/integration/test_hype_doge_replay_backfill.py but at
+    pattern in tests/integration/test_crypto_replay_backfill.py but at
     DOGE-scale prices ($0.11) where the precision bug fires."""
     return [
         (close_ts - warmup_secs + i, base_price + (i / warmup_secs) * 0.0001)
@@ -89,12 +89,12 @@ def test_floor_strike_to_db_fields_exists_and_returns_tuple():
         if isinstance(node, ast.FunctionDef)
     }
     assert "_floor_strike_to_db_fields" in fn_names, (
-        f"P2.3.b-fu2 contract: scripts/backfill/hype_doge_replay_backfill.py "
+        f"P2.3.b-fu2 contract: scripts/backfill/crypto_replay_backfill.py "
         f"must expose `_floor_strike_to_db_fields(floor_strike) -> tuple` "
         f"(replaces `_floor_strike_to_cents`). Got functions: {sorted(fn_names)}"
     )
 
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         _floor_strike_to_db_fields,
     )
     out = _floor_strike_to_db_fields(0.1134)
@@ -114,7 +114,7 @@ def test_floor_strike_to_db_fields_handles_missing_invalid():
     `float('nan')` parses as float successfully but `int(round(nan*100))`
     raises ValueError; the NaN/Inf guard returns `(None, None)` as the
     typed-None contract."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         _floor_strike_to_db_fields,
     )
     assert _floor_strike_to_db_fields(None) == (None, None)
@@ -135,7 +135,7 @@ def test_doge_subcent_threshold_roundtrips_to_db(tmp_path):
     0.1134 → `int(round(0.1134 * 100))` = 11 → `strike_cents/100.0` = 0.11.
     Post-fix: threshold REAL preserves all 4 decimal places.
     """
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema, _floor_strike_to_db_fields,
     )
     db = tmp_path / "state.db"
@@ -165,7 +165,7 @@ def test_doge_replay_market_writes_real_threshold(tmp_path):
     """`replay_market` end-to-end DOGE: pass market with floor_strike=0.1134
     (via `_floor_strike_to_db_fields`), verify the written DB row has
     `threshold=0.1134` REAL (not 0.11 derived from int strike_cents)."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema, replay_market, _floor_strike_to_db_fields,
     )
     db = tmp_path / "state.db"
@@ -220,7 +220,7 @@ def test_replay_market_uses_threshold_not_strike_cents_division(tmp_path):
     is BELOW $0.1234 but ABOVE $0.11). Under the bug, the two raw_probs
     are equal (because BS used strike_cents/100.0 = 0.11 for both).
     """
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema, replay_market,
     )
     db = tmp_path / "state.db"
@@ -291,7 +291,7 @@ def test_hype_integer_floor_strike_no_regression(tmp_path):
 
     Regression: HYPE corpus (4847 markets) is correct as-is per the RCA doc.
     Post-fix re-runs on HYPE must not perturb the existing values."""
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema, replay_market, _floor_strike_to_db_fields,
     )
     db = tmp_path / "state.db"
@@ -443,7 +443,7 @@ def test_replay_market_call_site_reads_threshold_key(tmp_path):
     (spot 0.1134 == threshold). If it uses strike_cents/100.0=0.99, the spot
     is wildly below — raw_prob should be ~0% rather than ~50%.
     """
-    from scripts.backfill.hype_doge_replay_backfill import (
+    from scripts.backfill.crypto_replay_backfill import (
         ensure_schema, replay_market,
     )
     db = tmp_path / "state.db"
