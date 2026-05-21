@@ -319,9 +319,10 @@ def test_verdict_survive_when_one_cell_clears_threshold():
 def test_main_returns_expected_keys():
     """End-to-end main() emits per-cell AUC + verdict dict shape pinned for downstream consumers.
 
-    Presence-only at scaffold-ship per F0.1 precedent. Once `main` exists as a
-    callable, this test flips GREEN; the synthetic-db fixture + downstream
-    dict-shape assertions land at impl-Bit.
+    Presence-only at scaffold-ship; full-pipeline shape lands at impl-Bit
+    (F0.1 chose a heavier scaffold-ship pipeline test; F0.5 defers the
+    synthetic-DB fixture to impl). Once `main` exists as a callable, this
+    test flips GREEN.
     """
     main_fn = getattr(gamma, "main", None)
     assert main_fn is not None, "main() not yet defined (scaffold-pending)"
