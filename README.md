@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 223,406 |
-| Observation period | 2026-02-22 to 2026-05-20 |
-| Filter pass rate | 4.0\% (9,009 of 223,406) |
-| Top rejection reason | Insufficient Edge (65,712) |
-| Settled trades | 4,542 (4,204 W / 336 L / 2 BE) |
-| Win rate | 92.6\% |
+| Markets evaluated | 228,563 |
+| Observation period | 2026-02-22 to 2026-05-21 |
+| Filter pass rate | 4.1\% (9,304 of 228,563) |
+| Top rejection reason | Insufficient Edge (67,007) |
+| Settled trades | 4,646 (4,305 W / 339 L / 2 BE) |
+| Win rate | 92.7\% |
 
-*Last updated: 2026-05-20T00:04:25Z*
+*Last updated: 2026-05-21T09:00:01Z*
 
 ## Live vs Observation
 
@@ -248,7 +248,7 @@ collector/{main_loop,ws_connection,rest_snapshot,writer,uploader,subscription_ma
 kalshi_wire/                   -- shared Kalshi WS transport library (top-level SIBLING to bot/ and collector/, D1.1.5 SHIPPED 2026-05-16, ticket 86b9zdhz2; ZERO bot.* / collector.* imports; consumed by both)
 kalshi_wire/{auth,ws_client}.py
                                -- auth.py: RSA-PSS-SHA256 sign + REST/WS header helpers; ws_client.py: WSClient (asyncio thread + connect/reconnect + silence watchdog + send queue) + Frame dataclass + build_envelope() (D0.3 §2 6-field bronze envelope)
-collector-start.sh             -- wrapper invoked by ops/kalshi-collector.service (D1.5 SHIPPED; parallel to start.sh; sources /home/botuser/.env.collector; `python -O -m collector` post P1-A-fu2 86ba1qgbp 2026-05-20 — -O activates P1-A `_VALIDATE_ENVELOPE=__debug__` gate)
+collector-start.sh             -- wrapper invoked by ops/kalshi-collector.service (D1.5 SHIPPED; parallel to start.sh; sources /home/botuser/.env.collector; `python -m collector`)
 ops/kalshi-collector.service   -- D1.5 systemd unit (SHIPPED 2026-05-16, ticket 86b9ypna4; Nice=10, MemoryHigh=400M, MemoryMax=512M, dedicated EnvironmentFile=/home/botuser/.env.collector — CPUAffinity retired 2026-05-19 ticket 86ba12rv6; MemoryHigh added 2026-05-20 ticket 86ba12rf0)
 requirements.txt               -- Python dependencies
 .env.example                   -- credential template

@@ -56,9 +56,9 @@ The third structural fact is that the entire platform is **operated by one perso
 
 [^swebench]: SWE-bench Verified leaderboard, May 2026. Source: [SWE-bench](https://www.swebench.com/); [MarkTechPost AI Agent Benchmark](https://www.marktechpost.com/2026/05/15/best-ai-agents-for-software-development-ranked-a-benchmark-driven-look-at-the-current-field/); [MorphLLM 14 Best AI Coding Agents 2026](https://www.morphllm.com/best-ai-coding-agents-2026).
 
-> **Live trading snapshot (auto-updated, last refresh 2026-05-20T00:04:25Z):**
+> **Live trading snapshot (auto-updated, last refresh 2026-05-21T09:00:01Z):**
 >
-> - **4,542** settled trades since 2026-02-22 — 4,204W / 336L / 2 BE; win rate 92.6\%
+> - **4,646** settled trades since 2026-02-22 — 4,305W / 339L / 2 BE; win rate 92.7\%
 > - Seven live 15-minute crypto assets (BTC, ETH, SOL, XRP, HYPE, DOGE, BNB)
 > - Six conditional overlays: decided contracts (z-score-driven near-certain outcomes), terminal momentum, low-price near-expiry, weekend discount, overnight discount, loss-burst cooldown
 > - 19 weather cities, 28 sports leagues, and S&P 500 intraday markets in observation mode (calibration data accumulating; no capital at risk)
@@ -231,7 +231,7 @@ The Data Corpus is a **medallion-architecture** data lake (bronze / silver / gol
 
 **Storage cost**: roughly $20–50 per month in projected steady state, dominated by S3 storage at the DEEP_ARCHIVE tier (bronze transitions to DEEP_ARCHIVE at 30 days; never expires). This is approximately the cost of one nice dinner per month for an asset that grows continuously and that no external party can buy.
 
-**Bot-collector isolation**: this is a structural rather than documentary property. The collector runs in a separate Python process, in its own systemd unit, at `Nice=10` priority (bot runs at `Nice=0`, so the bot preempts when both compete for CPU), with a soft `MemoryHigh=400M` cgroup throttle plus a hard `MemoryMax=512M` kill, using a separate API key, with zero imports from the bot codebase (enforced by `import-linter` contracts in CI). A collector crash cannot affect bot trading; a bot crash cannot affect data capture. The off-switch is `systemctl stop kalshi-collector`; the inverse is `systemctl stop kalshi-bot`. Each is independent. A shared `kalshi_wire/` package houses RSA-PSS authentication and the WebSocket protocol; this is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents bot-collector drift in how Kalshi frames are parsed.
+**Bot-collector isolation**: this is a structural rather than documentary property. The collector runs in a separate Python process, in its own systemd unit, at `Nice=10` priority (bot runs at `Nice=0`, so the bot preempts when both compete for CPU), with a soft `MemoryHigh=400M` cgroup throttle plus a hard `MemoryMax=512M` kill, using a separate API key, with zero imports from the bot codebase (enforced by `import-linter` contracts in CI). A collector crash cannot affect bot trading; a bot crash cannot affect data capture. The off-switch is `systemctl stop kalshi-collector`; the inverse is `systemctl stop kalshi-bot`. Each is independent. A shared `kalshi_wire/` package houses RSA-PSS authentication and the WebSocket transport (connect, reconnect, silence-watchdog, frame ingress); this is the "two sides of the same coin" architectural amendment of 2026-05-16 that prevents bot-collector drift in how Kalshi frames are received at the wire. The two consumers still share byte-identical `Frame.raw` (pinned by a differential test); the collector additionally opts into a parse-skip mode post P1-B-brutalist (2026-05-20) for throughput at high-ticker scale.
 
 ## 2.3 The corpus landscape
 
@@ -506,4 +506,4 @@ If the technical layers behind these claims matter to you, the companion technic
 If you'd prefer a non-technical overview that you could hand to a friend or family member, there is also a layperson whitepaper.
 
 — Gabriel Kagan
-*Last updated: 2026-05-20T00:04:25Z*
+*Last updated: 2026-05-21T09:00:01Z*

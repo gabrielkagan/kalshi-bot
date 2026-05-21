@@ -61,7 +61,7 @@ Two additional first-class assets coexist with the trading system: a **Data Corp
 > - `kalshi-collector.service` active since 2026-05-17 09:57:59 UTC after an operator-initiated restart; bronze day-zero (first non-empty chunk in S3) was ~09:52 UTC during an earlier run cycle on the same day.
 > - Seven 15M live assets: BTC (88¢+), ETH (90¢+ main tier with a 75–79¢ sub-tier capped at 50 contracts), SOL (86¢+, taker-first), XRP (92¢+), HYPE (90¢+), DOGE (85¢+), BNB (90¢+).
 > - P4.1 band-calibrated sizing live; soak through 2026-05-31.
-> - ~6,506 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing.
+> - ~6,506 tests across ~270 test files organized in 4 deploy-blocking in-tree tiers (plus the non-blocking research tier and out-of-band mutation testing).
 
 ## 1.3 First-principles statement of the system
 
@@ -1063,7 +1063,7 @@ The TDD-with-agents pattern is a Claude Code community / Anthropic engineering c
 
 ### 7.3.4 Pillar 5 — Tiered test suite + testmon + mutmut
 
-Tests are organized in 4 in-tree tiers plus out-of-band mutation testing:
+Tests are organized in 4 deploy-blocking in-tree tiers (plus the non-blocking research tier and out-of-band mutation testing):
 
 | Tier | Directory | Purpose |
 |---|---|---|
@@ -1071,13 +1071,14 @@ Tests are organized in 4 in-tree tiers plus out-of-band mutation testing:
 | 2 | `tests/integration/` | Cross-module flows, end-to-end scenarios |
 | 3 | `tests/unit/` | Function-level pure logic |
 | 4 | `tests/equivalence/` | Pinned engine outputs on 1000-row reference corpus |
+| 5 (research, non-deploy-blocking) | `tests/research/` | Falsification spike tests + cross-system research (paired with `scripts/research/`); may carry intentional `NotImplementedError` stubs during scaffold-first phase per TDD-first discipline. Excluded from deploy-blocking integration shards via `INTEGRATION_IGNORES`. |
 | mutmut (out-of-band) | `make test-mutmut` | Mutation testing — runs against `bot/engines/{volatility,probability}.py` with the equivalence tier as runner; catches "test passes but doesn't actually constrain" |
 
 `testmon` runs only the tests affected by current changes for fast feedback. The full suite takes minutes; `testmon`-filtered runs take seconds. CI runs the full suite; local development uses testmon for the inner loop.
 
 `mutmut` (mutation testing) periodically mutates the codebase one operator at a time and checks whether any test still fails. A "live" mutant — a code change that doesn't break a single test — indicates a gap in test coverage. The mutmut baseline is checked against `make` targets in CI.
 
-Test count at time of writing: **~6,506 tests across ~270 test files organized in 4 in-tree tiers plus out-of-band mutation testing**.
+Test count at time of writing: **~6,506 tests across ~270 test files organized in 4 deploy-blocking in-tree tiers (plus the non-blocking research tier and out-of-band mutation testing)**.
 
 ### 7.3.5 Adversarial review (the distinctive pattern)
 
@@ -1190,7 +1191,7 @@ Honestly stated:
 
 ## 8.1 Test tier overview
 
-Tests are stratified in 4 in-tree tiers plus out-of-band mutation testing (§7.3.4). Each tier has different runtime characteristics and different gating thresholds.
+Tests are stratified in 4 deploy-blocking in-tree tiers (plus the non-blocking research tier and out-of-band mutation testing) (§7.3.4). Each tier has different runtime characteristics and different gating thresholds.
 
 | Tier | Files | Test count | CI gate |
 |---|---|---|---|
@@ -1598,4 +1599,4 @@ The following are the primary sources cited by inline footnote elsewhere in this
 
 ---
 
-*Document last updated: 2026-05-20T00:04:25Z*
+*Document last updated: 2026-05-21T09:00:01Z*
