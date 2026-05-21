@@ -458,13 +458,42 @@ def _seed_synthetic_subthreshold_db(db_path: Path) -> None:
 
 
 def _seed_synthetic_survivor_db(db_path: Path) -> None:
-    """Create a minimal state.db engineered so cells clear the 3¢ Bonferroni threshold.
+    """Create a minimal state.db engineered so ≥1 cell clears the 3¢ Bonferroni threshold.
 
     BTC σ-events drive the same trajectory as the subthreshold seed; each
-    laggard's mid jumps from 50/51 to 60/61 within Δt of every BTC σ-event
-    (positive lead-edge in BTC's direction). The constant +10c lead-edge
-    produces degenerate bootstrap CIs at exactly +10c, which clears the
-    3¢ Bonferroni gate.
+    laggard's mid jumps from 50/51 to 60/61 within Δt of every BIG-RETURN
+    BTC σ-event (positive lead-edge in BTC's direction).
+
+    Per-event lead-edge is BIMODAL by construction (verified empirically
+    at impl-R1-M2 — earlier docstring incorrectly claimed "constant +10c"):
+
+      - PRE-BURST σ-warm-up events: rows 5..59 in the spot trajectory have
+        tiny baseline returns (±0.0001 noise) but the σ-detector evaluates
+        them once 5 prior returns accumulate. These events have `r_cur` of
+        the same order as the rolling σ, so `|r/σ|` clears the 0.3
+        threshold AND `sigma_at_t > 0`. They fire as σ-events with TINY
+        BTC returns; the laggard mid is unchanged (still 50/51) at
+        event_time so `lead_edge_cents = 0`. Total: ~36 zero-lead events.
+      - BURST events: rows 60..199 (every other tick, i % 2 == 0) have
+        big returns (0.005 or 0.01). The σ-detector fires; the laggard
+        mid has already jumped to 60/61 inside the
+        `(event_time, event_time + 30s]` response window →
+        `lead_edge_cents = +10`. Total: ~70 ten-lead events.
+
+    The bimodal distribution still passes the SURVIVE assertion because
+    σ_median sorts predominantly burst-σ events into `vol_high_day` (52
+    events × +10c → CI lo ≈ 10c, clears 3c) and warm-up + boundary events
+    into `vol_low_day` (~54 events, mixed 0c/10c → mean ≈ 3.33c with CI
+    lo also clearing 3c at the standard 95% but lower-bonferroni dropping
+    below — the verdict-doc's `n_cells_clearing_threshold >= 1` assertion
+    holds via `vol_high_day` alone).
+
+    A "tight uniform-survivor" fixture is possible but requires careful
+    σ-warm-up control (constant pre-burst returns produce σ=0 → no events
+    at all; varied pre-burst returns produce |r/σ| ≈ 1 → spurious events).
+    The bimodal seed accepts this complexity in exchange for a simpler
+    spot-trajectory function; the verdict test's invariant
+    (`n_cells_clearing_threshold >= 1`) is robust to the bimodality.
     """
     import datetime as dt
     import sqlite3
@@ -532,10 +561,14 @@ def _seed_synthetic_survivor_db(db_path: Path) -> None:
     )
 
     # 2. Laggard moc: mid is normally 50/51, but stays at 60/61 for the
-    #    entire (event_time, event_time + 30s] window after each BTC σ-event.
+    #    entire (event_time, event_time + 30s] window after each BURST
+    #    BTC σ-event (those tagged in `btc_event_ticks` during the loop).
     #    M_stale at event-time sees 50 (pre-jump); M_responded within Δt=30s
-    #    sees 60 (post-jump). Lead_edge = +10c × sign(BTC_return) = +10c
-    #    (BTC return positive on every event in this seed).
+    #    sees 60 (post-jump). Lead_edge for burst events = +10c (BTC return
+    #    positive on every BURST event in this seed). Pre-burst σ-warm-up
+    #    events (not tagged in btc_event_ticks but still fired by the
+    #    detector — see fixture docstring for the bimodal-distribution RCA)
+    #    see laggard mid = 50/51 at both stale + responded → lead_edge = 0.
     #
     #    NOTE the +1 offset in event_times: σ-detection fires at series[k+1]
     #    when log_returns[k] = log(series[k+1]/series[k]) crosses threshold.

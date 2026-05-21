@@ -206,6 +206,16 @@ def compute_event_lead_edge(
     framing from systematically over-reporting edge by treating noise as
     signal (per plan-doc § Hypothesis ¶2 list-item 3 + § Method → Per-laggard
     pipeline ¶2 bullet 3).
+
+    Edge case: `btc_return_at_event == 0` returns `lead_edge_cents = 0`
+    silently (sign=0 zeroes out any raw delta). Unreachable from the main
+    pipeline — `_detect_sigma_events` requires `|log_return / sigma| ≥
+    sigma_threshold` AND `sigma > 0`, which together imply `log_return ≠ 0`
+    at any tick fed into this helper. The behavior is preserved here for
+    callers who construct events outside the σ-detection pipeline (e.g.,
+    unit tests with explicit lead-edges); they should guarantee non-zero
+    `btc_return_at_event` or accept the 0c result as a "no-information"
+    event.
     """
     raw = float(m_responded_cents) - float(m_stale_cents)
     if btc_return_at_event > 0:
@@ -616,7 +626,13 @@ def _match_event_to_laggard_quotes(
             gap_to_event = (event_time - stale["_obs_dt"]).total_seconds()
             if best is None or gap_to_event < best[0]:
                 best = (gap_to_event, stale, responded)
-    else:
+    else:  # pragma: no cover — dead path post-impl-Bit; preserved for API symmetry
+        # NOTE: `_per_laggard_analysis` always passes `indexed_by_ticker`, so
+        # this linear-scan fallback is unreachable from the main pipeline.
+        # Kept in the helper signature for callers that don't pre-index (e.g.,
+        # ad-hoc REPL / debugging). If a future refactor removes the indexed
+        # path, the linear scan still produces semantically-identical output
+        # (verified equivalent in impl-R1-N2 inspection).
         for _ticker, rows in moc_by_ticker.items():
             stale: dict[str, Any] | None = None
             responded: dict[str, Any] | None = None
