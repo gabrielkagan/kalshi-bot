@@ -151,28 +151,50 @@ def test_default_write_queue_maxsize_is_50000():
     The new value gives 4.4× margin over the measured peak burst.
 
     A future-Bit decision to change this constant must lockstep-update
-    the following sites (8 surfaces total at the time this Bit shipped):
+    the surfaces enumerated below. Canonical list is maintained in
+    `kb/decisions/bit-collector-reconnect-drop-elimination-plan.md`
+    §"Sister-doc lockstep" — keep this enumeration and that one in sync.
 
-      1. The inline constant comment in collector/ws_connection.py
-         (rationale block above _DEFAULT_WRITE_QUEUE_MAXSIZE).
-      2. The kwarg docstring in BronzeArchiver.__init__ (kwarg
-         "write_queue_maxsize" Args block).
-      3. The init-time peak-counter comment block (above
-         self._write_queue_peak = 0 — currently cites the value
-         indirectly via the lockstep claim).
-      4. The get_health_snapshot() docstring (Snapshot keys block).
-      5. The start() docstring (Re-entrancy semantics paragraph).
-      6. agent_docs/bot_layout.md — the ws_connection.py entry (current
-         value cite) AND the main_loop.py entry (8-key snapshot mention).
-      7. tests/contracts/test_bronze_health_sidecar.py — both the module
-         docstring AND the required-set in
-         test_bronze_archiver_get_health_snapshot_returns_required_keys.
-      8. kb/decisions/bit-collector-reconnect-drop-elimination-plan.md
-         — the plan-doc value cite + risk-analysis arithmetic.
+      1. collector/ws_connection.py — rationale block above
+         _DEFAULT_WRITE_QUEUE_MAXSIZE.
+      2. collector/ws_connection.py — the constant value itself.
+      3. collector/ws_connection.py — BronzeArchiver.__init__ kwarg
+         docstring for write_queue_maxsize.
+      4. collector/ws_connection.py — init-block peak-counter docstring
+         (thread-safety model).
+      5. collector/ws_connection.py — get_health_snapshot() docstring
+         (8-key list).
+      6. collector/ws_connection.py — start() docstring Re-entrancy
+         semantics paragraph.
+      7. agent_docs/bot_layout.md — main_loop.py entry (8-key snapshot
+         mention).
+      8. agent_docs/bot_layout.md — ws_connection.py entry (current
+         value + shipped tag).
+      9. agent_docs/bot_layout.md — coinbase_archiver.py entry
+         (Kalshi-vs-Coinbase asymmetry annotation).
+     10. tests/contracts/test_bronze_health_sidecar.py — both the
+         module docstring AND the required-set in
+         test_bronze_archiver_get_health_snapshot_returns_required_keys
+         AND the JSON-flow-through guard for write_queue_peak_size.
+     11. collector/coinbase_archiver.py — asymmetry-justification
+         comment above its _DEFAULT_WRITE_QUEUE_MAXSIZE (which stays
+         at 10_000; the comment must reflect that the Kalshi-side
+         constant diverged at this Bit).
+     12. THIS pin (the test you're reading).
 
-    Plus THIS pin. Coinbase side (collector/coinbase_archiver.py) is
-    intentionally diverged from Kalshi post-86ba1xraq — re-symmetrize
-    only if a future Coinbase load measurement justifies it.
+    Explicitly RETRACTED from the original lockstep list (kept here as
+    a historical record of the R1+R2 decision):
+
+      - tests/contracts/test_d1_3_fu5_ack_not_enqueued.py:4 — was
+        originally enumerated as a value-update site; on review
+        confirmed as historical past-tense RCA narrative documenting
+        D1.3-fu4's initial 10_000 maxsize. Changing that docstring
+        would corrupt the D1.3-fu4 → D1.3-fu5 RCA narrative.
+
+    Coinbase side (collector/coinbase_archiver.py:_DEFAULT_WRITE_QUEUE_MAXSIZE)
+    is INTENTIONALLY DIVERGED from Kalshi post-86ba1xraq — different
+    load class (single conn, no REST cascade, steady-state rate). Re-
+    symmetrize only if a future Coinbase load measurement justifies.
     """
     from collector.ws_connection import _DEFAULT_WRITE_QUEUE_MAXSIZE
     assert _DEFAULT_WRITE_QUEUE_MAXSIZE == 50_000, (
