@@ -28,18 +28,24 @@ from pathlib import Path
 import pytest
 
 
-MONEY_TYPED_COLUMNS = frozenset({
+# Money-typed INTEGER columns split by source table (R1 finding M2: the RCA
+# D-27 list conflated two tables; verified against the real snapshot via
+# PRAGMA at B1 base).
+EVAL_OPP_MONEY_COLS = frozenset({
     "available_balance_cents",
     "position_size",
     "market_price",
     "counterfactual_pnl",
+    "seconds_to_close",
+})
+SETTLED_TRADES_MONEY_COLS = frozenset({
     "count",
     "entry_price_cents",
-    "seconds_to_close",
     "revenue_cents",
     "fee_cents",
     "pnl_cents",
 })
+MONEY_TYPED_COLUMNS = EVAL_OPP_MONEY_COLS | SETTLED_TRADES_MONEY_COLS
 
 
 @pytest.fixture
@@ -62,7 +68,7 @@ def snapshot_with_float_money(tmp_path: Path) -> Path:
                 filter_stage TEXT DEFAULT 'candidate',
                 status TEXT DEFAULT 'settled',
                 counterfactual_pnl INTEGER,
-                settled_at TEXT
+                settled_time TEXT
             );
         """))
         # Insert one row with float market_price (silently stored in INTEGER affinity)
@@ -80,13 +86,47 @@ def snapshot_with_float_money(tmp_path: Path) -> Path:
 
 
 def test_d27_money_columns_pinned() -> None:
-    """Inline regression contract: the canonical money-typed column set."""
-    assert "market_price" in MONEY_TYPED_COLUMNS
-    assert "counterfactual_pnl" in MONEY_TYPED_COLUMNS
-    assert "available_balance_cents" in MONEY_TYPED_COLUMNS
-    # Non-money columns NOT in the set
+    """Inline regression contract: per-table money-typed column sets."""
+    # evaluated_opportunities money columns
+    assert "market_price" in EVAL_OPP_MONEY_COLS
+    assert "counterfactual_pnl" in EVAL_OPP_MONEY_COLS
+    assert "available_balance_cents" in EVAL_OPP_MONEY_COLS
+    # settled_trades money columns
+    assert "pnl_cents" in SETTLED_TRADES_MONEY_COLS
+    assert "fee_cents" in SETTLED_TRADES_MONEY_COLS
+    # Non-money columns NOT in either set
     assert "evaluation_time" not in MONEY_TYPED_COLUMNS
     assert "ticker" not in MONEY_TYPED_COLUMNS
+    # Tables don't overlap (each column belongs to exactly one source)
+    assert not (EVAL_OPP_MONEY_COLS & SETTLED_TRADES_MONEY_COLS), (
+        "D-27 cross-table column drift: a money column appears in both tables"
+    )
+
+
+def test_d27_eval_opp_money_cols_present_in_real_snapshot(
+    snapshot_conn: "sqlite3.Connection",
+) -> None:
+    """Each EVAL_OPP_MONEY_COLS entry exists on the real evaluated_opportunities table."""
+    cols = {row[1] for row in snapshot_conn.execute(
+        "PRAGMA table_info(evaluated_opportunities)"
+    )}
+    missing = EVAL_OPP_MONEY_COLS - cols
+    assert not missing, (
+        f"D-27 EVAL_OPP_MONEY_COLS drift: {missing} not in real snapshot"
+    )
+
+
+def test_d27_settled_trades_money_cols_present_in_real_snapshot(
+    snapshot_conn: "sqlite3.Connection",
+) -> None:
+    """Each SETTLED_TRADES_MONEY_COLS entry exists on the real settled_trades table."""
+    cols = {row[1] for row in snapshot_conn.execute(
+        "PRAGMA table_info(settled_trades)"
+    )}
+    missing = SETTLED_TRADES_MONEY_COLS - cols
+    assert not missing, (
+        f"D-27 SETTLED_TRADES_MONEY_COLS drift: {missing} not in real snapshot"
+    )
 
 
 def test_d27_sqlite_int_affinity_silently_stores_floats() -> None:

@@ -82,17 +82,22 @@ def test_d08_replay_classify_stage_known_blocks(stage: str) -> None:
         "D-8 TDD-red: B3 must ship research.replay.classify_stage"
     )
     tier = rep.classify_stage(stage)
-    assert tier == "block", (
-        f"D-8 classification drift: classify_stage({stage!r}) -> {tier!r}, expected 'block'"
+    assert tier == "BLOCK", (
+        f"D-8 classification drift: classify_stage({stage!r}) -> {tier!r}, expected 'BLOCK'. "
+        f"Canonical alpha_audit.classify_stage returns UPPERCASE tier strings "
+        f"(scripts/alpha_audit.py:100/102/106/108/115/117/118 — UPPERCASE pattern)."
     )
 
 
 def test_d08_replay_classify_stage_candidate_passes() -> None:
-    """The literal 'candidate' filter_stage classifies as 'candidate' (NOT block)."""
+    """The literal 'candidate' filter_stage classifies as 'CANDIDATE' (NOT BLOCK).
+
+    Canonical from alpha_audit.classify_stage returns UPPERCASE tier strings.
+    """
     import research.replay as rep
     if not hasattr(rep, "classify_stage"):
         pytest.skip("D-8 TDD-red: classify_stage not yet implemented")
-    assert rep.classify_stage("candidate") == "candidate"
+    assert rep.classify_stage("candidate") == "CANDIDATE"
 
 
 @pytest.mark.parametrize("stage", [
@@ -111,9 +116,9 @@ def test_d08_replay_classify_stage_heuristic_forward_compat(stage: str) -> None:
     if not hasattr(rep, "classify_stage"):
         pytest.skip("D-8 TDD-red: classify_stage not yet implemented")
     tier = rep.classify_stage(stage)
-    assert tier == "block", (
+    assert tier == "BLOCK", (
         f"D-8 heuristic forward-compat: classify_stage({stage!r}) -> {tier!r}, "
-        f"expected 'block' (BLEED/DANGER/_blocked suffix)"
+        f"expected 'BLOCK' (BLEED/DANGER/_blocked suffix; UPPERCASE per alpha_audit)"
     )
 
 

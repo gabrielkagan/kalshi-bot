@@ -33,14 +33,26 @@ WRITE_SQL_PATTERNS = [
 
 
 def test_d25_replay_source_has_no_write_sql() -> None:
-    """research/replay.py has no INSERT/UPDATE/DELETE/CREATE/DROP/ALTER SQL strings."""
+    """research/replay.py has no INSERT/UPDATE/DELETE/CREATE/DROP/ALTER SQL in .execute() calls.
+
+    R1 finding M5: the original regex matched docstring prose. Narrowed to
+    require the write SQL to appear inside a `.execute(` or `.executescript(`
+    call site.
+    """
     src = inspect.getsource(rep)
-    for pattern in WRITE_SQL_PATTERNS:
-        matches = re.findall(pattern, src, re.IGNORECASE)
-        assert not matches, (
-            f"D-25 forbidden write SQL in replay.py: pattern {pattern!r} matched "
-            f"{matches!r}. Replay is read-only."
-        )
+    # Find execute(...) or executescript(...) string-literal args
+    execute_blocks = re.findall(
+        r"\.execute(?:script|many)?\s*\(\s*([\"'](?:[^\"'\\]|\\.)*[\"'])",
+        src,
+    )
+    for sql_literal in execute_blocks:
+        # Strip surrounding quotes
+        sql = sql_literal.strip("\"'")
+        for pattern in WRITE_SQL_PATTERNS:
+            assert not re.search(pattern, sql, re.IGNORECASE), (
+                f"D-25 forbidden write SQL inside .execute() call: pattern "
+                f"{pattern!r} matched in {sql!r}. Replay is read-only."
+            )
 
 
 def test_d25_replay_source_select_only() -> None:

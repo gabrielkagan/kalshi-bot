@@ -22,17 +22,40 @@ from __future__ import annotations
 import pytest
 
 
-CANONICAL_OUTCOMES = frozenset({"filled", "partial_filled", "cancelled", "rejected"})
-LEGACY_PARTIAL = "partial_fill"  # The pre-fix spelling
+# Canonical from tests/test_order_outcome_vocab.py::ALLOWED_OUTCOMES (the AST
+# guard that pins production vocab post 2026-05-04 fix). NOTE: the RCA D-21
+# document gave a wrong 4-value set including British 'cancelled' and 'rejected'
+# (which is not a canonical outcome at all). The PRODUCTION canonical set has
+# 12 values; American 'canceled' spelling.
+CANONICAL_OUTCOMES = frozenset({
+    "filled",
+    "unfilled",
+    "unfilled_retry",
+    "skipped_near_close",
+    "canceled",                    # American spelling per tests/test_order_outcome_vocab.py
+    "escalation_edge_abort",
+    "partial_retry",
+    "partial_filled",
+    "unfilled_window_closed",
+    "unfilled_price_collapsed",
+    "unfilled_price_drift",
+    "expired",
+})
+LEGACY_PARTIAL = "partial_fill"  # The pre-fix spelling (different family — event_type vocab)
 
 
 def test_d21_canonical_outcomes_pinned() -> None:
-    """Pin the canonical 4-value set as an inline regression contract."""
-    assert CANONICAL_OUTCOMES == frozenset({
-        "filled", "partial_filled", "cancelled", "rejected"
-    })
+    """Pin the canonical 12-value set matching tests/test_order_outcome_vocab.py."""
+    assert len(CANONICAL_OUTCOMES) == 12, (
+        f"D-21 set size: expected 12 canonical outcomes, got {len(CANONICAL_OUTCOMES)}"
+    )
+    # Spot-check the key American spelling
+    assert "canceled" in CANONICAL_OUTCOMES
+    assert "cancelled" not in CANONICAL_OUTCOMES, "D-21: 'cancelled' (British) is RCA drift"
+    # 'rejected' is NOT in the production vocab per the AST guard
+    assert "rejected" not in CANONICAL_OUTCOMES, "D-21: 'rejected' is RCA drift, not canonical"
+    # Legacy partial is NOT in the canonical set.
     assert LEGACY_PARTIAL == "partial_fill"
-    # Legacy is NOT in the canonical set.
     assert LEGACY_PARTIAL not in CANONICAL_OUTCOMES
 
 

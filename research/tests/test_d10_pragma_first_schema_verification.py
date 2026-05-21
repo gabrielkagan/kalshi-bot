@@ -52,7 +52,7 @@ def good_synthetic_snapshot(tmp_path: Path) -> Path:
             CREATE TABLE evaluated_opportunities (
                 id INTEGER PRIMARY KEY,
                 evaluation_time TEXT NOT NULL,
-                settled_at TEXT,
+                settled_time TEXT,
                 market_result TEXT,
                 side TEXT DEFAULT 'yes',
                 market_price INTEGER,
@@ -79,7 +79,7 @@ def bad_synthetic_snapshot_missing_column(tmp_path: Path) -> Path:
             CREATE TABLE evaluated_opportunities (
                 id INTEGER PRIMARY KEY,
                 evaluation_time TEXT NOT NULL,
-                settled_at TEXT,
+                settled_time TEXT,
                 market_result TEXT,
                 side TEXT DEFAULT 'yes',
                 entry_price_cents INTEGER,  -- RENAMED from market_price

@@ -115,10 +115,15 @@ def test_d26_replay_does_not_call_numpy_set_num_threads_lazily() -> None:
 
 
 def test_d26_b1_research_replay_module_loads_cleanly() -> None:
-    """Sanity: research.replay imports without raising (env-var setup doesn't break things)."""
+    """Sanity: research.replay imports without raising (env-var setup doesn't break things).
+
+    R1 finding MNR6: previously used importlib.reload(rep) mid-test which can
+    corrupt cached state for downstream tests. Use import_module for a fresh
+    probe without mutating the session's cached module.
+    """
     import importlib
-    importlib.reload(rep)  # force re-import to validate fresh state
-    assert rep is not None
+    fresh = importlib.import_module("research.replay")
+    assert fresh is not None
 
 
 def test_d26_pool_benchmark_function_exists() -> None:

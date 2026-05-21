@@ -9,7 +9,7 @@ Current registered cutoff:
 
 Replay's regime_cutoff parameter must:
 1. Filter every query reading evaluated_opportunities or settled_trades to
-   `WHERE evaluation_time >= cutoff` (or `settled_at >= cutoff` per D-20).
+   `WHERE evaluation_time >= cutoff` (or `settled_time >= cutoff` per D-20).
 2. Refuse to silently aggregate cross-regime windows without an explicit
    `regime_cutoff=...` opt-in.
 
@@ -36,7 +36,7 @@ def synthetic_snapshot(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """In-memory-ish snapshot fixture with pre + post cutoff rows.
 
     Schema mirrors the relevant subset of evaluated_opportunities for the
-    regime-cutoff and evaluation_time/settled_at tests. Real snapshot column
+    regime-cutoff and evaluation_time/settled_time tests. Real snapshot column
     set is verified by D-10 (PRAGMA-first); D-9 only needs the time columns.
     """
     db = tmp_path_factory.mktemp("synth") / "synthetic_snapshot.db"
@@ -184,23 +184,29 @@ def test_d09_cutoff_iso_format_pinned() -> None:
 
 
 def test_d09_replay_no_silent_cross_regime_aggregation() -> None:
-    """AST guard: research/replay.py does not perform unfiltered SUM(counterfactual_pnl).
+    """AST guard: any SELECT SUM(counterfactual_pnl) in replay.py is paired with a regime/time filter.
 
-    Catches the bug class where someone writes
-        `SELECT SUM(counterfactual_pnl) FROM evaluated_opportunities`
-    without a regime_cutoff filter.
+    R1 finding M7: the original blanket-forbid of `SELECT SUM(counterfactual_pnl)`
+    would force B3 to write contorted SQL. Narrowed: the SUM is OK as long as
+    the same SQL string includes a regime_cutoff / evaluation_time / time-based
+    filter (heuristic).
     """
     import inspect
+    import re
     import research.replay as rep
     src = inspect.getsource(rep)
-    forbidden_patterns = [
-        "SELECT SUM(counterfactual_pnl)",
-        "select sum(counterfactual_pnl)",
-    ]
-    for needle in forbidden_patterns:
-        # B3 may legitimately reference these in safer contexts; the test
-        # will need an allowlist once that ships. For now, B1 has neither.
-        assert needle not in src, (
-            f"D-9 unfiltered SUM(cf): research/replay.py contains {needle!r}. "
-            f"Add regime_cutoff filtering."
+    # Find SELECT SUM(counterfactual_pnl) inside execute() / executescript() call sites
+    matches = re.findall(
+        r"\.execute(?:script|many)?\s*\(\s*[\"']"
+        r"([^\"']*\bSELECT\b[^\"']*\bSUM\s*\(\s*counterfactual_pnl\s*\)[^\"']*)"
+        r"[\"']",
+        src,
+        re.IGNORECASE,
+    )
+    for sql in matches:
+        lower = sql.lower()
+        # Require some form of time-based filtering in the same statement.
+        time_filter_keywords = ("evaluation_time", "settled_time", "cutoff", "regime")
+        assert any(k in lower for k in time_filter_keywords), (
+            f"D-9 unfiltered SUM(cf): {sql!r}. Add evaluation_time/cutoff filter."
         )

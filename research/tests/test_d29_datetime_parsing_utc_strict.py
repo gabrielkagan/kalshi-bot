@@ -64,26 +64,35 @@ def test_d29_naive_datetime_compares_as_aware_via_utc_localize() -> None:
     assert localized == aware
 
 
-def test_d29_replay_regime_cutoff_rejects_naive_datetime() -> None:
+def test_d29_replay_regime_cutoff_rejects_naive_datetime(tmp_path) -> None:
     """B3's evaluate_window raises on naive datetime regime_cutoff (TDD-red).
 
     Per RCA D-29 test surface: "Naive datetime input to regime_cutoff arg
     raises (don't silently assume UTC)."
 
-    Forces callers to make the timezone choice explicit.
+    R1 finding M6: original test passed a nonexistent path, which could mask
+    the tz-check with a file-open error. Use a real (empty) snapshot via
+    tmp_path so the function reaches the tz validation.
     """
     import research.replay as rep
     if not hasattr(rep, "evaluate_window"):
         pytest.skip("D-29 TDD-red: evaluate_window not yet implemented")
+    # Real empty snapshot file — bypasses the file-not-found path
+    import sqlite3
+    snap = tmp_path / "snapshot_d29_naive_tz.db"
+    sqlite3.connect(str(snap)).close()
     naive = dt.datetime(2026, 4, 30, 16, 16, 0)  # NO tzinfo
     with pytest.raises((TypeError, ValueError)) as excinfo:
         rep.evaluate_window(
-            snapshot_path="/tmp/nonexistent.db",
+            snapshot_path=snap,
             regime_cutoff=naive,
         )
     msg = str(excinfo.value).lower()
-    assert "tz" in msg or "naive" in msg or "utc" in msg or "timezone" in msg, (
-        f"D-29 raise: should mention timezone/naive/utc/tz; got {excinfo.value!r}"
+    # Accept broader set of keywords — Python's native TypeError says
+    # "offset-naive and offset-aware" which contains 'naive' + 'offset'.
+    accepted = ["tz", "naive", "utc", "timezone", "offset", "aware"]
+    assert any(k in msg for k in accepted), (
+        f"D-29 raise: should mention {accepted}; got {excinfo.value!r}"
     )
 
 

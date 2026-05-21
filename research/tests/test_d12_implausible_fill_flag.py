@@ -67,14 +67,26 @@ def test_d12_flag_at_exact_threshold() -> None:
 
 
 def test_d12_balance_null_sets_balance_unknown() -> None:
-    """balance_cents=None → balance_unknown=True (NOT skip the gate)."""
+    """balance_cents=None → balance_unknown=True (skip-and-flag parity with alpha_audit).
+
+    R1 finding M8: alpha_audit at line ~391 SKIPS the gate when balance_unknown
+    fires (flag: "IMPLAUSIBLE_FILL gate skipped"). The B2 contract is:
+    when balance is unknown, set balance_unknown=True AND implausible_fill is
+    None (the gate was skipped — neither True nor False).
+    """
     import research.replay as rep
     if not hasattr(rep, "implausible_fill_check"):
         pytest.skip("D-12 TDD-red: implausible_fill_check not yet implemented")
     result = rep.implausible_fill_check(daily_cf_pnl_cents=5000, balance_cents=None)
     bu = result.get("balance_unknown", None) if isinstance(result, dict) else getattr(result, "balance_unknown", None)
+    flag = result.get("implausible_fill", "missing") if isinstance(result, dict) else getattr(result, "implausible_fill", "missing")
     assert bu is True, (
-        f"D-12 balance NULL: expected balance_unknown=True (NOT skip), got {bu!r} from {result!r}"
+        f"D-12 balance NULL: expected balance_unknown=True, got {bu!r} from {result!r}"
+    )
+    # The gate was skipped — implausible_fill must be None (not True, not False)
+    assert flag is None, (
+        f"D-12 balance NULL: expected implausible_fill=None (gate skipped per alpha_audit), "
+        f"got {flag!r}. Skip-and-flag parity with alpha_audit:~391."
     )
 
 
