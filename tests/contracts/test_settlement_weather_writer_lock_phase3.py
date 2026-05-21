@@ -1,232 +1,257 @@
-"""Ticket 86ba1xdwp — settlement weather Phase 3 writer-lock invariant.
+"""Ticket 86ba1xdwp — settlement weather Phase 3 writer-lock 2-phase split.
 
-Pins the structural invariant from `kb/decisions/settlement-weather-writer-storm-plan-may21.md`:
-the weather settlement phase in `bot/settlement.py::SettlementTracker._poll_evaluated_opportunities`
-must NOT call `_wx_eng._model.update_bias(...)` from inside the same for-loop body
-that also calls `_wx_eng._fetcher.fetch_observed_high(...)`.
+Pins the structural shape of the weather-settlement loop in
+``bot/settlement.py::SettlementTracker._poll_evaluated_opportunities``.
 
-The pre-fix shape (mechanically buggy):
+The bug (2026-05-21): the loop interleaves HTTP fetches
+(``_wx_eng._fetcher.fetch_observed_high(...)``) with shared-conn writes
+(``self._state.conn.execute("UPDATE evaluated_opportunities SET
+wx_actual_high_temp=...")``) and commits ONCE after the loop. Python's
+``sqlite3`` deferred-isolation auto-tx holds the writer lock from the
+first UPDATE through the last commit — across N × HTTP latency. Cascade
+victims: every separate-connection writer (``weather_engine._save_bias``,
+``market_obs_snapshotter``, ``phantom_reconcile_monitor``,
+``CALMLP_POSTHOC``) busy-waits up to ``busy_timeout``=10000ms.
 
-    for (opp_id, ticker, row) in _weather_updates:
-        ...
-        _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)   # HTTP, 1-5s
-        if _obs_high is not None:
-            self._state.conn.execute("UPDATE evaluated_opportunities ...")          # auto-BEGIN tx
-            _wx_dirty = True
-            ...
-            _wx_eng._model.update_bias(_wx_city, _obs_high, forecast_mean, ...)     # ← STILL in tx;
-                                                                                    #   _save_bias's
-                                                                                    #   separate conn
-                                                                                    #   times out 10s
-    if _wx_dirty:
-        self._state.conn.commit()                                                   # tx finally closes
+Fix shape (this test pins it):
+  Phase 3a (HTTP-only, NO DB writes): collect ``_wx_observations``.
+  Phase 3b (DB-only, tight per-row tx): UPDATE + commit per row, then
+  ``update_bias`` (its separate-conn INSERT can now acquire cleanly).
 
-The post-fix shape (Phase 3a HTTP-only / Phase 3b DB-only):
+STRUCTURAL anchors per ``feedback_long_arc_adv_review_durable_fixes`` —
+the guard targets function names + branch conditions, NOT line numbers
+(line cites drift on every adjacent edit and produced 4 onion-ring
+rounds in the F0.1 chain).
 
-    _wx_observations = []
-    for (opp_id, ticker, row) in _weather_updates:                                   # Phase 3a
-        ...
-        _obs_high = _wx_eng._fetcher.fetch_observed_high(_wx_city, _market_date)
-        if _obs_high is not None:
-            _wx_observations.append((opp_id, ticker, _wx_city, _market_date,
-                                     _obs_high, forecast_mean))
-
-    for (opp_id, ticker, _wx_city, _market_date, _obs_high, forecast_mean) in _wx_observations:  # Phase 3b
-        try:
-            self._state.conn.execute("UPDATE evaluated_opportunities ...")
-            self._state.conn.commit()                                                # per-row release
-            if forecast_mean:
-                _wx_eng._model.update_bias(_wx_city, _obs_high, forecast_mean, ...)
-        except Exception as e:
-            ...
-
-Failure modes pinned:
-
-  1. **Single-loop regression** — A future maintainer collapses the two loops back into
-     one to "simplify"; this test FAILS because `fetch_observed_high` and `update_bias`
-     end up in the same loop body again.
-
-  2. **Missing per-row commit** — A future maintainer removes the per-row commit in
-     Phase 3b to "save commits"; this test FAILS because no `self._state.conn.commit()`
-     remains inside the Phase 3b loop body.
-
-  3. **`_wx_dirty` resurrection** — A future maintainer reintroduces an after-loop
-     commit pattern; this test FAILS on the `_wx_dirty` symbol check.
-
-Storm evidence on production (`ubuntu-s-1vcpu-1gb-nyc3-01`):
-  2026-05-20 11:04-11:07 UTC + 2026-05-21 11:04-11:07 UTC — both daily slots
-  cascaded 10-30s `status=fail` writes across weather_engine save_bias /
-  market_obs_snapshotter / fifteenm_shadow / phantom_reconcile.
+Pre-fix this whole file is RED. Post-fix it's GREEN; future maintainers
+who collapse the two phases back into one will trip the guard.
 """
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_SETTLEMENT_PATH = _REPO_ROOT / "bot" / "settlement.py"
+import pytest
 
 
-def _find_method(tree: ast.Module, class_name: str, method_name: str) -> ast.FunctionDef:
-    for cls in ast.walk(tree):
-        if isinstance(cls, ast.ClassDef) and cls.name == class_name:
-            for item in cls.body:
-                if isinstance(item, ast.FunctionDef) and item.name == method_name:
-                    return item
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SETTLEMENT_PY = REPO_ROOT / "bot" / "settlement.py"
+METHOD_NAME = "_poll_evaluated_opportunities"
+
+
+def _load_method() -> ast.FunctionDef:
+    """Return the AST FunctionDef for the method containing the weather loop."""
+    tree = ast.parse(SETTLEMENT_PY.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == METHOD_NAME:
+            return node
     raise AssertionError(
-        f"Method {class_name}.{method_name} not found in {_SETTLEMENT_PATH}"
+        f"Could not find {METHOD_NAME!r} in {SETTLEMENT_PY}. Method may have been "
+        f"renamed; update METHOD_NAME in this test in lockstep."
     )
 
 
-def _calls_attribute_chain(node: ast.AST, chain_suffix: tuple) -> bool:
-    """Return True if `node`'s subtree contains a Call whose .func attribute chain
-    ends with `chain_suffix`.  e.g. chain_suffix=('_fetcher', 'fetch_observed_high')
-    matches `<anything>._fetcher.fetch_observed_high(...)`."""
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.Call):
+def _for_loops_over(method: ast.FunctionDef, *target_names: str) -> list[ast.For]:
+    """Return every ``for ... in <Name(id in target_names)>`` in the method."""
+    out: list[ast.For] = []
+    for node in ast.walk(method):
+        if isinstance(node, ast.For):
+            iter_node = node.iter
+            # accept `for x in _weather_updates` or `for x in _wx_observations`
+            if isinstance(iter_node, ast.Name) and iter_node.id in target_names:
+                out.append(node)
+    return out
+
+
+def _calls_in(scope: ast.AST, attr_name: str) -> list[ast.Call]:
+    """Every ``Call`` whose func is a chain ending in ``.<attr_name>(...)``."""
+    out: list[ast.Call] = []
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr == attr_name:
+                out.append(node)
+    return out
+
+
+def _has_call_chain(scope: ast.AST, *attr_chain: str) -> bool:
+    """True if ``scope`` contains a Call whose func attribute chain ends in
+    ``attr_chain`` (innermost-last).
+
+    e.g. ``_has_call_chain(loop, "_state", "conn", "commit")`` matches
+    ``self._state.conn.commit()``.
+    """
+    for node in ast.walk(scope):
+        if not isinstance(node, ast.Call):
             continue
-        func = sub.func
-        attrs = []
-        while isinstance(func, ast.Attribute):
-            attrs.append(func.attr)
-            func = func.value
-        attrs.reverse()
-        if len(attrs) >= len(chain_suffix) and tuple(attrs[-len(chain_suffix):]) == chain_suffix:
+        # walk the attribute chain backward from the call's func
+        attrs: list[str] = []
+        cur: ast.AST = node.func
+        while isinstance(cur, ast.Attribute):
+            attrs.append(cur.attr)
+            cur = cur.value
+        # innermost attr is first in attrs; we want it to end (innermost-last)
+        # with the requested chain. Reverse to outer-to-inner order, then check tail.
+        if list(reversed(attrs))[-len(attr_chain):] == list(attr_chain):
             return True
     return False
 
 
-def _calls_method(node: ast.AST, attr_name: str) -> bool:
-    """True if any Call in `node`'s subtree has .func.attr == attr_name."""
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
-            if sub.func.attr == attr_name:
-                return True
-    return False
+# ───────────────────────── tests ─────────────────────────────────────
 
 
-def _commits_state_conn(node: ast.AST) -> bool:
-    """True if subtree contains `self._state.conn.commit()` (or `_state.conn.commit()`)."""
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.Call):
-            continue
-        func = sub.func
-        if not isinstance(func, ast.Attribute) or func.attr != "commit":
-            continue
-        # func.value should be `self._state.conn` (Attribute "conn" on Attribute "_state")
-        val = func.value
-        if isinstance(val, ast.Attribute) and val.attr == "conn":
-            inner = val.value
-            if isinstance(inner, ast.Attribute) and inner.attr == "_state":
-                return True
-    return False
+def test_method_exists() -> None:
+    """Anchor: the containing method must still be named
+    ``_poll_evaluated_opportunities``. If it gets renamed, this test +
+    METHOD_NAME constant move together in one commit."""
+    method = _load_method()
+    assert method.name == METHOD_NAME
 
 
-def _names_referenced(node: ast.AST) -> set:
-    """All ast.Name.id strings appearing in `node`'s subtree."""
-    out: set = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Name):
-            out.add(sub.id)
-    return out
+def test_two_for_loops_over_weather_collections() -> None:
+    """Phase 3a + Phase 3b are TWO distinct loops.
 
-
-def test_weather_phase3_uses_two_separate_loops() -> None:
-    """Phase 3a (HTTP fetch) and Phase 3b (DB writes + update_bias) are SEPARATE for-loops.
-
-    Pin: at least one for-loop in `_poll_evaluated_opportunities` contains
-    `fetch_observed_high` but NOT `update_bias`, AND at least one OTHER for-loop
-    contains `update_bias` but NOT `fetch_observed_high`. This rules out the
-    pre-fix shape where both were in the same loop body.
+    Pre-fix: ONE loop iterates ``_weather_updates`` and does both HTTP
+    fetch + DB write inline.
+    Post-fix: ONE loop iterates ``_weather_updates`` (Phase 3a, HTTP
+    only, builds ``_wx_observations``), then a SECOND loop iterates
+    ``_wx_observations`` (Phase 3b, DB only). Total = 2.
     """
-    tree = ast.parse(_SETTLEMENT_PATH.read_text())
-    method = _find_method(tree, "SettlementTracker", "_poll_evaluated_opportunities")
-
-    fetch_only_loops = []
-    update_only_loops = []
-    mixed_loops = []
-    for for_node in ast.walk(method):
-        if not isinstance(for_node, ast.For):
-            continue
-        has_fetch = _calls_attribute_chain(for_node, ("_fetcher", "fetch_observed_high"))
-        has_update_bias = _calls_method(for_node, "update_bias")
-        if has_fetch and has_update_bias:
-            mixed_loops.append(for_node)
-        elif has_fetch:
-            fetch_only_loops.append(for_node)
-        elif has_update_bias:
-            update_only_loops.append(for_node)
-
-    assert not mixed_loops, (
-        f"Pre-fix regression: at least one for-loop in "
-        f"SettlementTracker._poll_evaluated_opportunities calls BOTH "
-        f"_fetcher.fetch_observed_high AND update_bias in the same body "
-        f"(line {mixed_loops[0].lineno}). The mechanical bug from ticket "
-        f"86ba1xdwp re-opened: writer lock held across HTTP latency. "
-        f"Split into Phase 3a (HTTP-only) + Phase 3b (DB-only) per "
-        f"kb/decisions/settlement-weather-writer-storm-plan-may21.md."
-    )
-
-    assert fetch_only_loops, (
-        "Expected at least one for-loop in _poll_evaluated_opportunities that calls "
-        "_fetcher.fetch_observed_high without update_bias (Phase 3a — HTTP-only). "
-        "Did the weather settlement phase get removed entirely?"
-    )
-
-    # Phase 3b can be absent ONLY if there are no HTTP observations to drain.
-    # In normal shape, the post-fix design has both phases.
-    assert update_only_loops, (
-        "Expected at least one for-loop in _poll_evaluated_opportunities that calls "
-        "update_bias without _fetcher.fetch_observed_high (Phase 3b — DB-only). "
-        "Did Phase 3b get folded back into Phase 3a?"
+    method = _load_method()
+    loops = _for_loops_over(method, "_weather_updates", "_wx_observations")
+    assert len(loops) == 2, (
+        f"Expected exactly 2 for-loops over (_weather_updates | _wx_observations) "
+        f"in {METHOD_NAME} — got {len(loops)}. The 2-phase split (Phase 3a HTTP "
+        f"only / Phase 3b DB only) is the contract; a single loop re-introduces "
+        f"the writer-storm bug fixed in 86ba1xdwp."
     )
 
 
-def test_weather_phase3b_commits_per_row() -> None:
-    """Phase 3b loop body MUST call `self._state.conn.commit()` per iteration.
-
-    Without per-row commit, the auto-BEGIN tx accumulates across update_bias calls,
-    re-opening the cascade. The plan-doc fix releases the writer lock immediately
-    after each UPDATE so the next iteration's separate-conn `_save_bias` can grab
-    the lock cleanly.
+def test_no_loop_mixes_fetch_and_update_bias() -> None:
+    """No SINGLE for-loop body contains BOTH ``fetch_observed_high(...)``
+    and ``update_bias(...)``. That coexistence is the bug-reintroduction
+    smell: any per-row HTTP-then-write loop is a writer-storm.
     """
-    tree = ast.parse(_SETTLEMENT_PATH.read_text())
-    method = _find_method(tree, "SettlementTracker", "_poll_evaluated_opportunities")
-
-    found_phase3b_commit = False
-    for for_node in ast.walk(method):
-        if not isinstance(for_node, ast.For):
-            continue
-        if not _calls_method(for_node, "update_bias"):
-            continue
-        if _calls_attribute_chain(for_node, ("_fetcher", "fetch_observed_high")):
-            continue
-        # This is the Phase 3b loop; assert it commits per row.
-        if _commits_state_conn(for_node):
-            found_phase3b_commit = True
-            break
-
-    assert found_phase3b_commit, (
-        "Phase 3b for-loop in SettlementTracker._poll_evaluated_opportunities "
-        "must contain `self._state.conn.commit()` inside the loop body so the "
-        "writer lock is released between rows. Without per-row commit, the "
-        "settlement weather cascade (ticket 86ba1xdwp) re-opens — each save_bias "
-        "call would still race against an open shared-conn tx."
-    )
+    method = _load_method()
+    loops = _for_loops_over(method, "_weather_updates", "_wx_observations")
+    for i, loop in enumerate(loops):
+        has_fetch = bool(_calls_in(loop, "fetch_observed_high"))
+        has_bias = bool(_calls_in(loop, "update_bias"))
+        assert not (has_fetch and has_bias), (
+            f"Loop #{i} in {METHOD_NAME} contains BOTH fetch_observed_high() "
+            f"and update_bias() — that re-introduces the 86ba1xdwp writer-storm. "
+            f"Keep HTTP (fetch_observed_high) in Phase 3a and DB writes "
+            f"(update_bias, the UPDATE statement) in Phase 3b."
+        )
 
 
-def test_wx_dirty_after_loop_commit_retired() -> None:
-    """The pre-fix `_wx_dirty` accumulator + after-loop `if _wx_dirty: commit()`
-    pattern is retired. If `_wx_dirty` is still referenced in
-    `_poll_evaluated_opportunities`, the fix is incomplete or has regressed.
+def test_phase3b_commits_per_row() -> None:
+    """The Phase 3b loop body must call ``self._state.conn.commit()``
+    INSIDE the loop (per-row commit), releasing the writer lock between
+    rows. The Phase 3b loop is identified as the loop containing an
+    UPDATE on ``evaluated_opportunities`` (the SQL write).
     """
-    tree = ast.parse(_SETTLEMENT_PATH.read_text())
-    method = _find_method(tree, "SettlementTracker", "_poll_evaluated_opportunities")
-    names = _names_referenced(method)
-    assert "_wx_dirty" not in names, (
-        "`_wx_dirty` accumulator should have been removed when Phase 3 was "
-        "two-phased per kb/decisions/settlement-weather-writer-storm-plan-may21.md. "
-        "If you intentionally kept it, the after-loop commit pattern likely "
-        "regressed the writer-lock-held-across-HTTP bug from ticket 86ba1xdwp."
+    method = _load_method()
+    loops = _for_loops_over(method, "_weather_updates", "_wx_observations")
+    phase3b_candidates = []
+    for loop in loops:
+        # Phase 3b = the loop that contains a self._state.conn.execute(...) call
+        if _has_call_chain(loop, "_state", "conn", "execute"):
+            phase3b_candidates.append(loop)
+    assert phase3b_candidates, (
+        f"No for-loop in {METHOD_NAME} contains a self._state.conn.execute(...) "
+        f"call against the weather collections. The Phase 3b DB loop must exist."
     )
+    for loop in phase3b_candidates:
+        assert _has_call_chain(loop, "_state", "conn", "commit"), (
+            f"Phase 3b loop in {METHOD_NAME} does NOT commit per-row. "
+            f"self._state.conn.commit() must appear INSIDE the loop body so "
+            f"the writer lock is released between rows (closes 86ba1xdwp)."
+        )
+
+
+def test_wx_dirty_flag_removed() -> None:
+    """The pre-fix code accumulated writes under a ``_wx_dirty`` flag and
+    committed once at the end. The post-fix per-row-commit design has no
+    use for this flag — its presence means the old single-loop pattern
+    is still live somewhere.
+    """
+    method = _load_method()
+    method_src = ast.unparse(method)
+    assert "_wx_dirty" not in method_src, (
+        f"_wx_dirty flag is still present in {METHOD_NAME}. The fix replaces "
+        f"the deferred-commit pattern with per-row commits in Phase 3b; the "
+        f"flag should be deleted in the same edit."
+    )
+
+
+def test_phase3b_commit_precedes_update_bias() -> None:
+    """In the Phase 3b loop body, ``self._state.conn.commit()`` must appear
+    BEFORE any ``update_bias(...)`` call in TEXTUAL READING ORDER —
+    including when one or both are nested inside child blocks
+    (``if``/``try``).
+
+    This is the durability anchor against the cascade-reopen smell flagged
+    in R1-N1 + tightened in R2-N1: pin commit-BEFORE-update_bias by
+    comparing (lineno, col_offset) keys, NOT top-level statement indices.
+    A pre-R2-N1 version of this assertion used statement-index comparison
+    and false-passed on the nested-in-conditional shape
+    ``for ...: self._state.conn.execute(...); if cond: update_bias(...); self._state.conn.commit()``
+    (commit and update_bias share the outer try's statement index, so
+    `commit_idx <= update_bias_idx` was trivially true while textually the
+    commit ran AFTER update_bias). Comparing (lineno, col_offset) closes
+    the hole — any source position where commit appears textually AFTER
+    update_bias inside the same loop body fails LOUDLY.
+    """
+    method = _load_method()
+    loops = _for_loops_over(method, "_weather_updates", "_wx_observations")
+    phase3b_loops = [
+        loop for loop in loops
+        if _has_call_chain(loop, "_state", "conn", "execute")
+    ]
+    assert phase3b_loops, "Phase 3b DB loop missing — earlier test should have caught this."
+    for loop in phase3b_loops:
+        commit_pos: tuple | None = None
+        update_bias_pos: tuple | None = None
+        # Recursively walk the entire loop body subtree to find the FIRST
+        # textual occurrence of each call. AST node lineno/col_offset is
+        # populated for every Call node (CPython ast module guarantee), so
+        # tuple comparison gives true textual reading order across nesting.
+        for sub in ast.walk(loop):
+            if not isinstance(sub, ast.Call):
+                continue
+            f = sub.func
+            if not isinstance(f, ast.Attribute):
+                continue
+            # Python AST populates (lineno, col_offset) for every Call
+            # node; tuple comparison gives textual reading order across
+            # arbitrary nesting (if / try / nested for).
+            pos = (sub.lineno, sub.col_offset)
+            if f.attr == "commit":
+                # Restrict to self._state.conn.commit() specifically (other
+                # .commit() flavors aren't load-bearing for the lock).
+                attrs: list[str] = []
+                cur: ast.AST = sub.func
+                while isinstance(cur, ast.Attribute):
+                    attrs.append(cur.attr)
+                    cur = cur.value
+                if list(reversed(attrs))[-3:] == ["_state", "conn", "commit"]:
+                    if commit_pos is None or pos < commit_pos:
+                        commit_pos = pos
+            elif f.attr == "update_bias":
+                if update_bias_pos is None or pos < update_bias_pos:
+                    update_bias_pos = pos
+        assert commit_pos is not None, (
+            f"Phase 3b loop missing self._state.conn.commit() — earlier "
+            f"assertion should have caught this."
+        )
+        if update_bias_pos is not None:
+            assert commit_pos < update_bias_pos, (
+                f"In Phase 3b loop body of {METHOD_NAME}, "
+                f"self._state.conn.commit() at {commit_pos} must "
+                f"precede update_bias() at {update_bias_pos} in textual "
+                f"reading order. Reversing this order re-opens the "
+                f"writer-storm cascade: update_bias's separate-conn "
+                f"INSERT would contend with the still-held shared-conn "
+                f"writer lock from the UPDATE."
+            )

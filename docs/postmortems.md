@@ -37,7 +37,7 @@ This collided with `supabase_sync.py` running **165 SQL queries every 10 seconds
 | Gap | Proposed Rule |
 |-----|---------------|
 | analyst.py (now `bot/ai/analyst.py` post-Sprint-10.3) missing busy_timeout | **Already had rule** in CLAUDE.md (line 106) — wasn't applied to analyst.py. Need a regression test. |
-| Per-row commits in settlement loop | **New rule:** Never commit inside a loop — always batch. |
+| Per-row commits in settlement loop | **New rule:** Never commit inside a loop — always batch. **Carveout 2026-05-21 (Bit 86ba1xdwp):** the batch rule applies when the loop body is fast/CPU-only. The Phase 3 weather sub-block in `_poll_evaluated_opportunities` interleaves Open-Meteo HTTP calls (1-5s each) with shared-conn UPDATEs — a single end-of-loop commit holds the writer lock across all HTTP latency and busy-times-out every separate-conn writer. The Phase 3 weather block now uses per-row commit (Phase 3a/3b split). See `kb/failures/database-contention.md` Incident 3 carveout for full rationale + pinned tests. |
 | No WAL requirement documented | **New rule:** All `sqlite3.connect()` calls on state.db must set `PRAGMA journal_mode=WAL`. |
 | supabase_sync runs 165 queries/10s | **Audit needed:** Reduce query count or increase sync interval. Not urgent but contributes to contention window. |
 | Weather observation flooding evaluated_opportunities | **Monitor:** 79 rows per settlement cycle from weather alone. If this grows, add a cleanup policy or reduce observation granularity. |
