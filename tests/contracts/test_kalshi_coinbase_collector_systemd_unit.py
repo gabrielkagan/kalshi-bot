@@ -21,9 +21,11 @@ Per-unit deltas vs ``kalshi-collector.service`` (D1.5):
     vCPUs; Nice=10 (collectors) vs Nice=0 (bot) gates priority when
     CPU is contended. Coinbase single-conn light load is fine
     wherever it lands.
-  - ``MemoryMax=256M`` (vs Kalshi's 512M). Coinbase single-conn × 7
+  - ``MemoryMax=256M`` (vs Kalshi's 2048M post-2026-05-20 raise;
+    originally 512M at D2.5 ship). Coinbase single-conn × 7
     products × 5 channels is well under Kalshi's 7-conn × 21K-subs
-    steady-state footprint; halve the cap.
+    steady-state footprint; cap stays at 256M because the
+    Coinbase-side load did not change under the s-4vcpu-8gb resize.
   - ``LimitNOFILE=512`` (vs Kalshi's 4096). 1 conn × 5 channels ×
     rotation + rclone needs ~30 fds; 512 gives ample headroom.
 
@@ -208,9 +210,11 @@ def test_service_nice_is_10():
 
 
 def test_service_memory_max_is_256m():
-    """``MemoryMax=256M`` kernel-kills before OOMing the 2GB box.
+    """``MemoryMax=256M`` kernel-kills before OOMing the 8GB box.
 
-    Half of kalshi-collector's 512M cap. Coinbase single-conn × 7
+    Kalshi collector raised from 512M → 2048M on 2026-05-20 (ticket
+    86ba1h0cb) in lockstep with the s-2vcpu-2gb → s-4vcpu-8gb droplet
+    resize; the Coinbase cap stays at 256M since its single-conn × 7
     products × 5 channels (post-D2.5 level2_batch promotion) at
     typical Coinbase steady-state load (~200-300 frames/sec
     aggregate — level2_batch ~120/sec dominates, matches+ticker
@@ -223,10 +227,11 @@ def test_service_memory_max_is_256m():
     """
     text = _read_unit()
     assert _directive(text, "MemoryMax") == "256M", (
-        "MemoryMax=256M — D2.5 isolation. Half of Kalshi's 512M cap "
-        "since Coinbase single-conn is structurally lighter. Sized "
-        "against worker queue depth (10K items) + zstd compression "
-        "buffer + rclone overhead."
+        "MemoryMax=256M — D2.5 isolation. Coinbase single-conn is "
+        "structurally lighter than the Kalshi side and did not need a "
+        "raise during the 2026-05-20 droplet resize. Sized against "
+        "worker queue depth (10K items) + zstd compression buffer + "
+        "rclone overhead."
     )
 
 

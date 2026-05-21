@@ -26,6 +26,9 @@ script referenced below must exist at the documented path in the repo.
 
 # Monitor-the-monitor (E.1, ticket 86ba0xq51) — every 10 min, alerts on stale cron monitor logs
 */10 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+
+# Autoalpha Phase 1 (ticket TBD, 2026-05-19) — daily at 13:30 UTC, 23 min after cohort_attribution_nightly.py (13:07 UTC). Reads cohort_attribution_daily, emits promote/demote recommendations to kb/findings/, Telegram-alerts top 5 each.
+30 13 * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/autoalpha_edge_scorer.py >> ~/autoalpha.log 2>&1
 ```
 
 ## MCP Server Setup
