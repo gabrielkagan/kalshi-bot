@@ -2,8 +2,9 @@
 
 Scaffold-only stub. All algorithmic helpers (`compute_lead_edge`,
 `bootstrap_lead_edge_ci`, `bonferroni_adjusted_ci`, `classify_verdict`,
-`survival_diagnostics`, `main`) are NotImplementedError stubs at this
-ship; the failing-assertion test suite at
+`survival_diagnostics`, `main`) don't yet exist — tests RED on
+AttributeError at attribute-lookup time when referencing
+`lead_lag.<name>`. The failing-assertion test suite at
 `tests/research/test_f0_4_cross_asset_lead_lag.py` pins the
 methodological invariants for the impl-Bit follow-up.
 

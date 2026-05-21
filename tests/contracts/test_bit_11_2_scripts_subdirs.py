@@ -148,7 +148,7 @@ SCRIPTS_ROOT_DIR_ALLOWLIST = frozenset(
         "ops",
         "cal_mlp",
         "git_hooks",
-        "research",  # CT-MDP F0.1 (2026-05-20) — falsification spikes
+        "research",  # Phase-0 CT-MDP falsifications (F0.1, F0.4, ...)
         "__pycache__",
     }
 )

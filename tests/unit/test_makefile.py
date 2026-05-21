@@ -100,10 +100,11 @@ BIT_12_4_TARGETS = ("pre-commit-checks",)
 # is the NAVIGATION AID for agent sessions.
 BIT_13_3_TARGETS = ("refresh-map",)
 
-# CT-MDP F0.1 (2026-05-20) — Phase-0 falsification spike tier. Paired
-# with scripts/research/. NOT deploy-blocking; runs locally during
-# falsification work. May carry intentional NotImplementedError stubs
-# during the scaffold-first phase per CLAUDE.md TDD-first discipline.
+# Phase-0 CT-MDP falsifications (F0.1 2026-05-20, F0.4 2026-05-21, ...) —
+# falsification spike tier. Paired with scripts/research/. NOT
+# deploy-blocking; runs locally during falsification work. May carry
+# intentional NotImplementedError stubs during the scaffold-first phase
+# per CLAUDE.md TDD-first discipline.
 CT_MDP_F0_1_TARGETS = ("test-research",)
 
 ALL_TARGETS = REQUIRED_TARGETS + OPTIONAL_TARGETS + BIT_11_3_TARGETS + BIT_11_1B_TARGETS + BIT_12_4_TARGETS + BIT_13_3_TARGETS + CT_MDP_F0_1_TARGETS

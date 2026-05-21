@@ -28,8 +28,8 @@ Invariants pinned here:
    admits microsecond-precision row in the same second AFTER a
    second-precision event; numeric datetime compare must exclude it
    (F0.1 scaffold-R1-M1 precedent).
-4. Regime conditioning — 4 buckets per laggard (vol_high × day,
-   vol_high × night, vol_low × day, vol_low × night) produce distinct
+4. Regime conditioning — 4 buckets per laggard (vol_high_day,
+   vol_high_night, vol_low_day, vol_low_night) produce distinct
    cell estimates.
 5. Bootstrap CI shape — (low, point, high) with low ≤ point ≤ high;
    Bonferroni-adjusted CI wider than standard 95% for identical inputs.
@@ -189,7 +189,7 @@ def test_bootstrap_ci_orders_low_point_high():
 
 
 def test_bonferroni_adjusted_ci_is_wider_than_standard():
-    """For identical inputs, Bonferroni-adjusted CI (n_tests=24) is wider than standard 95% (n_tests=1)."""
+    """For identical inputs, Bonferroni-adjusted CI (n_tests=24) is wider than the standard 95% bootstrap CI (confidence=0.95, no Bonferroni)."""
     per_event = [1.0, 2.0, 1.5, 1.8, 1.3, 0.9, 2.2, 1.4, 1.7, 1.6] * 10  # 100 events
     standard = lead_lag.bootstrap_lead_edge_ci(  # AttributeError → RED
         per_event_lead_edges=per_event,
