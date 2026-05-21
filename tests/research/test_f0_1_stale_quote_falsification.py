@@ -24,7 +24,7 @@ produced findings "impl-R1-M1..M5"; the IMPL-Bit R10 round on
 commit `84de594c` produced finding "impl-R10-C1" (the CRITICAL
 early-return KeyError) which is cited in the
 test_full_pipeline_handles_zero_sigma_events_for_one_asset docstring
-(see the def at L267 of this file).
+(grep for that function name in this file to find the def).
 Comment markers throughout use the prefixed form to disambiguate the
 namespaces — see plan-doc Status log for the canonical finding lists.)
 
