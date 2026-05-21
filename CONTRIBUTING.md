@@ -124,8 +124,11 @@ Per `CLAUDE.md` interaction rules + the modularization plan
   external-advisor feedback. WSClient owns: asyncio thread, WS
   connect/reconnect with exponential backoff, RSA-PSS handshake auth,
   silence watchdog (Apr-24 ordering invariant: `_last_msg_ts` set BEFORE
-  invoking `on_frame`), thread-safe outgoing-frame queue, frame parse +
-  seq-gap detect. Differential test
+  invoking `on_frame`), thread-safe outgoing-frame queue, frame parse
+  (optional — gated by the `parse_on_demand` kwarg; bot keeps the
+  default `False`, collector opts in to `True` post P1-B-brutalist
+  Phase B1 to skip `json.loads` on the asyncio thread) + seq-gap detect
+  (no-op when parse_on_demand=True since sid/seq are unparsed). Differential test
   `tests/equivalence/test_kalshi_wire_differential.py` pins byte-identical
   frame capture across the two consumers (Pillar 3 load-bearing).
 - **`scripts/cal_mlp/integration.py` is the single torch entry point.**
