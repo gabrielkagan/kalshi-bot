@@ -21,7 +21,7 @@ from __future__ import annotations
 def test_asset_ticker_prefix_mirrors_bot_series_tickers():
     """F0.5's ASSET_TICKER_PREFIX must equal bot.constants.SERIES_TICKERS.
 
-    Key-set equality + value equality combined: F0.5 must use the
+    Full `dict.__eq__` (key-set + value equality): F0.5 must use the
     canonical `KX<ASSET>15M` prefix verbatim for the canonical 7-asset
     universe. The LIKE pattern is constructed at query time as
     `ASSET_TICKER_PREFIX[asset] + "-%"` — the trailing hyphen separator
