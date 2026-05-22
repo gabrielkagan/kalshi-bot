@@ -299,7 +299,10 @@ def test_settle_buffer_below_minimum_rejected():
 
 
 def test_verdict_kill_when_every_cell_below_threshold():
-    """All cells with AUC upper-CI < 0.55 → KILL."""
+    """No cell with auc_lower ≥ 0.55 → KILL (binary complement of SURVIVE per
+    classify_verdict; the umbrella's stricter upper-CI < 0.55 framing is a
+    subset of the actual-code KILL definition and is not pinned at the impl —
+    see plan-doc § Kill threshold table for the canonical statement)."""
     classify = getattr(gamma, "classify_verdict", None)
     assert classify is not None, "classify_verdict not yet defined (scaffold-pending)"
 
