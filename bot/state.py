@@ -2135,6 +2135,10 @@ class StateManager:
         _began_explicitly = False
         _t0_lock = time.perf_counter()
         try:
+            # 2026-05-22 R1: parent-class catch — see lockstep note in
+            # insert_evaluated_opportunity retry loop. Production
+            # histogram 2026-05-22 attributed 9 `DatabaseError: another
+            # row available` traceback frames to this function alone.
             for _attempt in range(3):
                 try:
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -2142,7 +2146,7 @@ class StateManager:
                     _began_explicitly = True
                     _be_retries = _attempt
                     break
-                except sqlite3.OperationalError as _be_err:
+                except sqlite3.DatabaseError as _be_err:
                     _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
                     _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
                     _be_retries = _attempt + 1
@@ -2774,6 +2778,24 @@ class StateManager:
         # Only retry on transient "is locked"/"is busy"; "cannot start a
         # transaction within a transaction" is Python-side stale-tx and
         # not transient — sleep won't help.
+        # 2026-05-22 (responding to 2026-05-21 Tick error escalation):
+        # broadened to `sqlite3.DatabaseError` (parent of OperationalError)
+        # because Python's sqlite3 module surfaces stale-cursor-class
+        # raises ("another row available", "no more rows available")
+        # at the bare `DatabaseError` class level, which the narrow
+        # `OperationalError` catch did NOT match. Past-48h production
+        # histogram on the VPS journal: 21× `DatabaseError: another row
+        # available` + 2× `DatabaseError: no more rows available`
+        # escaped the retry block across the four StateManager
+        # hot-path sites that share this conn. Broadening lets the
+        # transient/non-transient string-match dispatch route them
+        # uniformly; behavior for `OperationalError` cases is
+        # unchanged (subclass still matches). Lockstep applied to
+        # insert_rejection + insert_bot_order BEGIN retry loops in
+        # the same Bit; the commit-race "no transaction is active"
+        # except sites stay narrow (different class, only OperationalError
+        # observed). See bot/CLAUDE.md SQLite section for the full
+        # 4-site coverage chain.
         for _attempt in range(3):
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
@@ -2782,7 +2804,7 @@ class StateManager:
                 _began_explicitly = True
                 _be_retries = _attempt
                 break
-            except sqlite3.OperationalError as _be_err:
+            except sqlite3.DatabaseError as _be_err:
                 _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
                 _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
                 _be_retries = _attempt + 1
@@ -3577,13 +3599,18 @@ class StateManager:
         _be_duration_ms: Optional[float] = None
         _be_retries: int = 0
         _t0_lock = time.perf_counter()
+        # 2026-05-22 R1: parent-class catch — see lockstep note in
+        # insert_evaluated_opportunity retry loop. Crash-safety divergence
+        # vs telemetry siblings preserved: non-transient OR retry-exhausted
+        # paths still `raise` (data-integrity contract — losing an order
+        # row is worse than crashing the tick).
         for _attempt in range(3):
             try:
                 self.conn.execute("BEGIN IMMEDIATE")
                 _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
                 _be_retries = _attempt
                 break
-            except sqlite3.OperationalError as _be_err:
+            except sqlite3.DatabaseError as _be_err:
                 _be_duration_ms = (time.perf_counter() - _t0_lock) * 1000.0
                 _be_err_repr = f"{type(_be_err).__name__}: {_be_err}"
                 _be_retries = _attempt + 1

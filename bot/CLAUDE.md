@@ -176,6 +176,35 @@ insert_evaluated_opportunity → swallow / mark_rejection_settled
 → B3-fu1 swallow / insert_bot_order → raise (crash safety) /
 insert_rejection → swallow. Pinned by
 `tests/integration/test_insert_rejection_defensive_guard_regression.py`.**
+**bit-state-py-database-error-catch (2026-05-22) broadened the BEGIN
+IMMEDIATE retry-loop except clause at the THREE retry-bearing
+StateManager hot-path sites — `insert_evaluated_opportunity`,
+`insert_rejection`, `insert_bot_order` — from `sqlite3.OperationalError`
+to its parent `sqlite3.DatabaseError`. Past-48h VPS-journal histogram
+attributed 21× `DatabaseError: another row available` + 2×
+`DatabaseError: no more rows available` to the narrow catch escaping
+(insert_rejection took 9 of the 21 `another row available` frames;
+the remaining 12 plus both `no more rows available` frames landed
+in insert_evaluated_opportunity — 2026-05-21 Tick error escalation
+traceback identifier). Python's sqlite3 module surfaces stale-
+cursor-class raises at the bare `DatabaseError` class — the existing
+`OperationalError` catch failed to match, so the retry / transient-
+vs-non-transient string dispatch never ran and the exception
+escaped to the outer broad catch (telemetry rows lost on the two
+telemetry-class siblings `insert_evaluated_opportunity` +
+`insert_rejection`; crash-safety re-raise on `insert_bot_order` —
+strictly worse on that path). Broadening to the parent class is a strict superset
+(`OperationalError` is a subclass) and preserves all existing
+transient/non-transient routing. The fourth hot-path site —
+`mark_rejection_settled` — has only a commit-race except (no BEGIN
+retry loop) and the commit-race "no transaction is active" signature
+has only been observed as `OperationalError` in production logs;
+it stays narrow until the cross-thread tx-race refactor (deferred
+per B3-fu1 OUT OF SCOPE). Pinned by AST guard
+`tests/integration/test_db_locked_instrumentation.py
+::test_begin_immediate_retry_loop_catches_database_error` (parametrized
+over the three host functions — extend `_BEGIN_RETRY_LOOP_HOSTS`
+if a future Bit adds a retry-loop sister site).**
 
 - New `sqlite3.connect()`: set `PRAGMA journal_mode=WAL` +
   `PRAGMA busy_timeout=10000`. Catch the contention bugs early.
