@@ -1,10 +1,18 @@
 """D-21 — order_outcome vocab compatibility window.
 
-Authoritative source: tests/test_order_outcome_vocab.py + AST guard +
+Authoritative source: tests/test_order_outcome_vocab.py::ALLOWED_OUTCOMES +
 project_order_outcome_vocab_resolved_may04.md (per RCA D-21).
 
-Canonical order_outcome values (the ALLOWED_OUTCOMES set):
-    'filled', 'partial_filled', 'cancelled', 'rejected'
+Canonical order_outcome values (the production ALLOWED_OUTCOMES set, 12 entries):
+    'filled', 'unfilled', 'unfilled_retry', 'skipped_near_close',
+    'canceled' (American), 'escalation_edge_abort', 'partial_retry',
+    'partial_filled', 'unfilled_window_closed', 'unfilled_price_collapsed',
+    'unfilled_price_drift', 'expired'
+
+NOTE: RCA D-21 doc lists a wrong 4-value set including British 'cancelled' and
+'rejected'. Both are RCA drift — the production AST guard pins American
+'canceled' and never had 'rejected' at all (R1 finding C2; see CANONICAL_OUTCOMES
+declaration below).
 
 Three legacy sites wrote 'partial_fill' (event_type vocab — the wrong family).
 The AST guard catches future drift; replay's compute_fill_rate must accept

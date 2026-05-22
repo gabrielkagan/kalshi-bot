@@ -114,11 +114,13 @@ def test_d14_balance_history_reconstruction_helper_exists() -> None:
 def test_d14_hwm_window_is_7_days() -> None:
     """The HWM lookback window is 7 days.
 
-    NOTE: there is NO `bot.constants.HWM_LOOKBACK` symbol (R1 finding: M3).
-    The canonical 7-day window is documented in:
-      - config.py::DRAWDOWN_* thresholds (lines ~153-155)
+    NOTE: there is NO `bot.constants.HWM_LOOKBACK` symbol (R1 finding M3).
+    R2 finding MNR1 corrected line cites:
+      - config.py: tier thresholds at ~153-155 (DRAWDOWN_HALF_THRESHOLD=0.85,
+        QUARTER_THRESHOLD=0.75, HALT_THRESHOLD=0.65) — these are NOT the window
+      - config.py: 7-day window at line 156 (HWM_LOOKBACK_SECONDS = 7 * 86400)
       - kb/concepts/drawdown-scaler.md
-      - bot._impl::PositionSizer.get_rolling_hwm() implementation
+      - bot._impl::PositionSizer.get_rolling_hwm() implementation (B1-baseline)
 
     Pin the constant if B3 exposes it under any of the accepted names.
     """

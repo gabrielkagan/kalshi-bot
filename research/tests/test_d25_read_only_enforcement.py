@@ -32,27 +32,89 @@ WRITE_SQL_PATTERNS = [
 ]
 
 
-def test_d25_replay_source_has_no_write_sql() -> None:
-    """research/replay.py has no INSERT/UPDATE/DELETE/CREATE/DROP/ALTER SQL in .execute() calls.
+def _extract_string_literals_from_call_arg(node: "ast.AST") -> "list[str]":
+    """Best-effort extract string literal(s) from an AST call argument.
 
-    R1 finding M5: the original regex matched docstring prose. Narrowed to
-    require the write SQL to appear inside a `.execute(` or `.executescript(`
-    call site.
+    Handles:
+      - Plain str: 'INSERT ...'
+      - Triple-quoted str: '''INSERT ...'''
+      - f-strings: f'INSERT {x}' → returns the constant fragments
+      - String concat: 'INSERT' + 'foo' → returns both pieces
+    Cannot resolve: variable references (Name lookups), method calls.
+    """
+    import ast as _ast
+    out: "list[str]" = []
+    if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+        out.append(node.value)
+    elif isinstance(node, _ast.JoinedStr):
+        for v in node.values:
+            if isinstance(v, _ast.Constant) and isinstance(v.value, str):
+                out.append(v.value)
+    elif isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Add):
+        out.extend(_extract_string_literals_from_call_arg(node.left))
+        out.extend(_extract_string_literals_from_call_arg(node.right))
+    return out
+
+
+def test_d25_replay_source_has_no_write_sql() -> None:
+    """research/replay.py has no INSERT/UPDATE/DELETE/CREATE/DROP/ALTER SQL inside .execute*() calls.
+
+    R1 finding M5 narrowed the regex to require `.execute(` context, but R2
+    finding M2 noted the regex blind-spotted triple-quoted strings, f-strings,
+    and variable-bound SQL. Switched to ast.parse + NodeVisitor so all three
+    patterns are covered.
+    """
+    import ast as _ast
+    src = inspect.getsource(rep)
+    tree = _ast.parse(src)
+    # Walk every Call node whose function is `something.execute*`.
+    violations: "list[tuple[str, str]]" = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        func = node.func
+        # Match conn.execute / conn.executescript / conn.executemany / cursor.execute*
+        if isinstance(func, _ast.Attribute) and func.attr in (
+            "execute", "executescript", "executemany"
+        ):
+            if not node.args:
+                continue
+            literals = _extract_string_literals_from_call_arg(node.args[0])
+            for lit in literals:
+                for pattern in WRITE_SQL_PATTERNS:
+                    if re.search(pattern, lit, re.IGNORECASE):
+                        violations.append((pattern, lit))
+    assert not violations, (
+        f"D-25 forbidden write SQL inside .execute*() call(s): {violations[:3]}. "
+        f"Replay is read-only."
+    )
+
+
+def test_d25_whole_source_write_sql_must_be_marked_allowed() -> None:
+    """Defense-in-depth: any write-SQL string anywhere in replay.py source must be
+    accompanied by a `# D-25-allow:` line comment within 3 lines of the match.
+
+    Catches the case where SQL is built via string concatenation or variable
+    binding outside of an .execute() call that the AST visitor sees.
     """
     src = inspect.getsource(rep)
-    # Find execute(...) or executescript(...) string-literal args
-    execute_blocks = re.findall(
-        r"\.execute(?:script|many)?\s*\(\s*([\"'](?:[^\"'\\]|\\.)*[\"'])",
-        src,
-    )
-    for sql_literal in execute_blocks:
-        # Strip surrounding quotes
-        sql = sql_literal.strip("\"'")
-        for pattern in WRITE_SQL_PATTERNS:
-            assert not re.search(pattern, sql, re.IGNORECASE), (
-                f"D-25 forbidden write SQL inside .execute() call: pattern "
-                f"{pattern!r} matched in {sql!r}. Replay is read-only."
-            )
+    lines = src.splitlines()
+    for pattern in WRITE_SQL_PATTERNS:
+        for ln_idx, line in enumerate(lines):
+            if re.search(pattern, line, re.IGNORECASE):
+                # Allow if a # D-25-allow: comment is within ±3 lines
+                window = lines[max(0, ln_idx - 3): ln_idx + 4]
+                allowed = any("D-25-allow" in w for w in window)
+                # Also allow if the match is inside a comment / docstring marker on the same line
+                # (e.g., the WRITE_SQL_PATTERNS list itself, comments explaining the pattern).
+                is_pattern_decl = "WRITE_SQL_PATTERNS" in line or line.strip().startswith("#")
+                if allowed or is_pattern_decl:
+                    continue
+                assert False, (
+                    f"D-25 unguarded write-SQL match at replay.py line {ln_idx + 1}: "
+                    f"pattern={pattern!r} line={line.strip()!r}. "
+                    f"Add `# D-25-allow: <reason>` within 3 lines if intentional."
+                )
 
 
 def test_d25_replay_source_select_only() -> None:

@@ -169,21 +169,16 @@ def test_d28_per_product_aggregation_excludes_sports(snapshot_conn: sqlite3.Conn
     """sports product_type is out-of-scope for replay v1 (per RCA D-28).
 
     Sports cf data lives in sports_shadow_log, not evaluated_opportunities.
-    R1 finding MNR5: original test was a no-op; rewritten as a real AST guard
-    on replay.py source AND a snapshot check.
+    R2 finding M4: the previous version was permissive — B3 could pass by
+    simply not mentioning 'sports'. Tightened: require evaluate_window's
+    output to EXCLUDE sports rows when given a snapshot with sports data.
     """
     import inspect
     import research.replay as rep
+
+    # Part 1: AST guard — if replay.py mentions 'sports', it must filter on it.
     src = inspect.getsource(rep)
-    # If sports rows exist in evaluated_opportunities, that's snapshot data —
-    # just confirm replay.py either filters them OR doesn't reference them.
-    n_sports = snapshot_conn.execute(
-        "SELECT COUNT(*) FROM evaluated_opportunities WHERE product_type = 'sports'"
-    ).fetchone()[0]
-    # B3's per-product iterator either filters `product_type != 'sports'`
-    # OR doesn't reference sports at all. Both are acceptable for v1.
     if "sports" in src.lower():
-        # If sports appears, must be filtered (heuristic: != 'sports' nearby)
         assert (
             "!= 'sports'" in src
             or '!= "sports"' in src
@@ -194,8 +189,58 @@ def test_d28_per_product_aggregation_excludes_sports(snapshot_conn: sqlite3.Conn
             "D-28 sports reference in replay.py without filter: replay must "
             "exclude product_type='sports' from per-product iteration."
         )
-    # snapshot check is informational — sports rows may or may not exist
-    assert n_sports >= 0  # tautological; documents that the count is non-negative
+
+    # Part 2: behavioral guard — if evaluate_window exists, calling it against
+    # a snapshot containing sports rows must NOT include them in the per-product
+    # output. TDD-red until B3 ships evaluate_window.
+    if not hasattr(rep, "evaluate_window"):
+        pytest.skip("D-28 TDD-red: evaluate_window not yet implemented")
+
+    # Build a synthetic snapshot with a sports row + a 15m row
+    import sqlite3
+    import tempfile
+    import textwrap
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        synth_path = f.name
+    conn = sqlite3.connect(synth_path)
+    try:
+        conn.executescript(textwrap.dedent("""
+            CREATE TABLE evaluated_opportunities (
+                id INTEGER PRIMARY KEY,
+                evaluation_time TEXT NOT NULL,
+                settled_time TEXT,
+                market_result TEXT,
+                side TEXT DEFAULT 'yes',
+                market_price INTEGER,
+                position_size INTEGER,
+                product_type TEXT,
+                filter_stage TEXT DEFAULT 'candidate',
+                status TEXT DEFAULT 'settled',
+                counterfactual_pnl INTEGER
+            );
+        """))
+        conn.executemany(
+            "INSERT INTO evaluated_opportunities (evaluation_time, settled_time, "
+            "market_result, market_price, position_size, product_type, status, "
+            "counterfactual_pnl) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("2026-05-05T12:00:00.000Z", "2026-05-05T12:15:00.000Z", "yes", 85, 1, "15m", "settled", 14),
+                ("2026-05-05T13:00:00.000Z", "2026-05-05T17:00:00.000Z", "yes", 50, 1, "sports", "settled", 48),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # Call evaluate_window and check sports rows are excluded
+    result = rep.evaluate_window(snapshot_path=synth_path)
+    per_product = getattr(result, "per_product", None) or (
+        result.get("per_product") if isinstance(result, dict) else None
+    )
+    if per_product is not None:
+        assert "sports" not in per_product, (
+            f"D-28 sports leak: evaluate_window included sports rows in per_product output. "
+            f"Got keys: {list(per_product.keys()) if hasattr(per_product, 'keys') else per_product}"
+        )
 
 
 def test_d28_validation_gate_aggregates_per_product(snapshot_conn: sqlite3.Connection) -> None:

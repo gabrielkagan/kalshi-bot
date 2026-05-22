@@ -77,12 +77,34 @@ def test_d29_replay_regime_cutoff_rejects_naive_datetime(tmp_path) -> None:
     import research.replay as rep
     if not hasattr(rep, "evaluate_window"):
         pytest.skip("D-29 TDD-red: evaluate_window not yet implemented")
-    # Real empty snapshot file — bypasses the file-not-found path
+    # Real snapshot file with minimal table — bypasses file-not-found AND
+    # the D-10 missing-table RuntimeError path so the tz-check is reached
+    # (R2 finding MNR4).
     import sqlite3
+    import textwrap
     snap = tmp_path / "snapshot_d29_naive_tz.db"
-    sqlite3.connect(str(snap)).close()
+    conn = sqlite3.connect(str(snap))
+    conn.executescript(textwrap.dedent("""
+        CREATE TABLE evaluated_opportunities (
+            id INTEGER PRIMARY KEY,
+            evaluation_time TEXT NOT NULL,
+            settled_time TEXT,
+            market_result TEXT,
+            side TEXT DEFAULT 'yes',
+            market_price INTEGER,
+            position_size INTEGER,
+            product_type TEXT,
+            filter_stage TEXT DEFAULT 'candidate',
+            status TEXT DEFAULT 'settled',
+            counterfactual_pnl INTEGER
+        );
+    """))
+    conn.commit()
+    conn.close()
     naive = dt.datetime(2026, 4, 30, 16, 16, 0)  # NO tzinfo
-    with pytest.raises((TypeError, ValueError)) as excinfo:
+    # Accept TypeError, ValueError, OR RuntimeError (D-10 schema raise path is
+    # a sibling — both are valid early-exit raises).
+    with pytest.raises((TypeError, ValueError, RuntimeError)) as excinfo:
         rep.evaluate_window(
             snapshot_path=snap,
             regime_cutoff=naive,

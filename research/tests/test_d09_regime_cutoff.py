@@ -186,27 +186,64 @@ def test_d09_cutoff_iso_format_pinned() -> None:
 def test_d09_replay_no_silent_cross_regime_aggregation() -> None:
     """AST guard: any SELECT SUM(counterfactual_pnl) in replay.py is paired with a regime/time filter.
 
-    R1 finding M7: the original blanket-forbid of `SELECT SUM(counterfactual_pnl)`
-    would force B3 to write contorted SQL. Narrowed: the SUM is OK as long as
-    the same SQL string includes a regime_cutoff / evaluation_time / time-based
-    filter (heuristic).
+    R1 finding M7 narrowed the regex to require `.execute(` call site, but R2
+    finding M3 noted the regex blind-spotted triple-quoted strings, f-strings,
+    and variable-bound SQL. Switched to ast.parse + NodeVisitor + a
+    whole-source defense-in-depth pass.
     """
+    import ast as _ast
     import inspect
     import re
     import research.replay as rep
     src = inspect.getsource(rep)
-    # Find SELECT SUM(counterfactual_pnl) inside execute() / executescript() call sites
-    matches = re.findall(
-        r"\.execute(?:script|many)?\s*\(\s*[\"']"
-        r"([^\"']*\bSELECT\b[^\"']*\bSUM\s*\(\s*counterfactual_pnl\s*\)[^\"']*)"
-        r"[\"']",
-        src,
-        re.IGNORECASE,
-    )
-    for sql in matches:
+    # Pass 1: AST visitor for .execute*(...) calls
+    tree = _ast.parse(src)
+    sum_in_execute: list[str] = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, _ast.Attribute) and func.attr in (
+            "execute", "executescript", "executemany"
+        ):
+            if not node.args:
+                continue
+            # Reuse the string-literal extractor from D-25.
+            from research.tests.test_d25_read_only_enforcement import (
+                _extract_string_literals_from_call_arg,
+            )
+            for lit in _extract_string_literals_from_call_arg(node.args[0]):
+                if re.search(
+                    r"\bSELECT\b.*\bSUM\s*\(\s*counterfactual_pnl\s*\)",
+                    lit,
+                    re.IGNORECASE | re.DOTALL,
+                ):
+                    sum_in_execute.append(lit)
+    # Pass 2: whole-source scan for SUM(counterfactual_pnl) outside .execute() blocks.
+    # Heuristic: if a line contains SUM(counterfactual_pnl) and is not the test's
+    # own description, the line itself (or one within ±2 lines) must reference
+    # a time filter.
+    lines = src.splitlines()
+    for ln_idx, line in enumerate(lines):
+        if not re.search(
+            r"\bSUM\s*\(\s*counterfactual_pnl\s*\)", line, re.IGNORECASE
+        ):
+            continue
+        # Skip if it's a comment/docstring marker only
+        if line.strip().startswith("#"):
+            continue
+        window = "\n".join(lines[max(0, ln_idx - 2): ln_idx + 3])
+        time_kws = ("evaluation_time", "settled_time", "cutoff", "regime")
+        assert any(k in window.lower() for k in time_kws), (
+            f"D-9 unfiltered SUM(cf) at replay.py line {ln_idx + 1}: "
+            f"{line.strip()!r}. Add evaluation_time/settled_time/cutoff/regime in "
+            f"the same SQL statement or within ±2 lines."
+        )
+    # Validate Pass 1 results too
+    for sql in sum_in_execute:
         lower = sql.lower()
-        # Require some form of time-based filtering in the same statement.
         time_filter_keywords = ("evaluation_time", "settled_time", "cutoff", "regime")
         assert any(k in lower for k in time_filter_keywords), (
-            f"D-9 unfiltered SUM(cf): {sql!r}. Add evaluation_time/cutoff filter."
+            f"D-9 unfiltered SUM(cf) inside .execute*(): {sql!r}. "
+            f"Add evaluation_time/cutoff filter."
         )

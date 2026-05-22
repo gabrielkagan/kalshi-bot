@@ -10,7 +10,10 @@ The 4 cell-block filter_stage values that prevent a row from reaching
     96C_SOL_XRP_STC_DANGER_BAND      (HIGH_PRICE_STC_BLOCK_FILTER_STAGE)
     TM98_97_98C_2_5MIN_BLEED         (TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE)
     SOL_TAKER_85_89C_2_5MIN_BLEED    (SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE)
-    tm96_calmlp_gate_blocked         (lowercase — bot._impl branch)
+    tm96_calmlp_gate_blocked         (lowercase — bot._impl branch in B1-baseline
+                                      worktree; on post-9.3-iii.c main this
+                                      lives in the canonical submodule home —
+                                      see CLAUDE.md for the layout map)
 
 Replay must UNION these with 'candidate' when aggregating "all 15M trades"
 funnels, AND must classify them identically to alpha_audit.classify_stage.
@@ -28,7 +31,9 @@ import pytest
 #   line 103: HIGH_PRICE_STC_BLOCK_FILTER_STAGE = "96C_SOL_XRP_STC_DANGER_BAND"
 #   line 150: TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE = "TM98_97_98C_2_5MIN_BLEED"
 #   line 172: SOL_TAKER_LOWPRICE_BLEED_BLOCK_FILTER_STAGE = "SOL_TAKER_85_89C_2_5MIN_BLEED"
-# Plus bot._impl tm96_calmlp_gate_blocked branch (lowercase by design).
+# Plus bot._impl tm96_calmlp_gate_blocked branch (lowercase by design). NOTE:
+# B2 base predates the 9.3-iii.c bot/_impl.py deletion — on post-9.3-iii.c
+# main, this lives in the canonical submodule home.
 EXPECTED_BLOCK_STAGES = frozenset({
     "96C_SOL_XRP_STC_DANGER_BAND",
     "TM98_97_98C_2_5MIN_BLEED",

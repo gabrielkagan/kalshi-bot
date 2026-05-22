@@ -127,17 +127,18 @@ def test_d26_b1_research_replay_module_loads_cleanly() -> None:
 
 
 def test_d26_pool_benchmark_function_exists() -> None:
-    """B3 ships a pool-benchmark or parallel-replay function (TDD-red)."""
-    if (
+    """B3 ships a pool-benchmark or parallel-replay function (TDD-red).
+
+    R2 finding MNR2: changed pytest.skip → assertion failure. The test is part
+    of the B3 contract surface — it should be RED until B3 ships, not silently
+    skipped.
+    """
+    has_parallel = (
         hasattr(rep, "replay_parallel")
         or hasattr(rep, "evaluate_window_parallel")
         or hasattr(rep, "_pool_replay")
-    ):
-        pass  # at least one parallel entry point exists
-    else:
-        # TDD-red signal for B3
-        import pytest
-        pytest.skip(
-            "D-26 TDD-red: B3 must ship a parallel-replay function "
-            "(replay_parallel / evaluate_window_parallel / _pool_replay)"
-        )
+    )
+    assert has_parallel, (
+        "D-26 TDD-red: B3 must ship one of "
+        "(replay_parallel / evaluate_window_parallel / _pool_replay)"
+    )
