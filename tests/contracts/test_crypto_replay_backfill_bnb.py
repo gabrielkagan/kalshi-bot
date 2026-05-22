@@ -149,7 +149,7 @@ def test_replay_market_writes_spot_staleness_seconds_from_candle_lag():
     # we don't care about vol here, so feed 12 ticks with the last one
     # 240s before eval_ts. Reuse 1-Hz cadence so the per-5s rescale
     # produces a valid number (matches the existing harness test fixture
-    # pattern from tests/integration/test_hype_doge_replay_backfill.py).
+    # pattern from tests/integration/test_crypto_replay_backfill.py).
     last_candle_ts = eval_ts - 240
     ticks = [(last_candle_ts - 60 * i, 100.0 + i * 0.001) for i in range(11, -1, -1)]
     # ticks is now ascending by ts. Confirm last is exactly eval_ts - 240.

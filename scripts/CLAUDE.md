@@ -61,7 +61,8 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
   extractor shipped P2.1.a-3 (ticket `86b9wuhhr`, commit `3a9d690a`).
   Reads `historical_replay_calmlp` from `data/replay/state.db`
   (Mac-only). Strict-subset 4-feature recipe with its own
-  `compute_cfg_fp_replay` namespace pinned at `9347942aaba71146`
+  `compute_cfg_fp_replay` namespace pinned at `ea9c30477f844afa`
+  (pre-Bit-F: `9347942aaba71146`; rotated Bit F 86ba1wpck 2026-05-21 via the BNB-key addition to `ASSET_FLOORS_REPLAY`)
   (dropped from recipe: `market_price`, `prob_breakeven_gap`). Boundary
   with `extract_data.py`: live rows → production recipe; replay rows →
   replay recipe. `train.py` consumes both bundle types via

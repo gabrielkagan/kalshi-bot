@@ -10,10 +10,10 @@ demands 32 source columns (REQUIRED_SOURCE_COLS) — most are bot-state
 features (market_price, NBBO, vol_regime, momentum, balance, depth, etc.).
 The Phase 2 replay backfill table `historical_replay_calmlp` (Mac-only,
 written by `scripts/backfill/crypto_replay_backfill.py`, ticket
-`86b9wy7v3`, harness shipped at `fe75cf0`) has 20 columns post-P2.3.b-fu2
-(19 pre-fu2 + `threshold REAL` added 2026-05-13 ticket `86b9xtam7` to preserve
-sub-cent strike precision for DOGE) by design because the harness explicitly
-notes:
+`86b9wy7v3`, harness shipped at `fe75cf0`; renamed + BNB-widened in Bit F
+`86ba1wpck` 2026-05-21) has 21 columns post-Bit-F (19 pre-fu2 + `threshold
+REAL` ticket `86b9xtam7` 2026-05-13 + `spot_staleness_seconds REAL` ticket
+`86ba1wpck` 2026-05-21) by design because the harness explicitly notes:
 
   > Bot-state features cannot be replayed accurately (market_price/NBBO,
   > depth, OFT, queue position, recent_bot_pnl, drawdown_scaler). These

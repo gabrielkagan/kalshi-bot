@@ -3,7 +3,8 @@
 P2.1.a-3 produced bundles in two distinct recipe namespaces:
   - production v1.1 (BTC/ETH/SOL/XRP, cfg_fp 345978797274721f / ablation
     1969b12c6c0c39bf, 8 CONT_FEATURE_COLS)
-  - replay_v1     (HYPE/DOGE, cfg_fp 9347942aaba71146, 4
+  - replay_v1     (HYPE/DOGE/BNB — BNB added Bit F 86ba1wpck 2026-05-21,
+    cfg_fp ea9c30477f844afa (pre-Bit-F: 9347942aaba71146), 4
     CONT_FEATURE_COLS_REPLAY)
 
 train.py/validate.py/conformal.py today hardcode `--asset` choices to
@@ -168,7 +169,8 @@ def test_resolve_recipe_production_namespace():
 def test_resolve_recipe_replay_namespace():
     """Anchor 3: replay_v1 namespace resolves to CONT_FEATURE_COLS_REPLAY
     (4 features, NO market_price, NO prob_breakeven_gap, NO seconds_to_close,
-    NO time_decayed_proximity) and to ASSET_FLOORS_REPLAY (HYPE/DOGE).
+    NO time_decayed_proximity) and to ASSET_FLOORS_REPLAY (HYPE/DOGE/BNB —
+    BNB added Bit F `86ba1wpck` 2026-05-21).
 
     Excluding these production-recipe features is load-bearing — see
     `features.py` CONT_FEATURE_COLS_REPLAY comment (zero-variance stc in

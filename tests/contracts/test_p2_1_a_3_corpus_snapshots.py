@@ -354,14 +354,19 @@ def test_p2_1_a_3_compute_cfg_fp_replay_pinned():
 
 
 def test_p2_1_a_3_asset_floors_replay_has_hype_doge():
-    """Anchor 8: features.ASSET_FLOORS_REPLAY includes HYPE + DOGE.
-    Kept SEPARATE from production ASSET_FLOORS so adding/removing replay
-    assets doesn't shift the v1.1 production cfg_fp pin (which bakes
-    ASSET_FLOORS into its canonical dict). See test_p2_1_a_3_production
-    _cfg_fps_unchanged for the load-bearing companion check."""
+    """Anchor 8: features.ASSET_FLOORS_REPLAY includes HYPE + DOGE + BNB.
+    (BNB added Bit F `86ba1wpck` 2026-05-21 — rotates cfg_fp_replay
+    9347942aaba71146 → ea9c30477f844afa.) Kept SEPARATE from production
+    ASSET_FLOORS so adding/removing replay assets doesn't shift the v1.1
+    production cfg_fp pin (which bakes ASSET_FLOORS into its canonical
+    dict). See test_p2_1_a_3_production_cfg_fps_unchanged for the
+    load-bearing companion check."""
     features = _import_features()
     assert "HYPE" in features.ASSET_FLOORS_REPLAY, "ASSET_FLOORS_REPLAY missing HYPE"
     assert "DOGE" in features.ASSET_FLOORS_REPLAY, "ASSET_FLOORS_REPLAY missing DOGE"
+    assert "BNB" in features.ASSET_FLOORS_REPLAY, (
+        "ASSET_FLOORS_REPLAY missing BNB (Bit F `86ba1wpck` 2026-05-21)"
+    )
     # Ensure HYPE/DOGE NOT silently in production ASSET_FLOORS (would shift
     # production cfg_fp pin).
     assert "HYPE" not in features.ASSET_FLOORS, (

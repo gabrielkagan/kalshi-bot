@@ -420,11 +420,13 @@ def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Replay-corpus recipe (HYPE/DOGE — Phase 2 replay backfill)
+# Replay-corpus recipe (HYPE/DOGE/BNB — Phase 2 replay backfill; BNB added Bit F)
 # ---------------------------------------------------------------------------
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — pull path for HYPE/DOGE
-# `historical_replay_calmlp` rows. The replay corpus has 20 cols post-P2.3.b-fu2
-# (19 pre-fu2 + `threshold REAL`, ticket `86b9xtam7`) vs
+# `historical_replay_calmlp` rows. Bit F (2026-05-21, ticket 86ba1wpck) widened
+# to include BNB. The replay corpus has 21 cols post-Bit-F (19 pre-fu2 +
+# `threshold REAL` ticket `86b9xtam7` + `spot_staleness_seconds REAL` ticket
+# `86ba1wpck`) vs
 # the 32 REQUIRED_SOURCE_COLS in extract_data.py; most bot-state features
 # (market_price, vol_regime, z_score, momentum/realized-vol, NBBO, balance,
 # strategy, side) are honest-NULL on replay rows by design (see
@@ -517,8 +519,10 @@ class RecipeSpec(NamedTuple):
         merges CORE (`ASSET_FLOORS` = {BTC, ETH, SOL, XRP}, baked into
         cfg_fp) + EXT (`ASSET_FLOORS_EXT` = {HYPE, DOGE, ...}, NOT in
         cfg_fp; extensible for future Kalshi crypto rollouts per Bit C
-        86ba0jn2b 2026-05-19). Replay namespace = HYPE/DOGE only
-        (separate `ASSET_FLOORS_REPLAY`). Caller membership-tests
+        86ba0jn2b 2026-05-19). Replay namespace = HYPE/DOGE/BNB
+        (separate `ASSET_FLOORS_REPLAY`; BNB added Bit F `86ba1wpck`
+        2026-05-21, rotated cfg_fp_replay 9347942aaba71146 →
+        ea9c30477f844afa). Caller membership-tests
         `if asset not in recipe.asset_floors` to guard `--asset NAME`
         against `recipe_namespace=NS` mismatch.
       - categorical_feature_cols: per-recipe tuple of categorical column

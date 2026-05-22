@@ -13,7 +13,7 @@ Phase 1 (POSITIVE) earned the build budget: 4,911 pre-T1 settled markets per
 asset (Mar 18 → May 10), 21× the live T1 corpus. See
 ``kb/findings/hype-doge-kalshi-market-history-may12.md``.
 
-Architecture (load-bearing — see test ``tests/integration/test_hype_doge_replay_backfill.py``):
+Architecture (load-bearing — see test ``tests/integration/test_crypto_replay_backfill.py``):
 
 - ``historical_replay_calmlp`` table (NOT writing to evaluated_opportunities
   — that would contaminate production audits + Wilson CIs).

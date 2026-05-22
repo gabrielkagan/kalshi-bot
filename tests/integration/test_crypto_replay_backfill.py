@@ -1,12 +1,13 @@
-"""86b9wy7v3 Phase 2 — HYPE/DOGE shadow backfill via prediction-pipeline replay.
+"""86b9wy7v3 Phase 2 + Bit F (86ba1wpck) — HYPE/DOGE/BNB shadow backfill via
+prediction-pipeline replay.
 
 Pins the contract for `scripts/backfill/crypto_replay_backfill.py`:
 
-- NEW table `historical_replay_calmlp` schema (cols + PK + CHECK constraints).
+- `historical_replay_calmlp` schema (cols + PK + CHECK constraints).
 - PRIMARY KEY `(ticker, evaluation_time)` with INSERT OR REPLACE idempotency.
 - `data_provenance` stamped `'replay_phase2_v1'` on every harness-written row.
 - `result` CHECK-constrained to {'yes', 'no'}; `asset` CHECK-constrained to
-  {'HYPE', 'DOGE'} (Phase 2 v1 scope per Phase 1 finding doc).
+  {'HYPE', 'DOGE', 'BNB'} (BNB added Bit F 2026-05-21).
 - Lock-step parity: `hour_sin`/`hour_cos`/`sigma_winsorize`/`prob_breakeven_gap`
   must route through `bot.helpers.derived_features` canonical helpers — the
   harness MUST NOT duplicate the math. Mirrors the surface
@@ -43,12 +44,15 @@ from bot.helpers.derived_features import (  # noqa: E402
 REPLAY_TABLE = "historical_replay_calmlp"
 REPLAY_PROVENANCE = "replay_phase2_v1"
 
-# 20 cols post-P2.3.b-fu2 (19 pre-fu2 + `threshold REAL`, ticket `86b9xtam7`,
-# 2026-05-13). This list is the minimum REQUIRED subset; the schema-check
-# below uses `set(EXPECTED_COLS) - set(cols)` so post-fu2 extra cols are
-# accepted. `threshold` deliberately NOT listed here so pre-fu2 corpora
-# (HYPE legacy) still satisfy the contract — `tests/contracts/test_p2_3_b_fu2_threshold_precision.py`
-# pins the post-fu2 `threshold` column presence separately.
+# 21 cols post-Bit-F (19 pre-P2.3.b-fu2 + `threshold REAL` ticket `86b9xtam7`
+# 2026-05-13 + `spot_staleness_seconds REAL` ticket `86ba1wpck` Bit F
+# 2026-05-21). This list is the minimum REQUIRED subset; the schema-check
+# below uses `set(EXPECTED_COLS) - set(cols)` so post-fu2/post-Bit-F extra
+# cols are accepted. `threshold` deliberately NOT listed here so pre-fu2
+# corpora (HYPE legacy) still satisfy the contract —
+# `tests/contracts/test_p2_3_b_fu2_threshold_precision.py` pins the post-fu2
+# `threshold` column presence separately. `spot_staleness_seconds` is
+# pinned in `tests/contracts/test_crypto_replay_backfill_bnb.py`.
 EXPECTED_COLS = [
     "ticker", "evaluation_time", "asset", "strike_cents",
     "close_time", "open_time",
@@ -132,8 +136,9 @@ def test_harness_exposes_api():
 
 def test_table_created_with_expected_columns(tmp_path: Path):
     """`ensure_schema()` creates `historical_replay_calmlp` with the 19 REQUIRED
-    cols (subset check; post-P2.3.b-fu2 the table has 20 cols total with the
-    added `threshold REAL`)."""
+    cols (subset check; post-Bit-F the table has 21 cols total with the
+    added `threshold REAL` (P2.3.b-fu2) + `spot_staleness_seconds REAL`
+    (Bit F, 2026-05-21))."""
     from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
