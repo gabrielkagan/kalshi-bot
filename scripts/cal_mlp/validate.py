@@ -296,7 +296,7 @@ def empirical_coverage(
         # to 0 in replay mode — mirrors Phase4Dataset's int64-zero defaults
         # for absent categoricals per fu2 (86b9xd9hn). The conformal cells
         # for a replay-namespace bundle are built per-stc_bucket only
-        # (extract_data_replay.compute_per_stc_bucket_stats:541), so
+        # (`extract_data_replay.compute_per_stc_bucket_stats`), so
         # collapsing price_tier and vol_regime axes is the conformal-
         # artifact-correct lookup form here.
         if replay_mode:

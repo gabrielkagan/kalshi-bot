@@ -199,8 +199,10 @@ and requires a sister anchor in the dispatch test):
   than silently defaulting. Replay-mode with `market_blend_w != 0`
   raises `SystemExit` at function entry — the neutral-50¢ breakeven
   only cancels the blend term when `w=0` and `validate.main`'s blend
-  resolution stack can otherwise pick up a non-zero scalar for
-  HYPE/DOGE silently. Pinned by
+  resolution stack can otherwise pick up a non-zero scalar for any
+  15M-product asset silently (HYPE 0.80 / DOGE 0.60 post-P2.3; BNB
+  0.20 post-P2.4 2026-05-19; or the legacy 0.40 fallback for non-15M
+  product types / assets absent from MARKET_BLEND_W_BY_ASSET). Pinned by
   `tests/contracts/test_p2_1_a_3_fu3_validate_replay_tolerance.py`
   (8 anchors: functional regression + nonzero-blend hard-fail +
   zero-blend success + keyword-only kwarg + production no-regression +

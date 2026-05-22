@@ -11,7 +11,8 @@ Phase 5 coverage audit step:
   `row['vol_regime_int']`, `row['market_price']`, `row['side']` directly.
   Replay parquets (extract_data_replay.py) structurally lack all four
   columns (no `market_price` orderbook → no PRICE_BIN_CUTOFFS digitize;
-  no vol regime feed for HYPE/DOGE; `side_int=1` hardcoded YES). Result:
+  no vol regime feed for any replay-recipe asset — HYPE/DOGE/BNB; BNB
+  added Bit F `86ba1wpck` 2026-05-21; `side_int=1` hardcoded YES). Result:
   `python -m scripts.cal_mlp.validate --asset HYPE` KeyErrors at the
   empirical_coverage per-row loop after Phase 4 prediction succeeds.
 
@@ -173,11 +174,14 @@ class TestEmpiricalCoverageReplaySchemaTolerance:
         p_center via the neutral-50¢ breakeven default. The function must
         hard-fail at entry rather than emit subtly-wrong coverage stats.
 
-        Production-resolution stack at validate.py:551-567 can pick up a
-        non-zero blend_w for HYPE/DOGE via MARKET_CONFIGS['15m']
-        .market_blend_w fallback even without --override-market-blend-w —
-        so "operator should set it to 0" is honor-system; the function
-        enforces it instead.
+        Production-resolution stack in `validate.main`'s "MARKET_BLEND_W
+        resolution: CLI > ENV > market_config.py > bundle" comment block
+        can pick up a non-zero blend_w for any 15M-product asset
+        (HYPE/DOGE at 0.80/0.60 post-P2.3; BNB at 0.20 post-P2.4
+        2026-05-19; or the legacy 0.40 scalar for non-15M product
+        types) via MARKET_CONFIGS['15m'].market_blend_w fallback even
+        without --override-market-blend-w — so "operator should set it
+        to 0" is honor-system; the function enforces it instead.
         """
         import pandas as pd
 
@@ -187,9 +191,14 @@ class TestEmpiricalCoverageReplaySchemaTolerance:
         df = pd.DataFrame([self._make_replay_row(stc_bucket=0)])
         replay_recipe = features.resolve_recipe(features.REPLAY_RECIPE_NAMESPACE)
 
-        # market_blend_w=0.40 is the production scalar fallback for
-        # assets absent from MARKET_BLEND_W_BY_ASSET (HYPE/DOGE per
-        # P2.1.d ship-resume). This call SHOULD raise; the patched
+        # market_blend_w=0.40 is the legacy production scalar fallback
+        # for assets absent from MARKET_BLEND_W_BY_ASSET. Post-P2.3+P2.4
+        # all 7 production 15M assets (BTC/ETH/SOL/XRP/HYPE/DOGE/BNB)
+        # ARE in MARKET_BLEND_W_BY_ASSET, so the fallback fires only for
+        # non-15M product types or future assets not yet in the per-asset
+        # map. The 0.40 value here exercises the fail-loud path
+        # regardless of how the resolution stack produced a non-zero
+        # scalar. This call SHOULD raise; the patched
         # function refuses the combination loudly rather than producing
         # a structurally-wrong p_center.
         with pytest.raises(SystemExit, match="market_blend_w"):
