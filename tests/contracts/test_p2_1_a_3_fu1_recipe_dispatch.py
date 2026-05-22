@@ -20,7 +20,8 @@ Bundles produced by `extract_data_replay.py` stamp
 `recipe_namespace='replay_v1'`; pre-P2.1.a-3 production bundles do NOT
 stamp the field (back-compat default = 'v1.1_production'). train.py /
 validate.py / conformal.py:
-  1.  Widen `--asset` choices to the 6-asset set.
+  1.  Widen `--asset` choices to the 7-asset set (4 production CORE +
+      3 replay-recipe — HYPE/DOGE/BNB; BNB added Bit F `86ba1wpck` 2026-05-21).
   2.  Read `ext_bundle.get('recipe_namespace', 'v1.1_production')` and
       route through `resolve_recipe(...)` to pick the right CONT_FEATURE_COLS
       / CONT_FEATURE_TRANSFORMS / MISSING_INDICATOR_COLS / ASSET_FLOORS.
@@ -50,7 +51,7 @@ CONFORMAL_PY = CAL_MLP / "conformal.py"
 FEATURES_PY = CAL_MLP / "features.py"
 
 
-SIX_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"})
+SEVEN_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 PRODUCTION_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP"})
 # Bit F (2026-05-21, ticket 86ba1wpck) widened replay recipe to include BNB
 # (ASSET_FLOORS_REPLAY['BNB']=75). The replay-namespace anchor must mirror.
@@ -293,8 +294,9 @@ def test_validate_py_asset_choices_includes_replay_assets():
 
 def test_conformal_py_asset_choices_includes_replay_assets():
     """Anchor 9: conformal.py (Phase 5) argparse --asset must accept HYPE
-    + DOGE so a P2.1.b-trained HYPE/DOGE bundle can advance to Phase 5
-    conformal-fit on its way to P2.1.c validate."""
+    + DOGE + BNB so a P2.1.b/Bit-F-trained replay bundle can advance to
+    Phase 5 conformal-fit on its way to P2.1.c validate (BNB added Bit F
+    `86ba1wpck` 2026-05-21)."""
     choices = _argparse_asset_choices(CONFORMAL_PY)
     assert choices is not None, "could not parse --asset choices from conformal.py"
     missing = REPLAY_ASSETS - choices

@@ -125,7 +125,7 @@ and requires a sister anchor in the dispatch test):
 - `features.ASSET_FLOORS` (CORE) = `{BTC: 88, ETH: 90, SOL: 86, XRP: 92}`.
   Frozen. Membership baked into `compute_cfg_fp()` canonical dict. Changing this rotates cfg_fp and invalidates all production bundles.
 - `features.ASSET_FLOORS_EXT` (EXTENSION) = `{HYPE: 75, DOGE: 75, ...}`.
-  Extensible. Membership NOT in cfg_fp — adding a new Kalshi crypto rollout (BNB next; future SHIB/ADA/etc.) is a 1-line edit with no cfg_fp rotation, no production-bundle invalidation.
+  Extensible. Membership NOT in cfg_fp — adding a new Kalshi crypto rollout (future SHIB/ADA/etc.) is a 1-line edit with no cfg_fp rotation, no production-bundle invalidation. (BNB has a production-side T4 promotion via P2.4 2026-05-19 but no cal_mlp v1.1 production bundle yet; the Bit F replay-recipe BNB bundle is a head-to-head-verdict input, NOT a production-CURRENT candidate — that flip would be Bit I scope.)
 - `resolve_recipe('v1.1_production').asset_floors` returns the UNION
   (CORE ∪ EXT). `train.py:693`'s membership guard reads the union;
   `compute_cfg_fp()` reads CORE only.

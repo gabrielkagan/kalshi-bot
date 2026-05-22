@@ -99,7 +99,8 @@ ASSET_FLOORS_EXT = {
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets in
 # the REPLAY recipe namespace. Kept SEPARATE so the replay-corpus
 # pipeline (`extract_data_replay.py` + `compute_cfg_fp_replay()`) has
-# its own asset-floor universe (cfg_fp_replay=9347942aaba71146). Adding
+# its own asset-floor universe (cfg_fp_replay=ea9c30477f844afa post-Bit-F
+# `86ba1wpck` 2026-05-21; pre-Bit-F: 9347942aaba71146). Adding
 # a new asset to ASSET_FLOORS_REPLAY rotates cfg_fp_replay; the EXT
 # pattern above is the production-recipe equivalent that explicitly
 # does NOT rotate cfg_fp.
@@ -107,8 +108,9 @@ ASSET_FLOORS_REPLAY = {
     'HYPE': 75,
     'DOGE': 75,
     # Bit F (2026-05-21, ticket 86ba1wpck) — BNB added to replay recipe.
-    # Rotates cfg_fp_replay from `9347942aaba71146` → new fingerprint;
-    # pin captured in tests/contracts/test_p2_1_a_3_corpus_snapshots.py.
+    # Rotates cfg_fp_replay from `9347942aaba71146` → `ea9c30477f844afa`;
+    # pin captured in tests/contracts/test_p2_1_a_3_corpus_snapshots.py
+    # AND tests/contracts/test_crypto_replay_backfill_bnb.py.
     'BNB': 75,
 }
 

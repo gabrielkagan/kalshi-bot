@@ -78,14 +78,18 @@ with these specific differences:
   - bundle dirs land at the standard `data/cal_mlp/<asset>/<train_id>/`
     so train.py / validate.py find them under the established convention
 
-Train.py asset-list extension (P2.1.b, SHIPPED)
-================================================
+Train.py asset-list extension (SHIPPED across multiple Bits)
+============================================================
 
 This module produces extract bundles for HYPE/DOGE/BNB. train.py's
 `--asset` choices was widened to 7 assets (`{BTC,ETH,SOL,XRP,HYPE,DOGE,BNB}`)
-via P2.1.b + Bit C + Bit F. The reduced CONT_FEATURE_COLS_REPLAY recipe
-is consumed via `compute_cfg_fp_replay()` namespace routing — bundles
-whose cfg_fp matches `ea9c30477f844afa` route through the replay path.
+via P2.1.a-3-fu1 (HYPE/DOGE landed `04982c66`) + BNB-T1 shadow activation
+(commit `fbfc25da`, ticket `86b9zmj0c`, 2026-05-17; added BNB to train.py
++ validate.py + conformal.py). The reduced CONT_FEATURE_COLS_REPLAY
+recipe is consumed via `compute_cfg_fp_replay()` namespace routing —
+bundles whose cfg_fp matches `ea9c30477f844afa` (post-Bit-F) route
+through the replay path. Bit F (`86ba1wpck`, 2026-05-21) added BNB to
+the REPLAY recipe (no train.py changes; the asset was already accepted).
 
 Lock-step rule
 ==============
@@ -235,7 +239,7 @@ def _normalize_cutoff_end(s: Optional[str]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="P2.1.a-3 cal_mlp replay-corpus extraction (HYPE/DOGE)")
+    ap = argparse.ArgumentParser(description="P2.1.a-3 + Bit F cal_mlp replay-corpus extraction (HYPE/DOGE/BNB)")
     ap.add_argument('--asset', required=True, choices=list(REPLAY_ASSET_CHOICES))
     ap.add_argument('--folds', type=int, default=2,
                     help='default 2 — replay corpus is 53d per asset; v1 used 2 folds')

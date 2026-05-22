@@ -23,10 +23,11 @@ Pins the artifacts P2.1.a-3 produces so P2.1.b/P2.1.c can rely on them:
         `DROP_PREDICATES_ORDER_REPLAY`, `REPLAY_PROVENANCE_FILTER_CHOICES`.
     7.  `compute_cfg_fp_replay()` returns `_PINNED_CFG_FP_REPLAY` —
         deterministic recipe fingerprint locked at first-extract time.
-    8.  `ASSET_FLOORS` includes HYPE + DOGE entries.
-    9.  HYPE/DOGE replay bundles exist with cfg_fp == `_PINNED_CFG_FP_REPLAY`
-        and row counts ≥ 4500 (replay corpus is 4,897 per asset; allow
-        small reduction from drop predicates).
+    8.  `ASSET_FLOORS_REPLAY` includes HYPE + DOGE + BNB entries (BNB
+        added Bit F `86ba1wpck` 2026-05-21).
+    9.  HYPE/DOGE/BNB replay bundles exist with cfg_fp == `_PINNED_CFG_FP_REPLAY`
+        and row counts ≥ 4500 (HYPE/DOGE corpus is 4,897 per asset; BNB
+        corpus is 5,906 post-Bit-F; allow small reduction from drop predicates).
     10. Lock-step AST guard: extract_data_replay.py contains NO inline
         hour_sin/cos or sigma_winsor formulas — must route through
         canonical helpers (`features.compute_hour_features` /
