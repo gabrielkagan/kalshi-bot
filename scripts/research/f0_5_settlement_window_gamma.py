@@ -16,7 +16,8 @@ Hypothesis (per plan-doc § Hypothesis):
   flow that's more predictive of settle direction than earlier states. A
   classifier fit on (state at T-60s before close) → settle direction should
   achieve ROC AUC ≥ 0.55 in at least one tradeable cell (vol-regime ×
-  day/night × moneyness).
+  day/night; moneyness dimension retracted at impl-R1 — see module-level
+  NOTE).
 
 Kill threshold (per ticket 86ba18zhr):
   T-60s AUC upper-CI < 0.55 in EVERY tradeable cell → KILL.
@@ -528,9 +529,9 @@ def main(
     Returns:
         {
             'verdict': 'KILL' | 'SURVIVE',
-            'per_cell_results': {(asset, vol, dn, moneyness): {n_events, auc_T60,
-                                                              auc_lower, auc_upper,
-                                                              auc_T300, status, ...}, ...},
+            'per_cell_results': {(asset, vol, dn): {n_events, auc_T60,
+                                                    auc_lower, auc_upper,
+                                                    auc_T300, status, ...}, ...},
             'n_windows': int,
             'window_days': int,
             'window_start_ts': str,
@@ -1034,7 +1035,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--settle-processing-delay-s",
         type=float,
         default=MIN_SETTLE_PROCESSING_DELAY_S,
-        help="Buffer (s) between settled_at and T-0 window close (≥5s, default 5)",
+        help=(
+            "Buffer (s) between settled_at and T-0 window close (default 5; "
+            "lower-bound 5s enforced inside compute_window_close — ValueError "
+            "at runtime if violated)"
+        ),
     )
     parser.add_argument(
         "--out", default=None, help="Output markdown path (default: stdout)"

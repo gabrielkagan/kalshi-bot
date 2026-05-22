@@ -17,8 +17,10 @@ Invariants pinned here (per plan-doc § Methodological invariants):
 2. No-look-ahead — for a window with close at t_close, the T-Xs state must
    use only rows with observation_time ≤ t_close - X. Settle outcome is the
    label, never a feature.
-3. Regime conditioning — vol × day/night × moneyness = 8 cells per asset;
-   per-cell AUC reported separately. Kill verdict is per-cell.
+3. Regime conditioning — vol × day/night = 4 cells per asset (moneyness
+   retracted at impl-R1 — Kalshi 15M tickers do not encode strike, see
+   the test body of test_cells_partition_into_vol_x_daynight for full
+   RCA); per-cell AUC reported separately. Kill verdict is per-cell.
 4. AUC bounded [0.5, 1.0] after orientation flip — AUC < 0.5 means the
    classifier predicts the wrong direction; flip and report 1 - raw_AUC.
    Degenerate input (single-class fold) must error rather than silently
@@ -302,8 +304,8 @@ def test_verdict_kill_when_every_cell_below_threshold():
     assert classify is not None, "classify_verdict not yet defined (scaffold-pending)"
 
     cells = [
-        {"asset": "BTC", "cell": "vol_high_day_itm", "auc_lower": 0.48, "auc_upper": 0.53},
-        {"asset": "ETH", "cell": "vol_low_night_otm", "auc_lower": 0.49, "auc_upper": 0.54},
+        {"asset": "BTC", "cell": "vol_high_day", "auc_lower": 0.48, "auc_upper": 0.53},
+        {"asset": "ETH", "cell": "vol_low_night", "auc_lower": 0.49, "auc_upper": 0.54},
     ]
     verdict = classify(cells=cells, auc_threshold=0.55)
     assert verdict == "KILL"
@@ -315,8 +317,8 @@ def test_verdict_survive_when_one_cell_clears_threshold():
     assert classify is not None, "classify_verdict not yet defined (scaffold-pending)"
 
     cells = [
-        {"asset": "BTC", "cell": "vol_high_day_itm", "auc_lower": 0.48, "auc_upper": 0.53},
-        {"asset": "SOL", "cell": "vol_high_night_otm", "auc_lower": 0.56, "auc_upper": 0.62},  # survivor
+        {"asset": "BTC", "cell": "vol_high_day", "auc_lower": 0.48, "auc_upper": 0.53},
+        {"asset": "SOL", "cell": "vol_high_night", "auc_lower": 0.56, "auc_upper": 0.62},  # survivor
     ]
     verdict = classify(cells=cells, auc_threshold=0.55)
     assert verdict == "SURVIVE"
