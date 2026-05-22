@@ -19,9 +19,12 @@ Hypothesis (per plan-doc § Hypothesis):
   day/night; moneyness dimension retracted at impl-R1 — see module-level
   NOTE).
 
-Kill threshold (per ticket 86ba18zhr):
-  T-60s AUC upper-CI < 0.55 in EVERY tradeable cell → KILL.
+Kill threshold (per ticket 86ba18zhr; harmonized at scaffold-R1-M3+M5 to
+absolute T-60s AUC ≥ 0.55 lower-CI, classify_verdict binary-complement
+semantics):
   ≥1 cell with AUC ≥ 0.55 lower-CI → SURVIVE.
+  No cell has AUC ≥ 0.55 lower-CI → KILL (binary complement of SURVIVE
+  per classify_verdict).
 
 Data sources (per plan-doc § RCA):
   - settled_trades: outcome label + window-close timestamp (`settled_at`).
