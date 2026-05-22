@@ -97,7 +97,8 @@ ASSET_FLOORS_EXT = {
 }
 
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets in
-# the REPLAY recipe namespace. Kept SEPARATE so the replay-corpus
+# the REPLAY recipe namespace; BNB added Bit F (`86ba1wpck`, 2026-05-21).
+# Kept SEPARATE so the replay-corpus
 # pipeline (`extract_data_replay.py` + `compute_cfg_fp_replay()`) has
 # its own asset-floor universe (cfg_fp_replay=ea9c30477f844afa post-Bit-F
 # `86ba1wpck` 2026-05-21; pre-Bit-F: 9347942aaba71146). Adding

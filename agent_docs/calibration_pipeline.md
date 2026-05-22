@@ -213,7 +213,7 @@ time, `Phase4Dataset.__getitem__` unconditionally read `df['price_tier']`
 `validate.py::empirical_coverage` made a parallel set of per-row reads
 including `df['market_price']` + `df['side']`. Replay parquets lack all
 four columns (no market_price → no price_tier digitization; no vol
-regime feed for HYPE/DOGE in replay backfill; no orderbook for
+regime feed for any replay-recipe asset (HYPE/DOGE/BNB) in replay backfill; no orderbook for
 market_price; only `side_int=1` hardcoded YES). fu2 (`86b9xd9hn`,
 SHIPPED `b566ae9`) closed the train.py categorical-FE side via
 `RecipeSpec.categorical_feature_cols`. fu3 (`86b9xe3ku`, this commit)

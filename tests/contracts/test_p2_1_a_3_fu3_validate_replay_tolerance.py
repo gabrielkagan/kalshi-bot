@@ -98,19 +98,27 @@ class TestEmpiricalCoverageReplaySchemaTolerance:
         none of those are read by empirical_coverage, so they're omitted
         from the fixture for clarity.
 
-        Present in the fixture (the load-bearing reads):
-          - `stc_bucket` (line 520; always 3 in production replay since
-            evaluation_time == open_time → stc=900s, but the test exercises
-            multiple buckets to prove the row-iter doesn't crash).
-          - `outcome` (line 526; bot-side label).
-          - `side_int` (`build_feature_frame` hardcodes `np.int8(1)`;
-            always 1 per "always YES side in replay" — structural anchor
-            to dodge line-cite drift per the long-arc lesson).
+        Present in the fixture (the load-bearing reads — structural
+        anchors to dodge line-cite drift per the long-arc lesson):
+          - `stc_bucket` (`build_feature_frame` hardcodes
+            `df['stc_bucket'] = np.int8(3)`; always 3 in production
+            replay since evaluation_time == open_time → stc=900s, but the
+            test exercises multiple buckets to prove the row-iter doesn't
+            crash).
+          - `outcome` (`build_feature_frame` derives from `result` per
+            its YES-side label convention; bot-side label).
+          - `side_int` (`build_feature_frame` hardcodes
+            `df['side_int'] = np.int8(1)`; always 1 per "always YES
+            side in replay").
           - `p_pred`, `p_std` added by validate.main's predictor pass.
 
         Notably ABSENT (the 4 columns fu3 must tolerate):
-          - `price_tier` (no market_price to digitize per line 455 comment).
-          - `vol_regime_int` (no vol regime feed for HYPE/DOGE replay).
+          - `price_tier` (no market_price to digitize per
+            `build_feature_frame`'s "No price_tier (no market_price
+            column..." comment block).
+          - `vol_regime_int` (no vol regime feed for any replay-recipe
+            asset — HYPE/DOGE/BNB; BNB added Bit F `86ba1wpck`
+            2026-05-21).
           - `market_price` (no orderbook in replay).
           - `side` string column (only `side_int`, hardcoded 1).
         """

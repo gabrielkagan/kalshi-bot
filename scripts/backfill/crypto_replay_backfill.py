@@ -24,24 +24,32 @@ Architecture (load-bearing — see test ``tests/integration/test_crypto_replay_b
   filter / re-backfill if the harness changes.
 - ``spot_staleness_seconds`` (Bit F, 2026-05-21): per-row AUDIT column —
   seconds between the warmup-tail candle's open_ts and the eval_ts. NOT a
-  recipe feature; ``compute_cfg_fp_replay`` rotates from the
-  pre-Bit-F `9347942aaba71146` via the BNB-key addition to ASSET_FLOORS_REPLAY
-  (NOT via this audit column — confirmed by `tests/contracts/test_p2_1_a_3_corpus_snapshots.py`).
-  Captures Coinbase 1-min REST gap regime; BNB has 34% trade-less minutes,
-  HYPE 10%, DOGE <1%. See `kb/decisions/bit-f-bnb-replay-backfill-plan.md`.
+  recipe feature; ``compute_cfg_fp_replay`` rotates to `ea9c30477f844afa`
+  from the pre-Bit-F `9347942aaba71146` via the BNB-key addition to
+  ASSET_FLOORS_REPLAY (NOT via this audit column — confirmed by
+  `tests/contracts/test_p2_1_a_3_corpus_snapshots.py`). Captures Coinbase
+  1-min REST gap regime; BNB has 34% trade-less minutes, HYPE 10%, DOGE
+  <1%. Post-backfill BNB staleness distribution on 5,881 non-NULL rows
+  (Mac, 2026-05-21): p50=0s, p75=60s, p90=120s, p99=300s, max=960s;
+  4.69% rows ≥120s, 0.48% ≥300s. See
+  `kb/decisions/bit-f-bnb-replay-backfill-plan.md`.
 
 Methodology gotchas (DO NOT VIOLATE):
 
-- **No HYPE/DOGE trained cal_mlp predictor exists.** Production
+- **No PRODUCTION-deployed HYPE/DOGE/BNB cal_mlp predictor exists.** Production
   ``_calmlp_predictors`` in ``scripts/cal_mlp/integration.py`` constructs
-  predictors for ``('BTC','ETH','SOL','XRP')`` only; there are no HYPE or DOGE
-  weights, neither on Mac nor VPS. ``replay_market(..., predictor=None)`` is
-  therefore the production v1 shape: ``blended_prob`` stays NULL, and the
-  ``calibrated_prob`` column comes from ``ProbabilityEngine.compute``'s
-  in-prod calibration cascade (Student-t passthrough → BLR depending on
-  CalEngine state). A future cross-asset transfer eval (file fu1 of
-  ``86b9wy7v3``) would feed HYPE/DOGE rows through a ``CalMLPPredictor("BTC")``
-  instance — NOT a "rerun on VPS" — because no asset-matched predictor exists.
+  predictors for ``('BTC','ETH','SOL','XRP')`` only; HYPE/DOGE have no
+  trained weights at either deployment site (Mac OR VPS); BNB has Mac-local
+  trained weights post-Bit-F (``models/cal_mlp_BNB/<train_id>/`` per Step 6
+  of the Bit F plan doc) but the VPS production CURRENT pointer was NOT
+  flipped, so the runtime predictor cache still does not construct BNB.
+  ``replay_market(..., predictor=None)`` is therefore the production v1
+  shape: ``blended_prob`` stays NULL, and the ``calibrated_prob`` column
+  comes from ``ProbabilityEngine.compute``'s in-prod calibration cascade
+  (Student-t passthrough → BLR depending on CalEngine state). A future
+  cross-asset transfer eval (file fu1 of ``86b9wy7v3``) would feed
+  HYPE/DOGE/BNB rows through a ``CalMLPPredictor("BTC")`` instance — NOT
+  a "rerun on VPS" — because no asset-matched runtime predictor exists.
 - **Bot-state features cannot be replayed accurately** (market_price/NBBO,
   depth, OFT, queue position, recent_bot_pnl, drawdown_scaler). These are
   honest-NULL on replay rows. Calibration assessment doesn't need them;

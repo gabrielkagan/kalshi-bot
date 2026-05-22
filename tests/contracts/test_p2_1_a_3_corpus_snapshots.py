@@ -84,7 +84,8 @@ _PINNED_CFG_FP_ABLATION = "1969b12c6c0c39bf"
 #     each market at `open_time` exactly, so stc=900s constant for every
 #     row — `fit_normstats` raises on zero-variance columns.
 #   - DROP_PREDICATES_ORDER_REPLAY (8 predicates)
-#   - ASSET_FLOORS_REPLAY (HYPE=75, DOGE=75)
+#   - ASSET_FLOORS_REPLAY (HYPE=75, DOGE=75 — initial recipe;
+#       BNB=75 added Bit F 86ba1wpck 2026-05-21 — see rotation note below)
 #   - replay_phase2_v1 provenance
 # Drift-detector — any change to the replay recipe shifts this hash and
 # trips test_p2_1_a_3_compute_cfg_fp_replay_pinned.
@@ -115,8 +116,9 @@ _EXPECTED_ROWS_DEFAULT = {
     "XRP": 9_045,
 }
 _ROW_TOLERANCE_PCT = 0.10
-# Replay corpus = 4,897 per asset. Drop predicates may remove a handful for
-# null-eval-time / settled-after-cutoff / non-yes-no-result.
+# Replay corpus: 4,897 HYPE / 4,897 DOGE / 5,906 BNB (BNB added Bit F
+# 86ba1wpck 2026-05-21). Drop predicates may remove a handful per asset
+# for null-eval-time / settled-after-cutoff / non-yes-no-result.
 _MIN_ROWS_REPLAY = 4500
 
 
