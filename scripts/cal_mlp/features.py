@@ -436,8 +436,8 @@ def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
 #                          sentinel; `market_price` not stored)
 #   - prob_breakeven_gap  (no historical Kalshi orderbook → can't derive)
 #
-# REPLAY recipe is therefore a strict subset of the v1.1 recipe with 6
-# CONT_FEATURE_COLS (vs 8). Other features derive from replay's
+# REPLAY recipe is therefore a strict subset of the v1.1 recipe with 4
+# CONT_FEATURE_COLS (vs 8 in production). Other features derive from replay's
 # (spot_at_evaluation, sigma_at_evaluation, strike_cents, close_time,
 # evaluation_time) tuple via the same formulas extract_data.py uses.
 #

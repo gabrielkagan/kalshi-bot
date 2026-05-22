@@ -92,7 +92,9 @@ def _fixture_market(
     strike_cents: int = 4500,
     result: str = "yes",
 ) -> dict:
-    series = "KXHYPE15M" if asset == "HYPE" else "KXDOGE15M"
+    series = f"KX{asset}15M"  # Bit F (2026-05-21): generalized from
+                                # HYPE/DOGE-only ternary to support BNB
+                                # without latent ticker corruption.
     return {
         "ticker": f"{series}-26APR011200-15",
         "event_ticker": f"{series}-26APR011200",
@@ -135,10 +137,10 @@ def test_harness_exposes_api():
 
 
 def test_table_created_with_expected_columns(tmp_path: Path):
-    """`ensure_schema()` creates `historical_replay_calmlp` with the 19 REQUIRED
-    cols (subset check; post-Bit-F the table has 21 cols total with the
-    added `threshold REAL` (P2.3.b-fu2) + `spot_staleness_seconds REAL`
-    (Bit F, 2026-05-21))."""
+    """`ensure_schema()` creates `historical_replay_calmlp` with at least the
+    19 REQUIRED-minimum cols listed in `EXPECTED_COLS` (subset check;
+    post-Bit-F the table has 21 cols total — `threshold REAL` added by
+    P2.3.b-fu2 + `spot_staleness_seconds REAL` added by Bit F 2026-05-21)."""
     from scripts.backfill.crypto_replay_backfill import ensure_schema
     db = tmp_path / "state.db"
     conn = _open(db)
@@ -186,7 +188,8 @@ def test_result_check_constraint_rejects_invalid(tmp_path: Path):
 
 
 def test_asset_check_constraint_rejects_unknown(tmp_path: Path):
-    """`asset` must be CHECK-constrained to {'HYPE', 'DOGE'} for Phase 2 v1.
+    """`asset` must be CHECK-constrained to {'HYPE', 'DOGE', 'BNB'} post-Bit-F
+    (BNB added via Bit F `86ba1wpck` 2026-05-21).
 
     If a future phase widens the replay to BTC/ETH/SOL/XRP, the CHECK gets
     widened in the same commit as the harness change (this guard catches

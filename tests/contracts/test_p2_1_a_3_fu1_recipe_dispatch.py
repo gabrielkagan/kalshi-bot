@@ -191,7 +191,7 @@ def test_resolve_recipe_replay_namespace():
             f"replay recipe must NOT include {excluded} — see features.py "
             f"CONT_FEATURE_COLS_REPLAY commentary on why each is dropped."
         )
-    # Asset floors are the HYPE/DOGE pair.
+    # Asset floors are the HYPE/DOGE/BNB triple.
     assert set(recipe.asset_floors.keys()) == REPLAY_ASSETS, (
         f"replay recipe asset_floors must be exactly {REPLAY_ASSETS}, "
         f"got {set(recipe.asset_floors.keys())}"
@@ -262,7 +262,7 @@ def test_resolve_recipe_exposes_transforms_and_missing():
 # ─────────────────────────────────────────────────────────────────────
 
 def test_train_py_asset_choices_includes_replay_assets():
-    """Anchor 7: train.py argparse --asset must accept HYPE + DOGE. Before
+    """Anchor 7: train.py argparse --asset must accept HYPE + DOGE + BNB. Before
     fix, choices=['BTC','ETH','SOL','XRP'] rejected HYPE at parse_args
     and Phase4 training for replay bundles was structurally blocked."""
     choices = _argparse_asset_choices(TRAIN_PY)
@@ -270,7 +270,7 @@ def test_train_py_asset_choices_includes_replay_assets():
     missing = REPLAY_ASSETS - choices
     assert not missing, (
         f"train.py --asset choices missing {missing}; got {choices}. "
-        f"Widen to include HYPE + DOGE for P2.1.b training on replay bundles."
+        f"Widen to include HYPE + DOGE + BNB for P2.1.b training on replay bundles."
     )
     # Defense-in-depth: original 4-asset set MUST still be accepted.
     assert PRODUCTION_ASSETS <= choices, (
@@ -279,7 +279,7 @@ def test_train_py_asset_choices_includes_replay_assets():
 
 
 def test_validate_py_asset_choices_includes_replay_assets():
-    """Anchor 8: validate.py argparse --asset must accept HYPE + DOGE for
+    """Anchor 8: validate.py argparse --asset must accept HYPE + DOGE + BNB for
     P2.1.c Brier+coverage on replay-namespace bundles. (sim_pnl counterfactual
     skipped via separate runtime guard; see Bit description.)"""
     choices = _argparse_asset_choices(VALIDATE_PY)

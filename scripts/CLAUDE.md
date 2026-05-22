@@ -57,7 +57,7 @@ The invariant "no `.py`/`.sh`/`.sql` directly under `scripts/` outside the allow
   recipe. No UNION with the replay corpus (architectural regression
   per Bit B R1 finding M1; see `kb/decisions/v1-1-B-extract-union-plan.md`
   L99 STALE patterns). `cfg_fp` UNCHANGED by Bit B.
-- `extract_data_replay.py` — parallel HYPE/DOGE replay-corpus
+- `extract_data_replay.py` — parallel HYPE/DOGE/BNB replay-corpus (BNB added Bit F `86ba1wpck` 2026-05-21)
   extractor shipped P2.1.a-3 (ticket `86b9wuhhr`, commit `3a9d690a`).
   Reads `historical_replay_calmlp` from `data/replay/state.db`
   (Mac-only). Strict-subset 4-feature recipe with its own

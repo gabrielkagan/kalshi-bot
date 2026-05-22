@@ -92,7 +92,11 @@ _PINNED_CFG_FP_REPLAY = "ea9c30477f844afa"
 
 
 PRODUCTION_ASSETS = ("BTC", "ETH", "SOL", "XRP")
-REPLAY_ASSETS = ("HYPE", "DOGE")
+# Bit F (2026-05-21, ticket 86ba1wpck) widened replay recipe to include BNB.
+# Anchor 9 self-skips when a per-asset bundle is absent on the workstation,
+# so widening here is safe — the BNB bundle artifact lives Mac-side post-
+# Bit F (`data/cal_mlp/BNB/<train_id>/` + `models/cal_mlp_BNB/<train_id>/`).
+REPLAY_ASSETS = ("HYPE", "DOGE", "BNB")
 
 # Per-asset post-DROP_PREDICATES row-count expectations from the P2.1.a-3
 # extract run. The C0 ticket `86b9wuhhr` "Why" table cites RAW source-table
@@ -381,8 +385,9 @@ def test_p2_1_a_3_asset_floors_replay_has_hype_doge():
 
 @pytest.mark.parametrize("asset", REPLAY_ASSETS)
 def test_p2_1_a_3_replay_bundle_exists_per_asset(asset):
-    """Anchor 9: HYPE/DOGE replay bundles exist with the pinned replay cfg_fp
-    and row counts ≥ 4500 (replay corpus is 4,897 per asset).
+    """Anchor 9: HYPE/DOGE/BNB replay bundles exist with the pinned replay
+    cfg_fp and row counts ≥ 4500 (HYPE/DOGE corpus is 4,897 each; BNB is
+    5,906 post-Bit-F, 2026-05-21).
 
     Replay bundles do NOT have `state_db_snapshot_sha256` because their
     source is `data/replay/state.db::historical_replay_calmlp` (a

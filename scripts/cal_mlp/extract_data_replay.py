@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE replay-corpus
-extraction for v1.1 cal_mlp retrain. Parallel pull path to extract_data.py.
+"""P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) + Bit F (2026-05-21, ticket
+86ba1wpck) — HYPE/DOGE/BNB replay-corpus extraction for v1.1 cal_mlp
+retrain. Parallel pull path to extract_data.py.
 
 Why a separate module
 =====================
@@ -77,13 +78,14 @@ with these specific differences:
   - bundle dirs land at the standard `data/cal_mlp/<asset>/<train_id>/`
     so train.py / validate.py find them under the established convention
 
-Train.py asset-list extension required (P2.1.b)
+Train.py asset-list extension (P2.1.b, SHIPPED)
 ================================================
 
-This module produces extract bundles for HYPE/DOGE but train.py's
-`--asset` choices is hardcoded to `('BTC','ETH','SOL','XRP')`. The
-P2.1.b sub-Bit will extend train.py to consume HYPE/DOGE bundles + the
-reduced CONT_FEATURE_COLS_REPLAY recipe.
+This module produces extract bundles for HYPE/DOGE/BNB. train.py's
+`--asset` choices was widened to 7 assets (`{BTC,ETH,SOL,XRP,HYPE,DOGE,BNB}`)
+via P2.1.b + Bit C + Bit F. The reduced CONT_FEATURE_COLS_REPLAY recipe
+is consumed via `compute_cfg_fp_replay()` namespace routing — bundles
+whose cfg_fp matches `ea9c30477f844afa` route through the replay path.
 
 Lock-step rule
 ==============
