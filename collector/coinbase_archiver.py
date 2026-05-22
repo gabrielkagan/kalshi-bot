@@ -152,8 +152,13 @@ DEFAULT_MSG_TYPE_TO_CHANNEL: Mapping[str, str] = {
 # matches + ticker contribute ~50-80 frames/sec aggregate (more in
 # volatile windows); heartbeat + status are <5 frames/sec combined.
 # Steady-state total ≈ 200-300 frames/sec; the 10K queue gives
-# ~30-50s buffering at that rate. Tuned the same as Kalshi
-# for cross-collector consistency.
+# ~30-50s buffering at that rate. INTENTIONALLY DIVERGED from Kalshi
+# (which bumped to 50_000 at ticket 86ba1xraq 2026-05-21 to absorb a
+# REST-refresh-induced reconnect-cascade burst on conn C). Coinbase has
+# a single conn + no REST-refresh cascade + bounded steady-state rate
+# — the 10K cap has ample headroom for the Coinbase load class. Re-
+# symmetrize ONLY if a future Coinbase universe-growth measurement
+# justifies it.
 _DEFAULT_WRITE_QUEUE_MAXSIZE = 10_000
 
 # Sentinel posted to ``_write_queue`` by ``stop()`` to signal the worker

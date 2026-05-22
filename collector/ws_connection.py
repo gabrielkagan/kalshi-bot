@@ -165,12 +165,27 @@ def _substring_extract_sid(raw: str) -> Optional[int]:
     m = _SID_PATTERN.search(raw)
     return int(m.group(1)) if m else None
 
-# D1.3-fu4 default write-queue capacity. ~10s of buffering at typical
-# steady-state per-conn load (~100-1000 frames/sec depending on subscribe
-# breadth). Tuned high enough to absorb subscribe storms + backlog drain
-# post-reconnect without dropping; low enough that an OOM-tier blowup
-# cannot accumulate (10000 envelopes × few KB ≈ tens of MB worst case).
-_DEFAULT_WRITE_QUEUE_MAXSIZE = 10_000
+# Default write-queue capacity. Bumped from 10_000 → 50_000 at ticket
+# 86ba1xraq (2026-05-21) after the universal-mode soak under the
+# 86ba1h0cb cap-raise surfaced a 1290-frame drop on conn C during the
+# hourly REST-refresh-induced reconnect cascade (peak burst ~11.3K
+# frames within ~30s window; producer ~1000/s outpaced worker ~957/s
+# for the duration, against a 10K cap). 50_000 ≈ ~50s of buffering at
+# typical per-conn load (~100-1000 frames/sec); gives 4.4× margin over
+# the measured peak burst. Worst-case memory at CURRENT universe size:
+# 7 archivers × 50_000 × ~500B avg frame ≈ 175 MB cumulative — well
+# under the 2 GB MemoryMax cap-raise (2026-05-21). At 2× universe
+# growth + 1KB/frame average the worst case rises to ~350 MB, which
+# would tighten the MemoryHigh=1600M headroom to ~61 MB margin against
+# the measured 1189 MB baseline — see `kb/decisions/bit-collector-
+# reconnect-drop-elimination-plan.md` §"Risk analysis" for the full
+# 2×-universe scenario + mitigations (peak instrumentation as early
+# warning; followup F1 cron alert; possible further bump to 75_000).
+# Set high enough to absorb the post-reconnect data flood that Kalshi
+# pushes ~3-4 min after we re-subscribe; low enough that a sustained
+# producer/consumer rate gap still bounds RAM instead of growing
+# unbounded.
+_DEFAULT_WRITE_QUEUE_MAXSIZE = 50_000
 
 # Sentinel posted to ``_write_queue`` by ``stop()`` to signal the worker
 # to drain remaining items + exit. Unique object identity (``is``-check)
@@ -264,10 +279,16 @@ class BronzeArchiver:
                 production URL). Tests point at a localhost mock.
             write_queue_maxsize: bound on the queue between
                 ``_on_frame`` (asyncio thread) and the bronze writer
-                worker thread. D1.3-fu4 default 10_000 ≈ ~10s buffering
-                at typical load. Smaller values trade latency-stability
-                for memory headroom; larger values trade memory for
-                burst-absorption. Set to ``0`` is NOT supported — Python's
+                worker thread. Default 50_000 ≈ ~50s buffering at typical
+                load. Bumped from 10_000 (D1.3-fu4 initial) to 50_000
+                2026-05-21 (ticket 86ba1xraq) after universal-mode RCA
+                showed an 11.3K-frame peak burst on conn C during the
+                REST-refresh-induced reconnect cascade — 10_000 was
+                insufficient margin once Kalshi started pushing
+                deferred data ~3-4 min after each per-conn re-subscribe.
+                Smaller values trade latency-stability for memory
+                headroom; larger values trade memory for burst-
+                absorption. Set to ``0`` is NOT supported — Python's
                 ``queue.Queue(maxsize=0)`` means UNBOUNDED, which defeats
                 the bounded-backpressure invariant of this Bit.
         """
@@ -307,6 +328,28 @@ class BronzeArchiver:
         # the first drop deterministically while suppressing the next
         # ~1000 (storm-time logspam is its own stall risk).
         self._drop_log_counter: int = 0
+        # High-water mark for ``_write_queue.qsize()``. Tracks queue
+        # saturation peak across the archiver's lifetime so capacity
+        # planning is data-driven (CLAUDE.md "Data-driven changes only").
+        # The instantaneous ``write_queue_size`` in the bronze_health
+        # sidecar is misleading during steady-state observation — it's
+        # almost always 0 between bursts. Peak surfaces the bursts that
+        # would otherwise only be visible post-hoc via ``_dropped_frames``
+        # > 0 (which is the very class ticket 86ba1xraq closed).
+        # Thread-safety model: RESET is performed under ``self._lock`` in
+        # ``start()`` alongside ``_dropped_frames``, so the reset and the
+        # other counter resets become visible together. MUTATION on the
+        # put_nowait success path of ``_on_frame`` is INTENTIONALLY
+        # LOCK-FREE — single-producer invariant: the asyncio thread owned
+        # by ``self._wire`` is the sole writer to ``_on_frame``, and
+        # ``stop()`` joins that thread via ``WSClient.stop(join_timeout=
+        # _WORKER_JOIN_TIMEOUT_S)`` BEFORE any subsequent ``start()`` can
+        # run its reset path. Net: no two threads ever write to
+        # ``_write_queue_peak`` concurrently. qsize() is documented racy
+        # under concurrent producer/consumer, but for an HWM single-frame
+        # under-count is acceptable (peak is a trend signal, not an
+        # accounting invariant).
+        self._write_queue_peak: int = 0
         # D1.3-fu5 observability counter — increments per subscribe-ack
         # processed. Post-fu5 acks bind sid synchronously and RETURN
         # WITHOUT enqueueing for bronze write (the ack's `Frame.raw` can
@@ -408,6 +451,13 @@ class BronzeArchiver:
             receiving acks" from "collector wedged + no activity". Flat
             ack_count + flat collector_seq across two ticks = no WS
             traffic at all.
+          - write_queue_peak_size: ticket 86ba1xraq (2026-05-21)
+            ADDITIVE backward-compat — high-water mark for
+            ``write_queue_size`` across the worker session. Surfaces
+            queue-saturation peaks that the instantaneous
+            ``write_queue_size`` misses (steady-state qsize is almost
+            always 0 between bursts; peak shows the bursts). Resets to
+            0 on worker (re)spawn. ``schema_version`` STAYS at 1.
         """
         worker = self._write_worker
         return {
@@ -415,6 +465,7 @@ class BronzeArchiver:
             "dropped_frames": self._dropped_frames,
             "write_queue_size": self._write_queue.qsize(),
             "write_queue_maxsize": self._write_queue.maxsize,
+            "write_queue_peak_size": self._write_queue_peak,
             "write_worker_alive": bool(worker is not None and worker.is_alive()),
             "collector_seq": self._collector_seq,
             "ack_frames_processed": self._ack_frames_processed,
@@ -603,6 +654,18 @@ class BronzeArchiver:
         # re-introduce the asyncio loop stall this whole Bit closes.
         try:
             self._write_queue.put_nowait((frame, channel, seq))
+            # 86ba1xraq peak instrumentation — bump the high-water mark
+            # after a successful put so capacity planning has visibility
+            # into burst peaks, not just post-hoc drops. Lock-free: this
+            # archiver's _on_frame runs single-threaded on the asyncio
+            # thread, so the read-then-write below has no writer race.
+            # qsize() is documented as approximate under concurrent
+            # producer/consumer, but for HWM tracking single-frame
+            # under-count is acceptable (peak is a trend signal, not an
+            # accounting invariant).
+            qsize = self._write_queue.qsize()
+            if qsize > self._write_queue_peak:
+                self._write_queue_peak = qsize
         except queue.Full:
             with self._lock:
                 self._dropped_frames += 1
@@ -827,6 +890,7 @@ class BronzeArchiver:
         (WSClient.start no-ops on a live thread). Re-entrancy semantics
         for the WORKER: if start() is called after a prior stop(), a
         FRESH worker is spawned + ``_dropped_frames`` / ``_drop_log_counter``
+        / ``_write_queue_peak`` (added at ticket 86ba1xraq 2026-05-21)
         are reset to zero so health monitors see per-session deltas
         from a known floor. Test fixtures that auto-start the worker
         (``_make_archiver``) rely on this reset so cross-test state
@@ -838,6 +902,13 @@ class BronzeArchiver:
                 # observability has a known floor.
                 self._dropped_frames = 0
                 self._drop_log_counter = 0
+                # 86ba1xraq: reset peak alongside dropped_frames so the
+                # bronze_health sidecar's high-water mark reflects the
+                # current worker session, not stale pre-restart bursts.
+                # Without this, peak would appear "stuck" after a
+                # collector self-restart and operators would mis-attribute
+                # current load to a long-cleared burst.
+                self._write_queue_peak = 0
                 # R2-M5: clear the idempotency guard so a subsequent
                 # stop() (post-restart) executes its drain logic instead
                 # of early-returning.
