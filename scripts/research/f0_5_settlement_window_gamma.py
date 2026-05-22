@@ -539,7 +539,8 @@ def main(
             'min_events_per_cell': int,
             'cells_clearing_threshold': list,
             'drop_counters': {'no_state_at_T60': int, 'no_state_at_T300': int,
-                              'no_spot': int, 'no_vol': int, 'no_strike': int},
+                              'no_spot': int, 'no_vol': int,
+                              'window_close_before_data': int},
         }
     """
     conn = sqlite3.connect(db_path)
