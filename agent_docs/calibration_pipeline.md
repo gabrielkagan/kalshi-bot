@@ -219,6 +219,9 @@ SHIPPED `b566ae9`) closed the train.py categorical-FE side via
 `RecipeSpec.categorical_feature_cols`. fu3 (`86b9xe3ku`, this commit)
 closed the validate.py empirical_coverage row-iter side via the
 keyword-only `recipe=` kwarg. The validate.py row-iter dispatch surface
-for HYPE/DOGE replay bundles is now closed; P2.3.b (HYPE/DOGE validation)
+for replay-recipe bundles is now closed (covers HYPE/DOGE/BNB — BNB
+added Bit F `86ba1wpck` 2026-05-21; the dispatch keys on
+`recipe_namespace='replay_v1'`, not on asset, so BNB is structurally
+included); P2.3.b (HYPE/DOGE validation)
 becomes runnable once P2.3.a's HYPE/DOGE bundle exists (P2.3.a remains
 blocked on `86b9xednb` — HYPE/DOGE replay corpus proxy).

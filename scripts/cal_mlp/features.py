@@ -609,9 +609,10 @@ def resolve_recipe(recipe_namespace):
             #     evaluates at `open_time`, so `stc = close_time -
             #     evaluation_time = 900s` for every 15M market → bucket 3
             #     under STC_BIN_CUTOFFS=[120,300,600]).
-            #   - `side_int=1` always (extract_data_replay.py:528
-            #     hard-codes `np.int8(1)` per its "always YES side in
-            #     replay" docstring — YES side per the production
+            #   - `side_int=1` always (`extract_data_replay.py::
+            #     build_feature_frame` hard-codes `df['side_int'] =
+            #     np.int8(1)` per its "always YES side in replay"
+            #     docstring — YES side per the production
             #     `extract_data.py:404` convention `side_int = (side ==
             #     'yes').astype(int8)`).
             # All four CalibrationMLP one-hots are therefore constant

@@ -15,8 +15,9 @@ Pins the artifacts P2.1.a-3 produces so P2.1.b/P2.1.c can rely on them:
         table (see `86b9wuhhr` "Why" section). Not strict bounds; guards
         against silent extract regressions.
 
-  HYPE/DOGE replay arm (source = local `data/replay/state.db`,
-  `historical_replay_calmlp` table; harness shipped at `fe75cf0`):
+  HYPE/DOGE/BNB replay arm (source = local `data/replay/state.db`,
+  `historical_replay_calmlp` table; harness shipped at `fe75cf0`; BNB
+  added Bit F `86ba1wpck` 2026-05-21):
     5.  `scripts/cal_mlp/extract_data_replay.py` exists.
     6.  `scripts/cal_mlp/features.py` exports `compute_cfg_fp_replay`,
         `CONT_FEATURE_COLS_REPLAY`, `CONT_FEATURE_TRANSFORMS_REPLAY`,
@@ -42,9 +43,10 @@ arms' artifacts are gitignored.
 
 REGEN protocol: see `kb/decisions/session-resume-may13-from-p2-1-a-3-*`
 (once filed) for the snapshot+extract command sequence. Do NOT run
-extract_data_replay.py for HYPE/DOGE on the production VPS state.db —
-HYPE/DOGE replay corpus lives in the separate Mac-only DB at
-`data/replay/state.db` (Phase 2 backfill design, ticket `86b9wy7v3`).
+extract_data_replay.py for HYPE/DOGE/BNB on the production VPS state.db
+— HYPE/DOGE/BNB replay corpus lives in the separate Mac-only DB at
+`data/replay/state.db` (Phase 2 backfill design ticket `86b9wy7v3`;
+BNB added via Bit F `86ba1wpck` 2026-05-21).
 """
 from __future__ import annotations
 
@@ -281,7 +283,7 @@ def test_p2_1_a_3_default_bundle_row_counts_within_tolerance(asset):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# HYPE/DOGE replay arm — anchors 5-9
+# HYPE/DOGE/BNB replay arm — anchors 5-9 (BNB added Bit F 86ba1wpck 2026-05-21)
 # ─────────────────────────────────────────────────────────────────────
 
 def test_p2_1_a_3_extract_data_replay_module_exists():

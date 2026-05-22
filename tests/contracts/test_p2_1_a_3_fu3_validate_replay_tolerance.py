@@ -103,7 +103,9 @@ class TestEmpiricalCoverageReplaySchemaTolerance:
             evaluation_time == open_time → stc=900s, but the test exercises
             multiple buckets to prove the row-iter doesn't crash).
           - `outcome` (line 526; bot-side label).
-          - `side_int` (line 528; always 1 per "always YES side in replay").
+          - `side_int` (`build_feature_frame` hardcodes `np.int8(1)`;
+            always 1 per "always YES side in replay" — structural anchor
+            to dodge line-cite drift per the long-arc lesson).
           - `p_pred`, `p_std` added by validate.main's predictor pass.
 
         Notably ABSENT (the 4 columns fu3 must tolerate):

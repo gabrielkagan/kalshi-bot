@@ -326,7 +326,8 @@ def empirical_coverage(
         #
         # fu3 (86b9xe3ku): replay parquet has no `market_price` (no
         # orderbook) and no `side` string (only `side_int=1`, hardcoded YES
-        # per extract_data_replay.py:528). Default both to 50¢/YES in
+        # per `extract_data_replay.py::build_feature_frame`'s
+        # `df['side_int'] = np.int8(1)` assignment). Default both to 50¢/YES in
         # replay mode — neutral breakeven so the inner blend reduces to
         # `0.5*w + (1-w)*p_pred`. Replay paths SHOULD run with
         # market_blend_w=0 (no real orderbook to blend toward), in which
