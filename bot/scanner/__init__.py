@@ -3662,7 +3662,9 @@ class OpportunityScanner:
                                             yes_asks=_tm_b1_yes_asks,
                                             entry_price_cents=best_ask)
                                         if _tm_b1_gate_a:
-                                            # Compute diagnostic for shadow row (R2 N3).
+                                            # Recompute disagree + conviction for the rejection_reason
+                                            # diagnostic — lets downstream audit/dashboard reconstruct
+                                            # the blocking decision without re-querying the orderbook.
                                             _tm_b1_disagree = (final_prob - (100 - _tm_b1_no_ask) / 100.0) if _tm_b1_no_ask is not None else None
                                             _tm_b1_conv = sum(d * (100 - p) for p, d in _tm_b1_yes_asks if (100 - p) >= 2)
                                             _tm_b1_dedup_a = (ticker, _tm_b1_gate_a)
@@ -4680,7 +4682,9 @@ class OpportunityScanner:
                                         yes_asks=_dc_b1_yes_asks,
                                         entry_price_cents=best_ask)
                                     if _dc_b1_gate_a:
-                                        # Compute diagnostic for shadow row (R2 N3).
+                                        # Recompute disagree + conviction for the rejection_reason
+                                        # diagnostic — lets downstream audit/dashboard reconstruct
+                                        # the blocking decision without re-querying the orderbook.
                                         _dc_b1_disagree = (_dc_assumed_p - (100 - _dc_b1_no_ask) / 100.0) if _dc_b1_no_ask is not None else None
                                         _dc_b1_conv = sum(d * (100 - p) for p, d in _dc_b1_yes_asks if (100 - p) >= 2)
                                         _dc_b1_dedup_a = (ticker, _dc_b1_gate_a)

@@ -246,7 +246,7 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 
 ## B1 composite adverse-selection gate (ClickUp 86ba1zdwm, 2026-05-21)
 
-Two independent gates protecting against catastrophic 15M losses diagnosed from a 7d -$235.83 PnL investigation. Full design: `kb/decisions/b1-orderbook-prior-gate-plan.md`. Constants live in `bot/constants.py` (post-Bit-3.1 canonical home). R0 sim (composite gate, 14d window): +$355 net retention, blocks 5/13 catastrophic losses (~38%), 14% high-95c winner block (composite-gate-only — Gate B fires only on HYPE entries >= 98c; Gate A fires across all assets at entry >= 90c; the 14% figure is the union of winners blocked by either gate at entry >= 95c).
+Two independent gates protecting against catastrophic 15M losses diagnosed from a 7d -$235.83 PnL investigation. Full design: `kb/decisions/b1-orderbook-prior-gate-plan.md`. Constants live in `bot/constants.py` (post-Bit-3.1 canonical home). R0 sim row "COMPOSITE (entry>=98 only): ob OR HYPE-only buf<0.75" (14d window): +$355 net retention, blocks 5/13 catastrophic losses (~38%), 14% high-95c winner block. The 14% is the R0-sim winner-block rate measured within the entry>=98 composite-gate sweep — see plan-doc Gate sim results table for the full sweep. Gate A is asset-agnostic at entry>=90c (catches Class A "orderbook disagrees"); Gate B is HYPE-only at entry>=98c (catches Class B "CFB RTI divergence" measurement-noise).
 
 ### Gate A — orderbook-prior (asset-agnostic, entry >= 90c)
 
