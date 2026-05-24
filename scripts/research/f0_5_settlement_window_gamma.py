@@ -1,10 +1,12 @@
 """F0.5 — Settlement-window gamma falsification (CT-MDP Attack #5, Phase 0).
 
 Full implementation post-impl-Bit ship. Helpers and main pipeline implemented;
-the 15-RED + 2-GREEN scaffold suite at
-`tests/research/test_f0_5_settlement_window_gamma.py` +
+the 18-test suite at `tests/research/test_f0_5_settlement_window_gamma.py`
+(17 research-tier including the impl-R1-added CV-guard
+`test_cv_uses_forward_chaining_temporal_split`) +
 `tests/contracts/test_f0_5_asset_ticker_prefix_mirrors_series_tickers.py`
-flips GREEN as each helper lands.
+(1 contract anti-drift) all GREEN. Scaffold-ship count was 15-RED + 2-GREEN;
+impl-R1 added the CV-guard bringing the research-tier total to 17.
 
 Parent plan: kb/decisions/ct-mdp-f0-5-settlement-window-gamma-plan.md
 Parent ClickUp: 86ba18zhr
