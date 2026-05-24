@@ -81,7 +81,9 @@ _DAY_HOUR_HIGH: int = 22
 # asset = vol_regime × day_night × moneyness, with moneyness via
 # `|spot - strike| / strike < 0.005`. **The 15M Kalshi ticker format does NOT
 # encode strike** — empirically (verified at impl-R1) every settled 15M ticker
-# has the form `KX<ASSET>15M-<YYMMDDHHMM>-<MM>` where the trailing `<MM>`
+# has the form `KX<ASSET>15M-<YYMMMDDHHMM>-<MM>` (3-letter month abbreviation,
+# e.g. `26MAY200345` per impl-R14-N1; total 11 chars in the date segment)
+# where the trailing `<MM>`
 # mirrors the close-MINUTE (00/15/30/45), not a strike index. Hourly markets
 # carry strike in the ticker (`KXBTC-26FEB2114-B95000`); 15M markets do not.
 # Without strike, moneyness cannot be computed from `settled_trades` alone;
@@ -381,9 +383,13 @@ def _load_settled_windows(
 ) -> list[dict[str, Any]]:
     """Load settled 15M windows in the analysis period.
 
-    Returns one row per (ticker, settled_at) pair. settled_trades may have
-    multiple rows per ticker (one per bot fill); we collapse via
-    DISTINCT-on-ticker since market_result is per-ticker invariant.
+    Returns one row per `(ticker, asset, market_result)` triple. settled_trades
+    carries one row per bot fill — possibly multiple per ticker — so the SQL
+    collapses via `GROUP BY (ticker, asset, market_result)` with
+    `MAX(settled_at)` as the aggregator. (Per impl-R1-N6 + impl-R14-M1: the
+    prior `SELECT DISTINCT` was removed at impl-R1-N6 since `GROUP BY` already
+    collapses; market_result is per-ticker invariant in practice so grouping
+    by it is defensive — distinct (yes/no) tickers do not collide.)
     """
     cur = conn.cursor()
     cur.execute(
