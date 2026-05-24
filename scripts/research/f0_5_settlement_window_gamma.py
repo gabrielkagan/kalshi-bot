@@ -77,7 +77,7 @@ _DAY_HOUR_LOW: int = 14
 _DAY_HOUR_HIGH: int = 22
 
 # NOTE: Moneyness dimension RETRACTED at impl-R1 (2026-05-21). Plan-doc § Method
-# step 4 + § Methodological invariants ¶ 3 originally specified 8 cells per
+# step 4 + § Methodological invariants ¶ 2 originally specified 8 cells per
 # asset = vol_regime × day_night × moneyness, with moneyness via
 # `|spot - strike| / strike < 0.005`. **The 15M Kalshi ticker format does NOT
 # encode strike** — empirically (verified at impl-R1) every settled 15M ticker
