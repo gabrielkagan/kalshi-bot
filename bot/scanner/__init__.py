@@ -258,6 +258,8 @@ from bot.constants import (
     STRATEGY_PANIC_CAPTURE,
     STRATEGY_TAKER_NOW,
     STRATEGY_WAIT,
+    HYPE_HIGH_PRICE_BUF_GATE_ENABLED,
+    ORDERBOOK_PRIOR_GATE_ENABLED,
     TERMINAL_MOMENTUM_ENABLED,
     TM96_CALMLP_GATE_ENABLED,
     TM98_HIGHPRICE_BLEED_BLOCK_FILTER_STAGE,
@@ -318,6 +320,11 @@ from bot.helpers import (
     tm_shadow_kelly_contracts_with_bound,  # Sim C, ticket 86ba0v7fc, 2026-05-19
 )
 from bot.helpers.band_calibration import calibrated_prob_for_sizing  # P4.1 (86b9zjrp7) — band-calibrated probability for 15M Kelly sizing only
+from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adverse-selection gate
+    check_hype_high_price_buf_gate,
+    check_orderbook_prior_gate,
+    extract_no_ask_and_yes_asks,
+)
 from bot.kalshi_client import KalshiClient
 from bot.state import StateManager
 from bot.feeds import CoinbaseFeed
@@ -3603,6 +3610,96 @@ class OpportunityScanner:
                                             if TM96_CALMLP_GATE_ENABLED:
                                                 _tm_intercepted = False
                                                 _tm96_gate_blocked_trade = True
+                                    # ── B1 (86ba1zdwm) composite adverse-selection gate ──
+                                    # Two would-block predicates run on every TM-intercepted
+                                    # candidate. Shadow rows log regardless of enable flag
+                                    # (mirrors TM96 R-p7-deploy-r10 — counterfactual data
+                                    # survives rollback). Trade-block (_tm_intercepted=False)
+                                    # only fires when the corresponding *_GATE_ENABLED is True.
+                                    if _tm_intercepted:
+                                        # Gate B (HYPE high-price buf) — measurement-noise risk
+                                        _tm_b1_gate_b = check_hype_high_price_buf_gate(
+                                            asset=asset, entry_price_cents=best_ask,
+                                            bot_buf_pct=_tm_buf_pct)
+                                        if _tm_b1_gate_b:
+                                            _tm_b1_dedup_b = (ticker, _tm_b1_gate_b)
+                                            if _tm_b1_dedup_b not in self._eval_opp_seen:
+                                                self._eval_opp_seen.add(_tm_b1_dedup_b)
+                                                try:
+                                                    self._state.insert_evaluated_opportunity(
+                                                        ticker, window["event_ticker"], asset,
+                                                        _tm_b1_gate_b,
+                                                        rejection_reason=(
+                                                            f"B1 {_tm_b1_gate_b}: buf={_tm_buf_pct:.3f}% "
+                                                            f"cal_p={final_prob:.3f} ask={best_ask}c "
+                                                            f"enabled={HYPE_HIGH_PRICE_BUF_GATE_ENABLED}"
+                                                        ),
+                                                        spot_price=spot, threshold=threshold,
+                                                        volatility=blended_rv, market_price=best_ask,
+                                                        seconds_to_close=seconds_remaining,
+                                                        calibrated_prob=final_prob, edge=edge,
+                                                        ofa_adjustment=ofa_adjustment,
+                                                        strategy=f"terminal_momentum_{best_ask}",
+                                                        z_score=z_score, raw_prob=raw_prob,
+                                                        fee_adjusted_edge=fee_adjusted_edge,
+                                                        best_ask_source=best_ask_source,
+                                                        product_type=window.get("product_type"),
+                                                        config_snapshot_id=self._ml.config_snapshot_id,
+                                                        **_shadow_diag)
+                                                except sqlite3.OperationalError:
+                                                    logging.warning("insert_evaluated_opportunity failed (b1_tm_gate_b)", exc_info=True)
+                                            logging.info(
+                                                "B1_GATE_B_WOULD_BLOCK_TM: %s %s @%dc buf=%.3f%% cal_p=%.3f enabled=%s",
+                                                asset, ticker, best_ask, _tm_buf_pct, final_prob,
+                                                HYPE_HIGH_PRICE_BUF_GATE_ENABLED)
+                                            if HYPE_HIGH_PRICE_BUF_GATE_ENABLED:
+                                                _tm_intercepted = False
+                                        # Gate A (orderbook-prior) — adverse-selection
+                                        _tm_b1_no_ask, _tm_b1_yes_asks = extract_no_ask_and_yes_asks(ob_data)
+                                        _tm_b1_gate_a = check_orderbook_prior_gate(
+                                            calibrated_prob=final_prob,
+                                            no_ask_cents=_tm_b1_no_ask,
+                                            yes_asks=_tm_b1_yes_asks,
+                                            entry_price_cents=best_ask)
+                                        if _tm_b1_gate_a:
+                                            # Recompute disagree + conviction for the rejection_reason
+                                            # diagnostic — lets downstream audit/dashboard reconstruct
+                                            # the blocking decision without re-querying the orderbook.
+                                            _tm_b1_disagree = (final_prob - (100 - _tm_b1_no_ask) / 100.0) if _tm_b1_no_ask is not None else None
+                                            _tm_b1_conv = sum(d * (100 - p) for p, d in _tm_b1_yes_asks if (100 - p) >= 2)
+                                            _tm_b1_dedup_a = (ticker, _tm_b1_gate_a)
+                                            if _tm_b1_dedup_a not in self._eval_opp_seen:
+                                                self._eval_opp_seen.add(_tm_b1_dedup_a)
+                                                try:
+                                                    self._state.insert_evaluated_opportunity(
+                                                        ticker, window["event_ticker"], asset,
+                                                        _tm_b1_gate_a,
+                                                        rejection_reason=(
+                                                            f"B1 {_tm_b1_gate_a}: cal_p={final_prob:.3f} "
+                                                            f"no_ask={_tm_b1_no_ask} disagree={_tm_b1_disagree:.3f} "
+                                                            f"conv={_tm_b1_conv}c ask={best_ask}c "
+                                                            f"enabled={ORDERBOOK_PRIOR_GATE_ENABLED}"
+                                                        ),
+                                                        spot_price=spot, threshold=threshold,
+                                                        volatility=blended_rv, market_price=best_ask,
+                                                        seconds_to_close=seconds_remaining,
+                                                        calibrated_prob=final_prob, edge=edge,
+                                                        ofa_adjustment=ofa_adjustment,
+                                                        strategy=f"terminal_momentum_{best_ask}",
+                                                        z_score=z_score, raw_prob=raw_prob,
+                                                        fee_adjusted_edge=fee_adjusted_edge,
+                                                        best_ask_source=best_ask_source,
+                                                        product_type=window.get("product_type"),
+                                                        config_snapshot_id=self._ml.config_snapshot_id,
+                                                        **_shadow_diag)
+                                                except sqlite3.OperationalError:
+                                                    logging.warning("insert_evaluated_opportunity failed (b1_tm_gate_a)", exc_info=True)
+                                            logging.info(
+                                                "B1_GATE_A_WOULD_BLOCK_TM: %s %s @%dc no_ask=%s cal_p=%.3f enabled=%s",
+                                                asset, ticker, best_ask, _tm_b1_no_ask, final_prob,
+                                                ORDERBOOK_PRIOR_GATE_ENABLED)
+                                            if ORDERBOOK_PRIOR_GATE_ENABLED:
+                                                _tm_intercepted = False
                                     if _tm_intercepted:
                                         _tm_balance = self._get_balance_cached() or 100000
                                         # Adversary A6: when sweep is live, size against worst-case fill
@@ -4524,6 +4621,107 @@ class OpportunityScanner:
                                     if _dc_existing_exposure > 0:
                                         _dc_position = max(0, _dc_position - _dc_existing_exposure)
 
+                                # ── B1 (86ba1zdwm) composite adverse-selection gate ──
+                                # Mirror of the TM-path gate; covers decided_t1/t2/etc. paths.
+                                # Placed BEFORE the cooldown check so cooldown stays adjacent
+                                # to DC_CANDIDATE per the test_decided_contract.py 800-char pin.
+                                # Shadow rows log regardless of enable flag (TM96 R-p7-deploy-r10
+                                # precedent); trade-block fires only when *_GATE_ENABLED is True.
+                                if _dc_live_enabled and _dc_position > 0:
+                                    _dc_b1_buf_pct = ((spot - threshold) / threshold * 100.0) if threshold and threshold > 0 else 0.0
+                                    _dc_b1_strat = {"decided_contract_t1": "decided_t1",
+                                                    "decided_contract_t1b": "decided_t1b",
+                                                    "decided_contract_t2": "decided_t2",
+                                                    "decided_contract_t2_z25": "decided_t2_z25",
+                                                    "decided_contract_t2_z2": "decided_t2_z2"}[_dc_tier]
+                                    # Gate B (HYPE high-price buf) — measurement-noise risk
+                                    _dc_b1_gate_b = check_hype_high_price_buf_gate(
+                                        asset=asset, entry_price_cents=best_ask,
+                                        bot_buf_pct=_dc_b1_buf_pct)
+                                    if _dc_b1_gate_b:
+                                        _dc_b1_dedup_b = (ticker, _dc_b1_gate_b)
+                                        if _dc_b1_dedup_b not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_dc_b1_dedup_b)
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    _dc_b1_gate_b,
+                                                    rejection_reason=(
+                                                        f"B1 {_dc_b1_gate_b}: buf={_dc_b1_buf_pct:.3f}% "
+                                                        f"cal_p={_dc_assumed_p:.3f} ask={best_ask}c "
+                                                        f"tier={_dc_tier} "
+                                                        f"enabled={HYPE_HIGH_PRICE_BUF_GATE_ENABLED}"
+                                                    ),
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=best_ask,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=_dc_assumed_p,
+                                                    edge=_dc_assumed_p - best_ask / 100.0,
+                                                    ofa_adjustment=ofa_adjustment,
+                                                    strategy=_dc_b1_strat,
+                                                    z_score=z_score, raw_prob=raw_prob,
+                                                    fee_adjusted_edge=fee_adjusted_edge,
+                                                    best_ask_source=best_ask_source,
+                                                    product_type=window.get("product_type"),
+                                                    config_snapshot_id=self._ml.config_snapshot_id,
+                                                    **_shadow_diag)
+                                            except sqlite3.OperationalError:
+                                                logging.warning("insert_evaluated_opportunity failed (b1_dc_gate_b)", exc_info=True)
+                                        logging.info(
+                                            "B1_GATE_B_WOULD_BLOCK_DC: %s %s @%dc strat=%s buf=%.3f%% cal_p=%.3f enabled=%s",
+                                            asset, ticker, best_ask, _dc_b1_strat,
+                                            _dc_b1_buf_pct, _dc_assumed_p,
+                                            HYPE_HIGH_PRICE_BUF_GATE_ENABLED)
+                                        if HYPE_HIGH_PRICE_BUF_GATE_ENABLED:
+                                            _dc_live_enabled = False
+                                    # Gate A (orderbook-prior) — adverse-selection
+                                    _dc_b1_no_ask, _dc_b1_yes_asks = extract_no_ask_and_yes_asks(ob_data)
+                                    _dc_b1_gate_a = check_orderbook_prior_gate(
+                                        calibrated_prob=_dc_assumed_p,
+                                        no_ask_cents=_dc_b1_no_ask,
+                                        yes_asks=_dc_b1_yes_asks,
+                                        entry_price_cents=best_ask)
+                                    if _dc_b1_gate_a:
+                                        # Recompute disagree + conviction for the rejection_reason
+                                        # diagnostic — lets downstream audit/dashboard reconstruct
+                                        # the blocking decision without re-querying the orderbook.
+                                        _dc_b1_disagree = (_dc_assumed_p - (100 - _dc_b1_no_ask) / 100.0) if _dc_b1_no_ask is not None else None
+                                        _dc_b1_conv = sum(d * (100 - p) for p, d in _dc_b1_yes_asks if (100 - p) >= 2)
+                                        _dc_b1_dedup_a = (ticker, _dc_b1_gate_a)
+                                        if _dc_b1_dedup_a not in self._eval_opp_seen:
+                                            self._eval_opp_seen.add(_dc_b1_dedup_a)
+                                            try:
+                                                self._state.insert_evaluated_opportunity(
+                                                    ticker, window["event_ticker"], asset,
+                                                    _dc_b1_gate_a,
+                                                    rejection_reason=(
+                                                        f"B1 {_dc_b1_gate_a}: cal_p={_dc_assumed_p:.3f} "
+                                                        f"no_ask={_dc_b1_no_ask} disagree={_dc_b1_disagree:.3f} "
+                                                        f"conv={_dc_b1_conv}c ask={best_ask}c "
+                                                        f"tier={_dc_tier} "
+                                                        f"enabled={ORDERBOOK_PRIOR_GATE_ENABLED}"
+                                                    ),
+                                                    spot_price=spot, threshold=threshold,
+                                                    volatility=blended_rv, market_price=best_ask,
+                                                    seconds_to_close=seconds_remaining,
+                                                    calibrated_prob=_dc_assumed_p,
+                                                    edge=_dc_assumed_p - best_ask / 100.0,
+                                                    ofa_adjustment=ofa_adjustment,
+                                                    strategy=_dc_b1_strat,
+                                                    z_score=z_score, raw_prob=raw_prob,
+                                                    fee_adjusted_edge=fee_adjusted_edge,
+                                                    best_ask_source=best_ask_source,
+                                                    product_type=window.get("product_type"),
+                                                    config_snapshot_id=self._ml.config_snapshot_id,
+                                                    **_shadow_diag)
+                                            except sqlite3.OperationalError:
+                                                logging.warning("insert_evaluated_opportunity failed (b1_dc_gate_a)", exc_info=True)
+                                        logging.info(
+                                            "B1_GATE_A_WOULD_BLOCK_DC: %s %s @%dc strat=%s no_ask=%s cal_p=%.3f enabled=%s",
+                                            asset, ticker, best_ask, _dc_b1_strat, _dc_b1_no_ask, _dc_assumed_p,
+                                            ORDERBOOK_PRIOR_GATE_ENABLED)
+                                        if ORDERBOOK_PRIOR_GATE_ENABLED:
+                                            _dc_live_enabled = False
                                 if _dc_live_enabled and _dc_position > 0:
                                     # Cooldown: skip if this ticker was recently skipped due to "no asks"
                                     if ticker in self._dc_skip_cooldown and time.time() < self._dc_skip_cooldown[ticker]:

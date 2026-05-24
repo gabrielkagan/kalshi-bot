@@ -280,29 +280,31 @@ class TestTMSizing(unittest.TestCase):
 
     def test_scan_time_uses_compute_fn(self):
         """TM candidate must derive size from tm_compute_contracts."""
-        # Window grew 20000→21000 chars in Sim C ship (86ba0v7fc) — the
-        # shadow-compute helper call site sits between `Terminal Momentum
-        # intercept` and the candidate dict, pushing the dict ~520 chars
-        # further down. The 21000-char ceiling is comfortably below the
-        # next scanner block (post-TM eval / wknd_discount block).
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
+        # Window grew 20000→21000 chars in Sim C ship (86ba0v7fc); grew
+        # 21000→25000→30000 chars across the B1 ship (86ba1zdwm, 2026-05-21)
+        # — the composite adverse-selection gate restructured into separated
+        # Gate A + Gate B paths (each with its own shadow-row insert + per-
+        # gate kill-switch check per R1 finding C1), adding ~6500 chars
+        # between the TM96 cal_mlp gate and the candidate dict. The 30000-
+        # char ceiling is comfortably below the next scanner block.
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:30000]
         self.assertIn("tm_compute_contracts(", tm_block)
 
     def test_scan_time_sets_position_size(self):
         """TM candidate must use _tm_size for position_size."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:30000]
         self.assertIn('"position_size": _tm_size', tm_block)
 
     def test_kelly_zero_in_candidate(self):
         """TM candidate must set kelly_f=0.0."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:30000]
         self.assertIn('"kelly_f": 0.0', tm_block)
 
     def test_drawdown_scaler_routes_through_real_sizer_in_candidate(self):
         """TM candidate must route drawdown_scaler through the real PositionSizer
         readonly accessor (post-DD-2, ClickUp 86b9z6y4k — was stubbed 1.0 pre-fix,
         which poisoned `evaluated_opportunities.drawdown_scaler` analytics)."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:21000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:30000]
         self.assertIn(
             '"drawdown_scaler": self._sizer._drawdown_scaler_readonly('
             'self._get_balance_cached() or 0)',
@@ -443,7 +445,7 @@ class TestTMThinBufferCap(unittest.TestCase):
         """The scan-time call to tm_compute_contracts must pass buf_pct=_tm_buf_pct.
         Check is component-based (not exact string) so multi-line call formatting
         from later changes (e.g. risk_cap_price added Apr 28) doesn't false-fail."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:20000]
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:30000]
         # Find a tm_compute_contracts call and verify positional args + buf_pct.
         self.assertIn("tm_compute_contracts(", tm_block,
                       "scan must call tm_compute_contracts")

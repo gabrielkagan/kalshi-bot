@@ -109,13 +109,15 @@ Python constant names) are:
 - `'TM98_97_98C_2_5MIN_BLEED'`
 - `'SOL_TAKER_85_89C_2_5MIN_BLEED'`
 - `'SOL_BLEED_V2_88_93C_2_5MIN'`
+- `'orderbook_prior_block'` (B1 Gate A, ClickUp 86ba1zdwm, 2026-05-21)
+- `'hype_high_price_buf_block'` (B1 Gate B, ClickUp 86ba1zdwm, 2026-05-21)
 
-Canonical 5-set (`'candidate'` baseline + these 4 bleed stages) lives
-in `bot.helpers.cohort_attribution.COHORT_PARTITION_STAGES` (Money
-Printer Roadmap P1.1, ticket `86b9x3kgd`, 2026-05-12) — extend that
-constant when adding a new cell-block stage and the cohort
-aggregator + dashboard + alerts + weekly report pick it up
-automatically.
+Canonical 7-set (`'candidate'` baseline + 4 pre-B1 bleed stages + 2 B1
+stages) lives in `bot.helpers.cohort_attribution.COHORT_PARTITION_STAGES`
+(Money Printer Roadmap P1.1, ticket `86b9x3kgd`, 2026-05-12; extended
+by B1 to 7-set 2026-05-21) — extend that constant when adding a new
+cell-block stage and the cohort aggregator + dashboard + alerts +
+weekly report pick it up automatically.
 
 To re-aggregate true total candidate volume, UNION these stage
 values. **Pattern:** any script that filters

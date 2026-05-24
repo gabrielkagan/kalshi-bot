@@ -37,6 +37,9 @@ COHORT_PARTITION_STAGES: FrozenSet[str] = frozenset({
     "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_85_89C_2_5MIN_BLEED",
     "SOL_BLEED_V2_88_93C_2_5MIN",
+    # B1 (ClickUp 86ba1zdwm, 2026-05-21) — composite adverse-selection gate
+    "orderbook_prior_block",
+    "hype_high_price_buf_block",
 })
 
 PRODUCT_TYPE_15M = "15m"

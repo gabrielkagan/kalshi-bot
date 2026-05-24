@@ -141,6 +141,12 @@ _PRODUCTION_RUNTIME_BLOCKED_STAGES = frozenset({
     '96C_SOL_XRP_STC_DANGER_BAND',  # HPSB
     # cal_mlp TM-96 gate (sim_pnl doesn't model the TM-96 cal_mlp path):
     'tm96_calmlp_gate_blocked',
+    # B1 composite adverse-selection gate (ClickUp 86ba1zdwm, 2026-05-21) —
+    # production rejects YES entries where bot's cal_p disagrees with the
+    # orderbook (Gate A) OR HYPE razor-thin buf at 98-99c (Gate B). sim_pnl
+    # doesn't model the orderbook-prior or per-asset divergence dynamics.
+    'orderbook_prior_block',
+    'hype_high_price_buf_block',
     # TM NBBO gate (bot.py:13651-13683) — production rejects 96/97c TM
     # rows on NBBO source AND sub-0.10% buffer 98/99c rows. sim_pnl
     # doesn't replicate the source-aware gate. (n=11 in the May 2-6

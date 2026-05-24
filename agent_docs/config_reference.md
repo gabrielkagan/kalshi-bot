@@ -243,3 +243,29 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 | Poll interval | 60 s | `scripts/backfill/external_market_poller.py --once` cron. |
 | Stale threshold | 900 s (15 min) | Above Deribit's typical weekly maintenance window (~10 min). |
 | Process-start grace | 900 s | Suppresses NEVER-stale alerts in cron mode for the first 15 min. |
+
+## B1 composite adverse-selection gate (ClickUp 86ba1zdwm, 2026-05-21)
+
+Two independent gates protecting against catastrophic 15M losses diagnosed from a 7d -$235.83 PnL investigation. Full design: `kb/decisions/b1-orderbook-prior-gate-plan.md`. Constants live in `bot/constants.py` (post-Bit-3.1 canonical home). R0 sim row "COMPOSITE (entry>=98 only): ob OR HYPE-only buf<0.75" (14d window): +$355 net retention, blocks 5/13 catastrophic losses (~38%), 14% high-95c winner block. The 14% is the R0-sim winner-block rate measured within the entry>=98 composite-gate sweep — see plan-doc Gate sim results table for the full sweep. Gate A is asset-agnostic at entry>=90c (catches Class A "orderbook disagrees"); Gate B is HYPE-only at entry>=98c (catches Class B "CFB RTI divergence" measurement-noise).
+
+### Gate A — orderbook-prior (asset-agnostic, entry >= 90c)
+
+| Constant | Value | Data justification |
+|---|---|---|
+| `ORDERBOOK_PRIOR_GATE_ENABLED` | `True` | Kill-switch; True = trade-block when gate fires. Shadow rows log regardless (TM96 R-p7-deploy-r10 precedent). |
+| `ORDERBOOK_PRIOR_GATE_MIN_ENTRY_CENTS` | `90` | R0 sim measured entry >= 90c only; sub-90c is out-of-scope. |
+| `ORDERBOOK_PRIOR_GATE_MIN_DISAGREE` | `0.05` | Strict `>`. Bot's cal_p must beat market floor `(100-no_ask)/100` by more than 5pts. At 0.02 catches 1 extra catastrophic but blocks 130+ extra winners (net negative). |
+| `ORDERBOOK_PRIOR_GATE_MIN_CONVICTION_CENTS` | `500` | Strict `>`. Sum of `depth * no_bid_price` for NO bids at price >= 2c. At `> 200` blocks 13 more winners for marginal gain. At `> 1000` misses 1 catastrophic. |
+| `ORDERBOOK_PRIOR_GATE_MIN_NO_BID_PRICE` | `2` | Drop 0-1c market-maker liquidity bids that exist on every contract (signal-free). |
+| `ORDERBOOK_PRIOR_GATE_FILTER_STAGE` | `"orderbook_prior_block"` | DB filter_stage literal. Registered in `bot.helpers.cohort_attribution.COHORT_PARTITION_STAGES`. |
+
+### Gate B — HYPE high-price buf (HYPE-only, entry >= 98c)
+
+| Constant | Value | Data justification |
+|---|---|---|
+| `HYPE_HIGH_PRICE_BUF_GATE_ENABLED` | `True` | Kill-switch. Retires when B2 (ticket `86ba1zf5j`) ships multi-venue synthetic RTI. |
+| `HYPE_HIGH_PRICE_BUF_GATE_MIN_ENTRY_CENTS` | `98` | R0 sim showed 98c is where asymmetric risk dominates. At 95c retains $235 but blocks 72% of winners (net negative). |
+| `HYPE_HIGH_PRICE_BUF_GATE_MIN_BUF_PCT` | `0.75` | Strict `<`. HYPE p99 positive-divergence = 76.6 bps (per R0 sim, signed positive direction = bot's loss direction). All 4 HYPE losers at entry>=95c in 14d had buf<0.50%. 0.75 is conservative bound including p99 noise. |
+| `HYPE_HIGH_PRICE_BUF_GATE_FILTER_STAGE` | `"hype_high_price_buf_block"` | DB filter_stage literal. Registered in `COHORT_PARTITION_STAGES`. |
+
+HYPE-only because HYPE has the widest per-asset feed divergence (single-venue Coinbase blindspot — HYPE doesn't trade on Kraken/Bitstamp/Gemini). Per-asset p99 divergence from settlement_journal × evaluated_opportunities join: BTC 33.1 bps, ETH 33.3 bps, SOL 45.5 bps, DOGE 46.9 bps, XRP 26.2 bps, HYPE **76.6 bps** (2x BTC). For non-HYPE assets, winners and losers have overlapping buf distributions — buf gates for them are net-negative in the R0 sim.

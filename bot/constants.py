@@ -1951,3 +1951,46 @@ WS_SILENCE_TIMEOUT_SECONDS = 180    # 3 min — err on side of faster reconnect
 WS_SILENCE_GRACE_SECONDS = 60       # don't trip watchdog in first minute after connect
 
 WS_WATCHDOG_CHECK_INTERVAL = 30     # check every 30s
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B1: Composite adverse-selection gate (ClickUp 86ba1zdwm, umbrella 86ba1zcd3)
+#
+# Two independent gates protecting against catastrophic 15M losses
+# diagnosed in kb/decisions/b1-orderbook-prior-gate-plan.md (R0, 2026-05-21).
+#
+# Gate A — orderbook-prior adverse-selection (asset-agnostic, entry >= 90c).
+#   Block YES entries when bot's calibrated_prob disagrees with market
+#   orderbook by >5 pts AND the NO bid book has >$5 of conviction at
+#   non-trivial prices (NO bids at price >= 2c, dropping pure liquidity
+#   makers). Catches the "informed counterparty" loss class. The 90c
+#   entry floor matches the R0 sim window — sub-90c entries are out of
+#   measured scope.
+#
+# Gate B — HYPE high-price buf gate (HYPE-only, entry >= 98c).
+#   Block YES entries at 98-99c on HYPE when bot's spot-distance-from-strike
+#   < 0.75%. HYPE has the widest per-asset feed divergence (single-venue
+#   Coinbase blind spot; p99 = 76.6 bps vs BTC's 33.1 bps per the R0
+#   per-asset divergence table). The asymmetric risk/reward at 98-99c
+#   requires near-certainty including feed-noise; thin buf is structurally
+#   negative-EV regardless of cal_p. Retires when B2 ships multi-venue
+#   synthetic RTI feed (ticket 86ba1zf5j).
+#
+# Rollback: flip *_GATE_ENABLED to False; shadow rows continue to log
+# (would-block computed regardless of enable flag, scanner-side gates
+# the trade-block — mirrors TM96 cal_mlp gate's R-p7-deploy-r10 pattern).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Gate A — orderbook-prior block
+ORDERBOOK_PRIOR_GATE_ENABLED = True
+ORDERBOOK_PRIOR_GATE_MIN_ENTRY_CENTS = 90     # entry-price floor — R0 sim only measured entry>=90c
+ORDERBOOK_PRIOR_GATE_MIN_DISAGREE = 0.05      # bot cal_p must beat market floor by >5pts (strict)
+ORDERBOOK_PRIOR_GATE_MIN_CONVICTION_CENTS = 500  # >$5 NO-side $ at prices >= MIN_NO_BID_PRICE (strict)
+ORDERBOOK_PRIOR_GATE_MIN_NO_BID_PRICE = 2     # filter out 0-1c liquidity-only NO bids
+ORDERBOOK_PRIOR_GATE_FILTER_STAGE = "orderbook_prior_block"
+
+# Gate B — HYPE high-price buf block
+HYPE_HIGH_PRICE_BUF_GATE_ENABLED = True
+HYPE_HIGH_PRICE_BUF_GATE_MIN_ENTRY_CENTS = 98   # only entries at 98-99c
+HYPE_HIGH_PRICE_BUF_GATE_MIN_BUF_PCT = 0.75     # require bot_buf >= 0.75% for HYPE 98-99c
+HYPE_HIGH_PRICE_BUF_GATE_FILTER_STAGE = "hype_high_price_buf_block"

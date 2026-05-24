@@ -110,6 +110,9 @@ LIVE_CANDIDATE_STAGES = frozenset({
     "TM98_97_98C_2_5MIN_BLEED",
     "SOL_TAKER_85_89C_2_5MIN_BLEED",
     "SOL_BLEED_V2_88_93C_2_5MIN",
+    # B1 (86ba1zdwm, 2026-05-21) — composite adverse-selection gate
+    "orderbook_prior_block",
+    "hype_high_price_buf_block",
 })
 
 # Regime cutoffs — pinned to actual deploy commit timestamps (UTC).
