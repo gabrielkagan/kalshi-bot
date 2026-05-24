@@ -354,10 +354,12 @@ def test_main_returns_expected_keys():
 def test_cv_uses_forward_chaining_temporal_split():
     """Pipeline-level no-look-ahead pin (Invariant 2 at the CV-fold layer).
 
-    Plan-doc § Method step 5 + § Methodological invariants ¶ k-fold:
-    "Use k-fold cross-validation (k=5) for AUC estimation with strict
-    temporal ordering of folds (no look-ahead across folds — fold k
-    trains on windows with settled_at < fold-k boundary only)."
+    Plan-doc § Method step 5: forward-chaining temporal CV via
+    `sklearn.model_selection.TimeSeriesSplit(n_splits=5)` — fold k trains
+    on windows with `settled_at < fold-k boundary` only. (Per impl-R15-M2:
+    the prior docstring fabricated a verbatim quote attributed to a
+    nonexistent "§ Methodological invariants ¶ k-fold" paragraph; actual
+    invariants are numbered 1-7 with no "k-fold" entry.)
 
     The initial impl-R1 ship used `sklearn.model_selection.KFold(shuffle=False)`
     which is NOT forward-chaining (only 1 of 5 folds honors the temporal

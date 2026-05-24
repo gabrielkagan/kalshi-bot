@@ -720,12 +720,13 @@ def main(
 
         # 5. Per-cell k-fold-CV AUC with bootstrap CI on T-60 features.
         #
-        # CV methodology per plan-doc § Method step 5 + § Methodological
-        # invariants ¶ k-fold:
-        #
-        #   "Use k-fold cross-validation (k=5) for AUC estimation with
-        #   strict temporal ordering of folds (no look-ahead across folds —
-        #   fold k trains on windows with settled_at < fold-k boundary only)."
+        # CV methodology per plan-doc § Method step 5: forward-chaining
+        # temporal CV via TimeSeriesSplit(n_splits=5), fold k trains on
+        # windows with settled_at < fold-k boundary only. (Per impl-R15-M2:
+        # the prior comment block here fabricated a verbatim quote attributed
+        # to a nonexistent "§ Methodological invariants ¶ k-fold" paragraph;
+        # the actual § Methodological invariants paragraphs are numbered 1-7
+        # with no "k-fold" entry.)
         #
         # **Forward-chaining** temporal split via `TimeSeriesSplit(n_splits=5)`
         # (impl-R1 fix; the initial impl used sklearn's plain KFold with
