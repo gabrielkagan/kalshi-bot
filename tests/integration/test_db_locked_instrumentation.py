@@ -465,6 +465,156 @@ def test_runtime_warning_marks_begin_immediate_ok_when_succeeds(caplog):
     )
 
 
+# ─── AST: BEGIN IMMEDIATE except handlers catch sqlite3.DatabaseError ──────
+
+
+_BEGIN_RETRY_LOOP_HOSTS = (
+    "insert_evaluated_opportunity",
+    "insert_rejection",
+    "insert_bot_order",
+)
+"""Three StateManager hot-path writers that share the BEGIN IMMEDIATE
+retry-loop pattern (`for _attempt in range(3): try: BEGIN IMMEDIATE`).
+The fourth member of the SQLite-section "4-site coverage chain" —
+`mark_rejection_settled` — has only a commit-race except (no BEGIN
+retry loop), so it is excluded; widen this tuple if a future Bit
+adds a BEGIN retry to that function.
+"""
+
+
+def _find_begin_retry_loop(fn: ast.FunctionDef) -> "ast.For | None":
+    """Locate the ``for _attempt in range(...):`` retry loop inside
+    a function body. Matches on the SHAPE of the for-loop header so
+    the guard survives identifier renames at the loop body level."""
+    for sub in ast.walk(fn):
+        if not isinstance(sub, ast.For):
+            continue
+        if not (isinstance(sub.target, ast.Name)
+                and sub.target.id == "_attempt"):
+            continue
+        if not (isinstance(sub.iter, ast.Call)
+                and isinstance(sub.iter.func, ast.Name)
+                and sub.iter.func.id == "range"):
+            continue
+        return sub
+    return None
+
+
+def _assert_handler_is_sqlite_database_error(
+        handler: ast.ExceptHandler, *, host: str) -> None:
+    """Assert ``handler.type`` is the ``sqlite3.DatabaseError`` Attribute
+    node — i.e. an `Attribute(value=Name('sqlite3'), attr='DatabaseError')`."""
+    htype = handler.type
+    assert isinstance(htype, ast.Attribute), (
+        f"[{host}] except handler type must be `sqlite3.DatabaseError` "
+        f"(attribute access), got AST node "
+        f"{type(htype).__name__ if htype is not None else 'None (bare except)'}: "
+        f"{ast.dump(htype) if htype is not None else '<bare>'}"
+    )
+    assert (isinstance(htype.value, ast.Name)
+            and htype.value.id == "sqlite3"), (
+        f"[{host}] except handler must qualify the class via the "
+        f"`sqlite3` module; got value={ast.dump(htype.value)}"
+    )
+    assert htype.attr == "DatabaseError", (
+        f"[{host}] except handler must catch `sqlite3.DatabaseError` "
+        f"(the parent class). Past-48h VPS-journal histogram (2026-05-22) "
+        f"showed 21× `DatabaseError: another row available` + 2× "
+        f"`DatabaseError: no more rows available` escaping the narrow "
+        f"`OperationalError` catch at the BEGIN IMMEDIATE retry sites — "
+        f"each escape lost a telemetry row (or, for insert_bot_order, "
+        f"propagated up the call stack with crash-safety divergence). "
+        f"Broadening to the parent class catches both `OperationalError` "
+        f"and the bare-`DatabaseError` raises while preserving the "
+        f"transient/non-transient string-match dispatch. "
+        f"Got `sqlite3.{htype.attr}`."
+    )
+
+
+@pytest.mark.parametrize("host_name", _BEGIN_RETRY_LOOP_HOSTS)
+def test_begin_immediate_retry_loop_catches_database_error(host_name: str):
+    """Each StateManager BEGIN IMMEDIATE retry loop must catch
+    ``sqlite3.DatabaseError`` (the parent class), NOT just
+    ``sqlite3.OperationalError``.
+
+    Background: Python's sqlite3 module surfaces stale-cursor-class
+    raises ("another row available", "no more rows available") at the
+    bare ``DatabaseError`` class. The pre-fix narrow ``OperationalError``
+    catch at each site let those raises escape the retry block —
+    telemetry rows were lost (insert_evaluated_opportunity, insert_rejection)
+    and the crash-safety site (insert_bot_order) would propagate the
+    exception up the call stack, potentially killing a scan tick during
+    order placement.
+
+    Robustness against future refactors:
+
+    - The guard ITERATES retry-loop ``try.handlers`` and checks the
+      LAST handler (Python's except-matching is first-match-wins, so
+      a narrow handler in front of a broad handler is fine — what we
+      pin is that the FINAL catch IS the parent class). This survives
+      a future defensive refactor that adds a more-specific handler
+      (e.g. ``except sqlite3.IntegrityError`` then ``except
+      sqlite3.DatabaseError``) without false-positive failures.
+    - A no-op-narrow-shadows-broad inversion (broad first, narrow
+      after) is caught by an explicit assertion that no handler EARLIER
+      than the DatabaseError one is a sqlite3-subclass — the earlier
+      handler must be for a non-sqlite class (a future ``except
+      json.JSONDecodeError`` or similar) so the DatabaseError catch
+      stays reachable.
+    """
+    state_py_path = ROOT / "bot" / "state.py"
+    tree = ast.parse(state_py_path.read_text())
+
+    fn = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.FunctionDef)
+                and node.name == host_name):
+            fn = node
+            break
+    assert fn is not None, (
+        f"could not locate {host_name!r} in bot/state.py — if the "
+        f"function was renamed, update _BEGIN_RETRY_LOOP_HOSTS"
+    )
+
+    retry_loop = _find_begin_retry_loop(fn)
+    assert retry_loop is not None, (
+        f"could not locate `for _attempt in range(...):` retry loop "
+        f"inside {host_name!r}"
+    )
+
+    try_stmt = None
+    for stmt in retry_loop.body:
+        if isinstance(stmt, ast.Try):
+            try_stmt = stmt
+            break
+    assert try_stmt is not None, (
+        f"[{host_name}] could not locate try/except inside the retry loop"
+    )
+    assert len(try_stmt.handlers) >= 1, (
+        f"[{host_name}] retry-loop try must have at least one except handler"
+    )
+
+    # Pin: the LAST handler is `sqlite3.DatabaseError`. Earlier handlers
+    # (if any) MUST be non-sqlite — otherwise a narrow sqlite-subclass
+    # in front (e.g. accidentally adding `except sqlite3.OperationalError`
+    # FIRST and `except sqlite3.DatabaseError` SECOND) would re-create
+    # the narrow-shadow bug we are fixing for the transient classes the
+    # retry path should still hit.
+    _assert_handler_is_sqlite_database_error(
+        try_stmt.handlers[-1], host=host_name)
+
+    for earlier in try_stmt.handlers[:-1]:
+        htype = earlier.type
+        if isinstance(htype, ast.Attribute) and isinstance(htype.value, ast.Name):
+            assert htype.value.id != "sqlite3", (
+                f"[{host_name}] except handler earlier than the final "
+                f"`sqlite3.DatabaseError` catch is a sqlite3 subclass "
+                f"({ast.dump(htype)}) — first-match-wins means it would "
+                f"shadow the broad catch and re-introduce the bug. "
+                f"Earlier handlers must be for non-sqlite classes."
+            )
+
+
 # ─── helper: pytest "does not raise" context manager ───────────────────────
 
 from contextlib import contextmanager
