@@ -47,6 +47,8 @@ KNOWN_BLOCK_STAGES = frozenset({
     "SOL_BLEED_V2_88_93C_2_5MIN",
     "96C_SOL_XRP_STC_DANGER_BAND",
     "tm96_calmlp_gate_blocked",
+    "orderbook_prior_block",        # B1 Gate A (86ba1zdwm, 2026-05-21)
+    "hype_high_price_buf_block",    # B1 Gate B (86ba1zdwm, 2026-05-21)
 })
 
 # Explicit classifications for stages that don't match the heuristic but are

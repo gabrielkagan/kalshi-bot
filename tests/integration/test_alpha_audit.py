@@ -571,6 +571,9 @@ def test_known_block_stages_match_canonical_set():
         "SOL_BLEED_V2_88_93C_2_5MIN",
         "96C_SOL_XRP_STC_DANGER_BAND",
         "tm96_calmlp_gate_blocked",
+        # B1 (86ba1zdwm, 2026-05-21) — composite adverse-selection gate
+        "orderbook_prior_block",
+        "hype_high_price_buf_block",
     }
     assert set(alpha_audit.KNOWN_BLOCK_STAGES) == expected
 
