@@ -89,12 +89,19 @@ _DAY_HOUR_HIGH: int = 22
 # The verdict-doc retracts the original ITM/OTM framing in § Risk register.
 
 #: Asset → 15M ticker prefix (`KX<ASSET>15M`). Mirrors `bot.constants.SERIES_TICKERS`
-#: verbatim (key-set + value equality) for the canonical 7-asset universe; the
-#: trailing `-` separator is appended at query time as `prefix + "-%"` to scope
-#: out hourly + daily markets that share the `KX<ASSET>` root. Anti-drift contract
-#: test: `tests/contracts/test_f0_5_asset_ticker_prefix_mirrors_series_tickers.py`
-#: (D1.11.a `LEAGUES_ESPN` pattern). When the bot's 7-asset universe changes,
-#: the contract test fails RED and the operator must update SERIES_TICKERS first.
+#: verbatim (key-set + value equality) for the canonical 7-asset universe.
+#: USAGE NOTE (impl-R11-M1 correction): the prefix is NOT used to construct a
+#: LIKE query against `settled_trades.ticker`. Per `_load_settled_windows`, the
+#: SQL filter is `WHERE product_type='15m'` — Kalshi's `product_type` column
+#: already discriminates 15M windows by enum value, so a separate per-asset
+#: ticker-prefix LIKE clause would be redundant. `ASSET_TICKER_PREFIX` is used
+#: ONLY as (a) the iteration key set in `_load_spot_series_by_asset` (one query
+#: per asset using the `<asset>_spot_at_decision` column) and (b) the structural
+#: anti-drift pin against `SERIES_TICKERS` (contract test:
+#: `tests/contracts/test_f0_5_asset_ticker_prefix_mirrors_series_tickers.py`
+#: per the D1.11.a `LEAGUES_ESPN` pattern). When the bot's 7-asset universe
+#: changes, the contract test fails RED and the operator must update
+#: SERIES_TICKERS first.
 ASSET_TICKER_PREFIX: dict[str, str] = dict(SERIES_TICKERS)
 
 # ----- Schema invariants (test-pinned) -----------------------------------

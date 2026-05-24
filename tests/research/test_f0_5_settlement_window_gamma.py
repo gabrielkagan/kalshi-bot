@@ -13,7 +13,8 @@ Invariants pinned here (per plan-doc § Methodological invariants):
 
 1. Schema invariants — required columns exist in settled_trades + moc +
    evaluated_opportunities. 7-asset universe pinned in-script via
-   ASSET_TICKER_PREFIX (15M-specific prefix `KX<ASSET>15M-`).
+   ASSET_TICKER_PREFIX (15M-specific prefix `KX<ASSET>15M`; the trailing
+   hyphen is NOT part of the prefix value per SERIES_TICKERS).
 2. No-look-ahead — for a window with close at t_close, the T-Xs state must
    use only rows with observation_time ≤ t_close - X. Settle outcome is the
    label, never a feature.
@@ -101,11 +102,18 @@ def test_seven_asset_universe_pinned_with_15m_prefix():
     """7-asset universe pinned in-script with the 15M-specific ticker prefix.
 
     Mirrors `bot.constants.SERIES_TICKERS` (values are `"KXBTC15M"`,
-    `"KXETH15M"`, ..., `"KXBNB15M"`; the LIKE pattern is constructed as
-    `SERIES_TICKERS[asset] + "-%"` — the trailing hyphen separator is
-    appended at query time before the strike suffix). The 15M-specific
-    prefix scopes-out hourly + daily markets — F0.5 is a terminal-condition
-    HJB on 15M windows only per umbrella plan-doc § Attack #5.
+    `"KXETH15M"`, ..., `"KXBNB15M"`). Per impl-R11-M1 correction: the
+    prefix is NOT used to construct a LIKE clause against
+    `settled_trades.ticker`. The script's 15M-window discrimination uses
+    the `WHERE product_type='15m'` SQL filter (Kalshi's canonical
+    product_type enum); a separate per-asset prefix-LIKE would be
+    redundant. ASSET_TICKER_PREFIX is used only as (a) the iteration
+    key set in `_load_spot_series_by_asset` and (b) the anti-drift pin
+    against SERIES_TICKERS. The 15M-specific value naming (`KX<ASSET>15M`,
+    distinct from hourly `KX<ASSET>`) is preserved to make the anti-drift
+    pin reject hourly-prefix promotions of SERIES_TICKERS in the future —
+    F0.5 is a terminal-condition HJB on 15M windows only per umbrella
+    plan-doc § Attack #5.
     """
     expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
     prefix_map = getattr(gamma, "ASSET_TICKER_PREFIX", None)
