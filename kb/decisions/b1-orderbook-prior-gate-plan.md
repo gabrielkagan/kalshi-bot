@@ -139,7 +139,7 @@ production scanner calls the two gate predicates SEPARATELY (not via the
 | KXDOGE15M-26MAY191330-30 | DOGE | 96 | 0.139 | 0.959 | -$48 | **A (orderbook)** |
 | KXHYPE15M-26MAY141600-00 | HYPE | 94 | 0.132 | 0.960 | -$41 | uncaught (entry<98) |
 
-**5 of 13 catastrophic caught (~38%)**. **8 uncaught** = $336 of bleed left for B2/B3 to address.
+**5 of 13 catastrophic caught (~38%)**. **8 uncaught** = $434 of catastrophic bleed (sum of uncaught PnL rows in the table above: 75+69+51+50+50+49+49+41) left for B2/B3 to address.
 
 The uncaught classes:
 - **HYPE at 94-96c**: entry below 98c threshold. Lowering threshold to ≥95c catches them but costs many winners.
