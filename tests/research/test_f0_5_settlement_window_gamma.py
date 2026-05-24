@@ -110,8 +110,9 @@ def test_seven_asset_universe_pinned_with_15m_prefix():
     redundant. ASSET_TICKER_PREFIX is used only as (a) the iteration
     key set in `_load_spot_series_by_asset` and (b) the anti-drift pin
     against SERIES_TICKERS. The 15M-specific value naming (`KX<ASSET>15M`,
-    distinct from hourly `KX<ASSET>`) is preserved to make the anti-drift
-    pin reject hourly-prefix promotions of SERIES_TICKERS in the future —
+    distinct from `HOURLY_SERIES_TICKERS`'s `KX<ASSET>D`) is preserved
+    to make the anti-drift pin reject hourly-prefix promotions of
+    SERIES_TICKERS in the future —
     F0.5 is a terminal-condition HJB on 15M windows only per umbrella
     plan-doc § Attack #5.
     """
