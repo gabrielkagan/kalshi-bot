@@ -1,12 +1,13 @@
 """F0.5 — Settlement-window gamma falsification (CT-MDP Attack #5, Phase 0).
 
 Full implementation post-impl-Bit ship. Helpers and main pipeline implemented;
-the 18-test suite at `tests/research/test_f0_5_settlement_window_gamma.py`
-(17 research-tier including the impl-R1-added CV-guard
-`test_cv_uses_forward_chaining_temporal_split`) +
+the 18-test F0.5 suite — 17 research-tier in
+`tests/research/test_f0_5_settlement_window_gamma.py` (including the
+impl-R1-added CV-guard `test_cv_uses_forward_chaining_temporal_split`) +
+1 contract anti-drift in
 `tests/contracts/test_f0_5_asset_ticker_prefix_mirrors_series_tickers.py`
-(1 contract anti-drift) all GREEN. Scaffold-ship count was 15-RED + 2-GREEN;
-impl-R1 added the CV-guard bringing the research-tier total to 17.
+— all GREEN. Scaffold-ship count was 15-RED + 2-GREEN; impl-R1 added the
+CV-guard bringing the research-tier total to 17.
 
 Parent plan: kb/decisions/ct-mdp-f0-5-settlement-window-gamma-plan.md
 Parent ClickUp: 86ba18zhr
@@ -52,7 +53,8 @@ from bot.constants import SERIES_TICKERS
 
 # ----- Constants ----------------------------------------------------------
 
-#: Kill rule threshold on the AUC lower-CI (per umbrella ticket 86ba18zhr).
+#: Kill rule threshold on the AUC lower-CI (per F0.5 ticket 86ba18zhr; the
+#: umbrella ticket is 86ba18zbv — 86ba18zhr is this Bit's ticket).
 AUC_KILL_THRESHOLD: float = 0.55
 
 #: Min per-cell event count below which a cell reports "insufficient".
@@ -361,7 +363,7 @@ def classify_verdict(
     """Return 'SURVIVE' if any cell has auc_lower ≥ threshold; 'KILL' otherwise.
 
     Cells with `status == 'insufficient'` are excluded from the verdict
-    computation. Survival gate (per umbrella ticket 86ba18zhr): ≥1 cell
+    computation. Survival gate (per F0.5 ticket 86ba18zhr): ≥1 cell
     anywhere with `auc_lower ≥ AUC_KILL_THRESHOLD`.
     """
     for cell in cells:
