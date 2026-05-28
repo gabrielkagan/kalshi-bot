@@ -32,11 +32,13 @@ KNOWN reconstruction caveats (measured by the RMSE gate itself, not assumed):
     lookback window's deltas (near-top converges quickly). Kraken/Coinbase have
     explicit ``snapshot`` frames; the bronze reader seeds from the most recent
     snapshot in the lookback window. Bitstamp every frame is a full snapshot.
-  - Kraken L2 CRC32 checksum verification is NOT implemented in v1 — bronze
-    diff-drops would silently desync a 60s window. The 60s averaging over many
-    markets is robust to occasional desync; checksum verification is a filed
-    follow-up (ticket 86ba5xfyb; kb/decisions/b2-synthetic-rti-feed-plan.md
-    "B2a next steps").
+  - Kraken L2 CRC32 checksum verification IS implemented (ticket 86ba5xfyb):
+    after each ``update`` the top-10 v2 checksum is recomputed and compared to
+    the frame's ``checksum``; on mismatch the Kraken stream is marked desynced
+    and DROPPED from the consolidated book for the rest of that 60s window (a
+    fresh ``snapshot`` re-seeds + clears the flag). Frames lacking a checksum
+    skip the check (e.g. unit fixtures). See ``kraken_book_checksum`` /
+    ``_KrakenChecksumBook`` / ``_verify_kraken_checksum``.
 """
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ import datetime as _dt
 import json
 import logging
 import math
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
@@ -168,6 +171,70 @@ class OrderBook:
         return bids, asks
 
 
+# ── Kraken v2 book checksum ──────────────────────────────────────────────────
+
+
+def _kraken_fmt(s: str) -> str:
+    """Kraken v2 checksum token: remove the decimal point, strip leading zeros.
+
+    Operates on the ORIGINAL price/qty STRING (e.g. ``"59.50"`` -> ``"5950"``,
+    ``"0.30709338"`` -> ``"30709338"``). A float-parsed value loses
+    trailing-zero precision (``"59.50"`` -> ``59.5`` -> ``"595"``) and yields
+    the wrong token, so callers must pass the precision-preserving string."""
+    return s.replace(".", "").lstrip("0")
+
+
+def kraken_book_checksum(
+    asks: Sequence[Tuple[str, str]],
+    bids: Sequence[Tuple[str, str]],
+    depth: int = 10,
+) -> int:
+    """CRC32 of the top-``depth`` asks (ascending) then bids (descending).
+
+    ``asks``/``bids`` are ``(price_str, qty_str)`` at book precision, sorted
+    best-first. Mirrors Kraken WS v2's ``book`` channel checksum so a desynced
+    book (from a dropped/out-of-order bronze diff) can be detected. Verified
+    against a real recorded HYPE/USD snapshot (checksum 3129294453)."""
+    parts: List[str] = []
+    for price, qty in list(asks)[:depth]:
+        parts.append(_kraken_fmt(price))
+        parts.append(_kraken_fmt(qty))
+    for price, qty in list(bids)[:depth]:
+        parts.append(_kraken_fmt(price))
+        parts.append(_kraken_fmt(qty))
+    return zlib.crc32("".join(parts).encode())
+
+
+class _KrakenChecksumBook:
+    """String-keyed Kraken book (price_str -> qty_str) maintained alongside the
+    float OrderBook purely to verify the v2 checksum. Detects a desynced book
+    after a dropped/out-of-order bronze diff."""
+
+    def __init__(self) -> None:
+        self.bids: Dict[str, str] = {}
+        self.asks: Dict[str, str] = {}
+
+    def apply_snapshot(
+        self,
+        bids_str: Sequence[Tuple[str, str]],
+        asks_str: Sequence[Tuple[str, str]],
+    ) -> None:
+        self.bids = {p: q for p, q in bids_str if float(q) > 0}
+        self.asks = {p: q for p, q in asks_str if float(q) > 0}
+
+    def apply_delta(self, side: str, price_str: str, qty_str: str) -> None:
+        book = self.bids if side == "bid" else self.asks
+        if float(qty_str) <= 0:
+            book.pop(price_str, None)
+        else:
+            book[price_str] = qty_str
+
+    def checksum(self) -> int:
+        asks = sorted(self.asks.items(), key=lambda kv: float(kv[0]))[:10]
+        bids = sorted(self.bids.items(), key=lambda kv: float(kv[0]), reverse=True)[:10]
+        return kraken_book_checksum(asks, bids)
+
+
 # ── Normalized venue update + parsers ───────────────────────────────────────
 
 
@@ -178,6 +245,12 @@ class VenueUpdate:
     bids: List[Tuple[float, float]] = field(default_factory=list)
     asks: List[Tuple[float, float]] = field(default_factory=list)
     deltas: List[Tuple[str, float, float]] = field(default_factory=list)
+    # Kraken-only: the v2 frame checksum + precision-preserving string levels,
+    # used to detect a desynced book. None/empty for the other venues.
+    checksum: Optional[int] = None
+    bids_str: List[Tuple[str, str]] = field(default_factory=list)
+    asks_str: List[Tuple[str, str]] = field(default_factory=list)
+    deltas_str: List[Tuple[str, str, str]] = field(default_factory=list)
 
 
 _REVERSE = _reverse_symbol_maps()
@@ -197,14 +270,31 @@ def _parse_kraken(raw: dict) -> Optional[VenueUpdate]:
     asset = _REVERSE["kraken"].get(entry.get("symbol", ""))
     if asset is None:
         return None
-    bids = [(_f(b["price"]), _f(b["qty"])) for b in entry.get("bids", [])]
-    asks = [(_f(a["price"]), _f(a["qty"])) for a in entry.get("asks", [])]
+    raw_bids = entry.get("bids", [])
+    raw_asks = entry.get("asks", [])
+    bids = [(_f(b["price"]), _f(b["qty"])) for b in raw_bids]
+    asks = [(_f(a["price"]), _f(a["qty"])) for a in raw_asks]
+    # Precision-preserving strings for the v2 checksum. str() is a no-op on the
+    # bronze path (iter_bronze_frames parses _raw with parse_float=str).
+    checksum = entry.get("checksum")
     if raw.get("type") == "snapshot":
-        return VenueUpdate(asset=asset, kind="snapshot", bids=bids, asks=asks)
+        return VenueUpdate(
+            asset=asset, kind="snapshot", bids=bids, asks=asks,
+            checksum=checksum,
+            bids_str=[(str(b["price"]), str(b["qty"])) for b in raw_bids],
+            asks_str=[(str(a["price"]), str(a["qty"])) for a in raw_asks],
+        )
     deltas = (
         [("bid", p, s) for p, s in bids] + [("ask", p, s) for p, s in asks]
     )
-    return VenueUpdate(asset=asset, kind="delta", deltas=deltas)
+    deltas_str = (
+        [("bid", str(b["price"]), str(b["qty"])) for b in raw_bids]
+        + [("ask", str(a["price"]), str(a["qty"])) for a in raw_asks]
+    )
+    return VenueUpdate(
+        asset=asset, kind="delta", deltas=deltas,
+        checksum=checksum, deltas_str=deltas_str,
+    )
 
 
 def _parse_bitstamp(raw: dict) -> Optional[VenueUpdate]:
@@ -281,6 +371,24 @@ def _apply_update(book: OrderBook, u: VenueUpdate) -> None:
             book.apply_delta(side, price, size)
 
 
+def _verify_kraken_checksum(stream: dict, u: VenueUpdate) -> None:
+    """Maintain the Kraken string book and flag the stream desynced on a v2
+    checksum mismatch (a dropped/out-of-order diff). A snapshot re-seeds the
+    book and clears any prior desync. Frames without a checksum skip the check."""
+    cb = stream["cbook"]
+    if u.kind == "snapshot":
+        cb.apply_snapshot(u.bids_str, u.asks_str)
+        stream["desynced"] = False
+    else:
+        for side, price, qty in u.deltas_str:
+            cb.apply_delta(side, price, qty)
+    if u.checksum is not None and not stream["desynced"]:
+        # INVARIANT: checksum-bearing frames carry string price/qty (bronze
+        # forces parse_float=str); a float price would falsely desync (safe dir).
+        if cb.checksum() != u.checksum:
+            stream["desynced"] = True
+
+
 # ── Per-second reconstruction + 60s average ─────────────────────────────────
 
 
@@ -315,7 +423,11 @@ def synthetic_rti_60s_average(
             if u is not None and u.asset == asset:
                 ups.append((ts, u))
         ups.sort(key=lambda x: x[0])
-        streams[venue] = {"ups": ups, "i": 0, "book": OrderBook(), "last": None}
+        streams[venue] = {
+            "ups": ups, "i": 0, "book": OrderBook(), "last": None,
+            "cbook": _KrakenChecksumBook() if venue == "kraken" else None,
+            "desynced": False,
+        }
 
     n_samples = int(round(window / step))
     samples = [close_ts - window + (i + 1) * step for i in range(n_samples)]
@@ -329,10 +441,14 @@ def synthetic_rti_60s_average(
             while s["i"] < len(ups) and ups[s["i"]][0] <= t:
                 ts_u, u = ups[s["i"]]
                 _apply_update(s["book"], u)
+                if s["cbook"] is not None:
+                    _verify_kraken_checksum(s, u)
                 s["last"] = ts_u
                 s["i"] += 1
             if s["last"] is None or (t - s["last"]) > lag:
                 continue  # no data yet, or stale beyond retrieval-lag → drop
+            if s["desynced"]:
+                continue  # checksum mismatch → corrupt book, drop the venue
             bids, asks = s["book"].snapshot()
             if bids and asks:
                 books[venue] = (bids, asks)
@@ -497,7 +613,10 @@ def iter_bronze_frames(
             if ts < start_ts or ts > end_ts:
                 continue
             try:
-                raw = json.loads(env["_raw"])
+                # parse_float=str preserves price/qty precision (Kraken sends
+                # them as JSON numbers) for the v2 checksum; harmless elsewhere
+                # (other venues send string prices; parsers float() via _f).
+                raw = json.loads(env["_raw"], parse_float=str)
             except (ValueError, KeyError, TypeError):
                 continue
             yield ts, raw
