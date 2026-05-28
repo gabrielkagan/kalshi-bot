@@ -39,6 +39,7 @@
 - **Hourly NO 40-54c:** 1-contract verification mode (env var kill switch)
 - **Low-price 70-79c:** dual-sizing sim (full Kelly vs LP_KELLY=0.25, LP_MAX_RISK=0.10)
 - **Position price monitor:** logs yes_ask/bid for held 15M positions via WS
+- **Multi-venue synthetic RTI (B2b-1, ticket 86ba64h2w):** in-bot 4-venue (Coinbase/Kraken/Bitstamp/Gemini) L2 → CFB-shape synthetic, logged to `evaluated_opportunities.rti_synthetic/rti_constituent_count/rti_confidence`. **SHADOW-ONLY — never feeds a decision.** Kill-switch `SYNTHETIC_RTI_ENABLED` (env, default OFF): when OFF the feed (`bot/feeds/synthetic_rti_feed.py`) opens no sockets/threads. Computed off the scan hot path by a sampler daemon; the scan loop reads an O(1) cache. NEVER flip the signal live before the Bit-4 validation gate (`kb/decisions/b2b-multi-venue-signal-program-plan.md`).
 
 ## Tests
 

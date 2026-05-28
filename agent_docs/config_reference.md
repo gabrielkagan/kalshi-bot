@@ -64,6 +64,7 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 | SOL_BLEED_V2_BLOCK_STC_HI_S | 300 | 5/9 KXSOL082215 weekend_discount @ 361s correctly excluded from gate |
 | SOL_BLEED_V2_BLOCK_STRATEGIES | {TAKER_NOW, MAKER_PATIENT} | bot/executor.py force-routes ALL SOL through `sol_taker_override` regardless of label; widened beyond v1's TAKER_NOW-only filter. MAKER_AGGRESSIVE / weekend_discount / overnight_discount / decided_t1/t2 are productive — NOT blocked |
 | BINANCE_FEED_ENABLED | env-default `0` | US-VPS HTTP-451 geoblocked; CROSS_EXCHANGE_CONSENSUS_MIN auto-lowers to 2 (Kraken+Bybit) when off |
+| SYNTHETIC_RTI_ENABLED | env-default `0` (OFF) | (Ticket 86ba64h2w, B2b-1, 2026-05-28) Kill-switch for the in-bot 4-venue (Coinbase/Kraken/Bitstamp/Gemini) L2 → CFB-shape synthetic RTI shadow feed (`bot/feeds/synthetic_rti_feed.py`). **SHADOW-ONLY** — logged to `evaluated_opportunities.rti_synthetic/rti_constituent_count/rti_confidence` for the Bit-3 retrain corpus; NEVER feeds a trade decision. When OFF (default) the feed opens no WS sockets / spawns no threads (`start()` no-ops) → zero scan-latency footprint. When ON it adds 4 L2 WS connections + a sampler daemon (compute off the scan hot path). NEVER flip the live signal before the Bit-4 shadow-validation gate. See `kb/decisions/b2b-1-core-shadow-plan.md`. |
 | STC_SIZING_SCALER_KNEE | 300 | Seconds — start scaling contracts by 300/STC above this |
 | STC_SIZING_SCALER_ENABLED | True | Universal STC scaler: contracts *= 300/STC for 15M at STC>300s |
 

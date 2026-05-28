@@ -1800,6 +1800,26 @@ class OpportunityScanner:
                                 (_kraken_price - spot) / spot * 10000, 4)
                 except Exception:
                     pass
+                # B2b-1 (86ba64h2w): stage the decision-time multi-venue
+                # synthetic RTI into _scan_rti_cache for SHADOW logging only
+                # (auto-filled into evaluated_opportunities.rti_* by
+                # insert_evaluated_opportunity). get_cached_synthetic is an
+                # O(1) read of the feed's off-hot-path sampler cache — the
+                # ~7ms-per-asset compute runs on the sampler daemon, NOT here
+                # (SCAN_BODY_SLOW budget). The staged value feeds NO decision
+                # (the zero-live-decision-change invariant — pinned by
+                # tests/contracts/test_synthetic_rti_shadow_invariant.py).
+                try:
+                    _srf = getattr(self._ml, "synthetic_rti_feed", None)
+                    if _srf is not None and asset is not None:
+                        _rti_syn, _rti_n, _rti_conf = _srf.get_cached_synthetic(asset)
+                        if _rti_syn is None:
+                            self._state._scan_rti_cache.pop(asset, None)
+                        else:
+                            self._state._scan_rti_cache[asset] = (
+                                round(_rti_syn, 6), _rti_n, _rti_conf)
+                except Exception:
+                    pass
             _shadow_diag = {
                 "egarch_sigma": vol_est.get("egarch_sigma"),
                 "egarch_blend_sigma": math.sqrt(_ebs_var) if _ebs_var and _ebs_var > 0 else None,
