@@ -323,10 +323,11 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
              patch.object(mod, "check_dropped_frames", _alert):
             mod.main()
 
-    # Post-D1.11.a (2026-05-19, ticket 86ba0ppy0): 4 checks × 2 WS-collector
-    # tiers + 3 checks × 2 HTTP-poll tiers (Weather + ESPN) + bot tier OK = 14.
-    assert len(sent_calls) == 14, (
-        f"Expected 14 alert dispatches (4×2 WS-collector + 3×2 "
+    # Post-B2a-1 (2026-05-28, ticket 86ba1zf5j): 4 checks × 3 WS-collector
+    # tiers (Kalshi + Coinbase + Venue-L2) + 3 checks × 2 HTTP-poll tiers
+    # (Weather + ESPN) + bot tier OK = 18.
+    assert len(sent_calls) == 18, (
+        f"Expected 18 alert dispatches (4×3 WS-collector + 3×2 "
         f"HTTP-poll-collector + 0 bot); got {len(sent_calls)}. Dispatch "
         f"loop may have lost a tier."
     )
@@ -336,6 +337,7 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
     coinbase_keys = [k for k in dedup_keys if k and k.startswith("d2_5_")]
     weather_keys = [k for k in dedup_keys if k and k.startswith("d1_8_")]
     espn_keys = [k for k in dedup_keys if k and k.startswith("d1_11_")]
+    venue_l2_keys = [k for k in dedup_keys if k and k.startswith("b2a_")]
     assert len(kalshi_keys) == 4
     assert len(coinbase_keys) == 4
     assert len(weather_keys) == 3
@@ -345,10 +347,24 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         f"{espn_keys}. The D1.11.a ESPN-tier dispatch was lost or "
         f"its dedup-key prefix regressed."
     )
+    assert len(venue_l2_keys) == 4, (
+        f"Expected 4 dedup keys with `b2a_` prefix (Venue-L2 side, FULL "
+        f"WS subset INCL ws_reconnects); got {len(venue_l2_keys)}: "
+        f"{venue_l2_keys}. The B2a-1 venue-L2-tier dispatch was lost or "
+        f"its dedup-key prefix regressed."
+    )
 
     kalshi_check_names = {k.removeprefix("d1_6_") for k in kalshi_keys}
     coinbase_check_names = {k.removeprefix("d2_5_") for k in coinbase_keys}
+    venue_l2_check_names = {k.removeprefix("b2a_") for k in venue_l2_keys}
     assert kalshi_check_names == coinbase_check_names
+    # Venue-L2 is a WS collector → same FULL 4-check set as Kalshi/Coinbase.
+    assert venue_l2_check_names == kalshi_check_names, (
+        f"Venue-L2-tier check set mismatch. Got: {venue_l2_check_names}; "
+        f"expected (Kalshi WS set): {kalshi_check_names}. The B2a-1 "
+        f"venue-L2 tier runs 3 persistent WS conns so it must include "
+        f"ws_reconnects (unlike the HTTP-poll weather/ESPN tiers)."
+    )
     expected_http_checks = {"disk", "collector_active", "dropped_frames"}
     weather_check_names = {k.removeprefix("d1_8_") for k in weather_keys}
     espn_check_names = {k.removeprefix("d1_11_") for k in espn_keys}

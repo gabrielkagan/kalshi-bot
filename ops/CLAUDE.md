@@ -398,13 +398,53 @@ sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
 
 `collector/espn_archiver.py` defines `LEAGUES_ESPN` (24 entries at D1.11.a ship) mirroring `bot.engines.sports_data.LEAGUES` enabled+espn-eligible subset. Contract test `tests/contracts/test_collector_espn_archiver.py::test_leagues_espn_mirrors_bot_leagues` fails RED on drift — operator must update both sides + `sudo -n /bin/systemctl restart kalshi-espn-collector` so the new channel registers as a BronzeWriter on next boot.
 
+## B2a-1 venue-L2 collector deploy (REQUIRES-APPROVAL discipline)
+
+`ops/kalshi-venue-l2-collector.service` (ticket `86ba1zf5j`) deploys the multi-venue lean L2 bronze recorder as a SIXTH parallel systemd unit on the bot VPS — the synthetic-RTI validation collector (B2a). It opens Kraken + Bitstamp + Gemini public L2 WebSockets in one asyncio thread (mirrors `bot/feeds/cross_exchange.py`; NOT a wire library) and archives RAW frames via `collector/writer.py` + `kalshi_wire.build_envelope`. Coinbase L2 bronze is already live via `kalshi-coinbase-collector` (`level2_batch`). **Starting this unit begins the ~14d bronze-accumulation clock for the offline RMSE gate** (`scripts/research/synthetic_rti_rmse.py`); per-asset RMSE ≤15 bps (≤25 HYPE) → build B2b, else escalate to B3 (paid CFB). Key isolation knobs (pinned by `tests/contracts/test_kalshi_venue_l2_collector_systemd_unit.py`): NO `CPUAffinity` (kernel floats it; `Nice=10` gates priority), `MemoryMax=512M` + `MemorySwapMax=0` (3 WS conns + periodic large Gemini full-book snapshots + the synchronous zstd compress-whole-in-flight spike at rotation — heavier than Coinbase single-conn 256M), `LimitNOFILE=512`, `Restart=on-failure` + `RestartSec=10s`, `EnvironmentFile=/home/botuser/.env.venue-l2-collector`.
+
+### Operator runbook: provision `/home/botuser/.env.venue-l2-collector`
+
+```bash
+cat > /home/botuser/.env.venue-l2-collector <<'ENV'
+VENUE_L2_BRONZE_ROOT=/var/lib/kalshi-venue-l2-collector/bronze
+RCLONE_REMOTE=s3prod
+S3_BUCKET=kalshi-bot-archive
+ENV
+chmod 600 /home/botuser/.env.venue-l2-collector
+chown botuser:botuser /home/botuser/.env.venue-l2-collector
+
+# No PEM / no KEY_ID — Kraken + Bitstamp + Gemini public L2 WS are keyless.
+
+sudo mkdir -p /var/lib/kalshi-venue-l2-collector/bronze
+sudo chown -R botuser:botuser /var/lib/kalshi-venue-l2-collector
+sudo chmod 750 /var/lib/kalshi-venue-l2-collector
+
+bash ops/install.sh   # 6-unit installer post-B2a-1
+
+sudo systemctl start kalshi-venue-l2-collector
+journalctl -u kalshi-venue-l2-collector -n 50
+rclone lsf s3prod:kalshi-bot-archive/bronze/kraken_ws/book/ | head
+```
+
+### Sudoers NOPASSWD extension (pre-deploy prerequisite)
+
+```bash
+sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
+# Add: botuser ALL=(root) NOPASSWD: /bin/systemctl restart kalshi-venue-l2-collector
+```
+
+### Off-switch + health monitoring
+
+`sudo systemctl stop kalshi-venue-l2-collector` → bot + Kalshi/Coinbase/Weather/ESPN collectors all unaffected. Per-venue kill via env (e.g. set `VENUE_L2_BRONZE_ROOT` to a venue subset is not supported; stop the unit to halt all three). `scripts/ops/collector_health_monitor.py` extends to SIX-TIER dispatch with dedup prefix `b2a_*`; FULL WS check set (disk + ws_reconnects + collector_active + dropped_frames — UNLIKE the HTTP-poll weather/ESPN tiers, since the recorder runs 3 persistent WS conns). The `ws_reconnects` check is passed `log_marker="venue_l2_ws_disconnected"` (the recorder's per-venue disconnect marker).
+
 ## Files
 - `kalshi-bot.service` — bot systemd unit, source of truth
 - `kalshi-collector.service` — D1.5 collector systemd unit, source of truth
 - `kalshi-coinbase-collector.service` — D2.5 Coinbase collector systemd unit, source of truth (ticket `86b9znq4w`, 2026-05-18)
 - `kalshi-weather-collector.service` — D1.8 weather collector systemd unit, source of truth (ticket `86ba0duck`, 2026-05-18)
 - `kalshi-espn-collector.service` — D1.11.a ESPN collector systemd unit, source of truth (ticket `86ba0ppy0`, 2026-05-19)
-- `install.sh` — 5-unit install + reload (validates + enables ALL FIVE — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector + kalshi-espn-collector)
+- `kalshi-venue-l2-collector.service` — B2a-1 venue-L2 collector systemd unit, source of truth (ticket `86ba1zf5j`, 2026-05-28)
+- `install.sh` — 6-unit install + reload (validates + enables ALL SIX — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector + kalshi-espn-collector + kalshi-venue-l2-collector)
 - `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
 - `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 

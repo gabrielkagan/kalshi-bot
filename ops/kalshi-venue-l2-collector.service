@@ -1,0 +1,46 @@
+[Unit]
+Description=Kalshi Venue-L2 Bronze Collector (B2a-1, synthetic RTI validation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/kalshi-bot-repo
+EnvironmentFile=/home/botuser/.env.venue-l2-collector
+ExecStart=/home/botuser/kalshi-bot-repo/venue-l2-collector-start.sh
+Restart=on-failure
+RestartSec=10s
+
+# B2a-1 isolation knobs — load-bearing structural bounds on the venue-L2
+# collector blast radius (NOT documentation suggestions). Pinned by
+# tests/contracts/test_kalshi_venue_l2_collector_systemd_unit.py; a future
+# edit that loosens any of these must update the test in the same commit
+# (and update kb/decisions/b2-synthetic-rti-feed-plan.md).
+#
+# Deltas vs kalshi-coinbase-collector.service (D2.5):
+#   - MemoryMax=512M (Coinbase: 256M). The venue-L2 recorder runs THREE
+#     concurrent WS conns (Kraken + Bitstamp + Gemini), periodically
+#     ingests large Gemini full-book snapshots, and the lean
+#     write-on-the-asyncio-thread design does a synchronous zstd
+#     compress-whole-in-flight at each rotation (peak resident ≈ in-flight
+#     size + zstd read buffer). 512M gives headroom on the s-4vcpu-8gb box.
+#   - NO CPUAffinity (same posture as coinbase/weather/espn + Kalshi
+#     post-retirement 2026-05-19 ticket 86ba12rv6). The 4-vCPU VPS lets the
+#     kernel scheduler float all collector tenants; Nice=10 (collectors)
+#     vs Nice=0 (bot) gates priority when CPU is contended.
+#   - LimitNOFILE=512 (same as Coinbase). 3 writers × 2 rotation files +
+#     rclone subprocess + 3 WS conns ≈ 30 fd typical; 512 gives ~15×
+#     headroom.
+#
+# Same as kalshi-coinbase-collector.service:
+Nice=10
+MemoryMax=512M
+MemorySwapMax=0
+LimitNOFILE=512
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

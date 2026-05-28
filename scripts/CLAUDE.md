@@ -11,7 +11,7 @@ The flat `scripts/` root was reorganized into 3 tier subdirs:
 - `scripts/ops/` — operator-facing one-shots + setup + migrations + lock sentinels (34 files).
 - `scripts/cal_mlp/` — cal_mlp pipeline (already a subdir; untouched by 11.2).
 - `scripts/git_hooks/` — git hook templates (already a subdir; untouched by 11.2).
-- `scripts/research/` — falsification spikes + cross-system research (F-series CT-MDP falsifications: `f0_1_stale_quote_falsification.py`, `f0_4_cross_asset_lead_lag.py`, `f0_5_settlement_window_gamma.py`; tests at `tests/research/`). Read-only against `state.db`; verdict docs land at `kb/findings/`.
+- `scripts/research/` — falsification spikes + cross-system research (F-series CT-MDP falsifications: `f0_1_stale_quote_falsification.py`, `f0_4_cross_asset_lead_lag.py`, `f0_5_settlement_window_gamma.py`; `synthetic_rti_rmse.py` — B2a-2 offline synthetic-RTI RMSE harness, ticket `86ba1zf5j`: reconstructs per-second consolidated books from the 4 venues' bronze L2 over the last 60s before each settled 15M close, runs `bot.feeds.synthetic_rti.compute_synthetic_rti`, averages 60 → per-asset RMSE vs `expiration_value`; gate ≤15 bps (≤25 HYPE) → build B2b else escalate B3. Imports `bot.*` + `collector.*` (scripts/ is NOT bound by collector-no-bot); tests at `tests/research/`). Read-only against `state.db` / Kalshi REST; verdict docs land at `kb/findings/`.
 
 Files remaining directly at `scripts/`:
 

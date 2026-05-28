@@ -1,4 +1,4 @@
-"""D1.6 + D1.6 fu + D2.5 + D1.8 + D1.11.a: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
+"""D1.6 + D1.6 fu + D2.5 + D1.8 + D1.11.a + B2a-1: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
 
 Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
 + 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
@@ -7,11 +7,14 @@ to also poll kalshi-weather-collector with a subset of checks: disk
 + collector_active + dropped_frames; NO ws_reconnects since weather
 is HTTP-polled and has no persistent WS conn) + 86ba0ppy0 (D1.11.a,
 2026-05-19 — extends to also poll kalshi-espn-collector with the
-same HTTP-poll subset as weather). Standalone CLI run via cron on
-the VPS. Polls 4 health surfaces × 2 WS-collectors + 3 health
-surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3, 2026-05-18)
-= 15 total alert classes; sends Telegram alerts via the existing
-``bot.notifier.TelegramNotifier`` (no Telegram client
+same HTTP-poll subset as weather) + 86ba1zf5j (B2a-1, 2026-05-28 —
+extends to also poll kalshi-venue-l2-collector with the FULL WS
+subset: disk + ws_reconnects + collector_active + dropped_frames,
+since the venue-L2 recorder runs 3 persistent WS conns). Standalone
+CLI run via cron on the VPS. Polls 4 health surfaces × 3 WS-collectors
++ 3 health surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3,
+2026-05-18) = 19 total alert classes; sends Telegram alerts via the
+existing ``bot.notifier.TelegramNotifier`` (no Telegram client
 re-implementation).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
@@ -134,6 +137,19 @@ ESPN_BRONZE_ROOT = "/var/lib/kalshi-espn-collector"
 ESPN_COLLECTOR_UNIT = "kalshi-espn-collector"
 ESPN_SIDECAR_PATH = "/var/lib/kalshi-espn-collector/bronze_health.json"
 ESPN_MONITOR_STATE_PATH = "/var/lib/kalshi-espn-collector/monitor_state.json"
+
+# B2a-1 Venue-L2-side defaults (2026-05-28, ticket 86ba1zf5j). UNLIKE the
+# weather/ESPN HTTP-poll tiers, the venue-L2 recorder runs THREE persistent
+# WS conns (Kraken + Bitstamp + Gemini), so its tier gets the FULL WS
+# check set (incl. ws_reconnects). The recorder emits the
+# ``venue_l2_ws_disconnected`` journal marker on every venue disconnect;
+# the ws_reconnects check below MUST be passed that marker (the Kalshi
+# default would never match → always-OK false negative).
+VENUE_L2_BRONZE_ROOT = "/var/lib/kalshi-venue-l2-collector"
+VENUE_L2_COLLECTOR_UNIT = "kalshi-venue-l2-collector"
+VENUE_L2_SIDECAR_PATH = "/var/lib/kalshi-venue-l2-collector/bronze_health.json"
+VENUE_L2_MONITOR_STATE_PATH = "/var/lib/kalshi-venue-l2-collector/monitor_state.json"
+VENUE_L2_WS_DISCONNECT_MARKER = "venue_l2_ws_disconnected"
 
 # B3-fu3 (ticket 86b9zxb4c, 2026-05-18) — alert on
 # `insert_evaluated_opportunity failed` WARNINGs from the bot journal.
@@ -622,9 +638,9 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs collector checks (4) × 2 WS-collector tiers +
+    """Entry point. Runs collector checks (4) × 3 WS-collector tiers +
     collector checks (3) × 2 HTTP-poll-collector tiers + bot checks
-    (1) × 1 bot tier = 15 total check dispatches per tick; sends
+    (1) × 1 bot tier = 19 total check dispatches per tick; sends
     Telegram alerts as needed.
 
     D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
@@ -644,13 +660,18 @@ def main() -> int:
     dispatch: kalshi-espn-collector is the 5th tier (second non-WS
     bronze source). Same HTTP-poll subset as weather.
 
+    B2a-1 (ticket 86ba1zf5j, 2026-05-28) extended to SIX-TIER dispatch:
+    kalshi-venue-l2-collector is the 6th tier (multi-venue lean L2 WS
+    recorder). FULL WS check set incl. ws_reconnects (3 persistent WS
+    conns), passing log_marker="venue_l2_ws_disconnected".
+
     Per-tier dedup-key prefixes (``d1_6_<check>`` for Kalshi
     collector / ``d2_5_<check>`` for Coinbase collector /
     ``b3_fu3_<check>`` for bot tier / ``d1_8_<check>`` for weather
-    collector / ``d1_11_<check>`` for ESPN collector) keep alert
-    dedup independent across tiers — a Kalshi
-    disk-pressure alert does NOT dedup-suppress a Coinbase or weather
-    disk-pressure alert (their underlying mount points are
+    collector / ``d1_11_<check>`` for ESPN collector / ``b2a_<check>``
+    for venue-L2 collector) keep alert dedup independent across tiers —
+    a Kalshi disk-pressure alert does NOT dedup-suppress a Coinbase or
+    weather disk-pressure alert (their underlying mount points are
     structurally separate per the Option B isolation posture), and
     the bot-tier alert never collides with any collector tier.
 
@@ -833,12 +854,52 @@ def main() -> int:
             unit=ESPN_COLLECTOR_UNIT,
         )),
     ]
+    # B2a-1 (2026-05-28, ticket 86ba1zf5j): venue-L2 collector tier. FULL
+    # WS check set (incl. ws_reconnects) — the recorder runs 3 persistent
+    # WS conns, so reconnect-storm detection applies (unlike the HTTP-poll
+    # weather/ESPN tiers). The ws_reconnects check is passed
+    # log_marker=VENUE_L2_WS_DISCONNECT_MARKER; the Kalshi-default
+    # "kalshi_ws_disconnected" substring would never match the recorder's
+    # journal lines (always-OK false negative). Sidecar path resolves at
+    # call time mirroring the writer's two-knob derivation
+    # (collector/venue_l2_main_loop.py VENUE_L2_BRONZE_ROOT /
+    # VENUE_L2_HEALTH_SIDECAR_PATH), same R5-M1-class fix as Coinbase/Weather.
+    _venue_l2_bronze_root_env = os.environ.get(
+        "VENUE_L2_BRONZE_ROOT", "",
+    ).strip()
+    if _venue_l2_bronze_root_env:
+        _venue_l2_default_sidecar = str(
+            Path(_venue_l2_bronze_root_env).parent / "bronze_health.json"
+        )
+    else:
+        _venue_l2_default_sidecar = VENUE_L2_SIDECAR_PATH
+    _venue_l2_sidecar_resolved = os.environ.get(
+        "VENUE_L2_HEALTH_SIDECAR_PATH", _venue_l2_default_sidecar,
+    ).strip() or _venue_l2_default_sidecar
+    venue_l2_checks = [
+        ("disk", lambda: check_disk(
+            path=VENUE_L2_BRONZE_ROOT,
+        )),
+        ("ws_reconnects", lambda: check_ws_reconnects(
+            unit=VENUE_L2_COLLECTOR_UNIT,
+            log_marker=VENUE_L2_WS_DISCONNECT_MARKER,
+        )),
+        ("collector_active", lambda: check_collector_active(
+            unit=VENUE_L2_COLLECTOR_UNIT,
+        )),
+        ("dropped_frames", lambda: check_dropped_frames(
+            sidecar_path=Path(_venue_l2_sidecar_resolved),
+            state_path=Path(VENUE_L2_MONITOR_STATE_PATH),
+            unit=VENUE_L2_COLLECTOR_UNIT,
+        )),
+    ]
     tiers = [
         ("kalshi-collector", "d1_6", kalshi_checks),
         ("kalshi-coinbase-collector", "d2_5", coinbase_checks),
         ("kalshi-bot", "b3_fu3", bot_checks),
         ("kalshi-weather-collector", "d1_8", weather_checks),
         ("kalshi-espn-collector", "d1_11", espn_checks),
+        ("kalshi-venue-l2-collector", "b2a", venue_l2_checks),
     ]
     for tier_name, dedup_prefix, checks in tiers:
         for check_name, check_fn in checks:
