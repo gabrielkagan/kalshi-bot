@@ -170,6 +170,16 @@ class StateManager:
         # reach: `_pt in (None, "15m", "hourly")` — SPX/weather/sports
         # route through other engines and skip the cache write).
         self._scan_spot_staleness_cache: Dict[str, float] = {}
+        # B2b-1 (86ba64h2w, 2026-05-28): per-asset multi-venue synthetic RTI,
+        # staged once per scan tick from SyntheticRTIFeed.get_cached_synthetic
+        # (an O(1) read of the feed's off-hot-path sampler cache). Read by
+        # insert_evaluated_opportunity to auto-fill rti_synthetic /
+        # rti_constituent_count / rti_confidence across all Coinbase scan-path
+        # insert sites — mirrors _scan_cx_gap_cache. Value is
+        # (rti, n_constituents, confidence); missing entry → NULL (asset not
+        # in the Coinbase scan path this tick, feed disabled, or sampler
+        # stale). SHADOW-ONLY — never feeds a decision.
+        self._scan_rti_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute
@@ -884,6 +894,23 @@ class StateManager:
             # nor the cache. Observability-only — S.3 (ticket
             # 86ba1wrka under umbrella 86ba1wrad) is the production gate.
             ("spot_staleness_seconds", "REAL"),
+            # B2b-1 (86ba64h2w, 2026-05-28): in-bot multi-venue synthetic RTI,
+            # SHADOW-ONLY. Decision-time CFB-shape reconstruction from 4-venue
+            # L2 (Coinbase/Kraken/Bitstamp/Gemini) paired with the live
+            # single-venue Coinbase signal + outcome → the dataset Bit 3
+            # retrains on. WRITE-ONLY: auto-filled on every Coinbase scan-path
+            # insert via the per-asset `_scan_rti_cache` (mirrors
+            # `_scan_cx_gap_cache` → spot_coinbase_kraken_gap_bps); NEVER read
+            # by any decision path (the zero-live-decision-change invariant).
+            # rti_synthetic = the index; rti_constituent_count = venues that
+            # contributed; rti_confidence = contributed / expected (the CFB
+            # constituent set the feed can source for the asset). NULL on
+            # non-Coinbase scan paths, sampler stall (cache stale), the
+            # disabled kill-switch (SYNTHETIC_RTI_ENABLED=False default), or
+            # backfill/test callers. See kb/decisions/b2b-1-core-shadow-plan.md.
+            ("rti_synthetic", "REAL"),
+            ("rti_constituent_count", "INTEGER"),
+            ("rti_confidence", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2507,7 +2534,17 @@ class StateManager:
                                      # 15M so hourly rows also carry staleness),
                                      # warmup (cache slot popped), or backfill
                                      # /test callers that supply neither input.
-                                     spot_staleness_seconds: Optional[float] = None):
+                                     spot_staleness_seconds: Optional[float] = None,
+                                     # B2b-1 (86ba64h2w, 2026-05-28): multi-venue
+                                     # synthetic RTI — SHADOW-ONLY. Auto-filled
+                                     # from `_scan_rti_cache[asset]` so every
+                                     # Coinbase scan-path insert carries the
+                                     # decision-time synthetic without per-call
+                                     # threading. Explicit caller kwargs win.
+                                     # NEVER read by any decision path.
+                                     rti_synthetic: Optional[float] = None,
+                                     rti_constituent_count: Optional[int] = None,
+                                     rti_confidence: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2552,6 +2589,18 @@ class StateManager:
         # from a caller wins.
         if spot_staleness_seconds is None and asset is not None:
             spot_staleness_seconds = self._scan_spot_staleness_cache.get(asset)
+        # B2b-1 (86ba64h2w, 2026-05-28): auto-fill the multi-venue synthetic
+        # RTI from the per-asset scanner cache. Mirrors _scan_cx_gap_cache /
+        # _scan_spot_staleness_cache above — staged once per tick at the
+        # Coinbase scan-path site; missing entry → NULL (asset not in the
+        # Coinbase scan path this tick, feed disabled, or sampler stale).
+        # Per-field guard so an explicit caller kwarg (e.g. a backfill) for
+        # any one field still wins. SHADOW-ONLY.
+        if (rti_synthetic is None and rti_constituent_count is None
+                and rti_confidence is None and asset is not None):
+            _rti = self._scan_rti_cache.get(asset)
+            if _rti is not None:
+                rti_synthetic, rti_constituent_count, rti_confidence = _rti
         # Per-level orderbook ladder (Apr 25): auto-fill from cache via
         # _get_fresh_ob_ladder (returns None on stale entries — honest).
         if orderbook_levels_json is None:
@@ -2902,8 +2951,9 @@ class StateManager:
                      config_snapshot_id,
                      tm_shadow_kelly_ct, tm_shadow_kelly_prob,
                      tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
-                     spot_staleness_seconds)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     spot_staleness_seconds,
+                     rti_synthetic, rti_constituent_count, rti_confidence)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3087,7 +3137,15 @@ class StateManager:
                     -- shadow UPSERT for the same (ticker, filter_stage,
                     -- side) tuple should NOT overwrite with a later
                     -- read. (Mirrors config_snapshot_id pattern.)
-                    spot_staleness_seconds=COALESCE(evaluated_opportunities.spot_staleness_seconds, excluded.spot_staleness_seconds)
+                    spot_staleness_seconds=COALESCE(evaluated_opportunities.spot_staleness_seconds, excluded.spot_staleness_seconds),
+                    -- B2b-1 (86ba64h2w): COALESCE preserves the FIRST synthetic
+                    -- reading for a (ticker, filter_stage, side) tuple — the
+                    -- candidate-emitting tick captures the freshest
+                    -- decision-time value; later rejection/shadow UPSERTs must
+                    -- not overwrite it (mirrors spot_staleness_seconds).
+                    rti_synthetic=COALESCE(evaluated_opportunities.rti_synthetic, excluded.rti_synthetic),
+                    rti_constituent_count=COALESCE(evaluated_opportunities.rti_constituent_count, excluded.rti_constituent_count),
+                    rti_confidence=COALESCE(evaluated_opportunities.rti_confidence, excluded.rti_confidence)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3151,7 +3209,8 @@ class StateManager:
                   config_snapshot_id,
                   tm_shadow_kelly_ct, tm_shadow_kelly_prob,
                   tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
-                  spot_staleness_seconds))
+                  spot_staleness_seconds,
+                  rti_synthetic, rti_constituent_count, rti_confidence))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.

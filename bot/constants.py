@@ -859,6 +859,17 @@ IV_RV_SPREAD_THRESHOLD = 0.50     # if IV > RV by 50%, shift toward IV
 
 BETA_LOOKBACK_RETURNS = 60        # 5 min of returns for cross-asset beta
 
+# ─── Multi-venue synthetic RTI (B2b-1, SHADOW-only) ─────────────────────
+# Kill-switch for the in-bot 4-venue (Coinbase/Kraken/Bitstamp/Gemini) L2 →
+# CFB-shape synthetic RTI feed (bot/feeds/synthetic_rti_feed.py). SHADOW-ONLY:
+# the synthetic is logged to evaluated_opportunities.rti_* for the Bit-3
+# retrain corpus and NEVER feeds a trade decision. Default OFF — flipping to
+# True opens 4 extra L2 WS connections + a sampler thread (off the scan hot
+# path; see the feed's _SAMPLE_INTERVAL_SECONDS). Ticket 86ba64h2w; plan
+# kb/decisions/b2b-1-core-shadow-plan.md. NEVER flip the live signal before
+# the Bit-4 shadow-validation gate (that is a separate, future change).
+SYNTHETIC_RTI_ENABLED = os.environ.get("SYNTHETIC_RTI_ENABLED", "0") == "1"
+
 # ─── Cross-Exchange Order Flow ──────────────────────────────────────────
 CROSS_EXCHANGE_ENABLED = True
 

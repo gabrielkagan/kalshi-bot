@@ -37,156 +37,159 @@
   Indexes (1):
     sqlite_autoindex_egarch_params_1                              unique=1  origin=pk  partial=0  cols=['asset']
 
-## evaluated_opportunities (149 columns)
-  cid=  0  name=id                                                      type=INTEGER                notnull=0  pk=1  dflt=None
-  cid=  1  name=ticker                                                  type=TEXT                   notnull=1  pk=0  dflt=None
-  cid=  2  name=event_ticker                                            type=TEXT                   notnull=1  pk=0  dflt=None
-  cid=  3  name=asset                                                   type=TEXT                   notnull=1  pk=0  dflt=None
-  cid=  4  name=filter_stage                                            type=TEXT                   notnull=1  pk=0  dflt=None
-  cid=  5  name=rejection_reason                                        type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=  6  name=evaluation_time                                         type=TEXT                   notnull=1  pk=0  dflt=None
-  cid=  7  name=spot_price                                              type=REAL                   notnull=0  pk=0  dflt=None
-  cid=  8  name=threshold                                               type=REAL                   notnull=0  pk=0  dflt=None
-  cid=  9  name=volatility                                              type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 10  name=market_price                                            type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 11  name=seconds_to_close                                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 12  name=calibrated_prob                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 13  name=edge                                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 14  name=ofa_adjustment                                          type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 15  name=status                                                  type=TEXT                   notnull=1  pk=0  dflt=''pending''
-  cid= 16  name=market_result                                           type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 17  name=counterfactual_pnl                                      type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 18  name=strategy                                                type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 19  name=position_size                                           type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 20  name=kelly_f                                                 type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 21  name=z_score                                                 type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 22  name=vol_regime                                              type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 23  name=calibrated_prob_raw                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 24  name=settled_time                                            type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 25  name=breakeven_wr                                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 26  name=expected_value                                          type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 27  name=drawdown_scaler                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 28  name=ask_depth                                               type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 29  name=best_ask_source                                         type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 30  name=ofa_confidence                                          type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 31  name=raw_prob                                                type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 32  name=calibration_method                                      type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 33  name=old_system_prob                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 34  name=fee_adjusted_edge                                       type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 35  name=egarch_sigma                                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 36  name=egarch_blend_sigma                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 37  name=egarch_blend_weight                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 38  name=mz_r_squared                                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 39  name=shadow_tv_blend_rv                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 40  name=mz_shadow_sigmoid_w                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 41  name=mz_baseline_qlike                                       type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 42  name=mz_qlike                                                type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 43  name=counterfactual                                          type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 44  name=shadow_cal_prob                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 45  name=shadow_cal_fee_edge                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 46  name=shadow_cal_temperature                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 47  name=product_type                                            type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 48  name=oft_prob_adjustment                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 49  name=oft_imbalance_ratio                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 50  name=oft_n_snapshots                                         type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 51  name=wx_ensemble_mean                                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 52  name=wx_ensemble_std                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 53  name=wx_bias_correction                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 54  name=wx_n_members                                            type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 55  name=wx_market_type                                          type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 56  name=wx_actual_high_temp                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 57  name=wx_no_side_edge                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 58  name=wx_hrrr_temp                                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 59  name=wx_corrected_mean                                       type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 60  name=hourly_pre_temp_prob                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 61  name=hourly_applied_temp_t                                   type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 62  name=hourly_shadow_temp_2_0                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 63  name=hourly_shadow_temp_1_0                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 64  name=hourly_shadow_temp_2_5                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 65  name=hourly_shadow_blend_50                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 66  name=hourly_shadow_temp_1_75                                 type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 67  name=hourly_shadow_temp_3_0                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 68  name=hourly_shadow_blend_20                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 69  name=hourly_shadow_blend_30                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 70  name=hourly_shadow_blend_60                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 71  name=hourly_post_temp_prob                                   type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 72  name=available_balance_cents                                 type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 73  name=order_id                                                type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 74  name=order_submitted_at                                      type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 75  name=order_outcome                                           type=TEXT                   notnull=0  pk=0  dflt=None
-  cid= 76  name=side                                                    type=TEXT                   notnull=0  pk=0  dflt=''yes''
-  cid= 77  name=taker_ask_at_submit                                     type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 78  name=no_ask_cents                                            type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 79  name=yes_bid_cents                                           type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 80  name=minutes_above_strike                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 81  name=window_max_buf_pct                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 82  name=window_min_buf_pct                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 83  name=recent_crossings_5m                                     type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 84  name=spot_at_window_open                                     type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 85  name=spot_momentum_60s_bps                                   type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 86  name=spot_momentum_5m_bps                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 87  name=spot_realized_range_15m_bps                             type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 88  name=btc_spot_change_30m_bps                                 type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 89  name=btc_spot_change_5m_bps                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 90  name=btc_realized_vol_15m                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 91  name=sol_btc_relative_return_30m_bps                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 92  name=hour_of_day_utc                                         type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 93  name=day_of_week                                             type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 94  name=is_weekend                                              type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 95  name=minutes_since_us_open                                   type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 96  name=is_fomc_day                                             type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 97  name=is_cpi_day                                              type=INTEGER                notnull=0  pk=0  dflt=None
-  cid= 98  name=spot_distance_to_strike_sigma                           type=REAL                   notnull=0  pk=0  dflt=None
-  cid= 99  name=prob_breakeven_gap                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid=100  name=kelly_vs_cap_ratio                                      type=REAL                   notnull=0  pk=0  dflt=None
-  cid=101  name=calibration_confidence                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid=102  name=active_positions_same_asset                             type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=103  name=recent_bot_pnl_30m_cents                                type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=104  name=current_drawdown_pct                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=105  name=recent_ioc_fill_success_rate_1h                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid=106  name=yes_spread_cents                                        type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=107  name=bid_depth                                               type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=108  name=spot_coinbase_kraken_gap_bps                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid=109  name=kalshi_flow_imbalance_level                             type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=110  name=kalshi_flow_depth_velocity                              type=REAL                   notnull=0  pk=0  dflt=None
-  cid=111  name=kalshi_flow_depth_drain                                 type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=112  name=orderbook_levels_json                                   type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=113  name=n_open_positions                                        type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=114  name=recent_n_outcome_streak                                 type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=115  name=time_since_last_fill_s                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid=116  name=maker_price_cents                                       type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=117  name=maker_depth_at_post                                     type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=118  name=maker_would_fill_within_30s                             type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=119  name=next_blocking_gate                                      type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=120  name=final_spot_price                                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid=121  name=knockout_time_relative                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid=122  name=max_excursion_from_strike                               type=REAL                   notnull=0  pk=0  dflt=None
-  cid=123  name=time_above_strike_seconds                               type=REAL                   notnull=0  pk=0  dflt=None
-  cid=124  name=time_below_strike_seconds                               type=REAL                   notnull=0  pk=0  dflt=None
-  cid=125  name=btc_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=126  name=eth_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=127  name=sol_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=128  name=xrp_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=129  name=hype_spot_at_decision                                   type=REAL                   notnull=0  pk=0  dflt=None
-  cid=130  name=doge_spot_at_decision                                   type=REAL                   notnull=0  pk=0  dflt=None
-  cid=131  name=bnb_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=132  name=okx_funding_rate_at_decision                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid=133  name=deribit_funding_rate_at_decision                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid=134  name=data_provenance                                         type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=135  name=bot_state_snapshot_json                                 type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=136  name=config_snapshot_id                                      type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=137  name=tm_shadow_kelly_ct                                      type=INTEGER                notnull=0  pk=0  dflt=None
-  cid=138  name=tm_shadow_kelly_prob                                    type=REAL                   notnull=0  pk=0  dflt=None
-  cid=139  name=tm_shadow_kelly_fraction                                type=REAL                   notnull=0  pk=0  dflt=None
-  cid=140  name=tm_shadow_kelly_bound_hit                               type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=141  name=spot_staleness_seconds                                  type=REAL                   notnull=0  pk=0  dflt=None
-  cid=142  name=cal_mlp_p_mean                                          type=REAL                   notnull=0  pk=0  dflt=None
-  cid=143  name=cal_mlp_p_std                                           type=REAL                   notnull=0  pk=0  dflt=None
-  cid=144  name=cal_mlp_final_lo                                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid=145  name=cal_mlp_final_hi                                        type=REAL                   notnull=0  pk=0  dflt=None
-  cid=146  name=cal_mlp_train_id                                        type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=147  name=cal_mlp_skipped_reason                                  type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=148  name=cal_mlp_request_id                                      type=TEXT                   notnull=0  pk=0  dflt=None
+## evaluated_opportunities (152 columns)
+  cid=0   name=id                                                       type=INTEGER                notnull=0  pk=1  dflt=None
+  cid=1   name=ticker                                                   type=TEXT                   notnull=1  pk=0  dflt=None
+  cid=2   name=event_ticker                                             type=TEXT                   notnull=1  pk=0  dflt=None
+  cid=3   name=asset                                                    type=TEXT                   notnull=1  pk=0  dflt=None
+  cid=4   name=filter_stage                                             type=TEXT                   notnull=1  pk=0  dflt=None
+  cid=5   name=rejection_reason                                         type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=6   name=evaluation_time                                          type=TEXT                   notnull=1  pk=0  dflt=None
+  cid=7   name=spot_price                                               type=REAL                   notnull=0  pk=0  dflt=None
+  cid=8   name=threshold                                                type=REAL                   notnull=0  pk=0  dflt=None
+  cid=9   name=volatility                                               type=REAL                   notnull=0  pk=0  dflt=None
+  cid=10  name=market_price                                             type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=11  name=seconds_to_close                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=12  name=calibrated_prob                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=13  name=edge                                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=14  name=ofa_adjustment                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=15  name=status                                                   type=TEXT                   notnull=1  pk=0  dflt='pending'
+  cid=16  name=market_result                                            type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=17  name=counterfactual_pnl                                       type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=18  name=strategy                                                 type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=19  name=position_size                                            type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=20  name=kelly_f                                                  type=REAL                   notnull=0  pk=0  dflt=None
+  cid=21  name=z_score                                                  type=REAL                   notnull=0  pk=0  dflt=None
+  cid=22  name=vol_regime                                               type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=23  name=calibrated_prob_raw                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=24  name=settled_time                                             type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=25  name=breakeven_wr                                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=26  name=expected_value                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=27  name=drawdown_scaler                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=28  name=ask_depth                                                type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=29  name=best_ask_source                                          type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=30  name=ofa_confidence                                           type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=31  name=raw_prob                                                 type=REAL                   notnull=0  pk=0  dflt=None
+  cid=32  name=calibration_method                                       type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=33  name=old_system_prob                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=34  name=fee_adjusted_edge                                        type=REAL                   notnull=0  pk=0  dflt=None
+  cid=35  name=egarch_sigma                                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=36  name=egarch_blend_sigma                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=37  name=egarch_blend_weight                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=38  name=mz_r_squared                                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=39  name=shadow_tv_blend_rv                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=40  name=mz_shadow_sigmoid_w                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=41  name=mz_baseline_qlike                                        type=REAL                   notnull=0  pk=0  dflt=None
+  cid=42  name=mz_qlike                                                 type=REAL                   notnull=0  pk=0  dflt=None
+  cid=43  name=counterfactual                                           type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=44  name=shadow_cal_prob                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=45  name=shadow_cal_fee_edge                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=46  name=shadow_cal_temperature                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=47  name=product_type                                             type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=48  name=oft_prob_adjustment                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=49  name=oft_imbalance_ratio                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=50  name=oft_n_snapshots                                          type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=51  name=wx_ensemble_mean                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=52  name=wx_ensemble_std                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=53  name=wx_bias_correction                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=54  name=wx_n_members                                             type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=55  name=wx_market_type                                           type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=56  name=wx_actual_high_temp                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=57  name=wx_no_side_edge                                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=58  name=wx_hrrr_temp                                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=59  name=wx_corrected_mean                                        type=REAL                   notnull=0  pk=0  dflt=None
+  cid=60  name=hourly_pre_temp_prob                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=61  name=hourly_applied_temp_t                                    type=REAL                   notnull=0  pk=0  dflt=None
+  cid=62  name=hourly_shadow_temp_2_0                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=63  name=hourly_shadow_temp_1_0                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=64  name=hourly_shadow_temp_2_5                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=65  name=hourly_shadow_blend_50                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=66  name=hourly_shadow_temp_1_75                                  type=REAL                   notnull=0  pk=0  dflt=None
+  cid=67  name=hourly_shadow_temp_3_0                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=68  name=hourly_shadow_blend_20                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=69  name=hourly_shadow_blend_30                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=70  name=hourly_shadow_blend_60                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=71  name=hourly_post_temp_prob                                    type=REAL                   notnull=0  pk=0  dflt=None
+  cid=72  name=available_balance_cents                                  type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=73  name=order_id                                                 type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=74  name=order_submitted_at                                       type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=75  name=order_outcome                                            type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=76  name=side                                                     type=TEXT                   notnull=0  pk=0  dflt='yes'
+  cid=77  name=taker_ask_at_submit                                      type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=78  name=no_ask_cents                                             type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=79  name=yes_bid_cents                                            type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=80  name=minutes_above_strike                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=81  name=window_max_buf_pct                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=82  name=window_min_buf_pct                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=83  name=recent_crossings_5m                                      type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=84  name=spot_at_window_open                                      type=REAL                   notnull=0  pk=0  dflt=None
+  cid=85  name=spot_momentum_60s_bps                                    type=REAL                   notnull=0  pk=0  dflt=None
+  cid=86  name=spot_momentum_5m_bps                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=87  name=spot_realized_range_15m_bps                              type=REAL                   notnull=0  pk=0  dflt=None
+  cid=88  name=btc_spot_change_30m_bps                                  type=REAL                   notnull=0  pk=0  dflt=None
+  cid=89  name=btc_spot_change_5m_bps                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=90  name=btc_realized_vol_15m                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=91  name=sol_btc_relative_return_30m_bps                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=92  name=hour_of_day_utc                                          type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=93  name=day_of_week                                              type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=94  name=is_weekend                                               type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=95  name=minutes_since_us_open                                    type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=96  name=is_fomc_day                                              type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=97  name=is_cpi_day                                               type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=98  name=spot_distance_to_strike_sigma                            type=REAL                   notnull=0  pk=0  dflt=None
+  cid=99  name=prob_breakeven_gap                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=100 name=kelly_vs_cap_ratio                                       type=REAL                   notnull=0  pk=0  dflt=None
+  cid=101 name=calibration_confidence                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=102 name=active_positions_same_asset                              type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=103 name=recent_bot_pnl_30m_cents                                 type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=104 name=current_drawdown_pct                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=105 name=recent_ioc_fill_success_rate_1h                          type=REAL                   notnull=0  pk=0  dflt=None
+  cid=106 name=yes_spread_cents                                         type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=107 name=bid_depth                                                type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=108 name=spot_coinbase_kraken_gap_bps                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=109 name=kalshi_flow_imbalance_level                              type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=110 name=kalshi_flow_depth_velocity                               type=REAL                   notnull=0  pk=0  dflt=None
+  cid=111 name=kalshi_flow_depth_drain                                  type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=112 name=orderbook_levels_json                                    type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=113 name=n_open_positions                                         type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=114 name=recent_n_outcome_streak                                  type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=115 name=time_since_last_fill_s                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=116 name=maker_price_cents                                        type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=117 name=maker_depth_at_post                                      type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=118 name=maker_would_fill_within_30s                              type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=119 name=next_blocking_gate                                       type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=120 name=final_spot_price                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=121 name=knockout_time_relative                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=122 name=max_excursion_from_strike                                type=REAL                   notnull=0  pk=0  dflt=None
+  cid=123 name=time_above_strike_seconds                                type=REAL                   notnull=0  pk=0  dflt=None
+  cid=124 name=time_below_strike_seconds                                type=REAL                   notnull=0  pk=0  dflt=None
+  cid=125 name=btc_spot_at_decision                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=126 name=eth_spot_at_decision                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=127 name=sol_spot_at_decision                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=128 name=xrp_spot_at_decision                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=129 name=hype_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
+  cid=130 name=doge_spot_at_decision                                    type=REAL                   notnull=0  pk=0  dflt=None
+  cid=131 name=bnb_spot_at_decision                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=132 name=okx_funding_rate_at_decision                             type=REAL                   notnull=0  pk=0  dflt=None
+  cid=133 name=deribit_funding_rate_at_decision                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=134 name=data_provenance                                          type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=135 name=bot_state_snapshot_json                                  type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=136 name=config_snapshot_id                                       type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=137 name=tm_shadow_kelly_ct                                       type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=138 name=tm_shadow_kelly_prob                                     type=REAL                   notnull=0  pk=0  dflt=None
+  cid=139 name=tm_shadow_kelly_fraction                                 type=REAL                   notnull=0  pk=0  dflt=None
+  cid=140 name=tm_shadow_kelly_bound_hit                                type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=141 name=spot_staleness_seconds                                   type=REAL                   notnull=0  pk=0  dflt=None
+  cid=142 name=rti_synthetic                                            type=REAL                   notnull=0  pk=0  dflt=None
+  cid=143 name=rti_constituent_count                                    type=INTEGER                notnull=0  pk=0  dflt=None
+  cid=144 name=rti_confidence                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=145 name=cal_mlp_p_mean                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=146 name=cal_mlp_p_std                                            type=REAL                   notnull=0  pk=0  dflt=None
+  cid=147 name=cal_mlp_final_lo                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=148 name=cal_mlp_final_hi                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=149 name=cal_mlp_train_id                                         type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=150 name=cal_mlp_skipped_reason                                   type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=151 name=cal_mlp_request_id                                       type=TEXT                   notnull=0  pk=0  dflt=None
   Indexes (5):
     idx_eval_opp_calmlp_pending                               unique=0  origin=c  partial=1  cols=['evaluation_time']
     idx_eval_opp_config_snapshot                              unique=0  origin=c  partial=0  cols=['config_snapshot_id']

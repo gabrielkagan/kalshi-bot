@@ -124,6 +124,7 @@ from bot.constants import (
     ACTIVE_WINDOWS_STALENESS_BUDGET_S,
     CALIBRATION_STATE_PATH,
     CROSS_EXCHANGE_ENABLED,
+    SYNTHETIC_RTI_ENABLED,
     DB_PATH,
     HIGH_PRICE_STC_BLOCK_BLEEDER_STRATEGIES,
     HIGH_PRICE_STC_BLOCK_ENABLED,
@@ -164,6 +165,7 @@ from bot.engines.volatility import VolatilityEngine
 # Feeds + fetchers (Sprint 4)
 from bot.feeds.coinbase import CoinbaseFeed
 from bot.feeds.cross_exchange import CrossExchangeFeed
+from bot.feeds.synthetic_rti_feed import SyntheticRTIFeed
 from bot.feeds.kalshi import KalshiFeed
 from bot.fetchers.coinglass import CoinGlassFetcher
 from bot.fetchers.deribit import DeribitDVOLFetcher
@@ -327,6 +329,11 @@ class MainLoop:
         # from Bit 8.1 — MainLoop construction is now in bot/main_loop.py).
         _telegram_state._TELEGRAM = self.telegram
         self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
+        # B2b-1 (86ba64h2w): in-bot multi-venue synthetic RTI, SHADOW-only.
+        # Always constructed; the kill-switch (SYNTHETIC_RTI_ENABLED, default
+        # OFF) gates start() so the disabled feed opens no sockets/threads.
+        # The scanner reads it via self._ml.synthetic_rti_feed.
+        self.synthetic_rti_feed = SyntheticRTIFeed(enabled=SYNTHETIC_RTI_ENABLED)
         self.coinglass = CoinGlassFetcher()
         self.kalshi_oft = KalshiOrderFlowTracker() if KALSHI_OFT_ENABLED else None
         self.order_flow = OrderFlowEngine(
@@ -785,6 +792,13 @@ class MainLoop:
         if self.cross_feed:
             self.cross_feed.start()
             logging.info("Cross-exchange feed starting...")
+
+        # Start the multi-venue synthetic-RTI shadow feed (no-op when the
+        # SYNTHETIC_RTI_ENABLED kill-switch is OFF — the default).
+        if self.synthetic_rti_feed:
+            self.synthetic_rti_feed.start()
+            if self.synthetic_rti_feed.enabled:
+                logging.info("Synthetic-RTI shadow feed starting (4-venue L2)...")
 
         # Start CoinGlass funding rate fetcher
         self.coinglass.start()
@@ -2236,6 +2250,8 @@ class MainLoop:
             self.coinglass.stop()
         if hasattr(self, 'cross_feed') and self.cross_feed:
             self.cross_feed.stop()
+        if hasattr(self, 'synthetic_rti_feed') and self.synthetic_rti_feed:
+            self.synthetic_rti_feed.stop()
         if hasattr(self, 'dvol_fetcher'):
             self.dvol_fetcher.stop()
         self.feed.stop()
