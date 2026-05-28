@@ -88,6 +88,15 @@ _SAMPLE_INTERVAL_SECONDS = 2.0
 # computed many ticks ago.
 _CACHE_STALE_SECONDS = 15.0
 _RECONNECT_BACKOFF_MAX = 60.0
+# Max WS frame size. python-websockets defaults to 1 MiB, but Coinbase
+# level2_batch full-book SNAPSHOTS are ~1.04 MB → the lib closes the conn with
+# 1009 "message too big" before delivering the frame → infinite reconnect
+# (observed 29x/2min on the 2026-05-28 flip; postmortem
+# kb/failures/b2b-1-shadow-flip-deploy-may28.md, ticket 86ba67npq). 16 MiB
+# mirrors the D1.3-fu1 lesson already baked into coinbase_wire/ws_client.py
+# (ws_max_size=16 MiB). Kraken/Bitstamp/Gemini frames are far smaller; the
+# cap is harmless for them.
+_WS_MAX_SIZE = 16 * 1024 * 1024
 # Bound on stop()'s join wait for the asyncio reader thread (mirror
 # collector.venue_l2_archiver._STOP_JOIN_TIMEOUT).
 _STOP_JOIN_TIMEOUT = 10.0
@@ -503,7 +512,7 @@ class SyntheticRTIFeed:
         backoff = 1.0
         while not self._ws_stop_event.is_set():
             try:
-                async with websockets.connect(url) as ws:
+                async with websockets.connect(url, max_size=_WS_MAX_SIZE) as ws:
                     for frame in subscribe_frames:
                         await ws.send(json.dumps(frame))
                     self._connected[venue] = True
