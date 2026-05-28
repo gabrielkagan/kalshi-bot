@@ -29,11 +29,13 @@ drifts the venue map, the subscribe payloads, or the routing fires here.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
 import pytest
 
+import collector.venue_l2_archiver as _vmod
 from collector.venue_l2_archiver import (
     BITSTAMP_WS_URL,
     DISCONNECT_LOG_MARKER,
@@ -284,35 +286,69 @@ def test_health_snapshot_schema_parity():
 # handle at close (R1 MAJOR M1). stop() must JOIN the reader thread, and _run
 # must cancel the venue coroutines on stop so the thread exits promptly even
 # when a venue WS is silent mid-recv.
+#
+# HERMETIC: these tests do NOT touch the network. They monkeypatch
+# websockets.connect with a fake that "connects" then blocks forever in a
+# pure-Python asyncio.sleep inside the read loop (simulating a silent WS that
+# never sends a frame). Cancelling the task on stop unwinds that sleep
+# instantly. (An earlier version pointed a venue at ws://127.0.0.1:9 and
+# relied on the OS refusing the connection fast — true on a dev Mac but NOT on
+# a CI runner, where the connect hung + the leaked reader thread wedged the
+# whole contract tier under xdist; see feedback_xdist_flake_cascade.)
 
 
-def _unreachable_archiver():
-    """Archiver with one venue pointed at a dead local port so the reader
-    thread spends its life in connect-fail → backoff (interruptible)."""
+class _HangingWS:
+    """Fake websockets connection: connects, accepts a subscribe send, then
+    blocks in the async-for read loop forever — a silent WS that never emits a
+    frame. Cancellable instantly (pure-Python asyncio.sleep)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def send(self, *_a):
+        return None
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await asyncio.sleep(3600)  # block; CancelledError unwinds it instantly
+        raise StopAsyncIteration  # unreachable — present for protocol clarity
+
+
+def _fake_connect(*_a, **_k):
+    return _HangingWS()
+
+
+def _hermetic_archiver():
+    """One-venue archiver; the venue's WS is the fake hanging connection (the
+    caller must monkeypatch websockets.connect first)."""
     writers = {"kraken": _CaptureWriter("kraken_ws", "book", "A")}
-    return VenueL2Archiver(
-        writers_by_venue=writers,
-        venues=("kraken",),
-        urls={"kraken": "ws://127.0.0.1:9"},  # nothing listening → fast refuse
-    )
+    return VenueL2Archiver(writers_by_venue=writers, venues=("kraken",))
 
 
-def test_stop_joins_reader_thread():
-    arch = _unreachable_archiver()
+def test_stop_joins_reader_thread(monkeypatch):
+    monkeypatch.setattr(_vmod.websockets, "connect", _fake_connect)
+    arch = _hermetic_archiver()
     arch.start()
-    time.sleep(0.3)  # let the loop spin up + enter the connect/backoff cycle
+    time.sleep(0.2)  # let the loop spin up, "connect", + enter the read loop
     arch.stop()
     assert arch._thread is not None
     assert not arch._thread.is_alive(), (
         "stop() must JOIN the reader thread so the producer is quiesced "
-        "before the owning main loop calls writer.close() (R1 M1)."
+        "before the owning main loop calls writer.close() (R1 M1). _run must "
+        "cancel the venue coroutine on stop so a silent-WS read unwinds."
     )
 
 
-def test_stop_before_loop_ready_still_terminates():
+def test_stop_before_loop_ready_still_terminates(monkeypatch):
     """stop() racing the reader thread's event-loop construction must still
     take effect (the _stop_requested plain flag closes that race)."""
-    arch = _unreachable_archiver()
+    monkeypatch.setattr(_vmod.websockets, "connect", _fake_connect)
+    arch = _hermetic_archiver()
     arch.start()
     arch.stop()  # may fire before _run_thread created the asyncio loop/event
     assert not arch._thread.is_alive(), (
