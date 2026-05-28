@@ -88,8 +88,8 @@ CONTRACT_FILES := tests/contracts
 # Integration ignores = unit + contract + equivalence + research + the
 # Pillar-3-unmasked breakeven_wr fixture bug (tracked separately as
 # 86b9vfn5r — remove that ignore when the fixture lands). The research
-# ignore (Phase-0 CT-MDP falsifications: F0.1 2026-05-20, F0.4 2026-05-21,
-# F0.5 2026-05-21, ...) keeps falsification spike tests out of the
+# ignore (Phase-0 CT-MDP falsifications: F0.1 2026-05-20 SURVIVE, F0.4
+# 2026-05-21 KILL, F0.5 2026-05-21 SURVIVE, ...) keeps falsification spike tests out of the
 # deploy-blocking integration tier — operator runs them on demand via
 # `make test-research`. Per the TDD-first discipline, the research tier
 # holds a mix of GREEN impl-shipped tests + intentional

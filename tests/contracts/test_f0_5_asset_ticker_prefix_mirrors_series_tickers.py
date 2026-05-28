@@ -23,10 +23,12 @@ def test_asset_ticker_prefix_mirrors_bot_series_tickers():
 
     Full `dict.__eq__` (key-set + value equality): F0.5 must use the
     canonical `KX<ASSET>15M` prefix verbatim for the canonical 7-asset
-    universe. The LIKE pattern is constructed at query time as
-    `ASSET_TICKER_PREFIX[asset] + "-%"` — the trailing hyphen separator
-    is appended at query time to scope-out hourly + daily markets that
-    share the `KX<ASSET>` root.
+    universe. Per impl-R11-M1 correction: ASSET_TICKER_PREFIX is used in
+    F0.5 only as (a) the iteration key set in `_load_spot_series_by_asset`
+    + (b) this anti-drift pin against SERIES_TICKERS. The script does NOT
+    construct a LIKE clause against `settled_trades.ticker` — 15M-window
+    discrimination uses the `product_type='15m'` SQL filter instead, which
+    is the canonical Kalshi-DB enum (a per-ticker LIKE would be redundant).
     """
     from bot import constants as bot_constants
     from scripts.research import f0_5_settlement_window_gamma as gamma

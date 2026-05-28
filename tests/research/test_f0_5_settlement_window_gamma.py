@@ -13,12 +13,15 @@ Invariants pinned here (per plan-doc § Methodological invariants):
 
 1. Schema invariants — required columns exist in settled_trades + moc +
    evaluated_opportunities. 7-asset universe pinned in-script via
-   ASSET_TICKER_PREFIX (15M-specific prefix `KX<ASSET>15M-`).
+   ASSET_TICKER_PREFIX (15M-specific prefix `KX<ASSET>15M`; the trailing
+   hyphen is NOT part of the prefix value per SERIES_TICKERS).
 2. No-look-ahead — for a window with close at t_close, the T-Xs state must
    use only rows with observation_time ≤ t_close - X. Settle outcome is the
    label, never a feature.
-3. Regime conditioning — vol × day/night × moneyness = 8 cells per asset;
-   per-cell AUC reported separately. Kill verdict is per-cell.
+3. Regime conditioning — vol × day/night = 4 cells per asset (moneyness
+   retracted at impl-R1 — Kalshi 15M tickers do not encode strike, see
+   the test body of test_cells_partition_into_vol_x_daynight for full
+   RCA); per-cell AUC reported separately. Kill verdict is per-cell.
 4. AUC bounded [0.5, 1.0] after orientation flip — AUC < 0.5 means the
    classifier predicts the wrong direction; flip and report 1 - raw_AUC.
    Degenerate input (single-class fold) must error rather than silently
@@ -99,11 +102,19 @@ def test_seven_asset_universe_pinned_with_15m_prefix():
     """7-asset universe pinned in-script with the 15M-specific ticker prefix.
 
     Mirrors `bot.constants.SERIES_TICKERS` (values are `"KXBTC15M"`,
-    `"KXETH15M"`, ..., `"KXBNB15M"`; the LIKE pattern is constructed as
-    `SERIES_TICKERS[asset] + "-%"` — the trailing hyphen separator is
-    appended at query time before the strike suffix). The 15M-specific
-    prefix scopes-out hourly + daily markets — F0.5 is a terminal-condition
-    HJB on 15M windows only per umbrella plan-doc § Attack #5.
+    `"KXETH15M"`, ..., `"KXBNB15M"`). Per impl-R11-M1 correction: the
+    prefix is NOT used to construct a LIKE clause against
+    `settled_trades.ticker`. The script's 15M-window discrimination uses
+    the `WHERE product_type='15m'` SQL filter (Kalshi's canonical
+    product_type enum); a separate per-asset prefix-LIKE would be
+    redundant. ASSET_TICKER_PREFIX is used only as (a) the iteration
+    key set in `_load_spot_series_by_asset` and (b) the anti-drift pin
+    against SERIES_TICKERS. The 15M-specific value naming (`KX<ASSET>15M`,
+    distinct from `HOURLY_SERIES_TICKERS`'s `KX<ASSET>D`) is preserved
+    to make the anti-drift pin reject hourly-prefix promotions of
+    SERIES_TICKERS in the future —
+    F0.5 is a terminal-condition HJB on 15M windows only per umbrella
+    plan-doc § Attack #5.
     """
     expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"}
     prefix_map = getattr(gamma, "ASSET_TICKER_PREFIX", None)
@@ -168,17 +179,26 @@ def test_settle_outcome_never_used_as_feature():
 # ----- Regime conditioning (Invariant 3) ----------------------------------
 
 
-def test_cells_partition_into_vol_x_daynight_x_moneyness():
-    """8 cells per asset = vol(high/low) × day/night × moneyness(itm/otm)."""
+def test_cells_partition_into_vol_x_daynight():
+    """4 cells per asset = vol(high/low) × day/night.
+
+    Moneyness dimension retracted at impl-R1 (2026-05-21). Plan-doc § Method
+    step 4 originally specified 8 cells per asset including a moneyness
+    (itm/otm) axis via `|spot - strike| / strike < 0.005`. **Kalshi 15M
+    tickers do NOT encode strike** — empirically the trailing `-MM` segment
+    on every settled 15M ticker is the close-MINUTE (00/15/30/45), not a
+    strike index. Without strike, moneyness cannot be computed from
+    settled_trades alone; the cell partition reduces to 4 cells per asset.
+    """
     cells_fn = getattr(gamma, "enumerate_cells", None)
     assert cells_fn is not None, "enumerate_cells not yet defined (scaffold-pending)"
 
     cells = cells_fn()
-    assert len(cells) == 8, f"expected 8 cells per asset, got {len(cells)}"
-    # Spot-check label shape.
+    assert len(cells) == 4, f"expected 4 cells per asset, got {len(cells)}"
+    # Spot-check label shape (vol × day_night).
     labels = {tuple(c) for c in cells}
-    assert ("vol_high", "day", "itm") in labels
-    assert ("vol_low", "night", "otm") in labels
+    assert ("vol_high", "day") in labels
+    assert ("vol_low", "night") in labels
 
 
 # ----- AUC bounded (Invariant 4) ------------------------------------------
@@ -288,13 +308,16 @@ def test_settle_buffer_below_minimum_rejected():
 
 
 def test_verdict_kill_when_every_cell_below_threshold():
-    """All cells with AUC upper-CI < 0.55 → KILL."""
+    """No cell with auc_lower ≥ 0.55 → KILL (binary complement of SURVIVE per
+    classify_verdict; the umbrella's stricter upper-CI < 0.55 framing is a
+    subset of the actual-code KILL definition and is not pinned at the impl —
+    see plan-doc § Kill threshold table for the canonical statement)."""
     classify = getattr(gamma, "classify_verdict", None)
     assert classify is not None, "classify_verdict not yet defined (scaffold-pending)"
 
     cells = [
-        {"asset": "BTC", "cell": "vol_high_day_itm", "auc_lower": 0.48, "auc_upper": 0.53},
-        {"asset": "ETH", "cell": "vol_low_night_otm", "auc_lower": 0.49, "auc_upper": 0.54},
+        {"asset": "BTC", "cell": "vol_high_day", "auc_lower": 0.48, "auc_upper": 0.53},
+        {"asset": "ETH", "cell": "vol_low_night", "auc_lower": 0.49, "auc_upper": 0.54},
     ]
     verdict = classify(cells=cells, auc_threshold=0.55)
     assert verdict == "KILL"
@@ -306,8 +329,8 @@ def test_verdict_survive_when_one_cell_clears_threshold():
     assert classify is not None, "classify_verdict not yet defined (scaffold-pending)"
 
     cells = [
-        {"asset": "BTC", "cell": "vol_high_day_itm", "auc_lower": 0.48, "auc_upper": 0.53},
-        {"asset": "SOL", "cell": "vol_high_night_otm", "auc_lower": 0.56, "auc_upper": 0.62},  # survivor
+        {"asset": "BTC", "cell": "vol_high_day", "auc_lower": 0.48, "auc_upper": 0.53},
+        {"asset": "SOL", "cell": "vol_high_night", "auc_lower": 0.56, "auc_upper": 0.62},  # survivor
     ]
     verdict = classify(cells=cells, auc_threshold=0.55)
     assert verdict == "SURVIVE"
@@ -326,3 +349,59 @@ def test_main_returns_expected_keys():
     """
     main_fn = getattr(gamma, "main", None)
     assert main_fn is not None, "main() not yet defined (scaffold-pending)"
+
+
+def test_cv_uses_forward_chaining_temporal_split():
+    """Pipeline-level no-look-ahead pin (Invariant 2 at the CV-fold layer).
+
+    Plan-doc § Method step 5: forward-chaining temporal CV via
+    `sklearn.model_selection.TimeSeriesSplit(n_splits=5)` — fold k trains
+    on windows with `settled_at < fold-k boundary` only. (Per impl-R15-M2:
+    the prior docstring fabricated a verbatim quote attributed to a
+    nonexistent "§ Methodological invariants ¶ k-fold" paragraph; actual
+    invariants are numbered 1-7 with no "k-fold" entry.)
+
+    The initial impl-R1 ship used `sklearn.model_selection.KFold(shuffle=False)`
+    which is NOT forward-chaining (only 1 of 5 folds honors the temporal
+    rule). The correct primitive is `TimeSeriesSplit`. This contract
+    AST-asserts the script imports + uses `TimeSeriesSplit` so a future
+    revert to plain `KFold` fails RED.
+    """
+    import ast
+    import inspect
+
+    src = inspect.getsource(gamma)
+    tree = ast.parse(src)
+
+    # Walk imports.
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                imported_names.add(f"{module}.{alias.name}")
+
+    # The forward-chaining temporal CV primitive must be imported AND
+    # actually referenced from main()'s CV-instantiation site. We require
+    # BOTH the import + a textual `TimeSeriesSplit(` call to guard against
+    # an import without use.
+    assert (
+        "sklearn.model_selection.TimeSeriesSplit" in imported_names
+    ), (
+        "F0.5 pipeline must import `TimeSeriesSplit` from sklearn.model_selection "
+        "for forward-chaining temporal CV per plan-doc § Method step 5. Plain "
+        "`KFold` is NOT forward-chaining (only 1 of n folds honors the temporal "
+        "invariant). Imports found: "
+        f"{sorted(n for n in imported_names if n.startswith('sklearn.'))}"
+    )
+    assert "TimeSeriesSplit(" in src, (
+        "F0.5 imports TimeSeriesSplit but never instantiates it — guard "
+        "against accidental import-only revert."
+    )
+    # Defense-in-depth: forbid `KFold(` instantiation (the bug we fixed).
+    # Allow `KFold` mentions in comments / docstrings (which would not
+    # match the `(` instantiation pattern).
+    assert "KFold(" not in src, (
+        "F0.5 must NOT instantiate plain `KFold` — see impl-R1-C2; use "
+        "`TimeSeriesSplit` for forward-chaining temporal CV."
+    )
