@@ -2540,7 +2540,7 @@ class StateManager:
                                      # /test callers that supply neither input.
                                      spot_staleness_seconds: Optional[float] = None,
                                      # B2b-1 (86ba64h2w, 2026-05-28): multi-venue
-                                     # synthetic RTI — SHADOW-ONLY. Auto-filled
+                                     # synthetic RTI — SHADOW by default. Auto-filled
                                      # from `_scan_rti_cache[asset]` so every
                                      # Coinbase scan-path insert carries the
                                      # decision-time synthetic without per-call

@@ -329,7 +329,8 @@ class MainLoop:
         # from Bit 8.1 — MainLoop construction is now in bot/main_loop.py).
         _telegram_state._TELEGRAM = self.telegram
         self.cross_feed = CrossExchangeFeed(self.feed) if CROSS_EXCHANGE_ENABLED else None
-        # B2b-1 (86ba64h2w): in-bot multi-venue synthetic RTI, SHADOW-only.
+        # B2b-1 (86ba64h2w): in-bot multi-venue synthetic RTI, SHADOW by default
+        # (decision spot only for SYNTHETIC_RTI_LIVE_ASSETS, RTI-6; default empty).
         # Always constructed; the kill-switch (SYNTHETIC_RTI_ENABLED, default
         # OFF) gates start() so the disabled feed opens no sockets/threads.
         # The scanner reads it via self._ml.synthetic_rti_feed.

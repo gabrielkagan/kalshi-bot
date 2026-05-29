@@ -1,4 +1,4 @@
-"""B2b-1 — SyntheticRTIFeed core (in-bot multi-venue L2 -> synthetic RTI), SHADOW-only.
+"""B2b-1 — SyntheticRTIFeed core (in-bot multi-venue L2 -> synthetic RTI), shadow by default.
 
 Ticket 86ba64h2w (program 86ba64gyq). Plan: kb/decisions/b2b-1-core-shadow-plan.md.
 
