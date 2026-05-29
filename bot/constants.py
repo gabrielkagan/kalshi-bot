@@ -870,6 +870,22 @@ BETA_LOOKBACK_RETURNS = 60        # 5 min of returns for cross-asset beta
 # the Bit-4 shadow-validation gate (that is a separate, future change).
 SYNTHETIC_RTI_ENABLED = os.environ.get("SYNTHETIC_RTI_ENABLED", "0") == "1"
 
+# ─── RTI go-live (RTI-6, per-asset promotion) ───────────────────────────
+# Per-asset gate for FEEDING the synthetic RTI into the LIVE decision spot (vs
+# the B2b-1 shadow logging above). Default EMPTY => no asset uses RTI for its
+# decision; zero behavior change, and the shadow invariant still holds for
+# every asset. Promote an asset (add its symbol) ONLY after it clears the
+# RTI-3 beats-market Brier gate AND the RMSE gate (umbrella 86ba6hdqr / ticket
+# 86ba6hf2y; plan kb/decisions/rti-go-live-plan.md). Mirrors the per-asset
+# MARKET_BLEND_W_BY_ASSET pattern — going live = a one-line edit here plus the
+# re-fit blend weights, shipped same commit, after the data gate + approval.
+SYNTHETIC_RTI_LIVE_ASSETS: set = set()
+# Minimum rti_confidence (contributed venues / expected, the CFB-shape
+# denominator) for a synthetic value to be trusted as the decision spot. Below
+# this the scanner falls back to the Coinbase spot — never trade on a
+# low-confidence synthetic. Tune from the RTI-3 corpus before any promotion.
+RTI_LIVE_MIN_CONFIDENCE = 0.75
+
 # ─── Cross-Exchange Order Flow ──────────────────────────────────────────
 CROSS_EXCHANGE_ENABLED = True
 

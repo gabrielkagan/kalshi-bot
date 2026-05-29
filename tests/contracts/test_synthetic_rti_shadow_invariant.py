@@ -7,12 +7,18 @@ Two load-bearing guarantees, pinned structurally (the codebase pins scanner
 invariants via AST rather than a live-scan harness — cf.
 tests/contracts/test_p4_1_band_calibrated_sizing.py):
 
-  1. ZERO LIVE-DECISION CHANGE. The synthetic flows ONLY through
-     ``self._state._scan_rti_cache`` and is read back ONLY in
-     ``insert_evaluated_opportunity`` to fill the three rti_* columns. The
-     scanner names that receive ``get_cached_synthetic(...)`` must not leak
-     anywhere outside the tight staging block — so the synthetic can never
-     reach ``final_prob`` / ``edge`` / a ``candidate.append`` argument.
+  1. ZERO LIVE-DECISION CHANGE *by default*. The synthetic flows through
+     ``self._state._scan_rti_cache``, read back in
+     ``insert_evaluated_opportunity`` (shadow logging of the rti_* columns)
+     AND — post RTI-6 — in ``OpportunityScanner._effective_decision_spot``,
+     which substitutes it for the decision spot ONLY for assets in
+     ``SYNTHETIC_RTI_LIVE_ASSETS``. That set defaults to EMPTY, so no asset is
+     promoted and the synthetic reaches NO decision in the shipped config (the
+     per-asset carve-out + default-empty pin live in
+     ``tests/contracts/test_rti_live_per_asset.py``). The names that receive
+     ``get_cached_synthetic(...)`` still must not leak outside the tight
+     staging block — the live route is the gated cache read, not the staged
+     locals.
 
   2. NUMPY-ONLY. ``bot.feeds.synthetic_rti_feed`` (and its aggregator
      ``bot.feeds.synthetic_rti``) must not pull in torch or pandas — their
