@@ -883,7 +883,8 @@ SYNTHETIC_RTI_LIVE_ASSETS: set = set()
 # Minimum rti_confidence (contributed venues / expected, the CFB-shape
 # denominator) for a synthetic value to be trusted as the decision spot. Below
 # this the scanner falls back to the Coinbase spot — never trade on a
-# low-confidence synthetic. Tune from the RTI-3 corpus before any promotion.
+# low-confidence synthetic. UNVALIDATED placeholder — MUST be tuned from the
+# RTI-3 corpus before any asset is promoted; 0.75 is a guess, not a result.
 RTI_LIVE_MIN_CONFIDENCE = 0.75
 
 # ─── Cross-Exchange Order Flow ──────────────────────────────────────────

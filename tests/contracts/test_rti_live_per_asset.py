@@ -11,6 +11,7 @@ Umbrella 86ba6hdqr / ticket 86ba6hf2y. Plan: kb/decisions/rti-go-live-plan.md.
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from bot.constants import SYNTHETIC_RTI_LIVE_ASSETS, RTI_LIVE_MIN_CONFIDENCE
@@ -53,8 +54,62 @@ def test_effective_spot_falls_back_when_rti_value_none(monkeypatch):
     assert OpportunityScanner._effective_decision_spot("BTC", 49999.0, cache) == 49999.0
 
 
-def test_decision_compute_routes_through_effective_spot():
-    """AST/text pin: the gated helper is the ONLY route RTI can take into the
-    decision — the live compute must be fed via _effective_decision_spot."""
-    src = SCANNER_PY.read_text()
-    assert "_effective_decision_spot" in src, "helper missing from scanner"
+def _probability_compute_calls(node):
+    return [
+        n for n in ast.walk(node)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "compute"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "ProbabilityEngine"
+    ]
+
+
+def _scan_fn(tree):
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == "scan":
+            return n
+    return None
+
+
+def _is_gated_spot(first):
+    """First positional arg references the gated effective spot — either the
+    inlined ``_effective_decision_spot(...)`` call or the ``_decision_spot``
+    local bound from it."""
+    if isinstance(first, ast.Name) and first.id == "_decision_spot":
+        return True
+    return (isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
+            and first.func.attr == "_effective_decision_spot")
+
+
+def test_live_executing_compute_fed_by_effective_spot():
+    """Within ``scan()`` (the LIVE decision path), the TRADE-DETERMINING compute
+    — the ``ProbabilityEngine.compute`` with a ``market_price_cents`` kwarg,
+    whose ``calibrated_prob`` becomes ``final_prob`` — must route its spot
+    through ``_effective_decision_spot``, NOT bare ``spot``. Catches the R1-C1
+    class (RTI wired into the pre-market screen but not the executed trade).
+
+    Scope is ``scan()`` only: the ``_process_*_shadow`` methods have their own
+    market-price computes that INTENTIONALLY stay on Coinbase spot (shadow
+    strategies keep their own basis; RTI is logged separately, not fed)."""
+    scan = _scan_fn(ast.parse(SCANNER_PY.read_text()))
+    assert scan is not None, "scan() not found"
+    executing = [c for c in _probability_compute_calls(scan)
+                 if any(kw.arg == "market_price_cents" for kw in c.keywords)]
+    assert executing, "no market-price (executing) compute inside scan()"
+    for call in executing:
+        first = call.args[0] if call.args else None
+        assert not (isinstance(first, ast.Name) and first.id == "spot"), (
+            "scan() executing compute fed bare `spot` — RTI gate bypassed (R1-C1)")
+        assert _is_gated_spot(first), (
+            "scan() executing compute must route spot through _effective_decision_spot")
+
+
+def test_live_screen_compute_also_uses_effective_spot():
+    """The pre-market screen compute inside ``scan()`` (no market_price_cents)
+    must also use the gated spot, so screen and executed trade agree."""
+    scan = _scan_fn(ast.parse(SCANNER_PY.read_text()))
+    assert scan is not None, "scan() not found"
+    screen = [c for c in _probability_compute_calls(scan)
+              if not any(kw.arg == "market_price_cents" for kw in c.keywords)]
+    assert any(_is_gated_spot(c.args[0]) for c in screen if c.args), (
+        "no screen compute in scan() is fed the gated effective spot")
