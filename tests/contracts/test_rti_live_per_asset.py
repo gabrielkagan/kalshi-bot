@@ -19,6 +19,7 @@ from bot.scanner import OpportunityScanner
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCANNER_PY = REPO_ROOT / "bot" / "scanner" / "__init__.py"
+EXECUTOR_PY = REPO_ROOT / "bot" / "executor.py"
 
 
 def test_live_assets_default_empty():
@@ -113,3 +114,20 @@ def test_live_screen_compute_also_uses_effective_spot():
               if not any(kw.arg == "market_price_cents" for kw in c.keywords)]
     assert any(_is_gated_spot(c.args[0]) for c in screen if c.args), (
         "no screen compute in scan() is fed the gated effective spot")
+
+
+def test_executor_addon_computes_routed_through_gate():
+    """Executor add-on / scale-in computes (LIVE position scaling) must route
+    their spot through the RTI gate (``_addon_decision_spot`` →
+    ``_effective_decision_spot``), so a scaled position is priced on the same
+    effective spot as its entry. Catches the R2-M1 class (entry on RTI spot but
+    scale-in on Coinbase spot once an asset is promoted)."""
+    calls = _probability_compute_calls(ast.parse(EXECUTOR_PY.read_text()))
+    assert calls, "no ProbabilityEngine.compute found in executor"
+    for call in calls:
+        first = call.args[0] if call.args else None
+        assert not (isinstance(first, ast.Name) and first.id == "spot"), (
+            "executor compute fed bare `spot` — add-on bypasses the RTI gate (R2-M1)")
+        assert (isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
+                and first.func.attr == "_addon_decision_spot"), (
+            "executor compute must route spot through _addon_decision_spot(...)")

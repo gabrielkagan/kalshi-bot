@@ -4917,7 +4917,8 @@ class OrderExecutor:
                 continue
 
             prob_result = ProbabilityEngine.compute(
-                spot, threshold, current_stc, blended_rv, asset=asset,
+                self._addon_decision_spot(asset, spot), threshold, current_stc,
+                blended_rv, asset=asset,
                 product_type=meta.get("candidate", {}).get("product_type"))
             cal_prob = prob_result.get("calibrated_prob")
             if cal_prob is None:
@@ -5157,6 +5158,23 @@ class OrderExecutor:
             logging.debug("addon spot price lookup failed", exc_info=True)
         return None
 
+    def _addon_decision_spot(self, asset: str, coinbase_spot: float) -> float:
+        """RTI-6: gate the add-on / scale-in decision spot through the scanner's
+        per-asset RTI gate, so a position SCALED is priced on the same effective
+        spot as the original ENTRY. Without this, a promoted asset would enter
+        on RTI spot (scanner) but scale on Coinbase spot (here) — the C1
+        screen-vs-trade divergence, one layer down at the position lifecycle.
+        Default-empty SYNTHETIC_RTI_LIVE_ASSETS => returns coinbase_spot
+        unchanged. Defensive: any lookup failure falls back to Coinbase."""
+        try:
+            scanner = self._ml.scanner if self._ml else None
+            if scanner is not None:
+                return scanner._effective_decision_spot(
+                    asset, coinbase_spot, self._state._scan_rti_cache)
+        except Exception:
+            logging.debug("addon RTI decision-spot gate failed", exc_info=True)
+        return coinbase_spot
+
     def _get_addon_balance(self) -> Optional[int]:
         """Get current balance in cents."""
         try:
@@ -5249,7 +5267,8 @@ class OrderExecutor:
 
             # Recompute probability at current spot/vol/stc
             prob_result = ProbabilityEngine.compute(
-                spot, threshold, current_stc, blended_rv, asset=asset,
+                self._addon_decision_spot(asset, spot), threshold, current_stc,
+                blended_rv, asset=asset,
                 product_type=meta.get("candidate", {}).get("product_type"))
             cal_prob = prob_result.get("calibrated_prob")
             if cal_prob is None:
