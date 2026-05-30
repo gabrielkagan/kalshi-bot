@@ -78,27 +78,52 @@ TIER_ALL: str = "1"
 
 
 # Firehose series excluded from the WS subscription (ticket 86ba76adw,
-# 2026-05-30). Measured 2026-05-30: these two esports series are
-# 193,174 + 118,377 = 90.5% of the 344K-market open universe. Subscribing
-# them blasts an oversized session_start subscribe burst (~1098 frames/conn)
-# that overwhelms the WS outbound send path → `socket.send() raised
-# exception` storm (~433/s) → abrupt disconnect (`no close frame received`) →
-# synchronized 7-conn reconnect storm. The result: every lower-volume market
-# (ALL crypto-15M, the corpus's priority) is captured SNAPSHOT-ONLY (0 deltas
-# / window) because the conn cycles every ~20s before a non-firehose book
-# accumulates deltas. Excluding these two shrinks the burst ~10x (~344K→~33K
-# markets) — well under the breaking threshold (a clean conn handles 10K
-# markets fine, verified by the incremental_subscribe_probe_v3 spike). The bot
-# does NOT trade esports, and esports orderbook bronze has no downstream
-# consumer yet (silver Tier-1 = coinbase + kalshi_market_lifecycle), so the
-# data loss is acceptable per operator direction ("crypto is the priority; we
-# can ignore esports if needed", 2026-05-30). Override via the
-# COLLECTOR_EXCLUDED_SERIES env (comma-separated; empty string = exclude
-# nothing) wired in main_loop. Matched on the leading KX<SERIES> dash-segment.
+# 2026-05-30). Measured 2026-05-30 from bronze: these two esports series are
+# 193,174 + 118,377 = 90.5% of the ~344K-market open universe. Subscribing
+# them blasts an oversized session_start subscribe burst (PRODUCTION-OBSERVED
+# ~1098 subscribe_frames/conn per the "Replan conn=… subscribe_frames=1098"
+# logs — count is markets×channels÷conns at the live batch_size, not derivable
+# from the in-repo DEFAULT_BATCH_SIZE alone) that overwhelms the WS outbound
+# send path → `socket.send() raised exception` storm (~433/s) → abrupt
+# disconnect (`no close frame received`) → synchronized 7-conn reconnect storm.
+# Result: every lower-volume market (ALL crypto-15M, the corpus's priority) is
+# captured SNAPSHOT-ONLY (0 deltas/window) because the conn cycles every ~20s
+# before a non-firehose book accumulates deltas. Excluding these two shrinks
+# the burst ~10x (~344K→~33K markets) — well under the breaking threshold (a
+# clean conn handles 10K markets fine, verified by the
+# incremental_subscribe_probe_v3 spike).
+#
+# SCOPE OF DATA LOSS (R1-M1 — do not understate): excluding a series drops it
+# from ALL subscribed channels (orderbook_delta + trade + market_lifecycle_v2 —
+# see subscription_manager CHANNELS_DEFAULT), so esports go FULLY dark in bronze
+# going forward — NOT just orderbook. This INCLUDES the silver Tier-1 source
+# `kalshi_market_lifecycle_v2_v1` (silver/models/kalshi/…, which has no series
+# filter): its esports settlement/`determined` rows will stop accruing. The bot
+# does NOT trade esports and no current model/strategy consumes esports bronze,
+# and crypto is the corpus priority, so this (broader-than-orderbook) loss is
+# accepted per operator direction ("crypto is the priority; we can ignore
+# esports if needed", 2026-05-30). REVERSIBLE: set COLLECTOR_EXCLUDED_SERIES=""
+# to re-collect everything (escape hatch), or list other series comma-separated.
+# Matched on the leading KX<SERIES> dash-segment (exact, never a substring).
 DEFAULT_EXCLUDED_SERIES: tuple = (
     "KXMVESPORTSMULTIGAMEEXTENDED",
     "KXMVECROSSCATEGORY",
 )
+
+
+def resolve_excluded_series(env_value: Optional[str]) -> tuple:
+    """Resolve the ``COLLECTOR_EXCLUDED_SERIES`` env value into the exclude
+    tuple (ticket 86ba76adw). Three documented semantics, kept as a pure
+    function so the load-bearing unset-vs-empty-vs-list branch is unit-tested
+    (a future ``os.environ.get(key, "")`` refactor would silently turn the
+    default-exclude OFF — this pins against that):
+      - ``None`` (env UNSET) → ``DEFAULT_EXCLUDED_SERIES`` (the esports default).
+      - ``""`` / whitespace / comma-only → ``()`` (escape hatch: exclude nothing).
+      - ``"A, B"`` → ``("A", "B")`` (trimmed, blanks dropped, order preserved).
+    """
+    if env_value is None:
+        return DEFAULT_EXCLUDED_SERIES
+    return tuple(s.strip() for s in env_value.split(",") if s.strip())
 
 
 # Hourly default — see module docstring for the cost / freshness

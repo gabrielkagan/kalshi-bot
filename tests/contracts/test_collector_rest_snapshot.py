@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import ast
 import json
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
@@ -176,6 +177,45 @@ def test_excluded_series_default_constant_names_the_two_esports_firehoses():
     from collector.rest_snapshot import DEFAULT_EXCLUDED_SERIES
     assert set(DEFAULT_EXCLUDED_SERIES) == {
         "KXMVECROSSCATEGORY", "KXMVESPORTSMULTIGAMEEXTENDED"}
+
+
+def test_resolve_excluded_series_env_semantics():
+    """Ticket 86ba76adw m1 — the load-bearing unset-vs-empty-vs-list branch
+    (COLLECTOR_EXCLUDED_SERIES). UNSET (None) → the esports default;
+    ""/whitespace/comma-only → () escape hatch; "A,B" → trimmed tuple. Pins
+    against a future os.environ.get(key, "") refactor silently disabling the
+    default exclude."""
+    from collector.rest_snapshot import (
+        DEFAULT_EXCLUDED_SERIES, resolve_excluded_series)
+    assert resolve_excluded_series(None) == DEFAULT_EXCLUDED_SERIES
+    assert resolve_excluded_series("") == ()
+    assert resolve_excluded_series("   ") == ()
+    assert resolve_excluded_series(",, ,") == ()
+    assert resolve_excluded_series("KXFOO,KXBAR") == ("KXFOO", "KXBAR")
+    assert resolve_excluded_series("  KXFOO , , KXBAR ") == ("KXFOO", "KXBAR")
+
+
+def test_refresher_forwards_excluded_series_to_fetch(monkeypatch):
+    """Ticket 86ba76adw m1 — RestSnapshotRefresher must forward its
+    ``excluded_series`` into every ``fetch_tickers_by_tier`` call (the
+    production wiring; otherwise the hourly refresh would re-introduce the
+    excluded firehose and re-open the reconnect storm)."""
+    import collector.rest_snapshot as rs
+    captured = {}
+
+    def fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {TIER_ALL: ["KXBTC15M-X"]}
+
+    monkeypatch.setattr(rs, "fetch_tickers_by_tier", fake_fetch)
+    refresher = rs.RestSnapshotRefresher(
+        api_key="kid", private_key=None, on_refresh=lambda m: None,
+        shutdown_event=threading.Event(),
+        excluded_series=("KXMVECROSSCATEGORY", "KXMVESPORTSMULTIGAMEEXTENDED"),
+    )
+    refresher._do_refresh()
+    assert captured.get("excluded_series") == (
+        "KXMVECROSSCATEGORY", "KXMVESPORTSMULTIGAMEEXTENDED")
 
 
 def test_fetch_default_excluded_series_is_empty_neutral():

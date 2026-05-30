@@ -76,12 +76,12 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from collector.rest_snapshot import (
     CRYPTO_15M_SERIES,
-    DEFAULT_EXCLUDED_SERIES,
     DEFAULT_INCREMENTAL_REFRESH_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     IncrementalDiscoveryRefresher,
     RestSnapshotRefresher,
     fetch_tickers_by_tier,
+    resolve_excluded_series,
 )
 from collector.subscription_manager import (
     CHANNELS_DEFAULT,
@@ -715,11 +715,8 @@ def run(
     # lower-volume markets (incl. crypto-15M) to snapshot-only. UNSET → the
     # measured 90.5%-of-universe esports default; ``""`` → exclude nothing
     # (escape hatch); ``"A,B"`` → exclude exactly those series.
-    _excl_env = os.environ.get("COLLECTOR_EXCLUDED_SERIES")
-    if _excl_env is None:
-        excluded_series = DEFAULT_EXCLUDED_SERIES
-    else:
-        excluded_series = tuple(s.strip() for s in _excl_env.split(",") if s.strip())
+    excluded_series = resolve_excluded_series(
+        os.environ.get("COLLECTOR_EXCLUDED_SERIES"))
     health_sidecar_env = os.environ.get(
         "COLLECTOR_HEALTH_SIDECAR_PATH",
         # Default: alongside bronze data dir so a single mount holds
