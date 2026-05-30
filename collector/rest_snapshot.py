@@ -53,7 +53,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 import requests
 
@@ -84,6 +84,42 @@ TIER_ALL: str = "1"
 # D1.3-fu4-oom-closure 2026-05-19, ticket 86b9zk4hz REUSED) when the
 # ticker set changes.
 DEFAULT_REFRESH_INTERVAL_SECONDS: float = 3600.0
+
+
+# ─── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ────────
+#
+# RCA: the hourly full-snapshot + force-reconnect mechanism above is correct
+# for markets whose lifespan >> the poll interval, but STRUCTURALLY undersamples
+# markets that open AND close inside a single poll gap. 15M crypto windows live
+# ~15 min, so an hourly poll catches only ~25% (15/60); the other ~75% are never
+# subscribed → permanent bronze loss. See
+# kb/decisions/collector-sub-hourly-incremental-subscribe-plan.md.
+#
+# Fix: a fast (default 60s) discovery poll SCOPED to the crypto-15M series that
+# dispatches subscribe frames MID-SESSION via BronzeArchiver.add_subscriptions
+# (no reconnect — so the D1.3-fu4 ack-flood / OOM class cannot reopen).
+#
+# CRYPTO_15M_SERIES mirrors bot.constants.SERIES_TICKERS.values(). The collector
+# cannot import bot.* (collector-no-bot contract), so this is a hand-mirror with
+# a drift-pin contract test
+# (tests/contracts/test_collector_incremental_subscribe.py
+# ::test_crypto_15m_series_mirrors_bot_series_tickers) — same pattern as the
+# LEAGUES_ESPN mirror. A new Kalshi 15M crypto series means a 1-line edit here +
+# a kalshi-collector restart.
+CRYPTO_15M_SERIES: tuple = (
+    "KXBTC15M",
+    "KXETH15M",
+    "KXSOL15M",
+    "KXXRP15M",
+    "KXHYPE15M",
+    "KXDOGE15M",
+    "KXBNB15M",
+)
+
+# Fast incremental-discovery cadence. 60s → a 15-min window is discovered within
+# ≤60s of opening (~14/15 min of orderbook captured). Tunable via
+# ``COLLECTOR_INCREMENTAL_REFRESH_SECONDS`` in main_loop.
+DEFAULT_INCREMENTAL_REFRESH_SECONDS: float = 60.0
 
 
 # Per-page cap requested from Kalshi /markets. Production hits ~60K
@@ -746,4 +782,168 @@ class RestSnapshotRefresher:
                 "RestSnapshotRefresher: on_refresh callback raised; the "
                 "next refresh will retry. Subscription set may be stale "
                 "until then."
+            )
+
+
+# ─── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ────────
+
+
+def fetch_open_tickers_for_series(
+    *,
+    series_tickers: Sequence[str],
+    api_key: str,
+    private_key,
+    base_url: str = DEFAULT_REST_BASE_URL,
+    session: Optional[requests.Session] = None,
+    max_retries: int = _DEFAULT_MAX_RETRIES,
+    _test_skip_auth: bool = False,
+    _test_backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
+) -> set:
+    """Return the UNION of open tickers across the given Kalshi series.
+
+    Issues one paginated ``/markets?series_ticker=<S>&status=open`` fetch per
+    series (tiny payloads — a handful of open windows per crypto-15M series at
+    any instant) and unions the results.
+
+    Differs from ``fetch_tickers_by_tier`` in its failure posture: this feeds
+    the INCREMENTAL ADD path (which only ever adds newly-seen tickers, never
+    drops), so a per-series failure is BEST-EFFORT — the bad series is skipped
+    this tick and retried next tick. There is no partial-set reconnect-storm
+    risk (R1-M2) because nothing here triggers a reconnect; a missed series
+    just delays discovery of its newest window by one ``interval_seconds``.
+
+    NEVER raises — per-series failures are logged + skipped.
+    """
+    if session is None:
+        session = requests.Session()
+    url = base_url.rstrip("/") + _REST_PATH_MARKETS
+    tickers: set = set()
+    for series in series_tickers:
+        cursor: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {
+                "limit": _PAGE_LIMIT, "status": "open", "series_ticker": series,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            body, _status, _err, _attempts, _elapsed, _ts = (
+                _do_request_with_retry_inner(
+                    session=session,
+                    url=url,
+                    params=params,
+                    api_key=api_key,
+                    private_key=private_key,
+                    max_retries=max_retries,
+                    skip_auth=_test_skip_auth,
+                    backoff_seconds=_test_backoff_seconds,
+                )
+            )
+            if body is None or not isinstance(body, dict):
+                logger.warning(
+                    "IncrementalDiscovery: series=%s page fetch failed; "
+                    "skipping this series this tick (retries next interval).",
+                    series,
+                )
+                break
+            markets = body.get("markets")
+            if isinstance(markets, list):
+                for row in markets:
+                    if not isinstance(row, dict):
+                        continue
+                    if row.get("status") not in ("open", "active"):
+                        continue
+                    ticker = row.get("ticker")
+                    if isinstance(ticker, str) and ticker:
+                        tickers.add(ticker)
+            next_cursor = body.get("cursor")
+            if not next_cursor or not isinstance(next_cursor, str):
+                break
+            cursor = next_cursor
+    return tickers
+
+
+class IncrementalDiscoveryRefresher:
+    """Background thread that polls the sub-hourly (crypto-15M) series at a fast
+    cadence and reports the current open ticker set to ``on_new``.
+
+    Owned by ``collector/main_loop.py``. Like ``RestSnapshotRefresher`` the
+    wiring is one-directional (refresher → callback): the refresher does NOT
+    hold archiver references; main_loop's ``on_new`` callback diffs against its
+    authoritative subscribed set, assigns the truly-new tickers to conns, and
+    dispatches ``BronzeArchiver.add_subscriptions`` (mid-session, no reconnect).
+
+    Lifecycle mirrors ``RestSnapshotRefresher``: first poll fires IMMEDIATELY on
+    ``start()``, then every ``interval_seconds`` on a cancellable
+    ``shutdown_event.wait(timeout=...)``. ``on_new`` exceptions are caught +
+    logged so a callback bug cannot crash the discovery thread.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        private_key,
+        series_tickers: Sequence[str],
+        on_new: Callable[[set], None],
+        shutdown_event: threading.Event,
+        interval_seconds: float = DEFAULT_INCREMENTAL_REFRESH_SECONDS,
+        base_url: str = DEFAULT_REST_BASE_URL,
+        session: Optional[requests.Session] = None,
+    ):
+        if interval_seconds <= 0:
+            raise ValueError(
+                f"interval_seconds must be > 0 (got {interval_seconds}); the "
+                "discovery loop sleeps for this duration between polls."
+            )
+        self._api_key = api_key
+        self._private_key = private_key
+        self._series_tickers = tuple(series_tickers)
+        self._on_new = on_new
+        self._shutdown_event = shutdown_event
+        self._interval_seconds = interval_seconds
+        self._base_url = base_url
+        self._session = session if session is not None else requests.Session()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="incremental-discovery-refresher",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._shutdown_event.set()
+
+    def _run(self) -> None:
+        self._do_poll()
+        while not self._shutdown_event.is_set():
+            woke_for_shutdown = self._shutdown_event.wait(
+                timeout=self._interval_seconds)
+            if woke_for_shutdown:
+                break
+            self._do_poll()
+
+    def _do_poll(self) -> None:
+        try:
+            open_set = fetch_open_tickers_for_series(
+                series_tickers=self._series_tickers,
+                api_key=self._api_key,
+                private_key=self._private_key,
+                base_url=self._base_url,
+                session=self._session,
+            )
+        except Exception:
+            logger.exception(
+                "IncrementalDiscoveryRefresher.fetch raised; skipping this "
+                "tick and retrying next interval."
+            )
+            return
+        try:
+            self._on_new(open_set)
+        except Exception:
+            logger.exception(
+                "IncrementalDiscoveryRefresher: on_new callback raised; the "
+                "next poll will retry."
             )

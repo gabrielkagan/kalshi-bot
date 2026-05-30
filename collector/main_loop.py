@@ -75,7 +75,10 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from collector.rest_snapshot import (
+    CRYPTO_15M_SERIES,
+    DEFAULT_INCREMENTAL_REFRESH_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
+    IncrementalDiscoveryRefresher,
     RestSnapshotRefresher,
     fetch_tickers_by_tier,
 )
@@ -531,6 +534,67 @@ def _replan_for_archivers(
             time.sleep(stagger_seconds)
 
 
+def _plan_incremental_adds(
+    *,
+    open_set: set,
+    tracked: set,
+    rr: int,
+    next_cmd_id: int,
+    conn_ids: Sequence[str],
+    batch_size: int,
+) -> Tuple[List[Tuple[int, List[Dict], Dict[int, str]]], int, int, List[str]]:
+    """Plan the MID-SESSION subscribe adds for newly-opened sub-hourly windows.
+
+    Ticket 86ba74hzy (2026-05-30). PURE function — no I/O, no archiver
+    mutation — so the cmd_id-non-collision + dedup invariants on the P0
+    incremental-discovery path are unit-testable (the wiring closure in
+    ``run()`` is a thin adapter that calls this under ``_incr_lock`` then
+    dispatches the returned plan via ``BronzeArchiver.add_subscriptions``).
+
+    Args:
+        open_set: currently-open sub-hourly tickers (crypto-15M) from the
+            discovery poll.
+        tracked: the authoritative already-subscribed set (full universe at
+            boot / after each hourly reconnect, plus everything added
+            incrementally since).
+        rr: round-robin cursor (carried across ticks for balance).
+        next_cmd_id: next free fast cmd_id. The CALLER seeds this at
+            ``conn_count * _PER_CONN_CMD_ID_STRIDE + 1`` (≥ every hourly
+            per-conn range ``[idx*STRIDE+1, (idx+1)*STRIDE]``) so fast adds
+            NEVER collide with the hourly plan's ids within a conn's map.
+        conn_ids: per-conn id strings (``conn_ids[idx]`` is conn ``idx``'s id).
+        batch_size: SubscriptionManager batch size.
+
+    Returns:
+        ``(dispatch, new_rr, new_next_cmd_id, new_tickers)`` where ``dispatch``
+        is a list of ``(conn_idx, frames, cmd_id_to_channel)`` for the caller
+        to feed to ``archivers[conn_idx].add_subscriptions``. Empty dispatch +
+        empty new_tickers when nothing is new (the common steady-state tick).
+    """
+    new = sorted(set(open_set) - set(tracked))
+    if not new:
+        return [], rr, next_cmd_id, []
+    n = len(conn_ids)
+    by_conn: Dict[int, List[str]] = {}
+    for ticker in new:
+        idx = rr % n
+        rr += 1
+        by_conn.setdefault(idx, []).append(ticker)
+    dispatch: List[Tuple[int, List[Dict], Dict[int, str]]] = []
+    for idx, tks in by_conn.items():
+        plan = ConnPlan(
+            conn_id=conn_ids[idx],
+            market_tickers=tuple(tks),
+            channels=CHANNELS_DEFAULT,
+        )
+        frames, cmap = SubscriptionManager.build_subscribe_frames(
+            plan, cmd_id_start=next_cmd_id, batch_size=batch_size,
+        )
+        next_cmd_id += len(frames)
+        dispatch.append((idx, frames, cmap))
+    return dispatch, rr, next_cmd_id, new
+
+
 def _build_writers_for_plan(
     plan: ConnPlan, bronze_root: Path,
 ) -> Dict[Optional[str], BronzeWriter]:
@@ -636,6 +700,13 @@ def run(
     refresh_seconds = float(os.environ.get(
         "COLLECTOR_REST_REFRESH_SECONDS",
         str(DEFAULT_REFRESH_INTERVAL_SECONDS),
+    ))
+    # Ticket 86ba74hzy (2026-05-30): fast sub-hourly incremental-discovery
+    # cadence. Catches 15M crypto windows (~15-min lifespan) that open AND
+    # close inside the hourly REST gap and were never subscribed pre-Bit.
+    incremental_refresh_seconds = float(os.environ.get(
+        "COLLECTOR_INCREMENTAL_REFRESH_SECONDS",
+        str(DEFAULT_INCREMENTAL_REFRESH_SECONDS),
     ))
     health_sidecar_env = os.environ.get(
         "COLLECTOR_HEALTH_SIDECAR_PATH",
@@ -803,7 +874,24 @@ def run(
     # exits in ≤ one stagger interval instead of pinning the refresher
     # thread for ~(N-1) * stagger seconds.
     refresher: Optional[RestSnapshotRefresher] = None
+    incremental_refresher: Optional[IncrementalDiscoveryRefresher] = None
     if not tickers_file and rest_private_key is not None:
+        # ── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ──
+        # main_loop owns the authoritative subscribed set + a fast cmd_id
+        # counter, both guarded by ``_incr_lock`` since the hourly refresher
+        # thread (``_on_refresh``) and the incremental thread
+        # (``_on_new_crypto_windows``) both mutate them. The fast cmd_id region
+        # starts ABOVE every hourly per-conn range
+        # ([idx*STRIDE+1, (idx+1)*STRIDE]) so incremental adds never collide
+        # with the hourly plan's ids.
+        _incr_lock = threading.Lock()
+        _fast_cmd_id_base = conn_count * _PER_CONN_CMD_ID_STRIDE + 1
+        _incr_state: Dict[str, object] = {
+            "tracked": {t for plan in plans for t in plan.market_tickers},
+            "next_cmd_id": _fast_cmd_id_base,
+            "rr": 0,
+        }
+
         def _on_refresh(new_tickers_by_tier: Dict[str, List[str]]) -> None:
             _replan_for_archivers(
                 new_tickers_by_tier=new_tickers_by_tier,
@@ -812,6 +900,58 @@ def run(
                 batch_size=batch_size,
                 shutdown_event=shutdown_event,
             )
+            # The hourly reconnect REPLACED each archiver's subscribe set +
+            # cmd_id map from the authoritative REST snapshot, re-subscribing
+            # the full universe (incl. whatever crypto-15M is open now). Reset
+            # incremental tracking to that set + reclaim the fast cmd_id region
+            # (the REPLACE dropped the old fast ids).
+            with _incr_lock:
+                _incr_state["tracked"] = {
+                    t for v in new_tickers_by_tier.values() for t in v
+                }
+                _incr_state["next_cmd_id"] = _fast_cmd_id_base
+                # ``rr`` is intentionally NOT reset — it's a best-effort
+                # balance cursor and ``rr % n`` wraps regardless of magnitude,
+                # so carrying it across hourly resets is harmless (and keeps
+                # round-robin continuity across the reconnect boundary).
+
+        def _on_new_crypto_windows(open_set: set) -> None:
+            # Diff against the authoritative subscribed set; subscribe only the
+            # truly-new windows MID-SESSION (no reconnect — that's the OOM
+            # class we're avoiding). Planning is delegated to the pure,
+            # unit-tested ``_plan_incremental_adds`` helper (cmd_id
+            # non-collision + dedup invariants pinned there); this closure is
+            # the thin lock + dispatch adapter.
+            conn_ids = [a._conn_id for a in archivers]
+            with _incr_lock:
+                dispatch, new_rr, new_next, new = _plan_incremental_adds(
+                    open_set=open_set,
+                    tracked=_incr_state["tracked"],  # type: ignore[arg-type]
+                    rr=_incr_state["rr"],  # type: ignore[arg-type]
+                    next_cmd_id=_incr_state["next_cmd_id"],  # type: ignore[arg-type]
+                    conn_ids=conn_ids,
+                    batch_size=batch_size,
+                )
+                if not dispatch:
+                    return
+                _incr_state["rr"] = new_rr
+                _incr_state["next_cmd_id"] = new_next
+                _incr_state["tracked"].update(new)  # type: ignore[union-attr]
+            # Dispatch OUTSIDE the state lock — add_subscriptions does network
+            # I/O (send_frame) which must not serialize behind _incr_lock.
+            for idx, frames, cmap in dispatch:
+                try:
+                    archivers[idx].add_subscriptions(frames, cmap)
+                except Exception:
+                    logger.exception(
+                        "Incremental add_subscriptions raised for conn idx=%d "
+                        "(%d frames); next poll retries.", idx, len(frames),
+                    )
+            logger.info(
+                "Incremental discovery: subscribed %d new sub-hourly window(s) "
+                "mid-session (no reconnect).", len(new),
+            )
+
         refresher = RestSnapshotRefresher(
             api_key=api_key,
             private_key=rest_private_key,
@@ -820,12 +960,23 @@ def run(
             interval_seconds=refresh_seconds,
             bronze_writer=kalshi_rest_writer,  # D1.9
         )
+        incremental_refresher = IncrementalDiscoveryRefresher(
+            api_key=api_key,
+            private_key=rest_private_key,
+            series_tickers=CRYPTO_15M_SERIES,
+            on_new=_on_new_crypto_windows,
+            shutdown_event=shutdown_event,
+            interval_seconds=incremental_refresh_seconds,
+        )
 
     logger.info(
         "Collector booted — bronze_root=%s, conn_count=%d, archivers=%d, "
-        "rest_refresh=%s",
+        "rest_refresh=%s, incremental_discovery=%s",
         bronze_root, conn_count, len(archivers),
         "on" if refresher is not None else "off (file-mode)",
+        ("on (%.0fs, %d series)" % (
+            incremental_refresh_seconds, len(CRYPTO_15M_SERIES))
+         ) if incremental_refresher is not None else "off (file-mode)",
     )
 
     try:
@@ -859,6 +1010,10 @@ def run(
             )
         if refresher is not None:
             refresher.start()
+        if incremental_refresher is not None:
+            # Ticket 86ba74hzy: fast sub-hourly discovery (first poll immediate)
+            # — subscribes newly-opened 15M crypto windows mid-session.
+            incremental_refresher.start()
         shutdown_event.wait()
     finally:
         # Step 7 — graceful shutdown.
