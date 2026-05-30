@@ -124,7 +124,7 @@ _NAN_INF_REPLACEMENT = None
 # Hardcoded asset whitelist mirrors bot.py ASSETS. Pinned here so the helper
 # stays usable in tests without importing all of bot.py. If bot.py adds an
 # asset, update this list AND the test that asserts the contract.
-_DEFAULT_ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB")
+_DEFAULT_ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH")
 
 
 # Sanity bound on ws_cache_age_ms. Anything older than 24h is almost

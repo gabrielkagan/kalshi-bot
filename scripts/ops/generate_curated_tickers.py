@@ -83,6 +83,8 @@ BOT_SERIES_PREFIXES: List[str] = [
     "KXHYPE15M-",
     "KXDOGE15M-",
     "KXBNB15M-",
+    "KXADA15M-",
+    "KXBCH15M-",
     # Crypto hourly daily settlement (from bot/constants.py::HOURLY_SERIES_TICKERS)
     "KXBTCD-",
     "KXETHD-",
@@ -91,6 +93,8 @@ BOT_SERIES_PREFIXES: List[str] = [
     "KXHYPED-",
     "KXDOGED-",
     "KXBNBD-",
+    "KXADAD-",
+    "KXBCHD-",
     # SPX hourly — bot/engines/spx_engine.py:27 SPX_SERIES_TICKER="KXINXU"
     # is the LIVE Kalshi series the bot queries (see :1107-1123). The
     # legacy ``KXSPX*`` LIKE patterns at bot/state.py:988/:1014 are

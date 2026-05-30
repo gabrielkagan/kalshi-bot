@@ -165,6 +165,8 @@ CRYPTO_15M_SERIES: tuple = (
     "KXHYPE15M",
     "KXDOGE15M",
     "KXBNB15M",
+    "KXADA15M",  # ADA 15M shadow onboarding (T1 2026-05-30)
+    "KXBCH15M",  # BCH 15M shadow onboarding (T1 2026-05-30)
 )
 
 # Fast incremental-discovery cadence. 10s → a 15-min (900s) window is discovered

@@ -695,8 +695,9 @@ class TestPerWindowFilters(unittest.TestCase):
     def test_asset_exclusion_btc_eth_only(self):
         """HOURLY_EXCLUDED_ASSETS contains SOL and XRP (BTC+ETH live hourly).
         T1 (2026-05-10): HYPE/DOGE added for shadow observation until T4.
-        T1 (2026-05-17): BNB added for shadow observation (ticket 86b9zmj0c)."""
-        self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP", "HYPE", "DOGE", "BNB"})
+        T1 (2026-05-17): BNB added for shadow observation (ticket 86b9zmj0c).
+        T1 (2026-05-30): ADA/BCH added (15M-shadow-only; hourly safety belt)."""
+        self.assertEqual(HOURLY_EXCLUDED_ASSETS, {"SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"})
 
 
 class TestHourlyNoSideAssetGate(unittest.TestCase):
@@ -717,9 +718,10 @@ class TestHourlyNoSideAssetGate(unittest.TestCase):
     def test_no_excluded_default_empty(self):
         """Original 4 assets eligible on NO-side. T1 (2026-05-10):
         HYPE/DOGE added as NO-side safety belt during shadow until T4.
-        T1 (2026-05-17): BNB added as NO-side safety belt (ticket 86b9zmj0c)."""
+        T1 (2026-05-17): BNB added as NO-side safety belt (ticket 86b9zmj0c).
+        T1 (2026-05-30): ADA/BCH added as NO-side safety belt (15M-shadow-only)."""
         from bot.constants import HOURLY_NO_EXCLUDED_ASSETS
-        self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, {"HYPE", "DOGE", "BNB"})
+        self.assertEqual(HOURLY_NO_EXCLUDED_ASSETS, {"HYPE", "DOGE", "BNB", "ADA", "BCH"})
 
     def test_yes_no_are_separate_constants(self):
         """YES and NO exclusion lists must not share state."""

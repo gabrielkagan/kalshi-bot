@@ -3162,7 +3162,7 @@ class OrderExecutor:
     # ── Maker ─────────────────────────────────────────────────────────────
 
     # Hourly series prefixes — maker orders must NEVER be placed on these tickers.
-    _HOURLY_SERIES_PREFIXES = ("KXBTCD-", "KXETHD-", "KXSOLD-", "KXXRPD-", "KXHYPED-", "KXDOGED-", "KXBNBD-")
+    _HOURLY_SERIES_PREFIXES = ("KXBTCD-", "KXETHD-", "KXSOLD-", "KXXRPD-", "KXHYPED-", "KXDOGED-", "KXBNBD-", "KXADAD-", "KXBCHD-")
 
     def _submit_maker(self, candidate: Dict, aggressive: bool = False, degraded: bool = False):
         """Submit maker limit order below fair value.

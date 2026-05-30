@@ -83,6 +83,8 @@ from bot.constants import (
     BRACKET_NO_FIXED_CONTRACTS,
     BRACKET_NO_KILL_THRESHOLD,
     BRACKET_NO_MAX_CONCURRENT,
+    ADA_15M_SHADOW,
+    BCH_15M_SHADOW,
     BNB_15M_SHADOW,
     BNB_MAX_RISK_PER_TRADE,
     BNB_MIN_ENTRY_PRICE,
@@ -3505,7 +3507,10 @@ class OpportunityScanner:
                             # tests/integration/test_doge_hype_onboarding_t1.py::TestAtomicActivationSafety.
                             and not (HYPE_15M_SHADOW and asset == "HYPE")
                             and not (DOGE_15M_SHADOW and asset == "DOGE")
-                            and not (BNB_15M_SHADOW and asset == "BNB")):
+                            and not (BNB_15M_SHADOW and asset == "BNB")
+                            # T1 (2026-05-30): ADA/BCH 15M shadow — must not route live through TM
+                            and not (ADA_15M_SHADOW and asset == "ADA")
+                            and not (BCH_15M_SHADOW and asset == "BCH")):
                         # Check DC overlap: skip if ticker already claimed by DC
                         _tm_dc_overlap = any(c["ticker"] == ticker and c.get("strategy", "").startswith("decided_")
                                              for c in candidates)
@@ -4158,6 +4163,9 @@ class OpportunityScanner:
                                 and not (HYPE_15M_SHADOW and asset == "HYPE")
                                 and not (DOGE_15M_SHADOW and asset == "DOGE")
                                 and not (BNB_15M_SHADOW and asset == "BNB")
+                                # T1 (2026-05-30): ADA/BCH 15M shadow
+                                and not (ADA_15M_SHADOW and asset == "ADA")
+                                and not (BCH_15M_SHADOW and asset == "BCH")
                                 and best_ask >= WEEKEND_DISCOUNT_MIN_PRICE
                                 and seconds_remaining <= WEEKEND_DISCOUNT_MAX_STC
                                 and not _wknd_dc_overlap
@@ -4349,6 +4357,9 @@ class OpportunityScanner:
                                 and not (HYPE_15M_SHADOW and asset == "HYPE")
                                 and not (DOGE_15M_SHADOW and asset == "DOGE")
                                 and not (BNB_15M_SHADOW and asset == "BNB")
+                                # T1 (2026-05-30): ADA/BCH 15M shadow
+                                and not (ADA_15M_SHADOW and asset == "ADA")
+                                and not (BCH_15M_SHADOW and asset == "BCH")
                                 and best_ask >= OVERNIGHT_DISCOUNT_MIN_PRICE
                                 and seconds_remaining <= OVERNIGHT_DISCOUNT_MAX_STC
                                 and not _ovn_dc_overlap
@@ -4624,8 +4635,8 @@ class OpportunityScanner:
                                 or (_dc_tier == "decided_contract_t2" and DECIDED_T2_ENABLED)
                                 or (_dc_tier == "decided_contract_t2_z25" and DECIDED_T2_Z25_ENABLED)
                                 or (_dc_tier == "decided_contract_t2_z2" and DECIDED_T2_Z2_ENABLED))
-                            # T1 (2026-05-10 HYPE/DOGE, 2026-05-17 BNB): shadow assets must not route live via DC
-                            if (HYPE_15M_SHADOW and asset == "HYPE") or (DOGE_15M_SHADOW and asset == "DOGE") or (BNB_15M_SHADOW and asset == "BNB"):
+                            # T1 (2026-05-10 HYPE/DOGE, 2026-05-17 BNB, 2026-05-30 ADA/BCH): shadow assets must not route live via DC
+                            if (HYPE_15M_SHADOW and asset == "HYPE") or (DOGE_15M_SHADOW and asset == "DOGE") or (BNB_15M_SHADOW and asset == "BNB") or (ADA_15M_SHADOW and asset == "ADA") or (BCH_15M_SHADOW and asset == "BCH"):
                                 _dc_live_enabled = False
                             if (_dc_live_enabled
                                     and not OBSERVATION_MODE
@@ -6539,6 +6550,64 @@ class OpportunityScanner:
                             config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
                     continue
 
+                # ── ADA SHADOW GATE (15M only — T1 onboarding 2026-05-30) ──
+                # When ADA_15M_SHADOW=True (current state), every ADA 15M candidate
+                # gets logged with filter_stage='ada_shadow' and skipped from live
+                # routing. Flip ADA_15M_SHADOW=False at T4 to promote to live.
+                if ADA_15M_SHADOW and asset == "ADA" and window.get("product_type") in (None, "15m"):
+                    _dedup_key = (ticker, "ada_shadow")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "ada_shadow",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            product_type=window.get("product_type"),
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
+                    continue
+
+                # ── BCH SHADOW GATE (15M only — T1 onboarding 2026-05-30) ──
+                # When BCH_15M_SHADOW=True (current state), every BCH 15M candidate
+                # gets logged with filter_stage='bch_shadow' and skipped from live
+                # routing. Flip BCH_15M_SHADOW=False at T4 to promote to live.
+                if BCH_15M_SHADOW and asset == "BCH" and window.get("product_type") in (None, "15m"):
+                    _dedup_key = (ticker, "bch_shadow")
+                    if _dedup_key not in self._eval_opp_seen:
+                        self._eval_opp_seen.add(_dedup_key)
+                        _ev = (final_prob * (100 - best_ask)) - ((1 - final_prob) * best_ask) - est_fee_1c
+                        self._state.insert_evaluated_opportunity(
+                            ticker, window["event_ticker"], asset, "bch_shadow",
+                            spot_price=spot, threshold=threshold, volatility=blended_rv,
+                            market_price=best_ask, seconds_to_close=seconds_remaining,
+                            calibrated_prob=final_prob, edge=edge, z_score=z_score,
+                            vol_regime=vol_est["regime"], raw_prob=raw_prob,
+                            calibration_method=calibration_method, fee_adjusted_edge=fee_adjusted_edge,
+                            breakeven_wr=best_ask / 100.0, expected_value=round(_ev, 2),
+                            ask_depth=ask_depth, best_ask_source=best_ask_source,
+                            position_size=sizing["contracts"],
+                            kelly_f=sizing["kelly_f"],
+                            drawdown_scaler=sizing["drawdown_scaler"],
+                            calibrated_prob_raw=calibrated_prob_raw,
+                            ofa_adjustment=ofa_adjustment,
+                            strategy=strategy,
+                            old_system_prob=_old_system_prob,
+                            product_type=window.get("product_type"),
+                            config_snapshot_id=self._ml.config_snapshot_id, **_oft_db, **_shadow_diag)
+                    continue
+
                 # ── SOL SUB-86c TIME GATE (15M only) ──
                 # SOL ≤85c far-from-expiry: 78.3% WR, -$289 (STC≥300s).
                 # Near-expiry (<300s): 100% WR, +$228. Block the far, keep the near.
@@ -8274,6 +8343,10 @@ class OpportunityScanner:
                                 _no_filter_stage = "no_side_doge_shadow"
                             elif BNB_15M_SHADOW and asset == "BNB":
                                 _no_filter_stage = "no_side_bnb_shadow"
+                            elif ADA_15M_SHADOW and asset == "ADA":
+                                _no_filter_stage = "no_side_ada_shadow"
+                            elif BCH_15M_SHADOW and asset == "BCH":
+                                _no_filter_stage = "no_side_bch_shadow"
                             else:
                                 _no_filter_stage = "no_side_shadow"
                         else:
