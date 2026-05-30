@@ -77,6 +77,30 @@ _REST_PATH_MARKETS: str = "/trade-api/v2/markets"
 TIER_ALL: str = "1"
 
 
+# Firehose series excluded from the WS subscription (ticket 86ba76adw,
+# 2026-05-30). Measured 2026-05-30: these two esports series are
+# 193,174 + 118,377 = 90.5% of the 344K-market open universe. Subscribing
+# them blasts an oversized session_start subscribe burst (~1098 frames/conn)
+# that overwhelms the WS outbound send path → `socket.send() raised
+# exception` storm (~433/s) → abrupt disconnect (`no close frame received`) →
+# synchronized 7-conn reconnect storm. The result: every lower-volume market
+# (ALL crypto-15M, the corpus's priority) is captured SNAPSHOT-ONLY (0 deltas
+# / window) because the conn cycles every ~20s before a non-firehose book
+# accumulates deltas. Excluding these two shrinks the burst ~10x (~344K→~33K
+# markets) — well under the breaking threshold (a clean conn handles 10K
+# markets fine, verified by the incremental_subscribe_probe_v3 spike). The bot
+# does NOT trade esports, and esports orderbook bronze has no downstream
+# consumer yet (silver Tier-1 = coinbase + kalshi_market_lifecycle), so the
+# data loss is acceptable per operator direction ("crypto is the priority; we
+# can ignore esports if needed", 2026-05-30). Override via the
+# COLLECTOR_EXCLUDED_SERIES env (comma-separated; empty string = exclude
+# nothing) wired in main_loop. Matched on the leading KX<SERIES> dash-segment.
+DEFAULT_EXCLUDED_SERIES: tuple = (
+    "KXMVESPORTSMULTIGAMEEXTENDED",
+    "KXMVECROSSCATEGORY",
+)
+
+
 # Hourly default — see module docstring for the cost / freshness
 # rationale. The refresh thread polls REST every interval_seconds and
 # force-reconnects WS conns (STAGGERED by
@@ -165,6 +189,7 @@ def fetch_tickers_by_tier(
     session: Optional[requests.Session] = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     bronze_writer: Optional[Any] = None,
+    excluded_series: Sequence[str] = (),
     _test_skip_auth: bool = False,
     _test_backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
 ) -> Optional[Dict[str, List[str]]]:
@@ -231,6 +256,10 @@ def fetch_tickers_by_tier(
     if session is None:
         session = requests.Session()
     url = base_url.rstrip("/") + _REST_PATH_MARKETS
+    # Firehose series to drop BEFORE they enter the subscription set (ticket
+    # 86ba76adw). Matched on the leading ``KX<SERIES>`` dash-segment so it is
+    # an exact series match, never a substring over-match. Empty ⇒ no-op.
+    excluded: set = set(excluded_series)
 
     tickers: set = set()
     cursor: Optional[str] = None
@@ -339,6 +368,8 @@ def fetch_tickers_by_tier(
                 continue
             ticker = row.get("ticker")
             if isinstance(ticker, str) and ticker:
+                if excluded and ticker.split("-", 1)[0] in excluded:
+                    continue  # firehose series (e.g. esports) — ticket 86ba76adw
                 tickers.add(ticker)
 
         if not next_cursor or not isinstance(next_cursor, str):
@@ -687,6 +718,7 @@ class RestSnapshotRefresher:
         base_url: str = DEFAULT_REST_BASE_URL,
         session: Optional[requests.Session] = None,
         bronze_writer: Optional[Any] = None,
+        excluded_series: Sequence[str] = (),
     ):
         if interval_seconds <= 0:
             raise ValueError(
@@ -705,6 +737,9 @@ class RestSnapshotRefresher:
         # D1.9 — forwarded to fetch_tickers_by_tier on every _do_refresh
         # tick. None = no bronze write (offline / test mode).
         self._bronze_writer = bronze_writer
+        # Ticket 86ba76adw — firehose series dropped from every refresh's
+        # subscription set (wired from COLLECTOR_EXCLUDED_SERIES in main_loop).
+        self._excluded_series = tuple(excluded_series)
 
     def start(self) -> None:
         """Spawn the daemon refresh thread."""
@@ -748,6 +783,7 @@ class RestSnapshotRefresher:
                 base_url=self._base_url,
                 session=self._session,
                 bronze_writer=self._bronze_writer,
+                excluded_series=self._excluded_series,
             )
         except Exception:
             logger.exception(

@@ -143,6 +143,56 @@ def test_fetch_single_page_returns_tickers_under_tier_all():
     assert out == {TIER_ALL: ["KXBTC-A", "KXETH-Z", "KXSOL-M"]}
 
 
+def test_fetch_excludes_configured_series():
+    """Ticket 86ba76adw: the two esports firehose series
+    (KXMVESPORTSMULTIGAMEEXTENDED + KXMVECROSSCATEGORY) are 90.5% of the open
+    universe; subscribing them blasts an oversized session_start burst that
+    overwhelms the WS send path (socket.send() storm) → reconnect storm →
+    every lower-volume market (all crypto-15M) captured snapshot-only.
+    ``excluded_series`` drops them by series segment BEFORE they enter the
+    subscription set, shrinking the burst ~10x. Match is on the leading
+    ``KX<SERIES>`` dash-segment (exact — never a substring over-match)."""
+    session = _build_session([{
+        "markets": [
+            {"ticker": "KXBTC15M-26MAY3015-A", "status": "open"},
+            {"ticker": "KXMVECROSSCATEGORY-X-1", "status": "open"},
+            {"ticker": "KXMVESPORTSMULTIGAMEEXTENDED-Y-2", "status": "open"},
+            {"ticker": "KXETH15M-26MAY3015-B", "status": "active"},
+        ],
+        "cursor": "",
+    }])
+    out = fetch_tickers_by_tier(
+        api_key="kid", private_key=None, session=session,
+        excluded_series=("KXMVECROSSCATEGORY", "KXMVESPORTSMULTIGAMEEXTENDED"),
+        _test_skip_auth=True,
+    )
+    assert out == {TIER_ALL: ["KXBTC15M-26MAY3015-A", "KXETH15M-26MAY3015-B"]}
+
+
+def test_excluded_series_default_constant_names_the_two_esports_firehoses():
+    """The collector-wide default exclude set (wired by main_loop +
+    RestSnapshotRefresher via the COLLECTOR_EXCLUDED_SERIES env) must name the
+    two measured 90.5%-of-universe esports series. Pins the burst-shrink fix."""
+    from collector.rest_snapshot import DEFAULT_EXCLUDED_SERIES
+    assert set(DEFAULT_EXCLUDED_SERIES) == {
+        "KXMVECROSSCATEGORY", "KXMVESPORTSMULTIGAMEEXTENDED"}
+
+
+def test_fetch_default_excluded_series_is_empty_neutral():
+    """``fetch_tickers_by_tier``'s OWN default is neutral (no exclusion) so the
+    function stays a pure REST→tier mapper; production opts in by passing the
+    env-derived set. Guards against silently dropping markets in any caller
+    that doesn't explicitly request exclusion."""
+    session = _build_session([{
+        "markets": [{"ticker": "KXMVECROSSCATEGORY-Z-9", "status": "open"}],
+        "cursor": "",
+    }])
+    out = fetch_tickers_by_tier(
+        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
+    )
+    assert out == {TIER_ALL: ["KXMVECROSSCATEGORY-Z-9"]}
+
+
 def test_fetch_paginates_until_empty_cursor():
     """The Kalshi /markets endpoint paginates via a ``cursor`` returned
     in the response. Empty cursor signals end-of-data. ``fetch_tickers_by_tier``

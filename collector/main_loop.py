@@ -76,6 +76,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from collector.rest_snapshot import (
     CRYPTO_15M_SERIES,
+    DEFAULT_EXCLUDED_SERIES,
     DEFAULT_INCREMENTAL_REFRESH_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     IncrementalDiscoveryRefresher,
@@ -708,6 +709,17 @@ def run(
         "COLLECTOR_INCREMENTAL_REFRESH_SECONDS",
         str(DEFAULT_INCREMENTAL_REFRESH_SECONDS),
     ))
+    # Ticket 86ba76adw (2026-05-30): firehose series excluded from the WS
+    # subscription so the session_start subscribe burst stays small enough to
+    # not trigger the socket.send() reconnect storm that starves all
+    # lower-volume markets (incl. crypto-15M) to snapshot-only. UNSET → the
+    # measured 90.5%-of-universe esports default; ``""`` → exclude nothing
+    # (escape hatch); ``"A,B"`` → exclude exactly those series.
+    _excl_env = os.environ.get("COLLECTOR_EXCLUDED_SERIES")
+    if _excl_env is None:
+        excluded_series = DEFAULT_EXCLUDED_SERIES
+    else:
+        excluded_series = tuple(s.strip() for s in _excl_env.split(",") if s.strip())
     health_sidecar_env = os.environ.get(
         "COLLECTOR_HEALTH_SIDECAR_PATH",
         # Default: alongside bronze data dir so a single mount holds
@@ -767,6 +779,7 @@ def run(
             api_key=api_key,
             private_key=rest_private_key,
             bronze_writer=kalshi_rest_writer,
+            excluded_series=excluded_series,
         )
         if rest_initial is None:
             # Fetch failed (transient 5xx exhausted retries, partial
@@ -959,6 +972,7 @@ def run(
             shutdown_event=shutdown_event,
             interval_seconds=refresh_seconds,
             bronze_writer=kalshi_rest_writer,  # D1.9
+            excluded_series=excluded_series,  # ticket 86ba76adw
         )
         incremental_refresher = IncrementalDiscoveryRefresher(
             api_key=api_key,
