@@ -519,13 +519,88 @@ class BronzeArchiver:
             self._subscribe_frames = tuple(subscribe_frames)
             self._cmd_id_to_channel = dict(cmd_id_to_channel)
 
+    def add_subscriptions(
+        self,
+        subscribe_frames: Sequence[Dict],
+        cmd_id_to_channel: Mapping[int, str],
+    ) -> None:
+        """Add ADDITIONAL subscribe frames MID-SESSION — no reconnect.
+
+        Ticket 86ba74hzy (2026-05-30). Used by the fast incremental-discovery
+        path (``collector.rest_snapshot.IncrementalDiscoveryRefresher`` via
+        main_loop's ``on_new`` callback) to subscribe newly-opened sub-hourly
+        (crypto-15M) markets as they open, WITHOUT force-reconnecting. This is
+        the safe alternative to ``update_subscriptions`` + ``request_reconnect``
+        for the high-churn sub-hourly case: a fast force-reconnect cadence would
+        reopen the D1.3-fu4 ack-flood / OOM class
+        (kb/failures/collector-oom-via-ack-queue-may17.md), but an incremental
+        ADD only dispatches the small per-tick DELTA.
+
+        Mid-session ``subscribe`` is a valid Kalshi WS operation — the bot does
+        it every day (bot/feeds/kalshi.py subscribes newly-discovered tickers
+        on the live session via fresh subscribe frames). ``send_frame`` is
+        thread-safe and raises synchronously if the WS isn't currently
+        connected.
+
+        Steps (order matters):
+          1. MERGE under ``self._lock`` via ATOMIC REBIND (NOT in-place mutation
+             — same safety model as ``update_subscriptions``; readers in
+             ``_handle_subscribe_ack`` / ``_on_session_start`` capture the
+             attribute in a single bytecode op under the GIL):
+               - ``_cmd_id_to_channel`` ← ``{**old, **new}`` so a fast ack for a
+                 new sid finds its channel. cmd_ids MUST be allocated by the
+                 caller from a region disjoint from the hourly plan's per-conn
+                 ranges (main_loop uses ≥ ``conn_count * _PER_CONN_CMD_ID_STRIDE
+                 + 1``).
+               - ``_subscribe_frames`` ← old + new (tuple concat) so that if the
+                 WS reconnects (silence watchdog) before the next hourly replan,
+                 ``_on_session_start`` replays the added frames too.
+          2. DISPATCH each new frame via ``self._wire.send_frame`` mid-session.
+             On failure (race with disconnect): caught + logged — the frame is
+             already merged into ``_subscribe_frames`` so the next
+             ``on_session_start`` replays it; nothing is lost.
+
+        Bounded growth: the hourly ``update_subscriptions`` REPLACES both
+        attributes from the authoritative REST snapshot, rebuilding them fresh
+        on each hourly ticker-set CHANGE (the common case under 15M crypto
+        churn, which guarantees the hourly set changes every cycle). A window
+        still open at that reconnect is in the snapshot → re-subscribed; closed
+        ones are dropped (sid GC). Even if a reset were skipped (hourly set
+        unchanged for a cycle), the growth is benign: extra stale entries only
+        cause more dedup / a replayed subscribe for a since-closed ticker that
+        Kalshi error-acks harmlessly — never an incorrect add.
+        """
+        with self._lock:
+            merged_map = dict(self._cmd_id_to_channel)
+            merged_map.update(cmd_id_to_channel)
+            self._cmd_id_to_channel = merged_map
+            self._subscribe_frames = tuple(self._subscribe_frames) + tuple(
+                subscribe_frames)
+        for frame in subscribe_frames:
+            try:
+                self._wire.send_frame(frame)
+            except Exception:
+                cmd_id = frame.get("id") if isinstance(frame, dict) else None
+                logging.warning(
+                    "BronzeArchiver.add_subscriptions: send_frame FAILED "
+                    "(conn=%s cmd_id=%s); frame merged into _subscribe_frames "
+                    "and will replay on next session_start.",
+                    self._conn_id, cmd_id, exc_info=True,
+                )
+
     def request_reconnect(self) -> None:
         """Delegate to the underlying ``WSClient.request_reconnect``.
 
         D1.4 surface: lets main_loop force-cycle the WS session after a
-        ``update_subscriptions`` so the new tickers actually take effect
-        (Kalshi has no in-session add/remove API; we have to reconnect
-        and re-subscribe).
+        ``update_subscriptions`` so the REPLACED ticker set takes effect.
+        A reconnect re-establishes ALL sids from scratch (``on_session_end``
+        clears the sid map → ``on_session_start`` re-dispatches every
+        ``_subscribe_frames`` entry), which is why it is reserved for the
+        hourly full-resync + GC cycle. NOTE: Kalshi DOES support in-session
+        ``subscribe`` for ADDING markets without a reconnect (see
+        ``add_subscriptions`` — the bot relies on this every day); reconnect is
+        used here only because ``update_subscriptions`` does a full REPLACE
+        (drops + re-adds), not because incremental add is unavailable.
         """
         self._wire.request_reconnect()
 
