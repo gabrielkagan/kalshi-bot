@@ -343,3 +343,46 @@ def test_deploy_yml_coinbase_collector_uses_git_diff_name_only():
         "--name-only` for path detection (mirror of D1.5.2 Kalshi pin). "
         "Pattern: `COINBASE_DIFF_OUT=$(git diff --name-only ...)`."
     )
+
+
+def test_deploy_yml_coinbase_unit_drift_guard_precedes_restart():
+    """2026-05-30: when the Coinbase UNIT FILE itself changed, deploy.yml
+    MUST verify the on-VPS installed unit matches the deploy-commit unit
+    BEFORE restarting — and FAIL LOUD (pointing at ops/install.sh) on drift.
+
+    deploy.yml does NOT cp units / daemon-reload (that is install.sh's job),
+    so a bare `systemctl restart` after a MemoryMax/cap change would run the
+    unit against its STALE on-disk cap. For the 9-asset corpus bump
+    (256M→384M, 2026-05-30) that means restarting the now-9-product collector
+    against the old 256M cap → OOM-kill window. This guard mirrors the
+    kalshi-bot unit-drift check (`systemctl cat` + `diff` + fail-with-recovery)
+    and refuses to restart against a stale unit. No new sudoers needed (read +
+    compare + exit 1).
+    """
+    script = _ssh_script_lines()
+    cat_idx = _line_index_containing(script, "systemctl cat kalshi-coinbase-collector")
+    restart_idx = _line_index_containing(
+        script, "systemctl restart kalshi-coinbase-collector"
+    )
+    assert cat_idx >= 0, (
+        "deploy.yml MUST read the installed Coinbase unit via `systemctl cat "
+        "kalshi-coinbase-collector` to drift-check it before restart. Without "
+        "this, a cap/MemoryMax change restarts against the STALE on-disk unit."
+    )
+    assert restart_idx >= 0, "Coinbase restart line missing."
+    assert cat_idx < restart_idx, (
+        "The unit-drift guard (`systemctl cat`) MUST appear BEFORE the "
+        "`systemctl restart kalshi-coinbase-collector` line — otherwise the "
+        "stale-cap restart fires before the guard can abort it."
+    )
+    joined = "\n".join(
+        l for l in script if not l.lstrip().startswith("#")
+    )
+    assert "ops/kalshi-coinbase-collector.service" in joined, (
+        "The drift guard must compare against the deploy-commit "
+        "ops/kalshi-coinbase-collector.service."
+    )
+    assert "install.sh" in joined, (
+        "The drift-guard failure message MUST point the operator at "
+        "`bash ops/install.sh` for recovery (cp unit + daemon-reload)."
+    )

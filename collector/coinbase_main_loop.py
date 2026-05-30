@@ -79,7 +79,9 @@ from coinbase_wire.ws_client import (
 logger = logging.getLogger(__name__)
 
 # Drain-thread polling cadence. Coinbase steady-state load is ~200-300
-# frames/sec aggregate across all 5 channels × 7 products (per the R0
+# frames/sec aggregate across all 5 channels × 9 products (7 bot products
+# + ADA + BCH for the corpus, added 2026-05-30; rate scales ~28% but the
+# 1s drain cadence is unaffected) (per the R0
 # reachability spike at D2.5 kickoff — level2_batch ~120/sec dominates,
 # matches + ticker ~50-80/sec, heartbeat + status <5/sec; see
 # collector/coinbase_archiver.py queue-capacity comment for the
@@ -92,6 +94,23 @@ _DRAIN_POLL_SECONDS: float = 1.0
 # (D2.2 docstring); reserves the sharding seam for a future Bit if
 # subscribe-fanout ever justifies it.
 _COINBASE_CONN_ID: str = "A"
+
+# Collector product universe (2026-05-30). The COLLECTOR collects 9 assets;
+# the bot trades 7. ADA + BCH are new Kalshi 15M series the bot does NOT
+# trade — collected here for the data corpus (collect-first, decoupled from
+# live trading). The SHARED ``coinbase_wire.ws_client.DEFAULT_PRODUCT_IDS``
+# is consumed by BOTH bot/feeds/coinbase.py AND this collector, so it stays
+# bot-aligned at 7; this collector-local superset adds ADA-USD + BCH-USD and
+# is passed EXPLICITLY to CoinbaseArchiver below (no bot.* import — the
+# collector-no-bot import contract is preserved). Listings verified live
+# 2026-05-30: ADA-USD + BCH-USD both status=online, trading_disabled=false
+# on Coinbase Exchange. Keep in superset-of-DEFAULT_PRODUCT_IDS form so a
+# bot-side product add never silently drops from the corpus.
+COLLECTOR_PRODUCT_IDS: Sequence[str] = (
+    *DEFAULT_PRODUCT_IDS,
+    "ADA-USD",
+    "BCH-USD",
+)
 
 # Bronze source string — fed into BronzeWriter + envelope ``_source``
 # field. Pinned at the CoinbaseArchiver D2.2 ship; replicated here so
@@ -341,7 +360,7 @@ def run(
         conn_id=_COINBASE_CONN_ID,
         url=url,
         channels=channels,
-        product_ids=DEFAULT_PRODUCT_IDS,
+        product_ids=COLLECTOR_PRODUCT_IDS,
     )
 
     owned_event = shutdown_event is None
@@ -382,7 +401,7 @@ def run(
     logger.info(
         "Coinbase collector booted — bronze_root=%s, channels=%s, "
         "products=%d, url=%s, health_sidecar=%s",
-        bronze_root, list(channels), len(DEFAULT_PRODUCT_IDS), url,
+        bronze_root, list(channels), len(COLLECTOR_PRODUCT_IDS), url,
         health_sidecar_path,
     )
 

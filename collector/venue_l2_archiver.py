@@ -34,7 +34,7 @@ Bronze layout — per-venue SOURCE, per-venue native L2 CHANNEL:
 
 All of a venue's subscribed assets share ONE channel; the asset is
 disambiguated by the symbol field inside the raw frame — exactly mirrors
-``coinbase_ws/level2_batch`` (all 7 products in one channel).
+``coinbase_ws/level2_batch`` (all products in one channel).
 
 WRITE MODEL: writes are SYNCHRONOUS on the asyncio thread (faithful to
 cross_exchange; the lean recorder does NOT need the bounded-queue
@@ -92,12 +92,28 @@ VENUE_CHANNELS: Mapping[str, str] = {
     "gemini": "l2",
 }
 
-# asset -> per-venue wire symbol. A key is ABSENT when CFB does NOT use
-# that venue for the asset's settling index (even if the venue lists the
-# pair) — adding a non-constituent venue would bias the synthetic AWAY
-# from the settlement reference. Collector-local (no bot.* import); the
-# Kraken DOGE symbol mirrors bot.constants.CROSS_EXCHANGE_SYMBOLS["DOGE"]
-# ["kraken"] = "XDG/USD".
+# asset -> per-venue wire symbol. TWO inclusion policies:
+#
+#   RTI-ALIGNED (the 7 trading assets BTC/ETH/SOL/XRP/DOGE/BNB/HYPE): a key
+#   is ABSENT when CFB does NOT use that venue for the asset's settling
+#   index (even if the venue lists the pair) — adding a non-constituent
+#   venue would bias the synthetic AWAY from the settlement reference
+#   (e.g. Gemini absent for XRP; Bitstamp absent for DOGE/BNB).
+#
+#   CORPUS-COLLECT (ADA, BCH — added 2026-05-30): the new Kalshi 15M assets
+#   the bot does NOT trade. Their CFB-RTI constituents are NOT yet resolved,
+#   so they are collected on EVERY venue that LISTS the pair (corpus-max).
+#   This is SAFE for the synthetic: BOTH reconstruction gates skip any asset
+#   absent from their per-asset params map, and NEITHER map has an ADA/BCH
+#   entry — the offline RMSE harness's local CFB_PARAMS
+#   (scripts/research/synthetic_rti_rmse.py) and the B2b live feed's
+#   _CFB_PARAMS (bot.feeds.synthetic_rti_feed). Raw bronze accumulates but is
+#   never reconstructed until their RTI constituents are resolved (follow-up
+#   ticket). Live-probed listings
+#   2026-05-30: ADA on kraken+bitstamp (NOT Gemini); BCH on all four.
+#
+# Collector-local (no bot.* import); the Kraken DOGE symbol mirrors
+# bot.constants.CROSS_EXCHANGE_SYMBOLS["DOGE"]["kraken"] = "XDG/USD".
 VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
     "kraken": {
         "BTC": "BTC/USD",
@@ -107,6 +123,8 @@ VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
         "DOGE": "XDG/USD",
         "BNB": "BNB/USD",
         "HYPE": "HYPE/USD",
+        "ADA": "ADA/USD",   # corpus-collect
+        "BCH": "BCH/USD",   # corpus-collect
     },
     "bitstamp": {
         "BTC": "btcusd",
@@ -114,12 +132,15 @@ VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
         "SOL": "solusd",
         "XRP": "xrpusd",
         "HYPE": "hypeusd",
+        "ADA": "adausd",    # corpus-collect
+        "BCH": "bchusd",    # corpus-collect
     },
     "gemini": {
         "BTC": "BTCUSD",
         "ETH": "ETHUSD",
         "SOL": "SOLUSD",
         "DOGE": "DOGEUSD",
+        "BCH": "BCHUSD",    # corpus-collect (ADA not listed on Gemini)
     },
 }
 

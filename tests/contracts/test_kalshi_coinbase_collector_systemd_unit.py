@@ -21,11 +21,13 @@ Per-unit deltas vs ``kalshi-collector.service`` (D1.5):
     vCPUs; Nice=10 (collectors) vs Nice=0 (bot) gates priority when
     CPU is contended. Coinbase single-conn light load is fine
     wherever it lands.
-  - ``MemoryMax=256M`` (vs Kalshi's 2048M post-2026-05-20 raise;
-    originally 512M at D2.5 ship). Coinbase single-conn × 7
-    products × 5 channels is well under Kalshi's 7-conn × 21K-subs
-    steady-state footprint; cap stays at 256M because the
-    Coinbase-side load did not change under the s-4vcpu-8gb resize.
+  - ``MemoryMax=384M`` (vs Kalshi's 2048M post-2026-05-20 raise;
+    originally 256M at D2.5 ship, 512M at the very first cut).
+    Coinbase single-conn × 9 products × 5 channels (ADA+BCH added
+    2026-05-30 for the 9-asset corpus) is well under Kalshi's 7-conn
+    × 21K-subs steady-state footprint; bumped 256M → 384M when the
+    product count went 7 → 9 (measured 7-product peak 229M → ~295M
+    projected at 9).
   - ``LimitNOFILE=512`` (vs Kalshi's 4096). 1 conn × 5 channels ×
     rotation + rclone needs ~30 fds; 512 gives ample headroom.
 
@@ -209,29 +211,29 @@ def test_service_nice_is_10():
     )
 
 
-def test_service_memory_max_is_256m():
-    """``MemoryMax=256M`` kernel-kills before OOMing the 8GB box.
+def test_service_memory_max_is_384m():
+    """``MemoryMax=384M`` kernel-kills before OOMing the 8GB box.
 
     Kalshi collector raised from 512M → 2048M on 2026-05-20 (ticket
     86ba1h0cb) in lockstep with the s-2vcpu-2gb → s-4vcpu-8gb droplet
-    resize; the Coinbase cap stays at 256M since its single-conn × 7
-    products × 5 channels (post-D2.5 level2_batch promotion) at
-    typical Coinbase steady-state load (~200-300 frames/sec
-    aggregate — level2_batch ~120/sec dominates, matches+ticker
-    ~50-80/sec, heartbeat+status <5/sec; see
-    collector/coinbase_archiver.py queue-capacity comment for the
-    R0-spike arithmetic) has a much smaller Python footprint than
-    Kalshi's 7-conn × ~21K-subs steady-state. 256M leaves room for
-    the worker queue (10K items × ~1KB envelope ≈ 10MB) + zstd
+    resize. The Coinbase cap was 256M for single-conn × 7 products ×
+    5 channels (post-D2.5 level2_batch promotion); bumped 256M → 384M
+    on 2026-05-30 when ADA-USD + BCH-USD were added for the 9-asset
+    corpus (the collector now collects 9 products; the bot still
+    trades 7). Measured peak was 229M/256M (90%) at 7 products; 9
+    products projects ~295M, so 384M restores headroom. Still far
+    below Kalshi's 7-conn × ~21K-subs steady-state. Host has 5.4G
+    free, so the per-unit cap is the only constraint. 384M leaves room
+    for the worker queue (10K items × ~1KB envelope ≈ 10MB) + zstd
     compression buffer + rclone upload overhead.
     """
     text = _read_unit()
-    assert _directive(text, "MemoryMax") == "256M", (
-        "MemoryMax=256M — D2.5 isolation. Coinbase single-conn is "
-        "structurally lighter than the Kalshi side and did not need a "
-        "raise during the 2026-05-20 droplet resize. Sized against "
-        "worker queue depth (10K items) + zstd compression buffer + "
-        "rclone overhead."
+    assert _directive(text, "MemoryMax") == "384M", (
+        "MemoryMax=384M — bumped from 256M on 2026-05-30 for the 9-asset "
+        "corpus (ADA+BCH added). Coinbase single-conn is still "
+        "structurally lighter than the Kalshi side. Sized against "
+        "measured 7-product peak (229M) scaled to 9 products (~295M) + "
+        "worker queue + zstd buffer + rclone overhead."
     )
 
 

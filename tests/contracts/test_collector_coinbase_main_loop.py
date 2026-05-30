@@ -176,6 +176,41 @@ def test_run_uses_bronze_writer():
     )
 
 
+def test_collector_uses_own_9_product_list_decoupled_from_wire_default():
+    """The COLLECTOR collects 9 assets; the bot trades 7.
+
+    Added 2026-05-30: ADA + BCH are new Kalshi 15M series the bot does NOT
+    trade. The SHARED ``coinbase_wire.ws_client.DEFAULT_PRODUCT_IDS`` is
+    consumed by BOTH ``bot/feeds/coinbase.py`` AND this collector, so it
+    stays bot-aligned at 7. The collector defines its OWN 9-product list
+    (``COLLECTOR_PRODUCT_IDS``) and passes it EXPLICITLY to CoinbaseArchiver
+    — decoupling collection from live trading without a ``bot.*`` import.
+    """
+    from coinbase_wire.ws_client import DEFAULT_PRODUCT_IDS
+    from collector.coinbase_main_loop import COLLECTOR_PRODUCT_IDS
+
+    # Wire default stays bot-aligned at 7 (decouple guarantee).
+    assert len(DEFAULT_PRODUCT_IDS) == 7
+    assert "ADA-USD" not in DEFAULT_PRODUCT_IDS
+    assert "BCH-USD" not in DEFAULT_PRODUCT_IDS
+
+    # Collector list = the 7 + ADA + BCH (corpus-max, 9 assets).
+    assert set(COLLECTOR_PRODUCT_IDS) == {
+        "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD",
+        "HYPE-USD", "DOGE-USD", "BNB-USD", "ADA-USD", "BCH-USD",
+    }
+    # Superset of the wire default — never silently drops a bot product.
+    assert set(DEFAULT_PRODUCT_IDS).issubset(set(COLLECTOR_PRODUCT_IDS))
+
+    # The orchestrator wires the collector list, NOT the wire default.
+    source = _module_source()
+    assert "product_ids=COLLECTOR_PRODUCT_IDS" in source, (
+        "run() must pass product_ids=COLLECTOR_PRODUCT_IDS to "
+        "CoinbaseArchiver — the 9-asset collector list, not the "
+        "bot-aligned 7-product wire DEFAULT_PRODUCT_IDS."
+    )
+
+
 def test_run_uses_rclone_uploader():
     """The orchestrator must wire ``RcloneUploader`` for S3 upload of
     rotated chunks. Same pattern as the Kalshi side."""
@@ -183,7 +218,7 @@ def test_run_uses_rclone_uploader():
     assert "RcloneUploader" in source, (
         "collector.coinbase_main_loop must instantiate RcloneUploader. "
         "Without this, rotated bronze chunks would accumulate locally "
-        "until the disk fills (the 256M MemoryMax + bounded /var/lib "
+        "until the disk fills (the 384M MemoryMax + bounded /var/lib "
         "would crash the unit)."
     )
 

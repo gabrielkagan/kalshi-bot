@@ -9,7 +9,7 @@ for D1.8 deltas.
 Per-unit deltas vs ``kalshi-coinbase-collector.service`` (D2.5):
   - Different ExecStart wrapper (``weather-collector-start.sh``).
   - Different EnvironmentFile (``/home/botuser/.env.weather-collector``).
-  - ``MemoryMax=128M`` (vs Coinbase's 256M). Weather is HTTP-polled
+  - ``MemoryMax=128M`` (vs Coinbase's 384M, was 256M pre-2026-05-30). Weather is HTTP-polled
     at 60-min cadence — 4 cycles × 19 cities × 4 channels per cycle ≈
     very light memory footprint. 128M provides ~5× headroom over
     measured baseline.
@@ -134,7 +134,7 @@ def test_service_nice_is_10():
 
 
 def test_service_memory_max_is_128m():
-    """``MemoryMax=128M`` — half of Coinbase's 256M cap.
+    """``MemoryMax=128M`` — half of Coinbase's pre-2026-05-30 256M cap (Coinbase now 384M).
 
     Weather is HTTP-polled at 60-min cadence × 19 cities × 4 channels
     per cycle. Each cycle's working set is ~1.3KB × 76 = ~100KB; the

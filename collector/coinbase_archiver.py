@@ -147,12 +147,13 @@ DEFAULT_MSG_TYPE_TO_CHANNEL: Mapping[str, str] = {
 
 # D1.3-fu4 default write-queue capacity. Per the R0 reachability spike
 # at D2.5 kickoff (BTC-USD, 30s, level2_batch only): 502 l2update
-# frames → ~17 frames/sec per product. Extrapolated to 7 products × 5
-# channels: level2_batch ~120 frames/sec dominates the post-D2.5 rate;
+# frames → ~17 frames/sec per product. Extrapolated to 9 products × 5
+# channels (7 bot products + ADA + BCH, the collector corpus list added
+# 2026-05-30): level2_batch ~120 frames/sec dominates the post-D2.5 rate;
 # matches + ticker contribute ~50-80 frames/sec aggregate (more in
 # volatile windows); heartbeat + status are <5 frames/sec combined.
-# Steady-state total ≈ 200-300 frames/sec; the 10K queue gives
-# ~30-50s buffering at that rate. INTENTIONALLY DIVERGED from Kalshi
+# Steady-state total ≈ 250-380 frames/sec (was ~200-300 at 7 products);
+# the 10K queue still gives ~25-40s buffering at that rate. INTENTIONALLY DIVERGED from Kalshi
 # (which bumped to 50_000 at ticket 86ba1xraq 2026-05-21 to absorb a
 # REST-refresh-induced reconnect-cascade burst on conn C). Coinbase has
 # a single conn + no REST-refresh cascade + bounded steady-state rate

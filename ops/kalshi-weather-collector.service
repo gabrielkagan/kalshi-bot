@@ -19,7 +19,7 @@ RestartSec=10s
 # same commit (and update kb/decisions/d1-8-weather-bronze-plan.md §New decisions #8).
 #
 # Deltas vs kalshi-coinbase-collector.service (D2.5):
-#   - MemoryMax=128M (Coinbase: 256M, Kalshi: 512M). Weather is the
+#   - MemoryMax=128M (Coinbase: 384M [was 256M pre-2026-05-30], Kalshi: 512M). Weather is the
 #     LIGHTEST tier of all 4 collector units — HTTP-poll at 60-min
 #     cadence × 19 cities × ≤4 channels per cycle (57 typical = 3
 #     forecast × 19 cities; 76 max = +19 archive_observed at 06:00 UTC).

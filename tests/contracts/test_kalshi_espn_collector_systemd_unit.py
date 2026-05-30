@@ -13,8 +13,9 @@ Per-unit deltas vs ``kalshi-weather-collector.service`` (D1.8):
     60s cadence via a sequential ``for league in self._leagues`` loop
     on a single ``requests.Session`` — peak in-flight is 1 response ×
     ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈ ~250 KB working
-    set. 256M matches Coinbase's known-good precedent rather than
-    right-sizing tightly so envelope-construction + json-decode
+    set. 256M matched Coinbase's known-good precedent (Coinbase bumped
+    to 384M on 2026-05-30 for the 9-asset corpus; ESPN unchanged) rather
+    than right-sizing tightly so envelope-construction + json-decode
     transients are absorbed.
   - ``LimitNOFILE=512`` (same as Weather + Coinbase).
 
@@ -138,20 +139,23 @@ def test_service_nice_is_10():
 
 
 def test_service_memory_max_is_256m():
-    """``MemoryMax=256M`` — same as Coinbase, double Weather's 128M.
+    """``MemoryMax=256M`` — matched Coinbase's original cap, double Weather's 128M.
 
     ESPN polls 24 leagues sequentially (`for league in self._leagues`
     loop on a single `requests.Session`) at 60s cadence. Peak in-flight
     = 1 response × ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈
-    ~250 KB working set. 256M matches Coinbase's known-good precedent
-    rather than right-sizing tightly so envelope-construction +
-    json-decode transients are absorbed without OOM-kill risk.
+    ~250 KB working set. 256M matched Coinbase's known-good precedent
+    (Coinbase bumped 256M→384M on 2026-05-30 for the 9-asset corpus;
+    ESPN unchanged) rather than right-sizing tightly so
+    envelope-construction + json-decode transients are absorbed
+    without OOM-kill risk.
     """
     text = _read_unit()
     assert _directive(text, "MemoryMax") == "256M", (
         "MemoryMax=256M — D1.11.a isolation. Sequential per-league "
-        "polling caps in-flight at 1 response × ~50 KB; 256M matches "
-        "Coinbase's known-good cap rather than right-sizing tightly."
+        "polling caps in-flight at 1 response × ~50 KB; 256M matched "
+        "Coinbase's original cap (Coinbase now 384M) rather than "
+        "right-sizing tightly."
     )
 
 

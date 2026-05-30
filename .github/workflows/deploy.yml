@@ -330,6 +330,12 @@ jobs:
             # message — the deploy aborts BEFORE the broken restart
             # silently leaves the unit unrestarted.
             COINBASE_RESTART_REASON=""
+            # Initialize next to RESTART_REASON so the unit-drift guard's
+            # `echo "$COINBASE_PATHS_CHANGED" | grep -q` is safe on the
+            # null-SHA / force-push path (where the else-branch that sets it
+            # is skipped) — avoids a `set -u` unbound-variable stderr line and
+            # makes the guard's skip behavior explicit. (R6 MINOR-1, 2026-05-30.)
+            COINBASE_PATHS_CHANGED=""
             if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
               COINBASE_RESTART_REASON="initial-push / force-push history rewrite (null SHA)"
             else
@@ -347,6 +353,27 @@ jobs:
               fi
             fi
             if [ -n "$COINBASE_RESTART_REASON" ]; then
+              # 2026-05-30 (9-asset corpus, ADA/BCH): unit-drift guard.
+              # deploy.yml does NOT cp units / daemon-reload (that is
+              # ops/install.sh's job), so a bare restart after a UNIT-FILE
+              # change runs against the STALE on-disk unit. For the
+              # 256M→384M MemoryMax bump that means restarting the now-9-
+              # product collector against the OLD 256M cap → OOM-kill window.
+              # So when ops/kalshi-coinbase-collector.service is in the
+              # changed set, verify the installed unit matches the deploy
+              # commit and FAIL LOUD (run install.sh) rather than restart
+              # against a stale cap. Mirrors the kalshi-bot unit-drift guard
+              # above (read + diff + exit 1 — no new sudoers needed). Pinned
+              # by test_deploy_yml_path_aware_coinbase_collector_restart.py::
+              # test_deploy_yml_coinbase_unit_drift_guard_precedes_restart.
+              if echo "$COINBASE_PATHS_CHANGED" | grep -q "ops/kalshi-coinbase-collector.service"; then
+                ON_VPS_CB_UNIT=$(systemctl cat kalshi-coinbase-collector 2>/dev/null) \
+                  || { echo "FAIL: kalshi-coinbase-collector.service not installed on VPS. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git reset --hard origin/main && bash ops/install.sh"; exit 1; }
+                REPO_CB_UNIT=$(git show ${{ github.sha }}:ops/kalshi-coinbase-collector.service) \
+                  || { echo "FAIL: cannot read ops/kalshi-coinbase-collector.service @ commit ${{ github.sha }}."; exit 1; }
+                diff <(echo "$ON_VPS_CB_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') <(echo "$REPO_CB_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') \
+                  || { echo "FAIL: on-VPS kalshi-coinbase-collector unit differs from ops/kalshi-coinbase-collector.service @ ${{ github.sha }} (likely a MemoryMax/cap change). A bare restart would run against the STALE on-disk cap (OOM risk). Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git reset --hard origin/main && bash ops/install.sh, then re-trigger this deploy."; exit 1; }
+              fi
               if systemctl is-active --quiet kalshi-coinbase-collector; then
                 echo "D2.5 path-aware restart: $COINBASE_RESTART_REASON"
                 sudo -n /bin/systemctl restart kalshi-coinbase-collector

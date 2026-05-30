@@ -10,7 +10,7 @@ the per-unit deltas of the multi-venue lean L2 recorder:
 
   - Different ExecStart wrapper (``venue-l2-collector-start.sh``).
   - Different EnvironmentFile (``/home/botuser/.env.venue-l2-collector``).
-  - ``MemoryMax=512M`` (vs Coinbase 256M). Three concurrent WS conns +
+  - ``MemoryMax=512M`` (vs Coinbase 384M, was 256M pre-2026-05-30). Three concurrent WS conns +
     periodic large Gemini full-book snapshots + the synchronous zstd
     compress-whole-in-flight memory spike at rotation. 512M with headroom
     on the s-4vcpu-8gb box.
@@ -113,7 +113,7 @@ def test_memory_max_is_512m():
     assert _directive(text, "MemoryMax") == "512M", (
         "MemoryMax=512M — 3 WS conns + periodic large Gemini full-book "
         "snapshots + the synchronous zstd compress-whole-in-flight spike "
-        "at rotation. Heavier than coinbase single-conn (256M)."
+        "at rotation. Heavier than coinbase single-conn (384M)."
     )
 
 

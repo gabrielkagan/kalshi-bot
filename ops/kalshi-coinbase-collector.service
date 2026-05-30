@@ -24,15 +24,19 @@ RestartSec=10s
 #     this unit and kalshi-collector across both vCPUs; Nice=10 +
 #     MemoryMax are the load-bearing isolation knobs. Coinbase
 #     single-conn light load is fine on either vCPU.
-#   - MemoryMax=256M (Kalshi: 512M). Coinbase single-conn × 7 products
-#     × 5 channels (post-D2.5 level2_batch promotion) is structurally
-#     lighter than Kalshi 7-conn × ~21K-subs. Halve the cap.
+#   - MemoryMax=384M (Kalshi: 512M). Coinbase single-conn × 9 products
+#     × 5 channels (post-D2.5 level2_batch promotion; ADA+BCH added
+#     2026-05-30 for the 9-asset corpus) is structurally lighter than
+#     Kalshi 7-conn × ~21K-subs. Bumped 256M→384M: measured peak was
+#     229M/256M (90%) at 7 products; 9 products project to ~295M, so 384M
+#     restores headroom. Host has 5.4G free (per-unit cap is the only
+#     constraint).
 #   - LimitNOFILE=512 (Kalshi: 4096). 1 conn × 5 channels × rotation +
 #     rclone needs ~30 fd typical; 512 is ~10× headroom.
 #
 # Same as kalshi-collector.service:
 Nice=10
-MemoryMax=256M
+MemoryMax=384M
 MemorySwapMax=0
 LimitNOFILE=512
 

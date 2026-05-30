@@ -19,11 +19,11 @@ RestartSec=10s
 # same commit (and update kb/decisions/d1-11a-espn-bronze-plan.md #8).
 #
 # Deltas vs kalshi-weather-collector.service (D1.8):
-#   - MemoryMax=256M (Weather: 128M, Coinbase: 256M, Kalshi: 512M).
+#   - MemoryMax=256M (Weather: 128M, Coinbase: 384M [was 256M pre-2026-05-30], Kalshi: 512M).
 #     ESPNArchiver.poll_once is a strict sequential `for league in
 #     self._leagues` loop with a single requests.Session — peak in-flight
 #     = 1 response × ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈
-#     ~250 KB working set. 256M matches Coinbase's known-good cap (vs
+#     ~250 KB working set. 256M matched Coinbase's original cap (vs
 #     right-sizing to ~250 KB) so envelope-construction transients +
 #     json-decode peaks + Python interpreter overhead are absorbed
 #     without tight-fitting.

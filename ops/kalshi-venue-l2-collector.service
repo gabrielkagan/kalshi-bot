@@ -19,7 +19,7 @@ RestartSec=10s
 # (and update kb/decisions/b2-synthetic-rti-feed-plan.md).
 #
 # Deltas vs kalshi-coinbase-collector.service (D2.5):
-#   - MemoryMax=512M (Coinbase: 256M). The venue-L2 recorder runs THREE
+#   - MemoryMax=512M (Coinbase: 384M [was 256M pre-2026-05-30]). The venue-L2 recorder runs THREE
 #     concurrent WS conns (Kraken + Bitstamp + Gemini), periodically
 #     ingests large Gemini full-book snapshots, and the lean
 #     write-on-the-asyncio-thread design does a synchronous zstd

@@ -110,22 +110,45 @@ def test_sources_and_channels_cover_every_venue():
 
 
 def test_venue_symbols_match_b2_coverage():
-    """Per the plan's per-venue asset-coverage table:
-      - Kraken: all 7 assets (DOGE = XDG/USD).
-      - Bitstamp: BTC/ETH/SOL/XRP/HYPE (5).
-      - Gemini: BTC/ETH/SOL/DOGE (4).
-    The asset is EXCLUDED for a venue even when it lists the pair, if CFB
-    doesn't use that venue for that asset's settling index.
+    """Per-venue asset-coverage table. TWO distinct inclusion policies:
+
+    RTI-ALIGNED (the 7 trading assets): a venue is EXCLUDED even when it
+    lists the pair, if CFB does NOT use that venue for the asset's settling
+    index — over-inclusion would bias the synthetic AWAY from settlement
+    (e.g. Gemini excluded for XRP, Bitstamp excluded for DOGE).
+
+    CORPUS-COLLECT (ADA, BCH — added 2026-05-30): the new Kalshi 15M assets
+    the bot does NOT trade. Their CFB-RTI constituents are NOT yet resolved,
+    so they are collected on EVERY venue that LISTS the pair (corpus-max).
+    This is safe for the synthetic because both reconstruction gates skip
+    any asset absent from their per-asset params map and neither has an
+    ADA/BCH entry — the offline RMSE harness's local ``CFB_PARAMS``
+    (``scripts/research/synthetic_rti_rmse.py``) and the B2b live feed's
+    ``_CFB_PARAMS`` (``bot.feeds.synthetic_rti_feed``). Raw bronze
+    accumulates but is not reconstructed until their RTI constituents are
+    resolved (follow-up). Live-probed listings 2026-05-30:
+    ADA on kraken+bitstamp (NOT Gemini); BCH on all four.
+
+      - Kraken:   7 RTI-aligned + ADA + BCH = 9 (DOGE = XDG/USD).
+      - Bitstamp: 5 RTI-aligned + ADA + BCH = 7.
+      - Gemini:   4 RTI-aligned + BCH       = 5 (ADA not listed on Gemini).
     """
     assert set(VENUE_SYMBOLS["kraken"]) == {
-        "BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE",
+        "BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ADA", "BCH",
     }
     assert VENUE_SYMBOLS["kraken"]["DOGE"] == "XDG/USD", (
         "Kraken DOGE symbol must be XDG/USD (mirror CROSS_EXCHANGE_SYMBOLS), "
         "NOT DOGE/USD."
     )
-    assert set(VENUE_SYMBOLS["bitstamp"]) == {"BTC", "ETH", "SOL", "XRP", "HYPE"}
-    assert set(VENUE_SYMBOLS["gemini"]) == {"BTC", "ETH", "SOL", "DOGE"}
+    assert VENUE_SYMBOLS["kraken"]["ADA"] == "ADA/USD"
+    assert VENUE_SYMBOLS["kraken"]["BCH"] == "BCH/USD"
+    assert set(VENUE_SYMBOLS["bitstamp"]) == {
+        "BTC", "ETH", "SOL", "XRP", "HYPE", "ADA", "BCH",
+    }
+    assert VENUE_SYMBOLS["bitstamp"]["ADA"] == "adausd"
+    assert VENUE_SYMBOLS["bitstamp"]["BCH"] == "bchusd"
+    assert set(VENUE_SYMBOLS["gemini"]) == {"BTC", "ETH", "SOL", "DOGE", "BCH"}
+    assert VENUE_SYMBOLS["gemini"]["BCH"] == "BCHUSD"
 
 
 def test_ws_urls_are_the_verified_endpoints():
