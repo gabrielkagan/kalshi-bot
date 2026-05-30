@@ -69,6 +69,7 @@ IMPORTLINTER_INI = REPO_ROOT / ".importlinter"
 
 # 7 staticmethods enumerated from bot/_impl.py:970-10054 pre-extraction.
 SCANNER_STATIC_METHODS = (
+    "_effective_decision_spot",  # RTI-6 per-asset go-live gate (umbrella 86ba6hdqr)
     "_compute_maker_counterfactual",
     "_parse_threshold",
     "_parse_weather_market_info",

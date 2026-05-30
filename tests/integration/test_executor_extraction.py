@@ -83,6 +83,7 @@ CONTRACT_TEST_PY = REPO_ROOT / "tests" / "contracts" / "test_import_linter_contr
 # 49 instance methods (no classmethods)
 EXECUTOR_INSTANCE_METHODS = (
     "__init__",
+    "_addon_decision_spot",  # RTI-6 per-asset go-live gate (umbrella 86ba6hdqr)
     "_active_order",
     "has_active_order",
     "_get_post_only_rejection_count",
