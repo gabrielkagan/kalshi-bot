@@ -308,3 +308,42 @@ def test_plan_incremental_adds_round_robin_balances_across_conns():
     from collector.subscription_manager import CHANNELS_DEFAULT
     counts = {idx: c // len(CHANNELS_DEFAULT) for idx, c in per_conn.items()}
     assert sorted(counts.values()) == [3, 3, 3], f"unbalanced: {counts}"
+
+
+# ─── 6. Discovery cadence — data-backed (86ba74hzy-fu, 2026-05-30) ──────────
+
+
+def test_incremental_default_interval_captures_near_full_window():
+    """The default discovery cadence must be fast enough to capture ~15/15 of
+    a ~15-min (900s) window. At 60s the worst-case lost sliver was ≤60s (~4%);
+    tightened to ≤10s (≤~1.1%) per the 86ba74hzy follow-up. Pins the coverage
+    INTENT so a future bump back toward 60s fails RED."""
+    from collector import rest_snapshot as rs
+    assert rs.DEFAULT_INCREMENTAL_REFRESH_SECONDS <= 10.0, (
+        "incremental discovery interval must be ≤10s so each ~15-min window "
+        "is discovered within ≤10s of opening (captures ≥~98.9% of it)."
+    )
+
+
+def test_incremental_poll_stays_well_under_read_rate_limit():
+    """Data-backed (CLAUDE.md 'no config tuning without data'): the scoped poll
+    fires one request per crypto-15M series per tick. Even as a same-instant
+    burst, that must stay well under Kalshi's READ_RATE_LIMIT (30 req/s,
+    Advanced tier; collector runs on its own key). At 7 series / 10s = 0.7
+    req/s avg, 7 req/s peak — comfortable headroom. This guards against a
+    future interval drop + series-count growth jointly breaching the budget."""
+    from collector import rest_snapshot as rs
+    from bot.constants import READ_RATE_LIMIT
+
+    n_series = len(rs.CRYPTO_15M_SERIES)
+    # Peak burst (all series fired same instant) must keep ≥2× headroom.
+    assert n_series <= READ_RATE_LIMIT / 2, (
+        f"peak burst {n_series} req would exceed half the {READ_RATE_LIMIT} "
+        "req/s read budget — add a per-request spacing or split the poll."
+    )
+    # Sustained average must stay under 10% of the read budget.
+    avg_rps = n_series / rs.DEFAULT_INCREMENTAL_REFRESH_SECONDS
+    assert avg_rps < READ_RATE_LIMIT * 0.1, (
+        f"avg {avg_rps:.2f} req/s exceeds 10% of the {READ_RATE_LIMIT} req/s "
+        "read budget; raise the interval or reduce the series scope."
+    )

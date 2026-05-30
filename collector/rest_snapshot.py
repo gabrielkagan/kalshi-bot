@@ -95,9 +95,11 @@ DEFAULT_REFRESH_INTERVAL_SECONDS: float = 3600.0
 # subscribed → permanent bronze loss. See
 # kb/decisions/collector-sub-hourly-incremental-subscribe-plan.md.
 #
-# Fix: a fast (default 60s) discovery poll SCOPED to the crypto-15M series that
-# dispatches subscribe frames MID-SESSION via BronzeArchiver.add_subscriptions
-# (no reconnect — so the D1.3-fu4 ack-flood / OOM class cannot reopen).
+# Fix: a fast (default 10s — tightened from the 60s ship default in the
+# 86ba74hzy follow-up; see DEFAULT_INCREMENTAL_REFRESH_SECONDS below) discovery
+# poll SCOPED to the crypto-15M series that dispatches subscribe frames
+# MID-SESSION via BronzeArchiver.add_subscriptions (no reconnect — so the
+# D1.3-fu4 ack-flood / OOM class cannot reopen).
 #
 # CRYPTO_15M_SERIES mirrors bot.constants.SERIES_TICKERS.values(). The collector
 # cannot import bot.* (collector-no-bot contract), so this is a hand-mirror with
@@ -116,10 +118,25 @@ CRYPTO_15M_SERIES: tuple = (
     "KXBNB15M",
 )
 
-# Fast incremental-discovery cadence. 60s → a 15-min window is discovered within
-# ≤60s of opening (~14/15 min of orderbook captured). Tunable via
-# ``COLLECTOR_INCREMENTAL_REFRESH_SECONDS`` in main_loop.
-DEFAULT_INCREMENTAL_REFRESH_SECONDS: float = 60.0
+# Fast incremental-discovery cadence. 10s → a 15-min (900s) window is discovered
+# within ≤10s of opening, so ≥~98.9% of its orderbook is captured (avg discovery
+# lag ~5s since the next poll after a :00/:15/:30/:45 boundary is ≤10s out).
+# Tightened from 60s (the 86ba74hzy ship default, ~93% capture) per the
+# 86ba74hzy follow-up to recover most of the opening-minute sliver.
+#
+# Rate safety (data-backed; CLAUDE.md "no config tuning without data"): the poll
+# fires one request per crypto-15M series per tick = 7 req/tick (1 page/series —
+# a crypto-15M series has only a handful of open windows at any instant, far
+# under the _PAGE_LIMIT=200 cursor-page size; a series would only paginate to a
+# 2nd request if >200 windows were simultaneously open, which the 15M schedule
+# never produces). At 10s that is 0.7 req/s average + 7 req/s peak burst, vs
+# Kalshi's READ_RATE_LIMIT=30 req/s
+# (Advanced tier; the collector runs on its own KALSHI_COLLECTOR_KEY_ID, so this
+# budget is independent of the bot). ~43× headroom average, ~4× on the burst.
+# Pinned by tests/contracts/test_collector_incremental_subscribe.py
+# ::test_incremental_poll_stays_well_under_read_rate_limit (+ the ≤10s coverage
+# pin). Tunable via ``COLLECTOR_INCREMENTAL_REFRESH_SECONDS`` in main_loop.
+DEFAULT_INCREMENTAL_REFRESH_SECONDS: float = 10.0
 
 
 # Per-page cap requested from Kalshi /markets. Production hits ~60K
