@@ -67,6 +67,17 @@ def test_shipped_default_is_all_shadow():
         assert a in C.ASSET_LIVE_TRADING
 
 
+def test_asset_live_trading_covers_all_series_no_drift():
+    # DRIFT-PIN (R1-MN1): the gate keys on dict MEMBERSHIP (`asset in
+    # ASSET_LIVE_TRADING` at the executor; the asset_from_ticker loop). A crypto
+    # series added to SERIES_TICKERS but forgotten here would BYPASS both gates
+    # and trade live (the very hardcoded-asset-drift anti-pattern this Bit kills).
+    # Lock the two sets together so a new asset must be added in lock-step.
+    assert set(C.ASSET_LIVE_TRADING) == set(C.SERIES_TICKERS), (
+        "ASSET_LIVE_TRADING drifted from SERIES_TICKERS — a crypto-15M series is "
+        "ungoverned by the live/shadow gate. Add it to ASSET_LIVE_TRADING.")
+
+
 def test_asset_from_ticker_matches_only_crypto_15m():
     # governed crypto-15M tickers map to their asset (place_order backstop scope)
     assert tm.asset_from_ticker("KXBTC15M-26MAY3015-T100") == "BTC"

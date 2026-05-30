@@ -3,6 +3,25 @@
 All values mirror constants in `bot/constants.py` (canonical home post-Bit-3.1) + `bot/config.py` (probability/EGARCH/sizing peer, Bit 12.1 — relocated from repo-root `config.py` 2026-05-12; bot/_impl.py was DELETED in Bit 9.3-iii.c so the historical `from bot.constants import *` re-export chain is gone — callers reach constants directly via `bot.constants.X` or via `from bot.constants import X`). `market_config.py` asserts they match at startup.
 On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_check.py`) and update this file in the same commit.
 
+## Trading mode (live/shadow control) — ticket 86ba747ke, 2026-05-30
+
+Modular global + per-asset live/shadow gate (single source of truth:
+`bot/trading_mode.py::is_live`). Consulted at the order chokepoints
+`bot/executor.py::execute` + the hard backstop `bot/kalshi_client.py::place_order`.
+Replaces the scattered inline `_15M_SHADOW` scanner checks. Read live →
+flipping a flag is a runtime kill-switch (no restart). SHIPPED OFF (everything
+shadow) after a verified ~80% account drawdown ($800→$150) on a structurally-losing
+strategy (settlement-convergence edge hunt: buying 90-99¢ near-certain favorites
+is −3.2¢/contract; lifetime fees $651 > +$379 gross). To put an asset back live,
+flip BOTH `GLOBAL_LIVE_TRADING=True` AND `ASSET_LIVE_TRADING["<ASSET>"]=True`
+(double fail-safe) — and only after a strategy clears the adversarial gate.
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| GLOBAL_LIVE_TRADING | False | Master kill — False = entire bot shadow (no real crypto-15M orders) |
+| ASSET_LIVE_TRADING | all False | Per-asset enable, all 9 crypto-15M series explicit; lock-step with `SERIES_TICKERS` (pinned by `tests/unit/test_trading_mode.py::test_asset_live_trading_covers_all_series_no_drift`) |
+| ASSET_LIVE_TRADING_DEFAULT | False | Unknown/unlisted asset → shadow (fail-safe) |
+
 ## Global / 15M
 
 | Config | Value | Notes |
