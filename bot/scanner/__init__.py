@@ -190,6 +190,8 @@ from bot.constants import (
     MAKER_ONLY_THRESHOLD,
     MARKET_BLEND_W,
     MARKET_BLEND_W_BY_ASSET,
+    SYNTHETIC_RTI_LIVE_ASSETS,
+    RTI_LIVE_MIN_CONFIDENCE,
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
     MAX_SECONDS_BEFORE_CLOSE,
@@ -944,6 +946,33 @@ class OpportunityScanner:
         # Clamp into [0, 1] — last_crossing < window_open_ts shouldn't
         # happen in well-formed state but defends against legacy data.
         return max(0.0, min(1.0, decided_seconds / elapsed))
+
+    @staticmethod
+    def _effective_decision_spot(asset, coinbase_spot, rti_cache):
+        """Spot price fed to BOTH the scanner's screen and trade
+        ``ProbabilityEngine.compute`` calls (they must use the same spot).
+
+        Coinbase spot by default. For an asset promoted into
+        ``SYNTHETIC_RTI_LIVE_ASSETS`` (default EMPTY), substitute the staged
+        multi-venue synthetic RTI iff it is present AND its ``rti_confidence``
+        clears ``RTI_LIVE_MIN_CONFIDENCE``; otherwise fall back to Coinbase —
+        never trade on a missing / low-confidence synthetic. With the default
+        empty set this is a no-op (returns ``coinbase_spot`` for every asset),
+        so the B2b-1 zero-live-decision-change invariant holds until an asset
+        is explicitly promoted (RTI-6; gated on the RTI-3 + RMSE data gates).
+
+        ``rti_cache`` is ``StateManager._scan_rti_cache``: ``{asset: (rti, n,
+        conf)}`` staged once per tick in ``scan()``.
+        """
+        if asset not in SYNTHETIC_RTI_LIVE_ASSETS:
+            return coinbase_spot
+        staged = rti_cache.get(asset)
+        if not staged:
+            return coinbase_spot
+        rti_syn, _n, rti_conf = staged
+        if rti_syn is None or rti_conf is None or rti_conf < RTI_LIVE_MIN_CONFIDENCE:
+            return coinbase_spot
+        return rti_syn
 
     @staticmethod
     def _compute_maker_counterfactual(
@@ -1806,9 +1835,12 @@ class OpportunityScanner:
                 # insert_evaluated_opportunity). get_cached_synthetic is an
                 # O(1) read of the feed's off-hot-path sampler cache — the
                 # ~7ms-per-asset compute runs on the sampler daemon, NOT here
-                # (SCAN_BODY_SLOW budget). The staged value feeds NO decision
-                # (the zero-live-decision-change invariant — pinned by
-                # tests/contracts/test_synthetic_rti_shadow_invariant.py).
+                # (SCAN_BODY_SLOW budget). The staged value feeds the decision
+                # ONLY via _effective_decision_spot for assets in
+                # SYNTHETIC_RTI_LIVE_ASSETS (default EMPTY → no decision use;
+                # RTI-6 per-asset carve-out). Pinned by
+                # tests/contracts/test_synthetic_rti_shadow_invariant.py +
+                # tests/contracts/test_rti_live_per_asset.py.
                 try:
                     _srf = getattr(self._ml, "synthetic_rti_feed", None)
                     if _srf is not None and asset is not None:
@@ -2049,8 +2081,17 @@ class OpportunityScanner:
                         _wx_prob.get("calibrated_prob") or 0.0,
                         _wx_mtype or "unknown")
                 else:
+                    # RTI-6 go-live (gated, default no-op): this is the PRE-MARKET
+                    # SCREEN compute (its cal_prob drives the early low-prob
+                    # reject gate + shadow logging). Substitute the synthetic RTI
+                    # for the Coinbase spot ONLY for assets in
+                    # SYNTHETIC_RTI_LIVE_ASSETS (default empty → _decision_spot ==
+                    # spot). The TRADE-DETERMINING compute below (prob_with_market)
+                    # uses the SAME effective spot so screen and trade agree.
+                    _decision_spot = self._effective_decision_spot(
+                        asset, spot, self._state._scan_rti_cache)
                     prob_result = ProbabilityEngine.compute(
-                        spot, threshold, seconds_remaining, blended_rv,
+                        _decision_spot, threshold, seconds_remaining, blended_rv,
                         asset=asset, product_type=window.get("product_type")
                     )
                 cal_prob = prob_result.get("calibrated_prob")
@@ -2929,8 +2970,16 @@ class OpportunityScanner:
                     prob_with_market["tradeable"] = True
                     prob_with_market["z_score"] = 0.0
                 else:
+                    # RTI-6 (gated): this is the TRADE-DETERMINING compute —
+                    # its calibrated_prob becomes final_prob (~line 3030) and
+                    # drives edge/sizing/candidate. Same synthetic substitution
+                    # as the screen compute above (default empty set => Coinbase
+                    # spot, unchanged). Both computes use the SAME effective
+                    # spot so screen and executed trade never disagree.
                     prob_with_market = ProbabilityEngine.compute(
-                        spot, threshold, seconds_remaining, blended_rv,
+                        self._effective_decision_spot(
+                            asset, spot, self._state._scan_rti_cache),
+                        threshold, seconds_remaining, blended_rv,
                         market_price_cents=best_ask,
                         asset=asset, product_type=window.get("product_type")
                     )

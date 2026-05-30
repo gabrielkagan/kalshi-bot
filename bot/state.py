@@ -178,7 +178,9 @@ class StateManager:
         # insert sites — mirrors _scan_cx_gap_cache. Value is
         # (rti, n_constituents, confidence); missing entry → NULL (asset not
         # in the Coinbase scan path this tick, feed disabled, or sampler
-        # stale). SHADOW-ONLY — never feeds a decision.
+        # stale). SHADOW by default; post-RTI-6 read by the scanner's
+        # _effective_decision_spot ONLY for assets in SYNTHETIC_RTI_LIVE_ASSETS
+        # (default empty ⇒ feeds no decision).
         self._scan_rti_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
@@ -900,8 +902,10 @@ class StateManager:
             # single-venue Coinbase signal + outcome → the dataset Bit 3
             # retrains on. WRITE-ONLY: auto-filled on every Coinbase scan-path
             # insert via the per-asset `_scan_rti_cache` (mirrors
-            # `_scan_cx_gap_cache` → spot_coinbase_kraken_gap_bps); NEVER read
-            # by any decision path (the zero-live-decision-change invariant).
+            # `_scan_cx_gap_cache` → spot_coinbase_kraken_gap_bps); read by a
+            # decision path (scanner _effective_decision_spot) ONLY for assets
+            # in SYNTHETIC_RTI_LIVE_ASSETS (RTI-6; default empty ⇒ the
+            # zero-live-decision-change invariant holds for every asset).
             # rti_synthetic = the index; rti_constituent_count = venues that
             # contributed; rti_confidence = contributed / expected (the CFB
             # constituent set the feed can source for the asset). NULL on
@@ -2536,12 +2540,14 @@ class StateManager:
                                      # /test callers that supply neither input.
                                      spot_staleness_seconds: Optional[float] = None,
                                      # B2b-1 (86ba64h2w, 2026-05-28): multi-venue
-                                     # synthetic RTI — SHADOW-ONLY. Auto-filled
+                                     # synthetic RTI — SHADOW by default. Auto-filled
                                      # from `_scan_rti_cache[asset]` so every
                                      # Coinbase scan-path insert carries the
                                      # decision-time synthetic without per-call
                                      # threading. Explicit caller kwargs win.
-                                     # NEVER read by any decision path.
+                                     # Read by a decision path only for
+                                     # SYNTHETIC_RTI_LIVE_ASSETS (RTI-6; default
+                                     # empty ⇒ shadow for all).
                                      rti_synthetic: Optional[float] = None,
                                      rti_constituent_count: Optional[int] = None,
                                      rti_confidence: Optional[float] = None):

@@ -1,4 +1,4 @@
-"""SyntheticRTIFeed — in-bot multi-venue L2 -> synthetic RTI (B2b-1, SHADOW-only).
+"""SyntheticRTIFeed — in-bot multi-venue L2 -> synthetic RTI (B2b-1; shadow by default, RTI-6 per-asset go-live).
 
 Ticket 86ba64h2w (program 86ba64gyq). Plan: kb/decisions/b2b-1-core-shadow-plan.md.
 
@@ -6,9 +6,11 @@ Maintains per-(venue, asset) L2 order books from Coinbase / Kraken / Bitstamp /
 Gemini WS frames and computes the CFB-shape synthetic RTI via the validated
 ``bot.feeds.synthetic_rti.compute_synthetic_rti`` aggregator.
 
-SHADOW-only: this feed only COMPUTES + exposes the synthetic for logging — it
-feeds NO trade decision in B2b-1. The ``enabled`` kill-switch (default False)
-gates the compute.
+SHADOW by default: this feed only COMPUTES + exposes the synthetic; it is
+consumed for logging always, and for the decision spot ONLY for assets in
+``SYNTHETIC_RTI_LIVE_ASSETS`` (RTI-6; default EMPTY ⇒ no decision use — the
+B2b-1 shadow invariant). The ``enabled`` kill-switch (default False) gates the
+compute.
 
 Bot-side lean parsers (NOT a ``collector`` import) — per D0.3 isolation,
 duplicate the minimum rather than couple bot -> collector. The Kraken v2 CRC32

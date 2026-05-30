@@ -9,8 +9,9 @@ TDD-first: these fail until bot/state.py adds the three columns
 ``insert_evaluated_opportunity`` auto-fill (mirroring the
 ``_scan_cx_gap_cache`` → ``spot_coinbase_kraken_gap_bps`` precedent).
 
-The synthetic is SHADOW-only: it is WRITE-ONLY into evaluated_opportunities
-and is never read by any decision path. The byte-identical test proves the
+The synthetic is SHADOW by default: it is WRITE-ONLY into evaluated_opportunities
+and read by a decision path only for assets in SYNTHETIC_RTI_LIVE_ASSETS (RTI-6;
+default EMPTY ⇒ shadow for all). The byte-identical test proves the
 cache auto-fill touches ONLY the three rti columns — every other persisted
 field (spot, edge, calibrated_prob, sizing, ...) is identical whether the
 cache is populated or empty.
