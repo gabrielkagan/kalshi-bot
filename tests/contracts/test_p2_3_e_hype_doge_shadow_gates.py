@@ -308,7 +308,17 @@ def test_every_candidates_append_site_has_hype_doge_safety(
     failures: list[str] = []
     for key, site in matched.items():
         spec = EXPECTED_SITES[key]
-        window_back = _source_slice(scanner_source, site.lineno, lines_back=200)
+        # The per-asset 15M shadow-gate block (XRP/HYPE/DOGE/BNB/ADA/BCH, each
+        # writing a `*_shadow` row then `continue`) sits between the strategy
+        # anchor and MAIN_YES. That block GROWS as assets onboard: BNB (P2.4)
+        # then ADA/BCH (T1 2026-05-30) each added ~30 lines, pushing the
+        # HYPE/DOGE gate signatures further above MAIN_YES (~249 lines back as
+        # of the ADA/BCH add). The `downstream_of_shadow_gate` form needs a
+        # wider lookback to still see those gates; the other forms gate
+        # immediately above their site and stay at 200 (a tighter bound that
+        # guards against false-positive pairing).
+        _lb = 360 if spec["gate_form"] == "downstream_of_shadow_gate" else 200
+        window_back = _source_slice(scanner_source, site.lineno, lines_back=_lb)
         window_fwd = _source_slice(scanner_source, site.lineno + 5, lines_back=4)
         if not _gate_pattern_matches(spec["gate_form"], window_back, window_fwd):
             failures.append(

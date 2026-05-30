@@ -191,7 +191,11 @@ class TestTMScanIntercept(unittest.TestCase):
 
     def test_position_overlap_check(self):
         """TM must check for existing positions."""
-        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:4000]
+        # Window widened 4000→4800: the TM gate's per-asset shadow kill-switch
+        # block grows as assets onboard (BNB, then ADA/BCH T1 2026-05-30 each
+        # add `and not (<ASSET>_15M_SHADOW and asset == "<ASSET>")` lines),
+        # pushing `get_open_positions` further past the intercept anchor.
+        tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:4800]
         self.assertIn("get_open_positions", tm_block)
 
     def test_concurrent_cap_check(self):

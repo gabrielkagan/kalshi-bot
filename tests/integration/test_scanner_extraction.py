@@ -1002,14 +1002,16 @@ def test_scanner_filter_stage_count_preserved():
     Pre-extraction snapshot: 38 mentions. T1 (2026-05-10, ticket 86b9vecw9) added
     NO-side shadow elif branches for HYPE/DOGE (no_side_hype_shadow,
     no_side_doge_shadow analogues to the existing no_side_xrp_shadow).
-    Current baseline: 41."""
+    ADA/BCH 15M shadow (T1 2026-05-30) added +4 mentions (2 NO-side elifs:
+    no_side_ada_shadow + no_side_bch_shadow; 2 YES-gate doc-comments):
+    origin/main 43 → current 47."""
     src = _read_scanner_source()
     count = src.count("filter_stage")
-    # T1 baseline 41; allow ±2 drift for test-formatting changes. The exact
-    # contract is that cell-block routing is preserved, locked by the
+    # Baseline ~47 post ADA/BCH T1; allow ±2 drift for test-formatting changes.
+    # The exact contract is that cell-block routing is preserved, locked by the
     # parametrize above.
-    assert 39 <= count <= 43, (
-        f"filter_stage count drift: expected 39-43, got {count}"
+    assert 45 <= count <= 49, (
+        f"filter_stage count drift: expected 45-49, got {count}"
     )
 
 

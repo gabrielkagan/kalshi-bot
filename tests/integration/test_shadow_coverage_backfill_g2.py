@@ -143,7 +143,8 @@ class TestG2BackfillIntegrationWithMockedAPI:
             # the new asset iteration.
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
-                    "DOGE": 0.18, "HYPE": 24.5, "BNB": 655.4}[asset]
+                    "DOGE": 0.18, "HYPE": 24.5, "BNB": 655.4,
+                    "ADA": 0.4512, "BCH": 512.3}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)
@@ -194,25 +195,26 @@ class TestG2BackfillIntegrationWithMockedAPI:
     def test_backfill_skips_already_populated(self, tmp_path):
         from shadow_coverage_backfill import backfill_xasset_spots
         sm = _make_db_with_eval_schema(tmp_path)
-        # Row that ALREADY has all 7 cross-asset spots populated (live
-        # row, post-BNB-followup 2026-05-17). Bit 2 (2026-05-11) widened
+        # Row that ALREADY has all 9 cross-asset spots populated (live
+        # row, post ADA/BCH T1 2026-05-30). Bit 2 (2026-05-11) widened
         # "already populated" from "btc IS NOT NULL" to "all 6 IS NOT
         # NULL"; the BNB followup (ticket 86b9zn5pq, 2026-05-17) extended
-        # the predicate to 7. Post-followup, a "fully populated" row
-        # MUST include the bnb column — without it, the widened WHERE
-        # predicate would pick the row up and re-fetch. Test asserts
-        # n == 0 (clean skip); the `return []` fetcher is just a tripwire
-        # that fires CoinbaseFetchError only if the skip-logic regresses.
+        # the predicate to 7; ADA/BCH T1 (2026-05-30) extended it to 9.
+        # Post-extension, a "fully populated" row MUST include the ada/bch
+        # columns — without them, the widened WHERE predicate would pick
+        # the row up and re-fetch. Test asserts n == 0 (clean skip); the
+        # `return []` fetcher is a tripwire that fires only if skip-logic regresses.
         sm.conn.execute(
             "INSERT INTO evaluated_opportunities(ticker, event_ticker, asset, "
             "filter_stage, evaluation_time, product_type, status, "
             "btc_spot_at_decision, eth_spot_at_decision, "
             "sol_spot_at_decision, xrp_spot_at_decision, "
             "hype_spot_at_decision, doge_spot_at_decision, "
-            "bnb_spot_at_decision) "
+            "bnb_spot_at_decision, ada_spot_at_decision, bch_spot_at_decision) "
             "VALUES ('LIVE', 'E', 'BTC', 'candidate', "
             "'2026-05-02T10:00:00Z', '15m', 'pending', "
-            "99999.0, 99999.0, 99999.0, 99999.0, 99999.0, 99999.0, 99999.0)"
+            "99999.0, 99999.0, 99999.0, 99999.0, 99999.0, 99999.0, 99999.0, "
+            "99999.0, 99999.0)"
         )
         sm.conn.commit()
         def _mock_fetch(asset, start_iso, end_iso):

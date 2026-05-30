@@ -3,7 +3,8 @@
 Extracted from bot/_impl.py in Sprint 4 Bit 4.5a (2026-05-08). Daemon
 thread that maintains per-asset spot prices for every symbol in
 ``bot.config.ASSETS`` (BTC, ETH, SOL, XRP, HYPE, DOGE post-T1 2026-05-10;
-BNB post-T1 2026-05-17 ticket 86b9zmj0c — ASSETS is the canonical source;
+BNB post-T1 2026-05-17 ticket 86b9zmj0c; ADA + BCH post-T1 2026-05-30 (15M
+shadow) — ASSETS is the canonical source;
 see kb/decisions/asset-onboarding-doge-hype-bit-1-shipped-may10.md +
 bit-1-5-shipped-may10.md + agent_docs/bnb-t1-plan-may17.md). Maintains a
 1-second-resolution rolling buffer (PRICE_BUFFER_SIZE), and persists the

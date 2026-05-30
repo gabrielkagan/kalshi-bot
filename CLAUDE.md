@@ -1,6 +1,6 @@
 # Kalshi Crypto Trading Bot
 
-Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below windows on BTC, ETH, SOL, XRP, HYPE, DOGE, BNB live (HYPE/DOGE T4 promoted 2026-05-14 via P2.3 raw_prob + per-asset MARKET_BLEND_W; BNB T4 promoted 2026-05-19 via P2.4 raw_prob + MARKET_BLEND_W_BY_ASSET["BNB"]=0.20; cal_mlp training arc retired). Hourly BNB stays in `HOURLY_EXCLUDED_ASSETS` (15M-only promotion; matches HYPE/DOGE P2.3 post-T4 state). Hourly markets and weather/sports/SPX scan in observation mode.
+Cryptocurrency prediction market bot for Kalshi. Trades 15-minute above/below windows on BTC, ETH, SOL, XRP, HYPE, DOGE, BNB live (HYPE/DOGE T4 promoted 2026-05-14 via P2.3 raw_prob + per-asset MARKET_BLEND_W; BNB T4 promoted 2026-05-19 via P2.4 raw_prob + MARKET_BLEND_W_BY_ASSET["BNB"]=0.20; cal_mlp training arc retired). Hourly BNB stays in `HOURLY_EXCLUDED_ASSETS` (15M-only promotion; matches HYPE/DOGE P2.3 post-T4 state). ADA + BCH added 2026-05-30 in 15M SHADOW (`ADA_15M_SHADOW`/`BCH_15M_SHADOW`=True; `filter_stage='ada_shadow'`/`'bch_shadow'`, zero live orders; branch `ada-bch-15m-shadow-t1`, plan `kb/decisions/ada-bch-15m-shadow-t1-plan.md`); hourly excluded as a safety belt (ADA has no Kalshi hourly series, BCH's KXBCHD not subscribed). Hourly markets and weather/sports/SPX scan in observation mode.
 
 ## Reference docs (read on demand)
 

@@ -5,7 +5,8 @@ thread that fetches the average funding rate across exchanges from
 the CoinGlass v3 API for every symbol in ``bot.config.ASSETS``
 (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10; BNB post-T1 2026-05-17
 ticket 86b9zmj0c; ``COINGLASS_SYMBOLS["BNB"]="BNB"`` entry added in
-T1.5 ticket 86b9zmj15) every ``COINGLASS_FETCH_INTERVAL`` seconds (10 min
+T1.5 ticket 86b9zmj15; ADA + BCH post-T1 2026-05-30 15M shadow — their
+CoinGlass entries deferred to T1.5) every ``COINGLASS_FETCH_INTERVAL`` seconds (10 min
 by default — 100 calls/day budget). Cache stales after
 ``COINGLASS_CACHE_TTL``.
 

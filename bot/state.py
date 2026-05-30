@@ -846,6 +846,13 @@ class StateManager:
             # ASSETS-driven (BNB T1 2026-05-17) and emits all 7 keys; the
             # consumer block below was the silent-drop site this Bit closes.
             ("bnb_spot_at_decision", "REAL"),
+            # ADA/BCH T1 15M shadow (2026-05-30, ada-bch-15m-shadow-t1).
+            # Wired end-to-end here proactively to avoid the BNB-T1 silent-drop
+            # gap (followup 86b9zn5pq): the scanner producer at
+            # bot/scanner/__init__.py:1056 is ASSETS-driven and emits these keys
+            # the moment ADA/BCH enter config.ASSETS.
+            ("ada_spot_at_decision", "REAL"),
+            ("bch_spot_at_decision", "REAL"),
             ("okx_funding_rate_at_decision", "REAL"),
             ("deribit_funding_rate_at_decision", "REAL"),
             # Phase G-6 (2026-05-02): provenance flag for v2 calibrator
@@ -1034,13 +1041,15 @@ class StateManager:
                 "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
                 "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%' "
                 "OR ticker LIKE 'KXHYPE15M%' OR ticker LIKE 'KXDOGE15M%' "
-                "OR ticker LIKE 'KXBNB15M%')")
+                "OR ticker LIKE 'KXBNB15M%' "
+                "OR ticker LIKE 'KXADA15M%' OR ticker LIKE 'KXBCH15M%')")
             self.conn.execute(
                 "UPDATE settled_trades SET product_type='hourly' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
                 "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%' "
                 "OR ticker LIKE 'KXHYPED%' OR ticker LIKE 'KXDOGED%' "
-                "OR ticker LIKE 'KXBNBD%')")
+                "OR ticker LIKE 'KXBNBD%' "
+                "OR ticker LIKE 'KXADAD%' OR ticker LIKE 'KXBCHD%')")
             self.conn.execute(
                 "UPDATE settled_trades SET product_type='spx_hourly' WHERE product_type IS NULL "
                 "AND ticker LIKE 'KXSPX%'")
@@ -1060,13 +1069,15 @@ class StateManager:
                 "AND (ticker LIKE 'KXBTC15M%' OR ticker LIKE 'KXETH15M%' "
                 "OR ticker LIKE 'KXSOL15M%' OR ticker LIKE 'KXXRP15M%' "
                 "OR ticker LIKE 'KXHYPE15M%' OR ticker LIKE 'KXDOGE15M%' "
-                "OR ticker LIKE 'KXBNB15M%')")
+                "OR ticker LIKE 'KXBNB15M%' "
+                "OR ticker LIKE 'KXADA15M%' OR ticker LIKE 'KXBCH15M%')")
             self.conn.execute(
                 "UPDATE evaluated_opportunities SET product_type='hourly' WHERE product_type IS NULL "
                 "AND (ticker LIKE 'KXBTCD%' OR ticker LIKE 'KXETHD%' "
                 "OR ticker LIKE 'KXSOLD%' OR ticker LIKE 'KXXRPD%' "
                 "OR ticker LIKE 'KXHYPED%' OR ticker LIKE 'KXDOGED%' "
-                "OR ticker LIKE 'KXBNBD%')")
+                "OR ticker LIKE 'KXBNBD%' "
+                "OR ticker LIKE 'KXADAD%' OR ticker LIKE 'KXBCHD%')")
             self.conn.execute(
                 "UPDATE evaluated_opportunities SET product_type='spx_hourly' WHERE product_type IS NULL "
                 "AND ticker LIKE 'KXSPX%'")
@@ -1755,9 +1766,9 @@ class StateManager:
 
         # Derive product_type from ticker prefix
         product_type = None
-        if any(ticker.startswith(p) for p in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXHYPE15M", "KXDOGE15M", "KXBNB15M")):
+        if any(ticker.startswith(p) for p in ("KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXHYPE15M", "KXDOGE15M", "KXBNB15M", "KXADA15M", "KXBCH15M")):
             product_type = "15m"
-        elif any(ticker.startswith(p) for p in ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXHYPED", "KXDOGED", "KXBNBD")):
+        elif any(ticker.startswith(p) for p in ("KXBTCD", "KXETHD", "KXSOLD", "KXXRPD", "KXHYPED", "KXDOGED", "KXBNBD", "KXADAD", "KXBCHD")):
             product_type = "hourly"
         elif ticker.startswith("KXSPX"):
             product_type = "spx_hourly"
@@ -2482,6 +2493,8 @@ class StateManager:
                                      hype_spot_at_decision: Optional[float] = None,
                                      doge_spot_at_decision: Optional[float] = None,
                                      bnb_spot_at_decision: Optional[float] = None,
+                                     ada_spot_at_decision: Optional[float] = None,
+                                     bch_spot_at_decision: Optional[float] = None,
                                      okx_funding_rate_at_decision: Optional[float] = None,
                                      deribit_funding_rate_at_decision: Optional[float] = None,
                                      # Phase G-6 (2026-05-02): provenance flag.
@@ -2738,6 +2751,10 @@ class StateManager:
                 # silently dropped on the floor here.
                 if bnb_spot_at_decision is None:
                     bnb_spot_at_decision = _ext.get("bnb_spot_at_decision")
+                if ada_spot_at_decision is None:
+                    ada_spot_at_decision = _ext.get("ada_spot_at_decision")
+                if bch_spot_at_decision is None:
+                    bch_spot_at_decision = _ext.get("bch_spot_at_decision")
                 if max_excursion_from_strike is None:
                     max_excursion_from_strike = _ext.get("max_excursion_from_strike")
                 if time_above_strike_seconds is None:
@@ -2952,6 +2969,7 @@ class StateManager:
                      sol_spot_at_decision, xrp_spot_at_decision,
                      hype_spot_at_decision, doge_spot_at_decision,
                      bnb_spot_at_decision,
+                     ada_spot_at_decision, bch_spot_at_decision,
                      okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                      data_provenance, bot_state_snapshot_json,
                      config_snapshot_id,
@@ -2959,7 +2977,7 @@ class StateManager:
                      tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
                      spot_staleness_seconds,
                      rti_synthetic, rti_constituent_count, rti_confidence)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3082,6 +3100,8 @@ class StateManager:
                     hype_spot_at_decision=excluded.hype_spot_at_decision,
                     doge_spot_at_decision=excluded.doge_spot_at_decision,
                     bnb_spot_at_decision=excluded.bnb_spot_at_decision,
+                    ada_spot_at_decision=excluded.ada_spot_at_decision,
+                    bch_spot_at_decision=excluded.bch_spot_at_decision,
                     okx_funding_rate_at_decision=excluded.okx_funding_rate_at_decision,
                     deribit_funding_rate_at_decision=excluded.deribit_funding_rate_at_decision,
                     -- Phase G-6: COALESCE so an existing non-default value
@@ -3210,6 +3230,7 @@ class StateManager:
                   sol_spot_at_decision, xrp_spot_at_decision,
                   hype_spot_at_decision, doge_spot_at_decision,
                   bnb_spot_at_decision,
+                  ada_spot_at_decision, bch_spot_at_decision,
                   okx_funding_rate_at_decision, deribit_funding_rate_at_decision,
                   data_provenance, bot_state_snapshot_json,
                   config_snapshot_id,

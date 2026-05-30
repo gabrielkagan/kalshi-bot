@@ -31,6 +31,8 @@ SERIES_TICKERS = {
     "HYPE": "KXHYPE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
     "DOGE": "KXDOGE15M",      # T4 LIVE 2026-05-14 (P2.3, 86b9xv66a)
     "BNB": "KXBNB15M",        # T4 LIVE 2026-05-19 (P2.4, 86b9zmj37)
+    "ADA": "KXADA15M",        # T1 15M shadow 2026-05-30 (ada-bch-15m-shadow-t1)
+    "BCH": "KXBCH15M",        # T1 15M shadow 2026-05-30 (ada-bch-15m-shadow-t1)
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -98,6 +100,23 @@ DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor
 # state). Plan: kb/decisions/p2-4-bnb-live-promotion-plan.md. Regression lock:
 # tests/integration/test_bnb_onboarding_t1.py.
 BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); flip to True for kill-switch revert
+
+# T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
+# SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi
+# KXADA15M/KXBCH15M, runs the full scan→evaluate pipeline, writes
+# filter_stage='ada_shadow'/'bch_shadow' rows to evaluated_opportunities, but
+# submits ZERO live orders. Mirrors the SHADOW half of BNB T1 (NOT the T4/P2.4
+# live half — no per-asset MIN_ENTRY_PRICE/MAX_RISK constants, no
+# MARKET_BLEND_W_BY_ASSET/TM_ASSET_RISK_CAPS/NBBO_FALLBACK_GATES entries; those
+# are T3/T4 surface and never reached under shadow=True). Kill-switch clauses
+# wired at the TM/WKND/OVN/DC strategy eligibility sites in
+# bot/scanner/__init__.py so an asset in shadow cannot route live through any
+# strategy. Hourly stays in HOURLY_EXCLUDED_ASSETS (15M-only; ADA has no hourly
+# series, BCH's KXBCHD is not subscribed). Plan:
+# kb/decisions/ada-bch-15m-shadow-t1-plan.md. Regression lock:
+# tests/integration/test_ada_bch_onboarding_t1.py.
+ADA_15M_SHADOW = True             # ADA 15M shadow observation (T1 2026-05-30); flip to False at T4 live promotion
+BCH_15M_SHADOW = True             # BCH 15M shadow observation (T1 2026-05-30); flip to False at T4 live promotion
 
 # T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend
 # edge-gated subset since 2026-05-10. HYPE conservative pick (borderline EV
@@ -298,6 +317,12 @@ HOURLY_SERIES_TICKERS = {
     "HYPE": "KXHYPED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
     "DOGE": "KXDOGED",        # T1 (2026-05-10): shadow via HOURLY_EXCLUDED_ASSETS
     "BNB": "KXBNBD",          # T1 (2026-05-17, 86b9zmj0c): shadow via HOURLY_EXCLUDED_ASSETS
+    # ADA hourly (KXADAD) is NOT live on Kalshi as of 2026-05-30 — entry kept
+    # for the cross-registry invariant (every ASSET ∈ all 3 registries). The
+    # hourly REST lookup returns 0 markets until/if Kalshi launches it; ADA is
+    # in HOURLY_EXCLUDED_ASSETS so it stays shadow-only even then.
+    "ADA": "KXADAD",          # T1 (2026-05-30): inert until Kalshi launches; shadow via HOURLY_EXCLUDED_ASSETS
+    "BCH": "KXBCHD",          # T1 (2026-05-30): KXBCHD live; not subscribed (15M-only), shadow via HOURLY_EXCLUDED_ASSETS
 }
 
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
@@ -383,7 +408,7 @@ HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR 
 
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
 
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted for any of the three)
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19); ADA/BCH hourly excluded per 15M-shadow-only design (T1 2026-05-30 — safety belt: ADA has no hourly series, BCH's KXBCHD is not subscribed)
 
 # NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
 #   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
@@ -394,7 +419,7 @@ HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB"}  # YES-side: BTC+
 # (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
 # thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
 # downside. Revisit per-asset if fills produce divergent live PnL.
-HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB"}  # NO-side safety belt: HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted). Existing BTC/ETH/SOL/XRP unblocked per data above.
+HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB", "ADA", "BCH"}  # NO-side safety belt: HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted); ADA/BCH per 15M-shadow-only T1 2026-05-30. Existing BTC/ETH/SOL/XRP unblocked per data above.
 
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
@@ -759,6 +784,8 @@ COINBASE_PRODUCTS = {
     "HYPE": "HYPE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
     "DOGE": "DOGE-USD",       # T1 (2026-05-10): shadow observation (verified live + online on Coinbase Exchange)
     "BNB": "BNB-USD",         # T1 (2026-05-17, 86b9zmj0c): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
+    "ADA": "ADA-USD",         # T1 (2026-05-30): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
+    "BCH": "BCH-USD",         # T1 (2026-05-30): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
 }
 
 PRICE_BUFFER_SIZE = 1800          # 30 minutes of 1-second snapshots (extended Apr 19 for Phase 2 features)
