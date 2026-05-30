@@ -93,6 +93,7 @@ from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 from bot.helpers.tm_sweep import tm_compute_contracts, tm_sweep_extract_depths
 from bot.helpers.orderbook import best_yes_ask_cents, convert_orderbook_fp  # Bit 86b9vpp2z (2026-05-11): orderbook utilities relocated from OpportunityScanner staticmethods to bot/helpers/orderbook.py. This direct top-level import RETIRES the `_get_opportunity_scanner()` cycle-break helper that previously existed in this module — OrderExecutor no longer needs a runtime back-edge to bot.scanner just to access the pure-utility orderbook functions.
 from bot.kalshi_client import KalshiClient
+from bot.trading_mode import is_live as tm_is_live, mode_reason as tm_mode_reason  # modular live/shadow gate
 from bot.engines.probability import ProbabilityEngine
 from bot.logger import Logger
 from bot.state import StateManager
@@ -546,6 +547,22 @@ class OrderExecutor:
 
         asset = candidate["asset"]
         ticker = candidate["ticker"]
+
+        # ── Trading-mode gate (modular global + per-asset live/shadow) ─
+        # Single chokepoint for live-vs-shadow on the crypto products this gate
+        # governs (the assets listed in ASSET_LIVE_TRADING). If the asset is in
+        # scope and not live-enabled (GLOBAL_LIVE_TRADING off, or its per-asset
+        # entry off), the candidate was still evaluated + logged by the scanner —
+        # we just place NO real order. Non-crypto products (weather/hourly NO-side,
+        # governed by WEATHER_NO_SIDE_LIVE / HOURLY_NO_SIDE_LIVE) are NOT in the
+        # map → untouched. Backstopped at kalshi_client.place_order for any path
+        # (e.g. taker escalation) that reaches the API without re-entering execute.
+        # Read live so a flag flip is a runtime kill-switch. See bot/trading_mode.py.
+        if asset in bot.constants.ASSET_LIVE_TRADING and not tm_is_live(asset):
+            logging.info(
+                "SHADOW_SKIP: %s %s reason=%s — evaluated, no live order placed",
+                ticker, candidate.get("strategy"), tm_mode_reason(asset))
+            return None
 
         # ── Unified exposure caps (always active) ─────────────────────
         _fresh_balance = None

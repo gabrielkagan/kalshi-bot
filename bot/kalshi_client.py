@@ -47,6 +47,7 @@ from bot.helpers.breakers import (
 from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # Sprint 10.5a (2026-05-11)
 from kalshi_wire.auth import load_private_key as _wire_load_private_key
 from kalshi_wire.auth import sign as _wire_sign
+from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live as _tm_is_live  # modular live/shadow backstop
 
 
 class KalshiClient:
@@ -261,6 +262,19 @@ class KalshiClient:
                     client_order_id: Optional[str] = None,
                     post_only: Optional[bool] = None,
                     time_in_force: Optional[str] = None) -> Optional[Dict]:
+        # ── Trading-mode hard backstop (modular live/shadow) ──────────────
+        # The TRUE single chokepoint: every order path (maker, taker escalation,
+        # any caller) reaches the Kalshi API here. If this ticker is a governed
+        # crypto-15M market whose asset is in shadow, refuse to place — catches
+        # paths that don't re-enter executor.execute() (e.g. mid-flight taker
+        # escalation) and makes a runtime flag-flip a true kill-switch even for
+        # open positions. Non-crypto tickers (asset_from_ticker→None) untouched.
+        _tm_asset = _tm_asset_from_ticker(ticker)
+        if _tm_asset is not None and not _tm_is_live(_tm_asset):
+            logging.warning(
+                "SHADOW_BLOCK: %s %s %s count=%s — trading-mode shadow, no order placed",
+                ticker, side, action, count)
+            return None
         body: Dict = {
             "ticker": ticker,
             "side": side,

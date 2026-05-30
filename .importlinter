@@ -175,6 +175,7 @@ forbidden_modules =
     bot.db_writer_registry
     bot.settlement
     bot.state
+    bot.trading_mode
 ignore_imports =
     # Sprint 10.5a (2026-05-11): bot.helpers.breakers reaches the circuit-breaker
     # REGISTRY singleton via a wrapper-internal lazy import (search anchor in
