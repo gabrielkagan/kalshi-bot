@@ -103,7 +103,8 @@ BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); fl
 
 # ── Trading mode: modular global + per-asset live/shadow control ──────────────
 # Single source of truth for "should this asset place REAL orders right now?".
-# Replaces the scattered inline `_15M_SHADOW` checks (~6 candidate-append sites,
+# Adds a modular gate ALONGSIDE (defense-in-depth with) the still-present
+# scattered inline `_15M_SHADOW` checks (~6 candidate-append sites,
 # 4 assets hardcoded) with ONE gate consulted at the order chokepoints
 # (`bot/executor.py::execute` + `bot/kalshi_client.py::place_order`) via
 # `bot/trading_mode.py::is_live`. Read live → flipping a flag is a runtime

@@ -1,8 +1,9 @@
 """Trading-mode control — global + per-asset live/shadow gate (TDD-first).
 
 The single source of truth for "should this asset place REAL orders right now?".
-Replaces the scattered inline `_15M_SHADOW` checks (~6 candidate-append sites,
-4 assets hardcoded) with one modular gate (north star: modular + easy). Read
+Added ALONGSIDE (defense-in-depth with) the scattered inline `_15M_SHADOW` checks
+(~6 candidate-append sites, 4 assets hardcoded) as one modular gate (north star:
+modular + easy) — both fail toward shadow; the scanner checks remain. Read
 live (module-attribute access on bot.constants) so flipping a flag is a runtime
 kill-switch — no restart needed.
 
@@ -68,11 +69,12 @@ def test_shipped_default_is_all_shadow():
 
 
 def test_asset_live_trading_covers_all_series_no_drift():
-    # DRIFT-PIN (R1-MN1): the gate keys on dict MEMBERSHIP (`asset in
-    # ASSET_LIVE_TRADING` at the executor; the asset_from_ticker loop). A crypto
-    # series added to SERIES_TICKERS but forgotten here would BYPASS both gates
-    # and trade live (the very hardcoded-asset-drift anti-pattern this Bit kills).
-    # Lock the two sets together so a new asset must be added in lock-step.
+    # DRIFT-PIN (R1-MN1): both chokepoints resolve the governed asset via
+    # asset_from_ticker, which iterates ASSET_LIVE_TRADING's keys to match the
+    # KX<ASSET>15M ticker. A crypto series added to SERIES_TICKERS but forgotten
+    # here would never match → BYPASS both gates and trade live (the very
+    # hardcoded-asset-drift anti-pattern this Bit kills). Lock the two sets
+    # together so a new asset must be added in lock-step.
     assert set(C.ASSET_LIVE_TRADING) == set(C.SERIES_TICKERS), (
         "ASSET_LIVE_TRADING drifted from SERIES_TICKERS — a crypto-15M series is "
         "ungoverned by the live/shadow gate. Add it to ASSET_LIVE_TRADING.")

@@ -263,12 +263,15 @@ class KalshiClient:
                     post_only: Optional[bool] = None,
                     time_in_force: Optional[str] = None) -> Optional[Dict]:
         # ── Trading-mode hard backstop (modular live/shadow) ──────────────
-        # The TRUE single chokepoint: every order path (maker, taker escalation,
-        # any caller) reaches the Kalshi API here. If this ticker is a governed
-        # crypto-15M market whose asset is in shadow, refuse to place — catches
-        # paths that don't re-enter executor.execute() (e.g. mid-flight taker
-        # escalation) and makes a runtime flag-flip a true kill-switch even for
-        # open positions. Non-crypto tickers (asset_from_ticker→None) untouched.
+        # Backstops ALL order PLACEMENT at the API boundary: every placement path
+        # (initial maker, taker escalation, any caller) reaches the Kalshi API
+        # here, so paths that don't re-enter executor.execute() (e.g. mid-flight
+        # taker escalation) are still caught. If this ticker is a governed
+        # crypto-15M market whose asset is in shadow, refuse to place. Sibling
+        # order-WORKING call amend_order is gated identically below; cancel_order
+        # is intentionally ungated (reduces exposure). Together that makes a
+        # runtime flag-flip a kill-switch even for a resting order on an open
+        # position. Non-crypto tickers (asset_from_ticker→None) untouched.
         _tm_asset = _tm_asset_from_ticker(ticker)
         if _tm_asset is not None and not _tm_is_live(_tm_asset):
             logging.warning(
@@ -304,6 +307,17 @@ class KalshiClient:
                     yes_price: Optional[int] = None,
                     no_price: Optional[int] = None) -> Optional[Dict]:
         """Amend an existing order in-place (price/count). Saves cancel+re-place."""
+        # Trading-mode backstop (same as place_order): amend is an order-WORKING
+        # API call — gating it makes the kill-switch hold even for a resting maker
+        # on an asset flipped to shadow mid-flight. Scoped to governed crypto-15M
+        # tickers; non-crypto untouched. (cancel_order is intentionally ungated —
+        # it only REDUCES exposure.)
+        _tm_asset = _tm_asset_from_ticker(ticker)
+        if _tm_asset is not None and not _tm_is_live(_tm_asset):
+            logging.warning(
+                "SHADOW_BLOCK: amend %s %s %s — trading-mode shadow, not amended",
+                ticker, side, action)
+            return None
         body: Dict = {"ticker": ticker, "side": side, "action": action}
         if count is not None:
             body["count"] = count

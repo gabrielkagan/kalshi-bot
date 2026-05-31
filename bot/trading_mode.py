@@ -1,7 +1,8 @@
 """Trading-mode control — the single source of truth for live vs shadow.
 
-One modular gate replacing the scattered inline `_15M_SHADOW` checks (~6
-candidate-append sites, 4 assets hardcoded — the anti-pattern). Every real order
+One modular gate added ALONGSIDE (defense-in-depth with) the still-present
+scattered inline `_15M_SHADOW` checks (~6 candidate-append sites, 4 assets
+hardcoded — the anti-pattern this complements; both fail toward shadow). Every real order
 flows through `executor.execute()` → `kalshi_client.place_order()`; both consult
 `is_live(asset)` here, so the entire live/shadow surface is one file.
 

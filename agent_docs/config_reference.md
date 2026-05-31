@@ -8,7 +8,8 @@ On change, run `make doc-drift` (alias for `python3 scripts/audit/doc_drift_chec
 Modular global + per-asset live/shadow gate (single source of truth:
 `bot/trading_mode.py::is_live`). Consulted at the order chokepoints
 `bot/executor.py::execute` + the hard backstop `bot/kalshi_client.py::place_order`.
-Replaces the scattered inline `_15M_SHADOW` scanner checks. Read live →
+Added ALONGSIDE (defense-in-depth with) the still-present scattered inline
+`_15M_SHADOW` scanner checks — both fail toward shadow. Read live →
 flipping a flag is a runtime kill-switch (no restart). SHIPPED OFF (everything
 shadow) after a verified ~80% account drawdown ($800→$150) on a structurally-losing
 strategy (settlement-convergence edge hunt: buying 90-99¢ near-certain favorites
