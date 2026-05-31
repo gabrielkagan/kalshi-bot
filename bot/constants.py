@@ -101,6 +101,27 @@ DOGE_15M_SHADOW = False           # DOGE 15M live (T4 promoted 2026-05-14, floor
 # tests/integration/test_bnb_onboarding_t1.py.
 BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); flip to True for kill-switch revert
 
+# ── Trading mode: modular global + per-asset live/shadow control ──────────────
+# Single source of truth for "should this asset place REAL orders right now?".
+# Adds a modular gate ALONGSIDE (defense-in-depth with) the still-present
+# scattered inline `_15M_SHADOW` checks (~6 candidate-append sites,
+# 4 assets hardcoded) with ONE gate consulted at the order chokepoints
+# (`bot/executor.py::execute` + `bot/kalshi_client.py::place_order`) via
+# `bot/trading_mode.py::is_live`. Read live → flipping a flag is a runtime
+# kill-switch (no restart). SHIPPED OFF per operator directive 2026-05-30:
+# revert EVERYTHING to shadow after a verified ~80% account drawdown on a
+# structurally-losing strategy (settlement-convergence edge hunt: high-tail
+# favorite-buying is -3.2c/contract; lifetime fees $651 > +$379 gross). To put an
+# asset back live you must flip BOTH GLOBAL_LIVE_TRADING=True AND
+# ASSET_LIVE_TRADING["<ASSET>"]=True (double fail-safe) — and only after a
+# strategy clears the adversarial gate. Pinned by tests/unit/test_trading_mode.py.
+GLOBAL_LIVE_TRADING = False        # master kill — False = entire bot shadow (no real orders)
+ASSET_LIVE_TRADING_DEFAULT = False  # unknown/unlisted asset -> shadow (fail-safe)
+ASSET_LIVE_TRADING = {              # per-asset live enable (ALL 9 crypto 15M series, explicit)
+    "BTC": False, "ETH": False, "SOL": False, "XRP": False,
+    "HYPE": False, "DOGE": False, "BNB": False, "ADA": False, "BCH": False,
+}
+
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi
 # KXADA15M/KXBCH15M, runs the full scan→evaluate pipeline, writes
