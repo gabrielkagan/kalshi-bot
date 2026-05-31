@@ -191,6 +191,12 @@ STC_EXTENDED_XRP_MIN_PRICE = 92   # XRP floor for 300-600s (data: 92c+ = 100% WR
 # DO NOT widen to >=96 — backtester confirmed 97-99¢ band is profitable, blocking it
 # costs ~$161/30d in foregone profit.
 # Decision doc: kb/decisions/96c-sol-xrp-2to5min-block-2026-04-26.md
+# HWM spike-rejection Telegram alert toggle. Muted 2026-05-31 (default OFF):
+# bot not trading, balance bounces (56c <-> 30055c) re-trip the 3-consecutive-
+# rejection counter and spam the channel. logging.warning still fires regardless
+# for journal observability. Set HWM_SPIKE_ALERT_ENABLED=1 on the VPS to restore.
+HWM_SPIKE_ALERT_ENABLED = os.environ.get("HWM_SPIKE_ALERT_ENABLED", "0") == "1"
+
 HIGH_PRICE_STC_BLOCK_ENABLED = os.environ.get("HIGH_PRICE_STC_BLOCK_ENABLED", "0") == "1"
 
 HIGH_PRICE_STC_BLOCK_ASSETS = frozenset({"SOL", "XRP"})

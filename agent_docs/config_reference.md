@@ -56,6 +56,7 @@ flip BOTH `GLOBAL_LIVE_TRADING=True` AND `ASSET_LIVE_TRADING["<ASSET>"]=True`
 | STC_EXTENDED_SOL_MIN_PRICE | 95 | SOL floor for 300-600s (95c+ = 100% WR, n=14) |
 | STC_EXTENDED_XRP_MIN_PRICE | 92 | XRP floor for 300-600s (same as main floor) |
 | SOL_LOW_ENTRY_STC_GATE | True | Block SOL ≤85c at STC≥300s (78.3% WR -$289; <300s is 100% WR +$228) |
+| HWM_SPIKE_ALERT_ENABLED | env-default `0` | Telegram send for HWM spike-rejection alert; muted 2026-05-31 (balance bounces spam channel while not trading; logging.warning still fires) |
 | HIGH_PRICE_STC_BLOCK_ENABLED | env-default `0` | 96¢ × {SOL,XRP} × 2-5min STC strategy-aware filter; saves $895/30d |
 | HIGH_PRICE_STC_BLOCK_ASSETS | {SOL, XRP} | Cell scope; BTC/ETH 96¢ profitable, untouched |
 | HIGH_PRICE_STC_BLOCK_PRICE_CENTS | 96 | Exact match — DO NOT widen, see KB |

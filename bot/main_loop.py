@@ -130,6 +130,7 @@ from bot.constants import (
     HIGH_PRICE_STC_BLOCK_ENABLED,
     HIGH_PRICE_STC_BLOCK_FILTER_STAGE,
     HOURLY_OBSERVATION_ENABLED,
+    HWM_SPIKE_ALERT_ENABLED,
     KALSHI_OFT_ENABLED,
     MARKET_REFRESH_SECONDS,
     MAX_SECONDS_BEFORE_CLOSE,
@@ -1652,7 +1653,10 @@ class MainLoop:
                             f"last_accepted={self.sizer._balance_history[-1][1] if self.sizer._balance_history else 'none'}c"
                         )
                         logging.warning(_msg)
-                        if _telegram_state._TELEGRAM:
+                        # Telegram send is muted by default (HWM_SPIKE_ALERT_ENABLED=0).
+                        # Balance bounces re-trip the counter and spam the channel while
+                        # the bot is not trading; the warning above keeps journal visibility.
+                        if HWM_SPIKE_ALERT_ENABLED and _telegram_state._TELEGRAM:
                             _telegram_state._TELEGRAM.send(_msg)
         except Exception:
             logging.debug("HWM balance recording failed", exc_info=True)
