@@ -665,7 +665,12 @@ class OrderExecutor:
         <= limit; startup positions-API reconcile corrects prices, same
         posture as the ghost-fill Layer A register) and holds to
         settlement. NO resting lifecycle: an IOC never rests, so there is
-        no registry, no cancel sweep, no fill polling thread. See
+        no registry, no cancel sweep, no fill polling thread. The
+        post-fill record path (record_position_from_fill +
+        mark_order_status) has NO retry-on-busy by design (R2-MN3
+        advisory): it matches the pre-existing synchronous-taker
+        posture, and a transient DB failure there self-heals via the
+        engine's boot sweep + the startup positions-API reconcile. See
         bot/twaplock.py + kb/decisions/longshot-twap-live-small-plan.md.
         """
         ticker = candidate["ticker"]
