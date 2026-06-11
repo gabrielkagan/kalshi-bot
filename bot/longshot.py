@@ -1286,6 +1286,25 @@ class LongshotEngine:
                 except Exception:
                     logging.error("longshot record_position_from_fill failed "
                                   "for %s", q["ticker"], exc_info=True)
+                    # R5-M1: un-stamp the trade_id + restore the consumed
+                    # skip budget so the NEXT poll retries this fill
+                    # cleanly. Pre-fix the trade_id stayed stamped (and
+                    # the budget stayed consumed) on a transient record
+                    # failure (`database is locked` —
+                    # record_position_from_fill has no retry-on-busy), so
+                    # every later poll deduped the fill, the quote
+                    # eventually popped 'canceled', and the position was
+                    # invisible to all rails. In the rare
+                    # committed-despite-raise race the retry records the
+                    # fill a second time — a bounded double-record,
+                    # accepted because it fails TOWARD recording (same
+                    # direction as the documented _boot_skip_seed /
+                    # _existing_longshot_count failure posture; the next
+                    # restart's reconcile heals it).
+                    q["seen_trade_ids"].discard(trade_id)
+                    if skip:
+                        q["boot_skip_remaining"] = (
+                            int(q.get("boot_skip_remaining") or 0) + skip)
                     continue
                 # R4-M2: per-order recorded-fill counter — bumped ONLY
                 # after a successful record (the skip branch above never
