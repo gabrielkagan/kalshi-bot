@@ -2,7 +2,7 @@
 
 > Update like a dashboard, not a doc. Re-state the date on every change.
 
-**Last updated:** 2026-05-19
+**Last updated:** 2026-06-11 (longshot Bit L-1 section added; default OFF)
 
 ## Live trading
 
@@ -27,6 +27,7 @@
 
 ## Disabled / observation
 
+- **Longshot premium-harvest (Bit L-1, 2026-06-11): default OFF.** `LONGSHOT_ENABLED=False` — flipped only at explicit operator go-live. Engine `bot/longshot.py`: sells deep-OTM 15M sides as a maker (posts opposite-side bid at 100−ask) when the executable ask is 4-15¢, STC 180-720s, and `p_normal ≤ ask × 0.5`; holds to settlement. Validated +4.58¢/ct fillable-only, day-bootstrap CI [+2.82, +6.26], 12/12 days, all 6 assets positive (`scripts/research/genhunt/02b_longshot_fillable_validation.py`). Rails: 3 contracts per (window, side); $150 concurrent collateral; $20/day loss cap (realized + marked — open positions whose sold side is currently ITM count as full loss); 3 consecutive losing days → persistent disable (`LONGSHOT_STREAK_RESET_UTC_DATE` to clear). Go-live path: `LONGSHOT_ENABLED=True` + `LONGSHOT_LIVE_OVERRIDE=True` runs longshot live while the main pipeline stays shadow (`trading_mode.strategy_is_live`; main pipeline unaffected). Orders carry the `ls-` client_oid prefix (boot orphan reconciliation + backstop recognition). R1 fix round 2026-06-11 hardened: fills polled before every cancel, ticker-PK collision stopgap (86badbf9t carries the durable rebuild), 404-terminal cancels + stale drop, one paginated fills fetch per tick.
 - **Hourly FULLY DISABLED (Apr 18):** Both `HOURLY_LIVE_ENABLED=0` and `HOURLY_NO_SIDE_LIVE=0` on VPS. Pre-kill NO-side: BTC NO 40-54c had 53.9% WR (n=1,113, p=0.005). Re-enable: flip env vars + restart.
 - **SPX Hourly:** observation (was briefly live Mar 17, reverted — Polygon 403 broke vol engine)
 - **Weather YES-side:** observation only (NWP ensemble GFS+ECMWF, 82 members, 19 cities)
