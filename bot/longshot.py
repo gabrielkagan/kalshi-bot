@@ -785,18 +785,64 @@ class LongshotEngine:
             return None
         return row is not None
 
+    def has_opposite_side_longshot_position(self, ticker: str,
+                                            buy_side: str) -> Optional[bool]:
+        """R4-M1: True iff any OPEN strategy_group='longshot' positions row
+        exists on this ticker with side != ``buy_side``. None on query
+        failure (callers treat None as a conflict: fail-closed for
+        placement, same convention as has_open_main_pipeline_position).
+
+        Why ONE open longshot row per ticker: the positions table PK is
+        (ticker) and record_position_from_fill matches WHERE
+        ticker+strategy_group with NO side predicate — an opposite-side
+        longshot fill ACCUMULATES into the existing row under the OLD
+        side. Concrete path: a sell-YES fill creates (ticker, side='no');
+        spot crosses the strike; sell-NO qualifies; its fill lands inside
+        the side='no' row, so settlement books winners as losers and
+        caps/marks/streaks corrupt. Until the durable composite-PK rebuild
+        lands (ticket 86badbf9t — this self-collision instance is noted on
+        that ticket), the invariant is one open longshot row per ticker:
+        enforced in _allowed_size (engine sizing + executor authorize) and
+        mirrored defensively at the scanner overlay so a stale-cache
+        evaluate can't slip a candidate through.
+        """
+        try:
+            row = self._state.conn.execute(
+                "SELECT 1 FROM positions WHERE ticker=? AND status='open' "
+                "AND strategy_group=? AND side != ? LIMIT 1",
+                (ticker, LONGSHOT_STRATEGY, buy_side)).fetchone()
+        except Exception:
+            logging.warning("longshot side-conflict query failed",
+                            exc_info=True)
+            return None
+        return row is not None
+
     def _allowed_size(self, ticker: str, sell_side: str, buy_side: str,
                       buy_price_cents: int) -> int:
         """min(per-window-side cap remainder, collateral cap remainder).
 
         Returns 0 outright when the ticker has main-pipeline open rows
-        (R1-C2 stopgap — see has_open_main_pipeline_position)."""
+        (R1-C2 stopgap — see has_open_main_pipeline_position) OR an open
+        longshot row on the OPPOSITE side (R4-M1 self-collision guard —
+        see has_opposite_side_longshot_position: one open longshot row
+        per ticker until 86badbf9t's composite-PK rebuild)."""
         conflict = self.has_open_main_pipeline_position(ticker)
         if conflict is None or conflict:
             if conflict:
                 logging.info(
                     "LONGSHOT_SKIP_main_conflict: %s has open non-longshot "
                     "position rows (ticker-PK stopgap, 86badbf9t)", ticker)
+            return 0
+        # R4-M1: opposite-side self-collision guard. None (query failure)
+        # also blocks: fail-closed for placement.
+        side_conflict = self.has_opposite_side_longshot_position(
+            ticker, buy_side)
+        if side_conflict is None or side_conflict:
+            if side_conflict:
+                logging.info(
+                    "LONGSHOT_SKIP_side_conflict: %s has an open longshot "
+                    "row on the opposite side — one open longshot row per "
+                    "ticker (ticker-PK stopgap, 86badbf9t)", ticker)
             return 0
         # Per-(window, side) cap: open longshot positions on this
         # (ticker, buy_side) + unfilled resting contracts on the same side.

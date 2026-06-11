@@ -2009,6 +2009,20 @@ class OpportunityScanner:
                                 balance_at_scan=self._get_balance_cached(),
                             )
                             if _ls_cands:
+                                # R4-M1 defensive mirror of the engine's
+                                # opposite-side self-collision guard
+                                # (one open longshot row per ticker —
+                                # ticker-PK stopgap, 86badbf9t): a
+                                # stale-cache evaluate must not slip an
+                                # opposite-side candidate through.
+                                # `is False` keeps None (query failure)
+                                # fail-closed, like the overlay gate above.
+                                _ls_cands = [
+                                    c for c in _ls_cands
+                                    if _ls_engine
+                                    .has_opposite_side_longshot_position(
+                                        c["ticker"],
+                                        c["longshot_buy_side"]) is False]
                                 candidates.extend(_ls_cands)
                         except Exception:
                             logging.warning(
