@@ -334,10 +334,13 @@ class LongshotEngine:
         """Per-main-loop-tick lifecycle sweep.
 
         1. Kill-switch / auto-disable: cancel ALL resting quotes.
-        2. T-3min sweep: cancel quotes whose window ran down past
+        2. Fill polling: record maker fills as positions
+           (hold-to-settlement; dedup by trade_id). Runs BEFORE the
+           cancel sweep (R1-C1) so fills landed since the last tick are
+           recorded before their quote can be canceled+popped;
+           _cancel_quote additionally runs a final poll of its own.
+        3. T-3min sweep: cancel quotes whose window ran down past
            LONGSHOT_MIN_STC_SECONDS.
-        3. Fill polling: record maker fills as positions
-           (hold-to-settlement; dedup by trade_id).
         """
         if now is None:
             now = time.time()
@@ -352,15 +355,15 @@ class LongshotEngine:
         with self._lock:
             quotes = list(self._resting.values())
         for q in quotes:
-            elapsed = max(0.0, now - q["registered_ts"])
-            remaining = q["stc_at_register"] - elapsed
-            if remaining < C.LONGSHOT_MIN_STC_SECONDS:
-                self._cancel_quote(q["order_id"], "t_minus_3min")
+            self._poll_fills(q)
 
         with self._lock:
             quotes = list(self._resting.values())
         for q in quotes:
-            self._poll_fills(q)
+            elapsed = max(0.0, now - q["registered_ts"])
+            remaining = q["stc_at_register"] - elapsed
+            if remaining < C.LONGSHOT_MIN_STC_SECONDS:
+                self._cancel_quote(q["order_id"], "t_minus_3min")
 
     # ── internals ─────────────────────────────────────────────────────────
 
@@ -506,6 +509,23 @@ class LongshotEngine:
             logging.warning("LONGSHOT_CANCEL_FAILED: %s %s reason=%s "
                             "(api None) — retry next tick",
                             q["ticker"], order_id, reason)
+            return
+        # R1-C1: final fill poll BEFORE popping — a fill can land between
+        # the last tick poll and the cancel taking effect; popping first
+        # would orphan it (position held to settlement with no local row).
+        self._poll_fills(q)
+        # R1-C1: reconcile against the DELETE response when it carries a
+        # filled count. If Kalshi says more contracts filled than we have
+        # recorded (fills API lag), KEEP the entry registered: the next
+        # tick re-polls, and the re-cancel hits the 404 idempotent path.
+        api_filled = None
+        if isinstance(resp, dict):
+            api_filled = (resp.get("order") or {}).get("fill_count")
+        if isinstance(api_filled, int) and api_filled > q["filled"]:
+            logging.warning(
+                "LONGSHOT_CANCEL_FILL_MISMATCH: %s %s api_filled=%d "
+                "recorded=%d — keeping entry for fill-poll retry",
+                q["ticker"], order_id, api_filled, q["filled"])
             return
         with self._lock:
             self._resting.pop(order_id, None)
