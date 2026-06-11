@@ -107,7 +107,7 @@ Phase-2 (followup ticket).
 ## Other tables
 
 - **positions** — Open position tracking (ticker PK, asset, side, count, avg_price_cents, status)
-- **pending_orders** — In-flight order tracking (order_id PK, ticker, side, action, count, price_cents, status)
+- **pending_orders** — In-flight order tracking (order_id PK, ticker, side, action, count, price_cents, status, recorded_fill_count). `recorded_fill_count` (Bit L-1 R4-M2, 2026-06-11; ALTER-loop migration, no DDL default): per-order count of contracts `LongshotEngine._apply_fills` has recorded via `record_position_from_fill` — seeds the order's OWN boot delta-apply skip at restart. Fresh `insert_bot_order` rows write an explicit 0; NULL marks a legacy pre-R4 row (boot falls back to the (ticker, side) open-longshot aggregate). `RECONCILE_IMPORT_LONGSHOT` attributes imported contracts to the most recent ls- order's counter.
 - **garch_params** — Persisted GARCH parameters per asset
 - **egarch_params** — Persisted EGARCH(1,1) parameters per asset
 - **sports_shadow_log** — Sports comeback shadow signals (game_id, sport, league, teams, comeback_prob, edge, market_result, pnl_cents)
