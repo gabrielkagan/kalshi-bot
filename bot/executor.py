@@ -516,6 +516,92 @@ class OrderExecutor:
                 total += cost
         return total
 
+    def _execute_longshot_maker(self, candidate: Dict) -> Optional[Dict]:
+        """Longshot premium-harvest maker placement (Bit L-1).
+
+        Reached ONLY from execute() — i.e. strictly BELOW the trading-mode
+        gate (bot/trading_mode.py), which stays the single live/shadow
+        chokepoint (plus the kalshi_client.place_order backstop). Posts a
+        post-only limit BUY of the candidate's buy side at 100-ask (= a
+        maker SELL of the deep-OTM side), then hands lifecycle (T-3min
+        cancel, condition-flip cancel, fill polling) to the LongshotEngine
+        registered on MainLoop. No taker escalation, no maker tail, no
+        per-asset lock. See bot/longshot.py +
+        kb/decisions/longshot-twap-live-small-plan.md.
+        """
+        ticker = candidate["ticker"]
+        engine = getattr(self._ml, "longshot_engine", None) if self._ml else None
+        if engine is None:
+            logging.warning(
+                "LONGSHOT_SKIP_no_engine: %s — candidate reached execute() "
+                "without a LongshotEngine on MainLoop", ticker)
+            return None
+        # Live-read kill switch (mirrors the engine-side check — a constants
+        # flip between scan and execute must stop placement).
+        if not bot.constants.LONGSHOT_ENABLED:
+            logging.info("LONGSHOT_SKIP_disabled: %s", ticker)
+            return None
+        if OBSERVATION_MODE:
+            logging.info(
+                "OBSERVATION MODE: Would post longshot maker for %s at %dc "
+                "for %d contracts", ticker,
+                candidate.get("longshot_buy_price_cents", -1),
+                candidate.get("position_size", 0))
+            return None
+        # Execute-time cap re-check (scan->execute race: a sister fill may
+        # have consumed the per-window-side or collateral cap).
+        count = engine.authorize(candidate)
+        if count <= 0:
+            logging.info("LONGSHOT_SKIP_authorize: %s caps consumed", ticker)
+            return None
+        buy_side = candidate["longshot_buy_side"]
+        price = int(candidate["longshot_buy_price_cents"])
+        client_oid = str(uuid.uuid4())
+        # Persist BEFORE submission (order-ledger crash-safety contract,
+        # mirrors the maker-first path / ticket 86ba0jb1g).
+        self._state.insert_bot_order(
+            client_oid, ticker, candidate["event_ticker"],
+            candidate["asset"], buy_side, count, price, False)
+        _price_kwarg = {"no_price": price} if buy_side == "no" else {"yes_price": price}
+        resp = self._client.place_order(
+            ticker=ticker, side=buy_side, action="buy",
+            count=count, client_order_id=client_oid,
+            post_only=True, **_price_kwarg,
+        )
+        if resp is None:
+            self._state.mark_order_status(client_oid, "api_error")
+            logging.warning(
+                "LONGSHOT_MAKER_REJECTED: %s %s %dct @ %dc (post_only)",
+                ticker, buy_side, count, price)
+            return None
+        order_id = (resp.get("order") or {}).get("order_id", client_oid)
+        self._state.confirm_order_submitted(client_oid, order_id)
+        engine.register_resting(
+            order_id=order_id, client_order_id=client_oid, ticker=ticker,
+            event_ticker=candidate["event_ticker"], asset=candidate["asset"],
+            sell_side=candidate["longshot_sell_side"], buy_side=buy_side,
+            buy_price_cents=price, count=count,
+            seconds_to_close=candidate["seconds_to_close"])
+        logging.info(
+            "LONGSHOT_MAKER_POSTED: %s sell_%s@%dc -> buy_%s %dct @ %dc "
+            "order=%s stc=%.0fs",
+            ticker, candidate["longshot_sell_side"],
+            candidate.get("longshot_ask_cents", -1), buy_side, count, price,
+            order_id, candidate["seconds_to_close"])
+        return {
+            "order_id": order_id,
+            "client_order_id": client_oid,
+            "ticker": ticker,
+            "event_ticker": candidate["event_ticker"],
+            "asset": candidate["asset"],
+            "side": buy_side,
+            "price_cents": price,
+            "count": count,
+            "is_taker": False,
+            "strategy": "longshot",
+            "entry_path": "longshot_maker",
+        }
+
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Sprint B Bit B.2b — seed decision_id ONCE at the top of
@@ -662,6 +748,15 @@ class OrderExecutor:
         if (candidate.get("product_type") == "weather"
                 and candidate.get("side") == "no"):
             return self._execute_weather_no_taker(candidate)
+
+        # ── LONGSHOT PREMIUM-HARVEST MAKER PATH (Bit L-1) ──
+        # Dispatched AFTER the trading-mode gate + unified exposure caps
+        # (single live/shadow chokepoint respected, never duplicated) and
+        # BEFORE Gate 1 — a resting longshot quote must neither consume nor
+        # be blocked by the per-asset maker lock of the main pipeline.
+        # No escalation, no maker-tail: rest at 100-ask, hold to settlement.
+        if candidate.get("strategy") == "longshot":
+            return self._execute_longshot_maker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
         # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.

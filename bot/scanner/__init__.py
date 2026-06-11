@@ -1963,6 +1963,47 @@ class OpportunityScanner:
                 if _pt in (None, "15m"):
                     self._update_window_state(ticker, spot, threshold)
 
+                # ── Longshot premium-harvest overlay (Bit L-1) ──────────
+                # Per-market deep-OTM maker-sell evaluation, delegated to
+                # bot/longshot.py (engine owns condition logic + risk rails
+                # + eval-row writes with filter_stage longshot_live/shadow).
+                # Candidates join the normal list and are partitioned out as
+                # an overlay at the scan() tail (bracket_no pattern), so
+                # they flow through executor.execute() — the trading-mode
+                # chokepoint — like every other order. Placed early in the
+                # market loop (right after the threshold sanity gate) so
+                # main-pipeline price/prob gates downstream can't starve
+                # the deep-OTM strikes this strategy targets. The engine
+                # no-ops cheaply (no orderbook fetch) unless a side is
+                # plausibly in the 4-15c band. LONGSHOT_ENABLED read live
+                # (runtime kill-switch pattern).
+                if (_pt in (None, "15m") and self._ml is not None
+                        and bot.constants.LONGSHOT_ENABLED):
+                    _ls_engine = getattr(self._ml, "longshot_engine", None)
+                    if _ls_engine is not None:
+                        try:
+                            _ls_cands = _ls_engine.evaluate_market(
+                                ticker=ticker,
+                                event_ticker=window["event_ticker"],
+                                asset=asset,
+                                product_type=_pt or "15m",
+                                spot=spot,
+                                threshold=threshold,
+                                seconds_to_close=seconds_remaining,
+                                blended_rv=blended_rv,
+                                orderbook_fetch=(
+                                    lambda _t=ticker:
+                                    self._get_orderbook_cached(_t)[0]),
+                                config_snapshot_id=self._ml.config_snapshot_id,
+                                balance_at_scan=self._get_balance_cached(),
+                            )
+                            if _ls_cands:
+                                candidates.extend(_ls_cands)
+                        except Exception:
+                            logging.warning(
+                                "longshot evaluate_market failed for %s",
+                                ticker, exc_info=True)
+
                 # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
                 # Skip probability computation for strikes clearly outside entry range.
                 if _pt in ("spx_hourly", "hourly", "weather"):
@@ -6931,13 +6972,14 @@ class OpportunityScanner:
         _tm_candidates = [c for c in candidates if c.get("strategy", "").startswith("terminal_momentum")]
         _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
         _lpne_candidates = [c for c in candidates if c.get("strategy") == "low_price_near_expiry"]
+        _longshot_candidates = [c for c in candidates if c.get("strategy") == "longshot"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
         _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
                             and not c.get("strategy", "").startswith("terminal_momentum")
-                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry")
+                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry", "longshot")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -7099,6 +7141,11 @@ class OpportunityScanner:
 
         # LPNE overlay: add all low-price near-expiry candidates
         selected.extend(_lpne_candidates)
+
+        # Longshot overlay: add all longshot candidates (Bit L-1 — engine
+        # already enforced per-window-side + collateral caps; the executor
+        # re-checks via LongshotEngine.authorize at placement time)
+        selected.extend(_longshot_candidates)
 
         # ── 96¢ × {SOL,XRP} × 2-5min STC danger-band filter (strategy-aware) ──
         # Strips bleeder-strategy candidates from the cell while preserving

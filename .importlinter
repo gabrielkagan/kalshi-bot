@@ -159,6 +159,7 @@ forbidden_modules =
     bot.executor
     bot.feeds
     bot.fetchers
+    bot.longshot
     bot.main_loop
     bot.infra
     bot.models
