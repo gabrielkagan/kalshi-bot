@@ -169,6 +169,20 @@ TWAPLOCK_MAX_CONTRACTS_PER_ENTRY = 2   # live-small sizing (plan doc: 1-2 ct/ent
 # was RETIRED at R1-MN4 (a value other than 1 could never be honored);
 # pinned-absent by tests/integration/test_twaplock_strategy.py.
 TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1ct) - this margin
+# Frozen-spot false-lock gate (R2-MN1): a frozen Coinbase WS price keeps
+# feeding the engine's ring buffer with FRESH receive timestamps, so the
+# accrued TWAP freezes at a stale price and p_lock can clear the threshold
+# spuriously (the absent-sample -> None layer in bot/twaplock.py::
+# _accrued_mean does NOT catch this — samples keep arriving, they're just
+# stale). The scanner's per-asset WS staleness reading (Bit S.1 cache,
+# bot/state.py _scan_spot_staleness_cache) must exist and be <= this many
+# seconds or the engine emits NO SIGNAL (log: TWAPLOCK_SPOT_STALE — info,
+# not warning: it fires routinely on thin assets). The S.2 RCA pre-flight
+# (ticket 86ba1wrh7, 2026-05-21) measured Coinbase 1-min candle coverage
+# May 9-21 at BNB 65.9% / HYPE 89.5% / DOGE 99.2% (BTC/ETH/SOL/XRP ~100%)
+# — so this gate trades frequency on thin assets for signal integrity,
+# the same direction as the stricter-than-validated 0.99 p_lock threshold.
+TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
 TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED
 

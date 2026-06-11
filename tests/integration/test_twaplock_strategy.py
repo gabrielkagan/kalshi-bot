@@ -124,10 +124,20 @@ def _ob(yes_ask_cents=95, yes_bid_cents=90):
 
 def _eval(eng, *, yes_ask_cents=95, yes_bid_cents=90, stc=90.0, spot=110.0,
           threshold=100.0, blended_rv=0.00001, ticker=TICKER, ob=None,
-          now=None, asset="BTC", event=EVENT):
+          now=None, asset="BTC", event=EVENT, spot_staleness=0.0):
     """Default geometry: spot WAY above strike with tiny vol at stc=90s
     (pre-TWAP-window branch — no accrued buffer needed) -> p_lock ~ 1.0
-    -> locked side YES at executable ask 95c (fee 1c; 95 <= 100-1-3)."""
+    -> locked side YES at executable ask 95c (fee 1c; 95 <= 100-1-3).
+
+    ``spot_staleness`` seeds the scanner-owned Bit-S.1 per-asset cache
+    (``state._scan_spot_staleness_cache``) that the frozen-spot gate
+    (R2-MN1) reads — default 0.0 = fresh WS tick this tick, so every
+    test that isn't ABOUT the gate sails through it. ``None`` pops the
+    slot (warmup / scanner honest-NULL)."""
+    if spot_staleness is None:
+        eng._state._scan_spot_staleness_cache.pop(asset, None)
+    else:
+        eng._state._scan_spot_staleness_cache[asset] = spot_staleness
     if ob is None:
         ob = _ob(yes_ask_cents, yes_bid_cents)
     return eng.evaluate_market(
@@ -340,6 +350,7 @@ class TestConditionLogic:
         assert len(cands) == expected
 
     def test_no_orderbook_no_candidate(self, engine, enabled):
+        engine._state._scan_spot_staleness_cache["BTC"] = 0.0  # fresh — isolate the orderbook branch from the R2-MN1 gate
         out = engine.evaluate_market(
             ticker=TICKER, event_ticker=EVENT, asset="BTC",
             product_type="15m", spot=110.0, threshold=100.0,
@@ -351,6 +362,55 @@ class TestConditionLogic:
     def test_zero_vol_no_candidate(self, engine, enabled):
         assert _eval(engine, blended_rv=0.0) == []
         assert _eval(engine, blended_rv=None) == []
+
+
+# ── frozen-spot false-lock gate (R2-MN1) ─────────────────────────────────────
+
+class TestSpotStalenessGate:
+    """A frozen Coinbase WS price keeps feeding record_spot with FRESH
+    receive timestamps, so the accrued TWAP freezes at a stale price and
+    p_lock can clear 0.99 spuriously — the absent-sample -> None layer in
+    _accrued_mean never fires because samples keep arriving. Layer 2:
+    evaluate_market reads the scanner's per-asset Bit-S.1 staleness cache
+    (state._scan_spot_staleness_cache) and emits NO SIGNAL when the
+    reading is missing or > TWAPLOCK_MAX_SPOT_STALENESS_SECONDS."""
+
+    def test_constant_exists(self):
+        assert C.TWAPLOCK_MAX_SPOT_STALENESS_SECONDS == 5.0
+
+    def test_stale_reading_blocks_and_writes_no_row(self, engine, state,
+                                                    enabled, caplog):
+        import logging as _logging
+        with caplog.at_level(_logging.INFO):
+            cands = _eval(
+                engine,
+                spot_staleness=C.TWAPLOCK_MAX_SPOT_STALENESS_SECONDS + 1.0)
+        assert cands == []
+        assert "TWAPLOCK_SPOT_STALE" in caplog.text
+        n = state.conn.execute(
+            "SELECT COUNT(*) FROM evaluated_opportunities WHERE "
+            "filter_stage LIKE 'twaplock%'").fetchone()[0]
+        assert n == 0
+
+    def test_missing_cache_entry_blocks(self, engine, enabled):
+        """Warmup / scanner honest-NULL pop: no reading = no signal."""
+        assert _eval(engine, spot_staleness=None) == []
+
+    def test_fresh_reading_passes(self, engine, enabled):
+        assert len(_eval(engine, spot_staleness=0.5)) == 1
+
+    def test_boundary_at_threshold_passes(self, engine, enabled):
+        """Gate is strict-greater-than: exactly the constant still trades."""
+        assert len(_eval(
+            engine,
+            spot_staleness=C.TWAPLOCK_MAX_SPOT_STALENESS_SECONDS)) == 1
+
+    def test_absent_sample_layer_still_holds(self, engine, enabled):
+        """Layer 1 (docstring-claimed absent-sample path) survives the
+        Layer-2 addition: inside the TWAP window (stc < 60) with no ring-
+        buffer sample at-or-before window start, a FRESH staleness reading
+        still emits nothing (accrued mean is None -> no signal)."""
+        assert _eval(engine, stc=30.0, spot_staleness=0.0) == []
 
 
 # ── one entry per window per asset ───────────────────────────────────────────

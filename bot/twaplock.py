@@ -292,6 +292,25 @@ class TwaplockEngine:
         if self._already_entered(ticker):
             return []
 
+        # Frozen-spot false-lock gate (R2-MN1; Layer 2 of the feed-gap
+        # defense — see _accrued_mean): a frozen Coinbase WS price keeps
+        # feeding record_spot with FRESH receive timestamps, so the
+        # accrued TWAP freezes at a stale price and p_lock can clear the
+        # threshold spuriously. The scanner stamps per-asset WS staleness
+        # into state._scan_spot_staleness_cache each tick (Bit S.1) and
+        # pops the slot on warmup-NULL; missing or stale -> NO SIGNAL.
+        # info, not warning — fires routinely on thin assets (S.2 RCA
+        # gap rates in the constant's comment, bot/constants.py).
+        _staleness = self._state._scan_spot_staleness_cache.get(asset)
+        if (_staleness is None
+                or _staleness > C.TWAPLOCK_MAX_SPOT_STALENESS_SECONDS):
+            logging.info(
+                "TWAPLOCK_SPOT_STALE: %s %s spot_staleness=%s vs max "
+                "%.1fs (None = unmeasured this tick) — no signal",
+                ticker, asset, _staleness,
+                C.TWAPLOCK_MAX_SPOT_STALENESS_SECONDS)
+            return []
+
         w = C.TWAPLOCK_TWAP_WINDOW_SECONDS
         accrued = None
         if seconds_to_close < w:
@@ -448,8 +467,18 @@ class TwaplockEngine:
 
         Requires at least one sample at-or-before ``window_start`` (the
         buffer is fed from entry-window scan ticks, which begin ~60s
-        before the TWAP window opens, so this holds in normal operation;
-        a restart mid-window or feed gap returns None — no signal).
+        before the TWAP window opens, so this holds in normal operation).
+        Feed-gap defense is TWO layers, and this method is only Layer 1:
+
+        * Layer 1 (here): ABSENT samples — restart mid-window / scanner
+          not ticking — leave no sample at-or-before window start, so
+          this returns None and compute_p_lock yields no signal.
+        * Layer 2 (evaluate_market): a FROZEN WS price keeps ticking
+          with fresh receive timestamps, so samples exist but are stale
+          — Layer 1 cannot see that. The
+          ``TWAPLOCK_MAX_SPOT_STALENESS_SECONDS`` gate reads the
+          scanner's per-asset Bit-S.1 staleness cache and emits no
+          signal (``TWAPLOCK_SPOT_STALE``) before p_lock is computed.
         """
         if now <= window_start:
             return None
