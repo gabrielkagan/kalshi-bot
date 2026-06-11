@@ -659,15 +659,22 @@ class LongshotEngine:
             sell_side = "no" if buy_side == "yes" else "yes"
             price = (o.get("no_price") if buy_side == "no"
                      else o.get("yes_price")) or 0
+            event_ticker = ticker.rsplit("-", 1)[0]
+            asset = trading_mode.asset_from_ticker(ticker) or ""
+            _skip = self._boot_skip_seed(order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
             remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
                 o.get("remaining_count") or 0)
             if not remaining:
-                remaining = int(o.get("count") or 0)
-            event_ticker = ticker.rsplit("-", 1)[0]
-            asset = trading_mode.asset_from_ticker(ticker) or ""
-            _skip = self._boot_skip_seed(order_id, ticker, buy_side)
+                # R5-MN2: BOTH remaining fields absent — derive from
+                # cumulative truth: original minus already-recorded
+                # (skip). The pre-fix original-count fallback made the
+                # registered count original+skip (the register below
+                # adds the skip back for R4-MN3 cumulative units), so a
+                # fully-recorded orphan could never reach
+                # filled >= count and ended 'canceled', not 'filled'.
+                remaining = max(0, int(o.get("count") or 0) - _skip)
             # R5-M3: seed the REAL remaining window life — the stale-drop
             # backstop measures `stc_at_register - elapsed < -grace`, so
             # the pre-fix 0.0 seed made it fire 120s after RESTART, not

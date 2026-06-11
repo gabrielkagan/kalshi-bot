@@ -542,3 +542,73 @@ class TestMN1StaleDropRequiresCompletePoll:
         assert engine.resting_count() == 0
         assert _pending_status(state, "oid-mn1") == "canceled"
         assert _positions_row(state)["count"] == 1  # no double-record
+
+
+# ── MN2: absent remaining fields must not overstate the count ───────────────
+
+class TestMN2RemainingFallbackUsesCumulativeTruth:
+    """R5-MN2: when BOTH remaining_count_fp and remaining_count were
+    absent from the API order, step-1 fell back to the ORIGINAL count —
+    but the registered count is CUMULATIVE (remaining + skip), so the
+    fallback double-counted the already-recorded contracts
+    (count = original + skip) and a fully-recorded orphan could never
+    reach filled >= count: it ended 'canceled' instead of 'filled'.
+    Fix: derive remaining = max(0, original_count - skip), consistent
+    with the cumulative-truth units of R4-MN3."""
+
+    def _boot_with_api_order(self, state, client, api_order, fills):
+        now = time.time()
+        _seed_pending_resting(state, client_oid="ls-mn2", order_id="oid-mn2",
+                              count=3, created_epoch=now - 600)
+        state.conn.execute(
+            "UPDATE pending_orders SET recorded_fill_count=? "
+            "WHERE order_id='oid-mn2'", (len(fills) and sum(
+                f["count"] for f in fills),))
+        state.conn.commit()
+        client.get_orders.return_value = {"orders": [api_order]}
+        client.get_fills.side_effect = _min_ts_respecting_fills(fills)
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        return engine
+
+    def test_fully_recorded_orphan_absent_remaining_ends_filled(
+            self, state, client, enabled):
+        now = time.time()
+        # 3-of-3 filled AND recorded pre-restart (counter=3); the API
+        # order carries NO remaining fields at all.
+        _record_longshot(state, side="no", count=3)
+        engine = self._boot_with_api_order(
+            state, client,
+            {"order_id": "oid-mn2", "client_order_id": "ls-mn2",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 3, "status": "resting",
+             "created_time": _rfc3339(now - 600)},
+            [{"order_id": "oid-mn2", "trade_id": "t-mn2", "count": 3,
+              "ts": now - 500, "created_time": _rfc3339(now - 500)}])
+        assert _pending_status(state, "oid-mn2") == "filled", (
+            "a fully-recorded orphan with ABSENT remaining fields must "
+            "end 'filled' — the original-count fallback overstated the "
+            "cumulative count to original+skip (R5-MN2)")
+        assert engine.resting_count() == 0
+        # Money behavior: nothing re-recorded.
+        assert _positions_row(state)["count"] == 3
+
+    def test_partially_recorded_orphan_absent_remaining_counts_cumulative(
+            self, state, client, enabled):
+        now = time.time()
+        _record_longshot(state, side="no", count=2)
+        client.cancel_order.return_value = None  # keep the entry alive
+        engine = self._boot_with_api_order(
+            state, client,
+            {"order_id": "oid-mn2", "client_order_id": "ls-mn2",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 3, "status": "resting",
+             "created_time": _rfc3339(now - 600)},
+            [{"order_id": "oid-mn2", "trade_id": "t-mn2", "count": 2,
+              "ts": now - 500, "created_time": _rfc3339(now - 500)}])
+        with engine._lock:
+            q = next(iter(engine._resting.values()))
+        assert q["count"] == 3, (
+            "remaining = max(0, original - skip) keeps the registered "
+            "count in cumulative units == the original size (R5-MN2)")
+        assert q["filled"] == 2
