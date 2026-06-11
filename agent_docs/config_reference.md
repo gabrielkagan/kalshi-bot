@@ -23,6 +23,30 @@ flip BOTH `GLOBAL_LIVE_TRADING=True` AND `ASSET_LIVE_TRADING["<ASSET>"]=True`
 | ASSET_LIVE_TRADING | all False | Per-asset enable, all 9 crypto-15M series explicit; lock-step with `SERIES_TICKERS` (pinned by `tests/unit/test_trading_mode.py::test_asset_live_trading_covers_all_series_no_drift`) |
 | ASSET_LIVE_TRADING_DEFAULT | False | Unknown/unlisted asset → shadow (fail-safe) |
 
+## Longshot premium-harvest maker (Bit L-1, 2026-06-11)
+
+Engine `bot/longshot.py`; plan `kb/decisions/longshot-twap-live-small-plan.md`.
+Validated via `scripts/research/genhunt/02b_longshot_fillable_validation.py`
+(fillable-only +4.58¢/ct, day-bootstrap CI [+2.82, +6.26], 12/12 days, all 6
+assets positive). Sell deep-OTM sides as a maker (post opposite-side bid at
+100−ask), hold to settlement. Live/shadow control stays with the trading-mode
+gate at `executor.execute()` (single chokepoint). Regression lock:
+`tests/integration/test_longshot_strategy.py`.
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| LONGSHOT_ENABLED | False | Master enable; default OFF — flipped only at explicit operator go-live |
+| LONGSHOT_MIN_ASK_CENTS | 4 | Sold-side executable ask band lower edge (validated 4-15c) |
+| LONGSHOT_MAX_ASK_CENTS | 15 | Sold-side executable ask band upper edge |
+| LONGSHOT_MIN_STC_SECONDS | 180.0 | T-3min — stop quoting / cancel resting below this STC |
+| LONGSHOT_MAX_STC_SECONDS | 720.0 | T-12min — earliest entry |
+| LONGSHOT_EDGE_RATIO | 0.5 | Condition: p_normal ≤ ask × ratio (prob units = ask_cents/200 at 0.5) |
+| LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE | 3 | Live-small sizing per (ticker, side); counts open positions + resting quotes |
+| LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS | 150.0 | Across resting quotes + open longshot positions |
+| LONGSHOT_DAILY_LOSS_CAP_DOLLARS | 20.0 | Realized longshot PnL today ≤ −cap → same-day auto-disable (log: LONGSHOT_DAILY_CAP_HIT) |
+| LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE | 3 | N consecutive completed losing days → persistent disable |
+| LONGSHOT_STREAK_RESET_UTC_DATE | "" | Operator re-enable: losing days on/before this UTC date ignored ("" = never reset) |
+
 ## Global / 15M
 
 | Config | Value | Notes |

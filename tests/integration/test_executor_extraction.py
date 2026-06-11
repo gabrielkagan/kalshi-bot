@@ -94,6 +94,7 @@ EXECUTOR_INSTANCE_METHODS = (
     "_execute_hourly_taker",
     "_execute_weather_no_taker",
     "_execute_hourly_no_taker",
+    "_execute_longshot_maker",  # Bit L-1 longshot premium-harvest maker path
     "execute",
     "tick",
     "_tick_sol_pathc_observations",
