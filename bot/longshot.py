@@ -470,16 +470,13 @@ class LongshotEngine:
         # (cancel only reduces exposure).
         if not self._boot_reconciled:
             self._boot_reconcile_orphans()
-        if not C.LONGSHOT_ENABLED:
-            self._cancel_all("longshot_disabled")
-            return
-        self._refresh_disabled()
-        if self._disabled_reason:
-            self._cancel_all(self._disabled_reason)
-            return
 
-        # R1-MN1/M3: prune per-ticker bookkeeping past TTL (15M windows
-        # are long gone after 30 min; keeps both dicts bounded).
+        # R1-MN1/M3 + R2-MN2: prune per-ticker bookkeeping past TTL (15M
+        # windows are long gone after 30 min; keeps both dicts bounded).
+        # MUST run ABOVE the disabled early-returns: evaluate_market stamps
+        # _mark_inputs BEFORE its own disable check, so a latched engine
+        # still accretes entries every scan tick — pruning only on the
+        # enabled path made the dicts unbounded exactly when disabled.
         with self._lock:
             cutoff = now - _SEEN_TTL_SECONDS
             self._eval_row_seen = {k: ts for k, ts
@@ -488,6 +485,14 @@ class LongshotEngine:
             self._mark_inputs = {k: v for k, v
                                  in self._mark_inputs.items()
                                  if v[2] >= cutoff}
+
+        if not C.LONGSHOT_ENABLED:
+            self._cancel_all("longshot_disabled")
+            return
+        self._refresh_disabled()
+        if self._disabled_reason:
+            self._cancel_all(self._disabled_reason)
+            return
 
         # R1-M6: ONE unfiltered paginated fills fetch per tick, dispatched
         # across all resting quotes (was one REST call per quote).
@@ -703,9 +708,15 @@ class LongshotEngine:
         predicate (consumed by _allowed_size + the scanner overlay) plus
         the executor _active_orders/pending-order guard keep longshot off
         such tickers. REMAINDER for ticket 86badbf9t (durable composite-PK
-        rebuild): the reverse race — the MAIN pipeline initiating on a
-        ticker where longshot already holds a row AFTER these checks ran —
-        is NOT guarded at L-1 scope.
+        rebuild): the reverse direction — the MAIN pipeline initiating on
+        a ticker where longshot already holds a row — is NOT guarded at
+        L-1 scope. Under dual-live (main pipeline + longshot both
+        placing) that is a COMMON PATH, not a narrow timing race: nothing
+        on the main side consults longshot's rows before entering, so any
+        main-pipeline fill on a longshot-held ticker clobbers the
+        longshot positions row via INSERT OR REPLACE. Acceptable only
+        while exactly one side is live; 86badbf9t must land before
+        dual-live.
         """
         try:
             row = self._state.conn.execute(
@@ -837,6 +848,10 @@ class LongshotEngine:
         # Same-day daily loss cap: realized (fee-inclusive) + MARKED —
         # open longshot positions whose sold side is currently ITM count
         # as full loss (R1-M3; plan doc "realized+marked").
+        # R2-MN4: this cap is PER-STRATEGY today (WHERE strategy='longshot'
+        # below) — main-pipeline losses don't count toward it and vice
+        # versa. Bit T-1 must replace the per-strategy caps with a
+        # COMBINED account-level daily loss cap before dual-live.
         try:
             today_pnl = self._state.conn.execute(
                 "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) "

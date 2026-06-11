@@ -469,3 +469,84 @@ class TestM2FpFieldsAndDedupStamp:
         with engine._lock:
             q = engine._resting["oid-m2b"]
         assert q["count"] == 2
+
+
+# ── MN2: TTL prune must run even while disabled ──────────────────────────────
+
+class TestMN2PruneRunsWhileDisabled:
+    """R2-MN2: the per-ticker bookkeeping prune sat BELOW tick()'s
+    disabled early-returns, but evaluate_market stamps _mark_inputs
+    BEFORE its own disable check — so a latched engine grew both dicts
+    unboundedly while scan kept calling evaluate_market."""
+
+    def test_prune_runs_when_longshot_disabled(self, engine, state, client,
+                                               monkeypatch):
+        monkeypatch.setattr(C, "LONGSHOT_ENABLED", False, raising=False)
+        now = time.time()
+        with engine._lock:
+            engine._eval_row_seen[(TICKER, "no")] = now - 3600.0
+            engine._mark_inputs[TICKER] = (100.0, 104.0, now - 3600.0)
+        engine.tick(now=now)
+        with engine._lock:
+            assert (TICKER, "no") not in engine._eval_row_seen
+            assert TICKER not in engine._mark_inputs
+
+    def test_prune_runs_when_daily_cap_latched(self, engine, state, client,
+                                               enabled):
+        today = datetime.datetime.now(timezone.utc).date().isoformat()
+        state.conn.execute(
+            "INSERT INTO settled_trades (ticker, event_ticker, asset,"
+            " market_result, side, count, entry_price_cents, revenue_cents,"
+            " fee_cents, pnl_cents, settled_at, strategy)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("KXBTC15M-26JUN110900-T99", EVENT, "BTC", "no", "no", 3, 92,
+             0, 0, -2100, f"{today}T12:00:00.000000Z", "longshot"))
+        state.conn.commit()
+        now = time.time()
+        with engine._lock:
+            engine._eval_row_seen[(TICKER, "no")] = now - 3600.0
+            engine._mark_inputs[TICKER] = (100.0, 104.0, now - 3600.0)
+        engine.tick(now=now)
+        assert engine.disabled_reason() == "daily_cap"
+        with engine._lock:
+            assert (TICKER, "no") not in engine._eval_row_seen
+            assert TICKER not in engine._mark_inputs
+
+
+# ── MN3: malformed place response must not register a phantom quote ──────────
+
+class TestMN3MalformedPlaceResponse:
+    """R2-MN3: place_order returned non-None but with an empty/missing
+    order dict — order_id fell back to client_oid and a quote was
+    registered against an id Kalshi never acknowledged (cancel/fill
+    lifecycle keyed on a non-order). Must log LONGSHOT_PLACE_MALFORMED,
+    NOT register, and best-effort cancel via the client_oid."""
+
+    def _wired(self, state, client, engine):
+        from bot.executor import OrderExecutor
+        ml = MagicMock()
+        ml.longshot_engine = engine
+        executor = OrderExecutor(client, state, MagicMock(),
+                                 main_loop=ml, kalshi_feed=None)
+        return executor
+
+    def test_empty_order_dict_not_registered(self, engine, state, client,
+                                             enabled, caplog):
+        executor = self._wired(state, client, engine)
+        cands = _eval(engine)
+        assert len(cands) == 1
+        client.place_order.return_value = {"order": {}}  # malformed
+        with caplog.at_level("WARNING"):
+            assert executor.execute(cands[0]) is None
+        assert "LONGSHOT_PLACE_MALFORMED" in caplog.text
+        assert engine.resting_count() == 0, (
+            "malformed place response must NOT register a quote (R2-MN3)")
+        # best-effort cancel attempted via the client_oid
+        assert client.cancel_order.called
+        coid = client.cancel_order.call_args.args[0]
+        assert coid.startswith(C.LONGSHOT_CLIENT_OID_PREFIX)
+        # ledger row must not stay placeable/resting
+        row = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE client_order_id=?",
+            (coid,)).fetchone()
+        assert row["status"] != "resting"

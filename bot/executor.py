@@ -604,7 +604,26 @@ class OrderExecutor:
                 "LONGSHOT_MAKER_REJECTED: %s %s %dct @ %dc (post_only)",
                 ticker, buy_side, count, price)
             return None
-        order_id = (resp.get("order") or {}).get("order_id", client_oid)
+        order_id = (resp.get("order") or {}).get("order_id")
+        if not order_id:
+            # R2-MN3: non-None response with an empty/missing order dict —
+            # we cannot key the cancel/fill lifecycle on an id Kalshi never
+            # acknowledged (the old client_oid fallback registered a
+            # phantom quote). Do NOT register; mark the ledger row off the
+            # placeable path and best-effort cancel via the client_oid
+            # (Kalshi cancel accepts it if the order somehow rested).
+            logging.warning(
+                "LONGSHOT_PLACE_MALFORMED: %s resp carried no order_id "
+                "(order=%r) — not registering; best-effort cancel via "
+                "client_oid %s", ticker, resp.get("order"), client_oid)
+            self._state.mark_order_status(client_oid, "api_error")
+            try:
+                self._client.cancel_order(client_oid)
+            except Exception:
+                logging.warning(
+                    "LONGSHOT_PLACE_MALFORMED cancel attempt failed for %s",
+                    client_oid, exc_info=True)
+            return None
         self._state.confirm_order_submitted(client_oid, order_id)
         engine.register_resting(
             order_id=order_id, client_order_id=client_oid, ticker=ticker,
