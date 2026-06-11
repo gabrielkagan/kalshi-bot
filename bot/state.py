@@ -91,7 +91,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # bot.* leaf imports
 from bot.constants import (
     DB_PATH,
-    LONGSHOT_CLIENT_OID_PREFIX,
+    ENGINE_OWNED_CLIENT_OID_PREFIXES,
+    ENGINE_OWNED_OID_PREFIX_TO_STRATEGY,
     OB_CACHE_EVICT_AGE_SECONDS,
     OB_CACHE_FRESHNESS_SECONDS,
     SOL_RESCUE_CONTRACT_CAP,
@@ -1373,58 +1374,66 @@ class StateManager:
                 # in place to restore local visibility.
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
-                # R3-M1 + R4-MN2: stamp longshot ONLY when the MOST RECENT
+                # R3-M1 + R4-MN2 (generalized at Bit T-1): stamp an
+                # ENGINE-OWNED strategy ONLY when the MOST RECENT
                 # pending_orders row on the ticker (ANY prefix, any status)
-                # is ls-prefixed — i.e. longshot was the last strategy to
-                # trade it. Pre-R4 this was an existence check on ls-
-                # history, so a weeks-old longshot quote claimed an import
-                # the MAIN pipeline most recently traded. When the recency
-                # test passes, the position lands inside the longshot
-                # rails (caps, marks, streaks) instead of the DDL default
-                # 'main'. 'longshot' mirrors bot.longshot.LONGSHOT_STRATEGY
-                # (passes through strategy_to_group unchanged).
+                # carries that engine's client_oid prefix — i.e. the engine
+                # was the last strategy to trade it. Pre-R4 this was an
+                # existence check on ls- history, so a weeks-old longshot
+                # quote claimed an import the MAIN pipeline most recently
+                # traded. When the recency test passes, the position lands
+                # inside that engine's rails (caps, marks, streaks) instead
+                # of the DDL default 'main'. The prefix->strategy map is
+                # single-sourced in
+                # bot.constants.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY
+                # ('ls-'->'longshot', 'tw-'->'twaplock'; both literals pass
+                # through strategy_to_group unchanged).
                 _last_order = self.conn.execute(
                     "SELECT order_id, client_order_id FROM pending_orders "
                     "WHERE ticker=? ORDER BY created_at DESC LIMIT 1",
                     (ticker,)).fetchone()
-                _ls_history = (
-                    _last_order
-                    if _last_order is not None
-                    and (_last_order["client_order_id"] or "").startswith(
-                        LONGSHOT_CLIENT_OID_PREFIX)
-                    else None)
+                _eng_strategy = None
+                if _last_order is not None:
+                    _last_coid = _last_order["client_order_id"] or ""
+                    for _pfx, _strat in (
+                            ENGINE_OWNED_OID_PREFIX_TO_STRATEGY.items()):
+                        if _last_coid.startswith(_pfx):
+                            _eng_strategy = _strat
+                            break
                 try:
-                    if _ls_history:
+                    if _eng_strategy:
                         self.conn.execute("""
                             INSERT INTO positions (ticker, event_ticker, asset,
                                 side, count, avg_price_cents, total_cost_cents,
                                 opened_at, updated_at, status,
                                 strategy, strategy_group)
-                            VALUES (?,?,?,?,?,?,?,?,?,'open',
-                                'longshot','longshot')
+                            VALUES (?,?,?,?,?,?,?,?,?,'open', ?, ?)
                         """, (ticker, event_ticker, asset, side, count,
-                              avg_price, cost, now, now))
+                              avg_price, cost, now, now,
+                              _eng_strategy, _eng_strategy))
                         # R4-M2: the imported contracts are "already
-                        # embodied" truth that LongshotEngine never
-                        # counter-attributed (the engine's per-order
+                        # embodied" truth that the engine never
+                        # counter-attributed (longshot's per-order
                         # recorded_fill_count only counts its OWN
-                        # record_position_from_fill calls). Attribute the
-                        # whole import to the MOST RECENT ls- order so its
-                        # own-row boot skip seed absorbs the fill refetch.
-                        # Single-row attribution is a best-guess when
-                        # multiple ls- orders contributed; the residual
-                        # multi-order ambiguity rides with ticket
-                        # 86badbf9t's durable rebuild.
+                        # record_position_from_fill calls; harmless no-op
+                        # for twaplock, which never reads the column).
+                        # Attribute the whole import to the MOST RECENT
+                        # engine-owned order so its own-row boot skip seed
+                        # absorbs the fill refetch. Single-row attribution
+                        # is a best-guess when multiple engine orders
+                        # contributed; the residual multi-order ambiguity
+                        # rides with ticket 86badbf9t's durable rebuild.
                         self.conn.execute(
                             "UPDATE pending_orders SET recorded_fill_count="
                             "COALESCE(recorded_fill_count, 0) + ? "
                             "WHERE order_id=?",
-                            (count, _ls_history["order_id"]))
+                            (count, _last_order["order_id"]))
                         logging.warning(
-                            "RECONCILE_IMPORT_LONGSHOT: ticker=%s side=%s "
+                            "RECONCILE_IMPORT_%s: ticker=%s side=%s "
                             "count=%d — unknown position imported with "
-                            "strategy_group='longshot' (ls- pending history)",
-                            ticker, side, count)
+                            "strategy_group='%s' (engine-owned pending "
+                            "history)", _eng_strategy.upper(), ticker, side,
+                            count, _eng_strategy)
                     else:
                         self.conn.execute("""
                             INSERT INTO positions (ticker, event_ticker, asset, side,
@@ -1647,22 +1656,30 @@ class StateManager:
         # Cancel all stale resting orders on Kalshi — clean slate on startup.
         # These are maker orders from pre-restart that were never filled or canceled.
         # Leaving them resting consumes capital and can interfere with new orders.
-        # R3-M1 carve-out: ls- (longshot) orders are ENGINE-OWNED flow —
-        # LongshotEngine._boot_reconcile_orphans adopts/reconciles them at
-        # its first tick (which runs AFTER this startup reconcile). Cancelling
-        # them here neutralized that machinery and flipping their rows off
-        # 'resting' hid them from the engine's boot step 2 query. Skip them
-        # in BOTH the cancel sweep and the local row-flip loops below.
+        # R3-M1 carve-out (generalized at Bit T-1): engine-owned orders
+        # (client_oid prefixes in ENGINE_OWNED_CLIENT_OID_PREFIXES — ls-
+        # longshot, tw- twaplock) are ENGINE-OWNED flow.
+        # LongshotEngine._boot_reconcile_orphans adopts/reconciles ls-
+        # orders at its first tick (which runs AFTER this startup
+        # reconcile); TwaplockEngine's first-tick boot sweep owns stranded
+        # tw- rows (an IOC never legitimately rests). Cancelling them here
+        # neutralized that machinery and flipping their rows off 'resting'
+        # hid them from the engines' boot queries. Skip them in BOTH the
+        # cancel sweep and the local row-flip loops below.
         _stale_canceled = 0
         for order in resting_orders:
             oid = order["order_id"]
             api_order_ids.add(oid)
             coid = order.get("client_order_id") or ""
-            if coid.startswith(LONGSHOT_CLIENT_OID_PREFIX):
+            if coid.startswith(ENGINE_OWNED_CLIENT_OID_PREFIXES):
+                _eng = next(
+                    (s for p, s in
+                     ENGINE_OWNED_OID_PREFIX_TO_STRATEGY.items()
+                     if coid.startswith(p)), "engine")
                 logging.info(
-                    "RECONCILE_SKIP_LONGSHOT: %s ticker=%s — LongshotEngine "
-                    "owns ls- order lifecycle (boot step adopts at first "
-                    "tick)", oid, order.get("ticker"))
+                    "RECONCILE_SKIP_%s: %s ticker=%s — engine owns this "
+                    "order lifecycle (boot step adopts/sweeps at first "
+                    "tick)", _eng.upper(), oid, order.get("ticker"))
                 continue
             ticker = order["ticker"]
             try:
@@ -1682,12 +1699,13 @@ class StateManager:
         # Import any orders from API that we don't have locally (for history)
         for order in resting_orders:
             oid = order["order_id"]
-            # R3-M1: ls- orders were NOT canceled above — don't flip their
-            # local rows to 'canceled' (a lie that hides them from the
-            # engine's boot step 2) and don't INSERT a synthetic 'canceled'
-            # history row (the engine adopts straight from the API list).
+            # R3-M1 (generalized at Bit T-1): engine-owned (ls-/tw-) orders
+            # were NOT canceled above — don't flip their local rows to
+            # 'canceled' (a lie that hides them from the engines' boot
+            # steps) and don't INSERT a synthetic 'canceled' history row
+            # (the engine adopts/sweeps straight from its own boot pass).
             if (order.get("client_order_id") or "").startswith(
-                    LONGSHOT_CLIENT_OID_PREFIX):
+                    ENGINE_OWNED_CLIENT_OID_PREFIXES):
                 continue
             existing = self.conn.execute(
                 "SELECT 1 FROM pending_orders WHERE order_id=?", (oid,)
@@ -1726,18 +1744,21 @@ class StateManager:
                   order.get("created_time", now), now))
 
         # Mark local resting orders not on API as canceled.
-        # R3-M1: ls- rows are skipped — a longshot order absent from the
-        # API list (fully filled / expired pre-restart) is reconciled by
+        # R3-M1 (generalized at Bit T-1): engine-owned (ls-/tw-) rows are
+        # skipped — a longshot order absent from the API list (fully
+        # filled / expired pre-restart) is reconciled by
         # LongshotEngine._boot_reconcile_orphans step 2, which NEEDS the
         # row still 'resting' to find it (fills recorded, row then marked
-        # filled/canceled by the engine).
+        # filled/canceled by the engine); a stranded tw- row is flipped to
+        # 'canceled' by TwaplockEngine's first-tick boot sweep, the single
+        # owner of that transition.
         local_rows = self.conn.execute(
             "SELECT order_id, client_order_id FROM pending_orders "
             "WHERE status='resting'"
         ).fetchall()
         for row in local_rows:
             if (row["client_order_id"] or "").startswith(
-                    LONGSHOT_CLIENT_OID_PREFIX):
+                    ENGINE_OWNED_CLIENT_OID_PREFIXES):
                 continue
             if row["order_id"] not in api_order_ids:
                 self.conn.execute("""
@@ -3908,15 +3929,17 @@ class StateManager:
         ).fetchall()
         cleaned = 0
         for row in rows:
-            # R4-MN1: ls- (longshot) rows are ENGINE-OWNED — same carve-out
-            # as _reconcile_orders (R3-M1). The settlement daemon calls this
-            # method concurrently (bot/settlement.py) and flipping a
-            # past-close ls- row to 'expired' would hide it from
+            # R4-MN1 (generalized at Bit T-1): engine-owned (ls-/tw-) rows
+            # — same carve-out as _reconcile_orders (R3-M1). The settlement
+            # daemon calls this method concurrently (bot/settlement.py) and
+            # flipping a past-close ls- row to 'expired' would hide it from
             # LongshotEngine._boot_reconcile_orphans step 2, which finds
-            # unreconciled orders via status='resting'. The engine's own
-            # stale-drop/cancel paths mark ls- rows off 'resting'.
+            # unreconciled orders via status='resting'; an 'expired' tw-
+            # row would likewise hide from TwaplockEngine's boot sweep
+            # (status IN ('pending','resting')). The engines' own paths
+            # mark their rows off 'resting'.
             if (row["client_order_id"] or "").startswith(
-                    LONGSHOT_CLIENT_OID_PREFIX):
+                    ENGINE_OWNED_CLIENT_OID_PREFIXES):
                 continue
             ticker = row["ticker"]
             m = re.match(r'KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-', ticker)
