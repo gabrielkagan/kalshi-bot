@@ -76,10 +76,16 @@ cancel sweeps). Live/shadow control stays with the trading-mode gate at
 | TWAPLOCK_TWAP_WINDOW_SECONDS | 60.0 | Kalshi settles on a 60s TWAP of its reference index |
 | TWAPLOCK_ENTRY_WINDOW_SECONDS | 90.0 | Only act in the final 90s of the window — the validated decision grid's DEC_FROM (`01b_twap_lock_validation.py`); the engine-side `_MIN_SUBMIT_STC_SECONDS`=10.0 lower bound is the grid's DEC_TO and also guards the settlement race. No backtest evidence for (90, 120] or [5, 10), so neither is traded (R1-MN1) |
 | TWAPLOCK_MAX_CONTRACTS_PER_ENTRY | 2 | Live-small sizing (plan doc: 1-2 ct/entry) |
-| TWAPLOCK_MAX_ENTRIES_PER_WINDOW | 1 | One shot per window per asset — in-memory latch + DB-derived (ANY tw- pending_orders row on the ticker consumed the shot, even a zero-fill canceled IOC; survives restart) |
 | TWAPLOCK_MIN_EDGE_CENTS | 3 | Executable ask must be ≤ 100 − taker_fee(1ct) − this margin |
 | TWAPLOCK_CLIENT_OID_PREFIX | "tw-" | client_order_id prefix on every twaplock taker: reconciler carve-outs (via `ENGINE_OWNED_CLIENT_OID_PREFIXES`) + `place_order` backstop strategy recognition. Cross-strategy ticker exclusion: the engine never enters a ticker with ANY open position or pending/resting order from ANY strategy (single-ticker positions PK until 86badbf9t; fail-closed) |
 | TWAPLOCK_LIVE_OVERRIDE | False | Twaplock-ONLY go-live: `trading_mode.strategy_is_live('twaplock', asset)` = `is_live(asset)` OR this flag. Main pipeline + longshot UNAFFECTED |
+
+One entry per window per asset is STRUCTURAL, not a config knob: the
+engine's in-memory latch is binary and ANY tw- pending_orders row on the
+ticker (even a zero-fill canceled IOC; survives restart) consumes the
+shot. The former `TWAPLOCK_MAX_ENTRIES_PER_WINDOW` constant was RETIRED
+at R1-MN4 (a value other than 1 could never be honored); pinned-absent by
+`tests/integration/test_twaplock_strategy.py::TestTwaplockConstants::test_sizing_rails`.
 
 ## Live-small combined risk rails (longshot + twaplock; Bit T-1)
 

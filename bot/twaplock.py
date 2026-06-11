@@ -50,8 +50,9 @@ access so a constants flip is a runtime kill-switch):
 
 * ``TWAPLOCK_ENABLED`` master flag (default OFF).
 * ``TWAPLOCK_MAX_CONTRACTS_PER_ENTRY`` per IOC.
-* ``TWAPLOCK_MAX_ENTRIES_PER_WINDOW`` (= 1): one shot per window per
-  asset — in-memory latch + DB-derived (any tw- pending_orders row on the
+* ONE entry per window per asset — STRUCTURAL, not a knob (the former
+  ``TWAPLOCK_MAX_ENTRIES_PER_WINDOW`` constant was retired at R1-MN4):
+  binary in-memory latch + DB-derived (any tw- pending_orders row on the
   ticker consumed the shot, even a zero-fill canceled IOC; survives
   restart).
 * Cross-strategy ticker exclusion: ANY open position or ANY
@@ -473,27 +474,30 @@ class TwaplockEngine:
         return area / (now - window_start)
 
     def _already_entered(self, ticker: str) -> bool:
-        """One shot per window per asset (TWAPLOCK_MAX_ENTRIES_PER_WINDOW).
+        """One shot per window per asset — STRUCTURAL invariant, no knob.
 
-        In-memory latch (set at placement) OR DB-derived: ANY tw- ledger
-        row on the ticker — including a zero-fill canceled IOC or an
-        api_error attempt — consumed the shot (defensive: never hammer a
-        settling market; survives restart). Fail-closed on query failure.
+        (The former TWAPLOCK_MAX_ENTRIES_PER_WINDOW constant was retired
+        at R1-MN4: the binary latch below could never honor any value but
+        1.) In-memory latch (set at placement) OR DB-derived: ANY tw-
+        ledger row on the ticker — including a zero-fill canceled IOC or
+        an api_error attempt — consumed the shot (defensive: never hammer
+        a settling market; survives restart). Fail-closed on query
+        failure.
         """
         with self._lock:
             if ticker in self._entered:
                 return True
         try:
-            n = self._state.conn.execute(
-                "SELECT COUNT(*) FROM pending_orders WHERE ticker=? "
-                "AND client_order_id LIKE ?",
+            row = self._state.conn.execute(
+                "SELECT 1 FROM pending_orders WHERE ticker=? "
+                "AND client_order_id LIKE ? LIMIT 1",
                 (ticker, C.TWAPLOCK_CLIENT_OID_PREFIX + "%"),
-            ).fetchone()[0] or 0
+            ).fetchone()
         except Exception:
             logging.warning("twaplock entered-count query failed",
                             exc_info=True)
             return True
-        return int(n) >= int(C.TWAPLOCK_MAX_ENTRIES_PER_WINDOW)
+        return row is not None
 
     def _conflicting_exposure(self, ticker: str) -> bool:
         """True when the ticker has ANY open position (any strategy —

@@ -22,9 +22,10 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit T-1 spec
   C.TWAPLOCK_ENTRY_WINDOW_SECONDS (the validated decision grid).
 - Fee + margin gate: locked-side executable ask must satisfy
   ask <= 100 - taker_fee(1ct, ask) - TWAPLOCK_MIN_EDGE_CENTS.
-- One entry per window per asset (TWAPLOCK_MAX_ENTRIES_PER_WINDOW=1):
-  in-memory one-shot latch + DB-derived (tw- pending_orders rows) so the
-  latch survives a restart.
+- One entry per window per asset (STRUCTURAL — no knob; the retired
+  TWAPLOCK_MAX_ENTRIES_PER_WINDOW constant is pinned absent): in-memory
+  one-shot latch + DB-derived (tw- pending_orders rows) so the latch
+  survives a restart.
 - Cross-strategy ticker exclusion: ANY open position (main, longshot,
   twaplock) or ANY pending/resting order row on the ticker blocks entry
   (positions PK is still single-ticker until 86badbf9t).
@@ -148,8 +149,12 @@ class TestTwaplockConstants:
 
     def test_sizing_rails(self):
         assert C.TWAPLOCK_MAX_CONTRACTS_PER_ENTRY == 2
-        assert C.TWAPLOCK_MAX_ENTRIES_PER_WINDOW == 1
         assert C.TWAPLOCK_MIN_EDGE_CENTS == 3
+        # R1-MN4: one-entry-per-window is STRUCTURAL (binary in-memory
+        # latch + ANY tw- pending_orders row on the ticker), not a knob —
+        # the TWAPLOCK_MAX_ENTRIES_PER_WINDOW constant was RETIRED because
+        # the latch could never honor a value other than 1.
+        assert not hasattr(C, "TWAPLOCK_MAX_ENTRIES_PER_WINDOW")
 
     def test_entry_window(self):
         # Validated decision grid (01b_twap_lock_validation.py
