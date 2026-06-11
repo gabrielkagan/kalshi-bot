@@ -641,6 +641,51 @@ class TestExecutorChokepoint:
             (TICKER,)).fetchone()
         assert row["count"] == 1
 
+    def test_place_malformed_no_order_id_marks_api_error(self, wired, state,
+                                                         enabled):
+        """TWAPLOCK_PLACE_MALFORMED: a place response without an order_id
+        keys nothing — ledger row marked api_error, NO position recorded,
+        one-shot consumed (positions-API reconcile owns any hidden fill).
+        Mirrors longshot's LONGSHOT_PLACE_MALFORMED R2 defense."""
+        executor, engine, client = wired
+        client.place_order.return_value = {"order": {}}
+        cands = _eval(engine)
+        assert executor.execute(cands[0]) is None
+        row = state.conn.execute(
+            "SELECT status FROM pending_orders "
+            "WHERE client_order_id LIKE 'tw-%'").fetchone()
+        assert row["status"] == "api_error"
+        pos = state.conn.execute(
+            "SELECT 1 FROM positions WHERE ticker=?", (TICKER,)).fetchone()
+        assert pos is None
+        assert _eval(engine) == []  # shot consumed
+
+    @pytest.mark.parametrize("order_fields", [
+        {"fill_count_fp": "garbage"},                  # unparseable FP str
+        {"fill_count": "garbage"},                     # unparseable legacy
+        {"fill_count_fp": {"nested": "junk"}},         # wrong type entirely
+    ])
+    def test_malformed_fill_count_degrades_to_zero_fill(
+            self, wired, state, enabled, order_fields):
+        """R1-MN5: a malformed fill-count field on an otherwise-valid IOC
+        response must DEGRADE to the 0-fill path (row canceled, no
+        position, shot consumed) — never raise past
+        confirm_order_submitted (which would strand the row 'resting' and
+        crash the scan tick)."""
+        executor, engine, client = wired
+        client.place_order.return_value = {
+            "order": {"order_id": "oid-tw-m", **order_fields}}
+        cands = _eval(engine)
+        assert executor.execute(cands[0]) is None  # must not raise
+        st = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-tw-m'"
+        ).fetchone()["status"]
+        assert st == "canceled"
+        pos = state.conn.execute(
+            "SELECT 1 FROM positions WHERE ticker=?", (TICKER,)).fetchone()
+        assert pos is None
+        assert _eval(engine) == []  # shot consumed — no hot retry
+
     def test_api_none_marks_api_error(self, wired, state, enabled):
         executor, engine, client = wired
         client.place_order.return_value = None

@@ -737,10 +737,25 @@ class OrderExecutor:
             self._state.mark_order_status(client_oid, "api_error")
             return None
         self._state.confirm_order_submitted(client_oid, order_id)
-        # FP-primary fill read from the synchronous IOC response.
-        filled = fp_str_to_int(order.get("fill_count_fp")) or (
-            order.get("fill_count") or 0)
-        filled = min(int(filled), count)
+        # FP-primary fill read from the synchronous IOC response. A
+        # malformed count field (R1-MN5) DEGRADES to the 0-fill path
+        # below (row canceled, no position) — it must never raise past
+        # confirm_order_submitted, which would strand the row 'resting'
+        # and crash the scan tick. The money side of a fill hidden by a
+        # garbage count is owned by the startup positions-API reconcile
+        # (same posture as the no-order_id branch above).
+        try:
+            filled = fp_str_to_int(order.get("fill_count_fp")) or (
+                order.get("fill_count") or 0)
+            filled = min(int(filled), count)
+        except (TypeError, ValueError):
+            logging.warning(
+                "TWAPLOCK_FILL_PARSE_MALFORMED: %s order=%s unparseable "
+                "fill count (fill_count_fp=%r fill_count=%r) — treating "
+                "as 0-fill; positions-API reconcile owns any hidden fill",
+                ticker, order_id, order.get("fill_count_fp"),
+                order.get("fill_count"))
+            filled = 0
         if filled <= 0:
             self._state.mark_order_status(order_id, "canceled")
             logging.info(
