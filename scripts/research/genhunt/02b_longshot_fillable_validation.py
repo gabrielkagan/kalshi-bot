@@ -1,3 +1,10 @@
+# PROVENANCE NOTE (Bit T-1 R2-MN2): committed as the auditable record of
+# the validated construction + numbers cited by bot/longshot.py /
+# bot/constants.py (+4.58c/ct fillable-only, CI [+2.82, +6.26], 12/12
+# days), NOT as a runnable CI artifact. Running it requires UNTRACKED
+# research-corpus siblings that exist only on the research machine — a
+# clean clone fails at import on scripts/research/nbbo_cache.py +
+# scripts/research/fairvalue_model.py — plus the local bronze corpus.
 """GENHUNT #02b — Arm B (deep-OTM longshot selling) FILLABLE-ONLY validation re-run.
 
 Pre-registered clean re-run of the 2026-06-11 GENHUNT round's strongest output

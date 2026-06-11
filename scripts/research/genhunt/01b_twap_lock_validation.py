@@ -1,3 +1,11 @@
+# PROVENANCE NOTE (Bit T-1 R2-MN2): committed as the auditable record of
+# the validated construction + numbers cited by bot/twaplock.py /
+# bot/constants.py (+14.4c/ct, CI [+11.1, +17.7], n=359/12d), NOT as a
+# runnable CI artifact. Running it requires UNTRACKED research-corpus
+# siblings that exist only on the research machine — a clean clone fails
+# at import on scripts/research/nbbo_cache.py +
+# scripts/research/fairvalue_model.py, then on the importlib load of
+# scripts/research/genhunt/01_twap_lock.py — plus the local bronze corpus.
 """Terminal TWAP-Lock Repricing — pre-registered VALIDATION run (GENHUNT #01b).
 
 Validates the GENHUNT round's #01 INCONCLUSIVE candidate (lock arm n=53,
