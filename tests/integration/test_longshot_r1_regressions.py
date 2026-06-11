@@ -325,3 +325,58 @@ class TestC2PositionsPKCollisionStopgap:
         assert guard < call, (
             "scanner overlay must check has_open_main_pipeline_position "
             "BEFORE calling evaluate_market (R1-C2)")
+
+
+# ── M2: immortal cancel-failure entries ──────────────────────────────────────
+
+class TestM2ImmortalCancelEntries:
+    """R1-M2: a quote whose cancel kept failing (API None / order already
+    gone) stayed in _resting forever — re-cancelled every tick, polluting
+    caps and REST budget. Order-not-found (DELETE 404 sentinel) is
+    terminal; anything else is dropped once the window is 120s past close
+    after one final fill poll."""
+
+    def test_cancel_404_is_terminal_with_final_poll(self, engine, state,
+                                                    enabled):
+        _register(engine, order_id="oid-m2", stc=170.0)
+        engine._client.cancel_order.return_value = {
+            "_error": True, "_status_code": 404}
+        engine._client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-m2", "trade_id": "t-m2",
+                       "count": 1}]}
+        engine.tick()
+        assert engine.resting_count() == 0
+        row = state.conn.execute(
+            "SELECT count FROM positions WHERE ticker=? AND status='open'",
+            (TICKER,)).fetchone()
+        assert row is not None and row["count"] == 1
+
+    def test_persistent_cancel_failure_dropped_past_grace(self, engine,
+                                                          state, enabled,
+                                                          caplog):
+        _register(engine, order_id="oid-m2b", stc=600.0)
+        engine._client.cancel_order.return_value = None  # always fails
+        with engine._lock:
+            t0 = engine._resting["oid-m2b"]["registered_ts"]
+        engine.tick(now=t0 + 500)  # remaining=100 -> cancel fails, stays
+        assert engine.resting_count() == 1
+        # fills API surfaces a fill just before the stale drop
+        engine._client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-m2b", "trade_id": "t-m2b",
+                       "count": 2}]}
+        with caplog.at_level("WARNING"):
+            engine.tick(now=t0 + 721)  # remaining=-121 < -120 -> drop
+        assert engine.resting_count() == 0
+        assert "LONGSHOT_STALE_DROP" in caplog.text
+        row = state.conn.execute(
+            "SELECT count FROM positions WHERE ticker=? AND status='open'",
+            (TICKER,)).fetchone()
+        assert row is not None and row["count"] == 2
+
+    def test_not_dropped_inside_grace(self, engine, enabled):
+        _register(engine, order_id="oid-m2c", stc=600.0)
+        engine._client.cancel_order.return_value = None
+        with engine._lock:
+            t0 = engine._resting["oid-m2c"]["registered_ts"]
+        engine.tick(now=t0 + 700)  # remaining=-100 > -120 -> keep retrying
+        assert engine.resting_count() == 1

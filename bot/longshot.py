@@ -64,6 +64,11 @@ LONGSHOT_STRATEGY = "longshot"
 LONGSHOT_FILTER_STAGE_LIVE = "longshot_live"
 LONGSHOT_FILTER_STAGE_SHADOW = "longshot_shadow"
 
+# R1-M2: a quote this far past its window close (cancel kept failing —
+# Kalshi auto-cancels at close anyway) is dropped after one final fill
+# poll instead of being re-cancelled forever.
+_STALE_DROP_GRACE_SECONDS = 120.0
+
 _SQRT2 = math.sqrt(2.0)
 
 
@@ -372,6 +377,26 @@ class LongshotEngine:
             if remaining < C.LONGSHOT_MIN_STC_SECONDS:
                 self._cancel_quote(q["order_id"], "t_minus_3min")
 
+        # R1-M2: stale-drop backstop. If the cancel keeps failing (API
+        # None / network) past 120s AFTER window close, the order no
+        # longer exists on Kalshi (auto-cancelled at close) — one final
+        # fill poll, then drop the entry so it can't pollute caps and
+        # REST budget forever.
+        with self._lock:
+            quotes = list(self._resting.values())
+        for q in quotes:
+            elapsed = max(0.0, now - q["registered_ts"])
+            remaining = q["stc_at_register"] - elapsed
+            if remaining < -_STALE_DROP_GRACE_SECONDS:
+                self._poll_fills(q)
+                with self._lock:
+                    self._resting.pop(q["order_id"], None)
+                logging.warning(
+                    "LONGSHOT_STALE_DROP: %s %s %.0fs past close with "
+                    "cancel still failing — entry dropped after final "
+                    "fill poll (filled %d/%d)", q["ticker"], q["order_id"],
+                    -remaining, q["filled"], q["count"])
+
     # ── internals ─────────────────────────────────────────────────────────
 
     def _boot_reconcile_orphans(self) -> None:
@@ -602,6 +627,19 @@ class LongshotEngine:
                             "(api None) — retry next tick",
                             q["ticker"], order_id, reason)
             return
+        # R1-M2: order-not-found is TERMINAL — Kalshi already expired/
+        # cancelled it (idempotent-DELETE 404 sentinel from _request).
+        # Fall through to the final fill poll + pop; never retry.
+        if isinstance(resp, dict) and resp.get("_error"):
+            if resp.get("_status_code") != 404:
+                logging.warning(
+                    "LONGSHOT_CANCEL_FAILED: %s %s reason=%s (api error "
+                    "%s) — retry next tick", q["ticker"], order_id, reason,
+                    resp.get("_status_code"))
+                return
+            logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
+                         "already expired/cancelled on Kalshi (404)",
+                         q["ticker"], order_id, reason)
         # R1-C1: final fill poll BEFORE popping — a fill can land between
         # the last tick poll and the cancel taking effect; popping first
         # would orphan it (position held to settlement with no local row).
