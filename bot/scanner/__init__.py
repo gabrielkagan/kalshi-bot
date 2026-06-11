@@ -10157,10 +10157,23 @@ class OpportunityScanner:
         return event_ticker
 
     def _get_occupied_timeslots(self) -> Dict[str, set]:
-        """Return {timeslot: set(assets)} for timeslots with open positions or resting orders."""
+        """Return {timeslot: set(assets)} for timeslots with open positions or resting orders.
+
+        Longshot rows are EXCLUDED (Bit L-1 R2-C1): the longshot overlay
+        lives INSIDE the market loop, so a longshot resting quote / open
+        position counting as occupancy would drop the whole (timeslot,
+        asset) window from eligible_windows on the very next tick —
+        starving the engine's condition-flip cancel + _mark_inputs AND the
+        main pipeline's evaluation of that window. Longshot's own caps are
+        enforced engine-side (per-(window, side) + collateral), and the
+        ticker-PK collision stopgap keeps it off main-pipeline tickers, so
+        the single-asset-per-timeslot rule never applied to it.
+        """
         occupied: Dict[str, set] = {}
 
         for pos in self._state.get_open_positions():
+            if pos.get("strategy_group") == "longshot":
+                continue  # R2-C1: longshot positions don't occupy the slot
             et = pos.get("event_ticker", "")
             asset = pos.get("asset", "")
             ts = self._window_timeslot(et)
@@ -10168,6 +10181,9 @@ class OpportunityScanner:
                 occupied.setdefault(ts, set()).add(asset)
 
         for order in self._state.get_resting_orders():
+            if (order.get("client_order_id") or "").startswith(
+                    bot.constants.LONGSHOT_CLIENT_OID_PREFIX):
+                continue  # R2-C1: longshot resting quotes don't occupy
             et = order.get("event_ticker", "")
             asset = order.get("asset", "")
             ts = self._window_timeslot(et)

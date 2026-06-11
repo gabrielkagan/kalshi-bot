@@ -453,7 +453,12 @@ class LongshotEngine:
             if remaining < -_STALE_DROP_GRACE_SECONDS:
                 self._poll_fills(q)
                 with self._lock:
-                    self._resting.pop(q["order_id"], None)
+                    _popped = self._resting.pop(q["order_id"], None)
+                # R2-C1: stale drop is a pop site too — clear the ledger row
+                # (Kalshi auto-cancelled the order at window close). Skip
+                # when the final poll fully filled it (already marked).
+                if _popped is not None:
+                    self._mark_pending(q["order_id"], "canceled")
                 logging.warning(
                     "LONGSHOT_STALE_DROP: %s %s %.0fs past close with "
                     "cancel still failing — entry dropped after final "
@@ -507,6 +512,22 @@ class LongshotEngine:
             logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
                             "final fill poll + cancel", ticker, order_id)
             self._cancel_quote(order_id, "boot_orphan")
+
+    def _mark_pending(self, order_id: str, status: str) -> None:
+        """R2-C1: flip the pending_orders row off status='resting' whenever
+        a quote is popped from the in-memory registry (canceled / filled /
+        stale-dropped). The scanner's `_get_occupied_timeslots` ALSO
+        excludes ls- rows defensively, but the ledger must still tell the
+        truth — a permanently-'resting' row outlives the quote and leaks
+        into dashboards + the executor's pending-order conflict check.
+        mark_order_status matches order_id OR client_order_id
+        (bot/state.py), so the server-assigned id works here. DB failure
+        must never break a cancel sweep — log and continue."""
+        try:
+            self._state.mark_order_status(order_id, status)
+        except Exception:
+            logging.warning("longshot mark_order_status(%s, %s) failed",
+                            order_id, status, exc_info=True)
 
     def _resting_for_ticker(self, ticker: str) -> List[Dict]:
         with self._lock:
@@ -774,7 +795,13 @@ class LongshotEngine:
                 q["ticker"], order_id, api_filled, q["filled"])
             return
         with self._lock:
-            self._resting.pop(order_id, None)
+            _popped = self._resting.pop(order_id, None)
+        # R2-C1: the pop must flip the pending_orders row off 'resting' —
+        # otherwise the (timeslot, asset) occupancy block outlives the
+        # quote. Skip when the final poll above already fully filled the
+        # quote (_apply_fills popped it and marked the row 'filled').
+        if _popped is not None:
+            self._mark_pending(order_id, "canceled")
         logging.info("LONGSHOT_CANCEL: %s %s reason=%s", q["ticker"],
                      order_id, reason)
 
@@ -855,4 +882,8 @@ class LongshotEngine:
                 q["buy_price_cents"], q["filled"], q["count"], trade_id)
         if q["filled"] >= q["count"]:
             with self._lock:
-                self._resting.pop(q["order_id"], None)
+                _popped = self._resting.pop(q["order_id"], None)
+            # R2-C1: fully filled -> ledger row leaves 'resting' (idempotent
+            # when the entry was already popped by a sister path).
+            if _popped is not None:
+                self._mark_pending(q["order_id"], "filled")
