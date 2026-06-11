@@ -26,9 +26,14 @@ Once the locked side's probability ``p_lock`` clears
 4-venue validation index; undercounting events costs frequency, not
 correctness — the degraded-index lesson), BUY that side as a TAKER (IOC)
 if the executable ask leaves >= taker_fee + ``TWAPLOCK_MIN_EDGE_CENTS``
-vs ~100c settlement. Hold to settlement: NO resting-quote lifecycle, NO
-registry, NO cancel sweeps (an IOC never rests — much simpler than
-bot/longshot.py by design).
+vs ~100c settlement. (R1-MN2 note: this integer-cent per-1-contract
+construction can sit <= 1c WIDER at the boundary than the validated
+rule's continuous fee + 0.03 edge test — acceptable because the live
+p_lock threshold is strictly tighter than the validated one (0.99 vs
+0.95), which more than absorbs a 1c boundary widening on the price
+side.) Hold to settlement: NO resting-quote lifecycle, NO registry, NO
+cancel sweeps (an IOC never rests — much simpler than bot/longshot.py by
+design).
 
 Division of labor (mirrors the longshot overlay pattern):
 
