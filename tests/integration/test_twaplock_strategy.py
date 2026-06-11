@@ -811,3 +811,58 @@ class TestBootSweep:
             "SELECT status FROM pending_orders WHERE client_order_id='tw-late'"
         ).fetchone()["status"]
         assert st == "pending"
+
+
+# ── scanner overlay + main_loop wiring (source pins) ─────────────────────────
+
+class TestScannerAndMainLoopWiring:
+    """Source pins for the Bit T-1 wiring outside the engine (mirrors the
+    longshot R1 source-pin pattern in test_longshot_r1_regressions.py)."""
+
+    def _scanner_src(self):
+        import pathlib
+        return pathlib.Path("bot/scanner/__init__.py").read_text()
+
+    def test_scanner_overlay_calls_engine(self):
+        src = self._scanner_src()
+        start = src.index("TWAP-lock endgame overlay")
+        block = src[start:start + 3000]
+        assert "twaplock_engine" in block
+        assert "evaluate_market" in block
+        # kill switch read live at the scan layer (cheap no-op when off)
+        assert "TWAPLOCK_ENABLED" in block
+
+    def test_scanner_partitions_twaplock_as_overlay(self):
+        src = self._scanner_src()
+        # tail partition (bracket_no/longshot pattern): twaplock candidates
+        # bypass the single-asset filter and re-join via selected.extend
+        assert '_twaplock_candidates = [c for c in candidates' in src
+        assert 'c.get("strategy") == "twaplock"' in src
+        assert "selected.extend(_twaplock_candidates)" in src
+        # excluded from the main-pipeline list
+        _main_start = src.index("_main_candidates = [c for c in candidates")
+        _main_block = src[_main_start:_main_start + 600]
+        assert '"twaplock"' in _main_block
+
+    def test_occupied_timeslots_have_no_twaplock_carveout(self):
+        """INTENTIONAL asymmetry vs longshot R2-C1: a twaplock position /
+        tw- order DOES occupy its (timeslot, asset) slot, so the main
+        pipeline skips the window for its final ~2min — the cheap reverse-
+        direction defense for the single-ticker positions PK (86badbf9t).
+        Twaplock needs no further evaluation of an entered window (one
+        shot, hold to settlement; marks go stale but settlement realizes
+        within minutes)."""
+        import pathlib
+        src = pathlib.Path("bot/scanner/__init__.py").read_text()
+        start = src.index("def _get_occupied_timeslots")
+        block = src[start:start + 2500]
+        assert "TWAPLOCK_CLIENT_OID_PREFIX" not in block
+        assert '"twaplock"' not in block.replace(
+            "twaplock rows DO occupy", "")  # carve-out absent by design
+
+    def test_main_loop_constructs_and_ticks_engine(self):
+        import pathlib
+        src = pathlib.Path("bot/main_loop.py").read_text()
+        assert "from bot.twaplock import TwaplockEngine" in src
+        assert "self.twaplock_engine = TwaplockEngine(" in src
+        assert "self.twaplock_engine.tick()" in src
