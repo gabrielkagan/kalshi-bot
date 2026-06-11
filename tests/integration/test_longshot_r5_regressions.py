@@ -479,3 +479,66 @@ class TestM3BootAdoptionSeedsRealClose:
         assert q["stc_at_register"] == 0.0, (
             "an unparseable ticker must fall back to 0.0 — adoption must "
             "never crash on it (R5-M3)")
+
+
+# ── MN1: stale-drop is terminal — its final poll must be COMPLETE ───────────
+
+class TestMN1StaleDropRequiresCompletePoll:
+    """R5-MN1: the stale-drop popped the entry after _poll_fills
+    regardless of completeness — a failed/partial final poll could
+    orphan a last-moment fill forever (the pop is terminal; the entry's
+    seen_trade_ids/dedup state dies with it). One-retry-per-tick fix:
+    pop only when the final poll returned complete=True; the stale
+    condition re-fires next tick. Bounded worst case: the entry persists
+    one tick per failed poll — the window is already closed (no NEW
+    fills accrue) and trade_id dedup keeps re-polls idempotent."""
+
+    def _stale_quote(self, engine, state, *, order_id="oid-mn1",
+                     client_oid="ls-mn1", count=3):
+        _seed_pending_resting(state, client_oid=client_oid,
+                              order_id=order_id, count=count)
+        engine._boot_reconciled = True
+        return _register(engine, order_id=order_id, client_oid=client_oid,
+                         count=count, stc=0.0)
+
+    def test_failed_final_poll_defers_the_drop(self, engine, state, client,
+                                               enabled):
+        self._stale_quote(engine, state)
+        client.cancel_order.return_value = None     # cancel keeps failing
+        client.get_fills.return_value = None        # poll fails outright
+        engine.tick(now=time.time() + 300)          # > 120s grace
+        assert engine.resting_count() == 1, (
+            "a stale-drop on a FAILED final poll is a terminal decision "
+            "on missing data — the entry must survive to next tick "
+            "(R5-MN1)")
+        assert _pending_status(state, "oid-mn1") == "resting"
+        # Next tick the poll succeeds -> drop proceeds.
+        client.get_fills.return_value = {"fills": []}
+        engine.tick(now=time.time() + 301)
+        assert engine.resting_count() == 0
+        assert _pending_status(state, "oid-mn1") == "canceled"
+
+    def test_partial_final_poll_records_but_defers_the_drop(
+            self, engine, state, client, enabled):
+        """Page-cap exhaustion (cursor never drains) = partial snapshot:
+        the partial page's fills are still recorded, but the drop waits
+        for a COMPLETE poll."""
+        self._stale_quote(engine, state, count=3)
+        client.cancel_order.return_value = None
+        client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-mn1", "trade_id": "t-mn1",
+                       "count": 1}],
+            "cursor": "never-drains"}
+        engine.tick(now=time.time() + 300)
+        assert engine.resting_count() == 1, (
+            "a PARTIAL final poll must not drive the terminal stale-drop "
+            "(R5-MN1)")
+        row = _positions_row(state)
+        assert row is not None and row["count"] == 1, (
+            "the partial page's fills must still be recorded (R3-MN1 "
+            "behavior preserved)")
+        client.get_fills.return_value = {"fills": []}
+        engine.tick(now=time.time() + 301)
+        assert engine.resting_count() == 0
+        assert _pending_status(state, "oid-mn1") == "canceled"
+        assert _positions_row(state)["count"] == 1  # no double-record

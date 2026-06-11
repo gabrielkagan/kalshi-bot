@@ -554,7 +554,23 @@ class LongshotEngine:
             elapsed = max(0.0, now - q["registered_ts"])
             remaining = q["stc_at_register"] - elapsed
             if remaining < -_STALE_DROP_GRACE_SECONDS:
-                self._poll_fills(q)
+                # R5-MN1: the drop is TERMINAL (the entry's dedup state
+                # dies with it), so the final poll must be COMPLETE —
+                # a failed/partial snapshot could hide a last-moment
+                # fill forever. On a failed/partial poll, leave the
+                # entry: the stale condition re-fires next tick (one
+                # retry per tick). Bounded worst case: the entry
+                # persists one tick per failed poll while it
+                # over-reserves caps — safe direction — and the window
+                # is already closed, so no NEW fills accrue;
+                # seen_trade_ids dedup keeps the re-polls (and the
+                # partial pages' recorded fills) idempotent.
+                if not self._poll_fills(q):
+                    logging.warning(
+                        "LONGSHOT_STALE_DROP_DEFERRED: %s %s final fill "
+                        "poll failed/partial — retry next tick (R5-MN1)",
+                        q["ticker"], q["order_id"])
+                    continue
                 with self._lock:
                     _popped = self._resting.pop(q["order_id"], None)
                 # R2-C1: stale drop is a pop site too — clear the ledger row
