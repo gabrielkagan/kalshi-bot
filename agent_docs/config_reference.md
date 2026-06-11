@@ -43,11 +43,58 @@ gate at `executor.execute()` (single chokepoint). Regression lock:
 | LONGSHOT_EDGE_RATIO | 0.5 | Condition: p_normal ≤ ask × ratio (prob units = ask_cents/200 at 0.5) |
 | LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE | 3 | Live-small sizing per (ticker, side); counts open positions + resting quotes. R4-M1: `_allowed_size` additionally returns 0 on ANY open opposite-side longshot row (one open longshot row per ticker — `record_position_from_fill` matches WHERE ticker+strategy_group with no side predicate, so an opposite-side fill would accumulate under the old side; ticker-PK stopgap, 86badbf9t). R5-M2 extends the same invariant to opposite-side RESTING quotes (registry quotes are future rows; incl. CANCEL_FILL_MISMATCH-held entries) via `has_opposite_side_resting_quote`. The scanner overlay mirrors both guards defensively |
 | LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS | 150.0 | Across resting quotes + open longshot positions |
-| LONGSHOT_DAILY_LOSS_CAP_DOLLARS | 20.0 | Realized + MARKED longshot PnL today ≤ −cap → same-day auto-disable (log: LONGSHOT_DAILY_CAP_HIT). Marked term (R1-M3): open longshot positions whose sold side is currently ITM (latest engine-input spot vs strike) count as full loss (total_cost_cents) — plan doc "realized+marked". R2-MN4: cap is PER-STRATEGY (WHERE strategy='longshot'); Bit T-1 must make it the combined cap before dual-live |
-| LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE | 3 | N consecutive completed losing days → persistent disable |
-| LONGSHOT_STREAK_RESET_UTC_DATE | "" | Operator re-enable: losing days on/before this UTC date ignored ("" = never reset) |
-| LONGSHOT_CLIENT_OID_PREFIX | "ls-" | client_order_id prefix on every longshot maker (R1-M1/M4 + R3-M1 + R4-MN1/MN2): boot orphan reconciliation (first-tick adopt-and-kill of restart survivors) + `place_order` backstop strategy recognition (`trading_mode.strategy_from_client_order_id`) + startup-reconciler carve-out (`bot/state.py::_reconcile_orders` skips ls- orders in cancel/row-flip sweeps; `cleanup_expired_resting_orders` also skips ls- rows — R4-MN1, the settlement daemon calls it concurrently and an 'expired' flip would hide the row from boot step 2; `_reconcile_positions` stamps imports `strategy_group='longshot'` only when the MOST RECENT pending_orders row on the ticker is ls- — R4-MN2 recency, not existence) |
+| LONGSHOT_CLIENT_OID_PREFIX | "ls-" | client_order_id prefix on every longshot maker (R1-M1/M4 + R3-M1 + R4-MN1/MN2): boot orphan reconciliation (first-tick adopt-and-kill of restart survivors) + `place_order` backstop strategy recognition (`trading_mode.strategy_from_client_order_id`) + startup-reconciler carve-out (Bit T-1 generalized: `bot/state.py` keys off `ENGINE_OWNED_CLIENT_OID_PREFIXES` — `_reconcile_orders` skips engine-owned orders in cancel/row-flip sweeps; `cleanup_expired_resting_orders` also skips them — R4-MN1, the settlement daemon calls it concurrently and an 'expired' flip would hide the row from boot step 2; `_reconcile_positions` stamps imports with the mapped strategy_group only when the MOST RECENT pending_orders row on the ticker carries an engine-owned prefix — R4-MN2 recency, not existence) |
 | LONGSHOT_LIVE_OVERRIDE | False | Longshot-ONLY go-live (R1-M4): `trading_mode.strategy_is_live('longshot', asset)` = `is_live(asset)` OR this flag. Main pipeline UNAFFECTED (non-longshot strategies reduce exactly to `is_live`). Consulted at `executor.execute()` + the `place_order` backstop; a live→shadow flip also cancels resting quotes on the next tick (R1-MN4) |
+
+The Bit L-1 per-strategy rails `LONGSHOT_DAILY_LOSS_CAP_DOLLARS` /
+`LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE` / `LONGSHOT_STREAK_RESET_UTC_DATE`
+were RETIRED at Bit T-1 into the combined `LIVE_SMALL_*` rails below
+(closing the R2-MN4 note — `LongshotEngine._refresh_disabled` now consumes
+`bot/strategy_caps.py`, same numbers as twaplock's latch; log signatures
+LONGSHOT_DAILY_CAP_HIT / LONGSHOT_CONSEC_DAYS_DISABLE unchanged).
+
+## TWAP-lock endgame taker (Bit T-1, 2026-06-11)
+
+Engine `bot/twaplock.py`; plan `kb/decisions/longshot-twap-live-small-plan.md`.
+Validated via `scripts/research/genhunt/01b_twap_lock_validation.py`
+(+14.4¢/ct, day-bootstrap CI [+11.1, +17.7], n=359 over 12 days, 29.9
+locks/day on the honest 4-venue index, print cross-check 99.2%, all 7 assets
+positive). In the final ~2min of a 15M window, compute `p_lock` from the
+accrued Coinbase-anchored settlement-TWAP (per-asset spot ring buffer fed
+from the scanner's per-tick read) + a remaining-variance term from
+`blended_rv`; when the locked side clears the threshold, BUY it as a TAKER
+(IOC) if the executable ask leaves ≥ fee + margin vs ~100¢ settlement; hold
+to settlement. No resting lifecycle (an IOC never rests — no registry, no
+cancel sweeps). Live/shadow control stays with the trading-mode gate at
+`executor.execute()` (single chokepoint). Regression lock:
+`tests/integration/test_twaplock_strategy.py`.
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| TWAPLOCK_ENABLED | False | Master enable; default OFF — flipped only at explicit operator go-live |
+| TWAPLOCK_P_LOCK_THRESHOLD | 0.99 | STRICTER than the validated 0.95: the Coinbase-anchored MVP index adds proxy error vs the honest 4-venue validation index; undercounting costs frequency, not correctness (degraded-index lesson) |
+| TWAPLOCK_TWAP_WINDOW_SECONDS | 60.0 | Kalshi settles on a 60s TWAP of its reference index |
+| TWAPLOCK_ENTRY_WINDOW_SECONDS | 120.0 | Only act in the final 120s of the window (engine-side `_MIN_SUBMIT_STC_SECONDS`=5.0 lower bound guards the settlement race) |
+| TWAPLOCK_MAX_CONTRACTS_PER_ENTRY | 2 | Live-small sizing (plan doc: 1-2 ct/entry) |
+| TWAPLOCK_MAX_ENTRIES_PER_WINDOW | 1 | One shot per window per asset — in-memory latch + DB-derived (ANY tw- pending_orders row on the ticker consumed the shot, even a zero-fill canceled IOC; survives restart) |
+| TWAPLOCK_MIN_EDGE_CENTS | 3 | Executable ask must be ≤ 100 − taker_fee(1ct) − this margin |
+| TWAPLOCK_CLIENT_OID_PREFIX | "tw-" | client_order_id prefix on every twaplock taker: reconciler carve-outs (via `ENGINE_OWNED_CLIENT_OID_PREFIXES`) + `place_order` backstop strategy recognition. Cross-strategy ticker exclusion: the engine never enters a ticker with ANY open position or pending/resting order from ANY strategy (single-ticker positions PK until 86badbf9t; fail-closed) |
+| TWAPLOCK_LIVE_OVERRIDE | False | Twaplock-ONLY go-live: `trading_mode.strategy_is_live('twaplock', asset)` = `is_live(asset)` OR this flag. Main pipeline + longshot UNAFFECTED |
+
+## Live-small combined risk rails (longshot + twaplock; Bit T-1)
+
+Single source of truth `bot/strategy_caps.py` — BOTH engines' disable
+latches consume the same functions (realized fee-inclusive PnL from
+`settled_trades WHERE strategy IN ('longshot','twaplock')` + marked open
+losses from each engine's registered mark provider).
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS | 20.0 | COMBINED realized+marked PnL today ≤ −cap → same-day auto-disable of BOTH engines (logs: LONGSHOT_DAILY_CAP_HIT / TWAPLOCK_DAILY_CAP_HIT) |
+| LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE | 3 | N consecutive completed COMBINED losing days → persistent disable of BOTH |
+| LIVE_SMALL_STREAK_RESET_UTC_DATE | "" | Operator re-enable: combined losing days on/before this UTC date ignored ("" = never reset) |
+| ENGINE_OWNED_OID_PREFIX_TO_STRATEGY | {ls-: longshot, tw-: twaplock} | Single-sourced prefix→strategy map driving the `bot/state.py` reconciler carve-outs + `trading_mode.strategy_from_client_order_id`; extend when a new engine-owned strategy lands |
+| ENGINE_OWNED_CLIENT_OID_PREFIXES | ("ls-", "tw-") | Tuple form for `str.startswith` checks (derived from the map) |
 
 ## Global / 15M
 
