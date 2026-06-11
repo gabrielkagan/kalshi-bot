@@ -95,6 +95,7 @@ EXECUTOR_INSTANCE_METHODS = (
     "_execute_weather_no_taker",
     "_execute_hourly_no_taker",
     "_execute_longshot_maker",  # Bit L-1 longshot premium-harvest maker path
+    "_execute_twaplock_taker",  # Bit T-1 TWAP-lock endgame taker path
     "execute",
     "tick",
     "_tick_sol_pathc_observations",

@@ -2037,6 +2037,49 @@ class OpportunityScanner:
                                 "longshot evaluate_market failed for %s",
                                 ticker, exc_info=True)
 
+                # ── TWAP-lock endgame overlay (Bit T-1) ─────────────────
+                # Final-120s lock detection, delegated to bot/twaplock.py
+                # (engine owns p_lock math + risk rails + eval-row writes
+                # with filter_stage twaplock_live/shadow). Candidates join
+                # the normal list and are partitioned out as an overlay at
+                # the scan() tail (longshot/bracket_no pattern), so they
+                # flow through executor.execute() — the trading-mode
+                # chokepoint — like every other order. The engine no-ops
+                # cheaply outside the entry window but DOES feed its
+                # per-asset spot ring buffer + mark inputs on every
+                # enabled call (the accrued-TWAP estimate needs samples
+                # from BEFORE the settlement window opens). Cross-strategy
+                # ticker exclusion lives inside the engine (fail-closed),
+                # so no scanner-side position pre-check is needed.
+                # TWAPLOCK_ENABLED read live (runtime kill-switch pattern).
+                if (_pt in (None, "15m") and self._ml is not None
+                        and bot.constants.TWAPLOCK_ENABLED):
+                    _tw_engine = getattr(self._ml, "twaplock_engine", None)
+                    if _tw_engine is not None:
+                        try:
+                            _tw_cands = _tw_engine.evaluate_market(
+                                ticker=ticker,
+                                event_ticker=window.get("event_ticker",
+                                                        ""),
+                                asset=asset,
+                                product_type=_pt or "15m",
+                                spot=spot,
+                                threshold=threshold,
+                                seconds_to_close=seconds_remaining,
+                                blended_rv=blended_rv,
+                                orderbook_fetch=(
+                                    lambda _t=ticker:
+                                    self._get_orderbook_cached(_t)[0]),
+                                config_snapshot_id=self._ml.config_snapshot_id,
+                                balance_at_scan=self._get_balance_cached(),
+                            )
+                            if _tw_cands:
+                                candidates.extend(_tw_cands)
+                        except Exception:
+                            logging.warning(
+                                "twaplock evaluate_market failed for %s",
+                                ticker, exc_info=True)
+
                 # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
                 # Skip probability computation for strikes clearly outside entry range.
                 if _pt in ("spx_hourly", "hourly", "weather"):
@@ -7006,13 +7049,14 @@ class OpportunityScanner:
         _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
         _lpne_candidates = [c for c in candidates if c.get("strategy") == "low_price_near_expiry"]
         _longshot_candidates = [c for c in candidates if c.get("strategy") == "longshot"]
+        _twaplock_candidates = [c for c in candidates if c.get("strategy") == "twaplock"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
         _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
                             and not c.get("strategy", "").startswith("terminal_momentum")
-                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry", "longshot")
+                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry", "longshot", "twaplock")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -7179,6 +7223,12 @@ class OpportunityScanner:
         # already enforced per-window-side + collateral caps; the executor
         # re-checks via LongshotEngine.authorize at placement time)
         selected.extend(_longshot_candidates)
+
+        # TWAP-lock overlay: add all twaplock candidates (Bit T-1 — engine
+        # already enforced the one-shot-per-window latch + cross-strategy
+        # exclusion + combined live-small rails; the executor re-checks via
+        # TwaplockEngine.authorize at placement time)
+        selected.extend(_twaplock_candidates)
 
         # ── 96¢ × {SOL,XRP} × 2-5min STC danger-band filter (strategy-aware) ──
         # Strips bleeder-strategy candidates from the cell while preserving
@@ -10190,6 +10240,15 @@ class OpportunityScanner:
         enforced engine-side (per-(window, side) + collateral), and the
         ticker-PK collision stopgap keeps it off main-pipeline tickers, so
         the single-asset-per-timeslot rule never applied to it.
+
+        Twaplock rows have NO such carve-out (Bit T-1, INTENTIONAL
+        asymmetry): a twaplock position / tw- order DOES occupy its slot,
+        blocking main-pipeline entry into that window for its final ~2min
+        — the cheap reverse-direction defense for the single-ticker
+        positions PK (86badbf9t). Unlike longshot, twaplock needs no
+        further evaluation of an entered window (one shot, no cancel
+        lifecycle, hold to settlement; its marks go stale but settlement
+        realizes them within minutes).
         """
         occupied: Dict[str, set] = {}
 
