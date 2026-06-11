@@ -480,3 +480,33 @@ class TestM2PerOrderRecordedFillCounter:
         engine.tick()
         assert _positions_row(state)["count"] == 2, (
             "boot refetch after a reconcile import must be a no-op")
+
+
+# ── MN1: cleanup_expired_resting_orders needs the ls- carve-out ──────────────
+
+# A clearly past-close 15M ticker (Jan 1 2026 12:00 ET).
+PAST_TICKER = "KXBTC15M-26JAN011200-T104"
+PAST_EVENT = "KXBTC15M-26JAN011200"
+
+
+class TestMN1CleanupExpiredCarveOut:
+    """R4-MN1: the settlement daemon calls cleanup_expired_resting_orders
+    concurrently with the engine's boot reconcile; flipping a past-close
+    ls- row to 'expired' hides it from boot step 2 (which queries
+    status='resting') — same engine-owned carve-out as _reconcile_orders
+    (R3-M1)."""
+
+    def test_past_close_ls_row_stays_resting(self, state):
+        _seed_pending_resting(state, client_oid="ls-mn1", order_id="oid-mn1",
+                              ticker=PAST_TICKER, event=PAST_EVENT)
+        _seed_pending_resting(state, client_oid="mk-mn1", order_id="oid-mn1m",
+                              ticker=PAST_TICKER, event=PAST_EVENT,
+                              side="yes", price=95)
+        state.cleanup_expired_resting_orders()
+        assert _pending_status(state, "oid-mn1") == "resting", (
+            "a past-close ls- row must stay 'resting' for the engine's "
+            "boot step-2 query — the LongshotEngine owns the ls- "
+            "lifecycle (R4-MN1)")
+        assert _pending_status(state, "oid-mn1m") == "expired", (
+            "non-longshot past-close rows must still expire (R4-MN1 "
+            "carve-out is ls- only)")

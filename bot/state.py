@@ -3895,10 +3895,21 @@ class StateManager:
         now_utc = datetime.datetime.now(timezone.utc)
         now_str = now_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         rows = self.conn.execute(
-            "SELECT order_id, ticker FROM pending_orders WHERE status='resting'"
+            "SELECT order_id, client_order_id, ticker FROM pending_orders "
+            "WHERE status='resting'"
         ).fetchall()
         cleaned = 0
         for row in rows:
+            # R4-MN1: ls- (longshot) rows are ENGINE-OWNED — same carve-out
+            # as _reconcile_orders (R3-M1). The settlement daemon calls this
+            # method concurrently (bot/settlement.py) and flipping a
+            # past-close ls- row to 'expired' would hide it from
+            # LongshotEngine._boot_reconcile_orphans step 2, which finds
+            # unreconciled orders via status='resting'. The engine's own
+            # stale-drop/cancel paths mark ls- rows off 'resting'.
+            if (row["client_order_id"] or "").startswith(
+                    LONGSHOT_CLIENT_OID_PREFIX):
+                continue
             ticker = row["ticker"]
             m = re.match(r'KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-', ticker)
             if not m:
