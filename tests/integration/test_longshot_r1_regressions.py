@@ -380,3 +380,80 @@ class TestM2ImmortalCancelEntries:
             t0 = engine._resting["oid-m2c"]["registered_ts"]
         engine.tick(now=t0 + 700)  # remaining=-100 > -120 -> keep retrying
         assert engine.resting_count() == 1
+
+
+# ── M3: daily cap must include marked (sold-side-ITM) open positions ─────────
+
+TICKER2 = "KXBTC15M-26JUN111215-T110"
+EVENT2 = "KXBTC15M-26JUN111215"
+
+
+def _seed_settled(state, ticker, pnl_cents, settled_date,
+                  strategy="longshot"):
+    state.conn.execute(
+        "INSERT INTO settled_trades (ticker, event_ticker, asset,"
+        " market_result, side, count, entry_price_cents, revenue_cents,"
+        " fee_cents, pnl_cents, settled_at, strategy)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (ticker, EVENT, "BTC", "no", "no", 3, 92, 0, 0, pnl_cents,
+         f"{settled_date}T12:00:00.000000Z", strategy))
+    state.conn.commit()
+
+
+def _today_iso():
+    return datetime.datetime.now(timezone.utc).date().isoformat()
+
+
+class TestM3DailyCapMarkedTerm:
+    """R1-M3: the $20 daily cap counted REALIZED PnL only — open longshot
+    positions whose sold side is currently ITM (a near-certain full loss
+    at settlement) didn't count, so the cap could be blown by multiples
+    before settlement realized it. Plan doc says 'realized+marked'."""
+
+    def test_itm_sold_side_marks_toward_cap(self, engine, state, enabled):
+        # realized -$18 (under the $20 cap) ...
+        _seed_settled(state, "KXBTC15M-26JUN110900-T99", -1800, _today_iso())
+        # ... plus an open position on TICKER2 (bought NO 3 @ 92c = 276c)
+        # whose SOLD side (YES) is ITM at the latest mark: 1800+276 >= 2000.
+        state.record_position_from_fill(
+            TICKER2, EVENT2, "BTC", "no", 3, 92, strategy="longshot",
+            is_taker=False, fill_source="longshot_maker")
+        out = _eval(engine, ticker=TICKER2, spot=120.0, threshold=110.0)
+        assert out == []
+        assert engine.disabled_reason() == "daily_cap"
+
+    def test_otm_sold_side_does_not_mark(self, engine, state, enabled):
+        _seed_settled(state, "KXBTC15M-26JUN110900-T99", -1800, _today_iso())
+        state.record_position_from_fill(
+            TICKER2, EVENT2, "BTC", "no", 3, 92, strategy="longshot",
+            is_taker=False, fill_source="longshot_maker")
+        # sold YES still OTM (spot below strike) -> no marked loss
+        _eval(engine, ticker=TICKER2, spot=100.0, threshold=110.0)
+        assert engine.disabled_reason() is None
+        assert len(_eval(engine, ticker=TICKER)) == 1
+
+    def test_marked_only_can_trip_cap(self, engine, state, enabled,
+                                      monkeypatch, caplog):
+        # zero realized; cap shrunk to $2 so the 276c marked loss trips it
+        monkeypatch.setattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS", 2.0,
+                            raising=False)
+        state.record_position_from_fill(
+            TICKER2, EVENT2, "BTC", "no", 3, 92, strategy="longshot",
+            is_taker=False, fill_source="longshot_maker")
+        with caplog.at_level("WARNING"):
+            out = _eval(engine, ticker=TICKER2, spot=120.0, threshold=110.0)
+        assert out == []
+        assert engine.disabled_reason() == "daily_cap"
+        assert "LONGSHOT_DAILY_CAP_HIT" in caplog.text
+
+    def test_sold_no_side_itm_when_spot_below_strike(self, engine, state,
+                                                     enabled, monkeypatch):
+        monkeypatch.setattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS", 2.0,
+                            raising=False)
+        # bought YES (sold NO); NO is ITM when spot < threshold
+        state.record_position_from_fill(
+            TICKER2, EVENT2, "BTC", "yes", 3, 92, strategy="longshot",
+            is_taker=False, fill_source="longshot_maker")
+        out = _eval(engine, ticker=TICKER2, spot=100.0, threshold=110.0)
+        assert out == []
+        assert engine.disabled_reason() == "daily_cap"

@@ -158,6 +158,10 @@ class LongshotEngine:
         self._disabled_utc_date: Optional[str] = None
         # R1-M1: one-shot boot orphan reconciliation latch (first tick).
         self._boot_reconciled = False
+        # R1-M3: ticker -> (spot, threshold, ts) — latest engine inputs,
+        # captured per evaluate_market call, used to MARK open positions
+        # (sold side currently ITM = full loss) against the daily cap.
+        self._mark_inputs: Dict[str, Tuple[float, float, float]] = {}
 
     # ── public surface ────────────────────────────────────────────────────
 
@@ -211,6 +215,13 @@ class LongshotEngine:
         """
         if not C.LONGSHOT_ENABLED:
             return []
+        # R1-M3: capture the latest mark inputs BEFORE the disable refresh
+        # so the marked-loss term sees this tick's spot/threshold.
+        if (spot is not None and spot > 0
+                and threshold is not None and threshold > 0):
+            with self._lock:
+                self._mark_inputs[ticker] = (float(spot), float(threshold),
+                                             time.time())
         self._refresh_disabled()
         if self._disabled_reason:
             return []
@@ -535,6 +546,44 @@ class LongshotEngine:
         collateral_max = collateral_avail // int(buy_price_cents)
         return max(0, min(cap_remaining, collateral_max))
 
+    def _marked_open_loss_cents(self) -> int:
+        """R1-M3: full-loss mark on open longshot positions.
+
+        A position whose SOLD side is currently ITM (latest spot vs strike
+        from this engine's evaluate_market inputs) is a near-certain full
+        loss at settlement — its total_cost_cents counts toward the daily
+        cap. Sold side = opposite of the position's (bought) side: bought
+        NO -> sold YES, ITM when spot > threshold; bought YES -> sold NO,
+        ITM when spot < threshold. Positions without a mark (window no
+        longer evaluated) contribute 0 — settlement realizes them within
+        minutes anyway. Returns 0 on query failure (the realized term
+        still applies; see the fail-open note in _refresh_disabled).
+        """
+        try:
+            rows = self._state.conn.execute(
+                "SELECT ticker, side, total_cost_cents FROM positions "
+                "WHERE strategy_group=? AND status='open'",
+                (LONGSHOT_STRATEGY,)).fetchall()
+        except Exception:
+            logging.warning("longshot marked-loss query failed",
+                            exc_info=True)
+            return 0
+        with self._lock:
+            marks = dict(self._mark_inputs)
+        marked = 0
+        for r in rows:
+            m = marks.get(r["ticker"])
+            if not m:
+                continue
+            spot, threshold, _ts = m
+            if r["side"] == "no":
+                sold_itm = spot > threshold     # sold YES wins above strike
+            else:
+                sold_itm = spot < threshold     # sold NO wins below strike
+            if sold_itm:
+                marked += int(r["total_cost_cents"] or 0)
+        return marked
+
     def _refresh_disabled(self) -> None:
         """Re-derive the auto-disable latch from settled_trades.
 
@@ -545,7 +594,9 @@ class LongshotEngine:
         today = datetime.datetime.now(timezone.utc).date()
         today_iso = today.isoformat()
 
-        # Same-day daily loss cap (realized, fee-inclusive).
+        # Same-day daily loss cap: realized (fee-inclusive) + MARKED —
+        # open longshot positions whose sold side is currently ITM count
+        # as full loss (R1-M3; plan doc "realized+marked").
         try:
             today_pnl = self._state.conn.execute(
                 "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) "
@@ -555,13 +606,15 @@ class LongshotEngine:
         except Exception:
             logging.warning("longshot daily-pnl query failed", exc_info=True)
             return
+        marked_cents = self._marked_open_loss_cents()
         cap_cents = int(round(C.LONGSHOT_DAILY_LOSS_CAP_DOLLARS * 100))
-        if today_pnl <= -cap_cents:
+        if today_pnl - marked_cents <= -cap_cents:
             if self._disabled_reason != "daily_cap":
                 logging.warning(
-                    "LONGSHOT_DAILY_CAP_HIT: realized longshot PnL today "
-                    "%dc <= -%dc — auto-disabled for the rest of the UTC day",
-                    today_pnl, cap_cents)
+                    "LONGSHOT_DAILY_CAP_HIT: longshot PnL today realized "
+                    "%dc + marked -%dc <= -%dc — auto-disabled for the "
+                    "rest of the UTC day", today_pnl, marked_cents,
+                    cap_cents)
             self._disabled_reason = "daily_cap"
             self._disabled_utc_date = today_iso
             return
