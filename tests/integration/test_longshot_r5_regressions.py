@@ -612,3 +612,73 @@ class TestMN2RemainingFallbackUsesCumulativeTruth:
             "remaining = max(0, original - skip) keeps the registered "
             "count in cumulative units == the original size (R5-MN2)")
         assert q["filled"] == 2
+
+
+# ── MN3: 'pending' ls- rows must be visible to boot reconciliation ──────────
+
+class TestMN3PendingRowsReconciledAtBoot:
+    """R5-MN3: boot step-2 queried status='resting' only. A crash
+    between insert_bot_order (status='pending', order_id=client_oid) and
+    confirm_order_submitted stranded the row in 'pending' forever —
+    invisible to step 2, never terminally marked, leaking into
+    dashboards and the executor's pending-order conflict check. Fix:
+    step-2 queries status IN ('resting','pending') and marks pending
+    rows by client_order_id (the row never received a server order_id);
+    step-1 additionally REPAIRS an API-present pending row via
+    confirm_order_submitted (no-op for confirmed rows) so the adopted
+    quote's lifecycle marks land on the row."""
+
+    def test_pending_row_never_placed_is_terminally_marked(
+            self, state, client, enabled):
+        # Crash after the ledger insert, before (or during) place_order:
+        # no API order, no server order_id, row status='pending'.
+        state.insert_bot_order("ls-mn3a", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        assert _pending_status(state, "ls-mn3a") == "pending"
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert engine._boot_reconciled is True
+        assert _pending_status(state, "ls-mn3a") == "canceled", (
+            "a crash-between-place-and-confirm ls- row must be "
+            "reconciled and terminally marked at boot — 'pending' rows "
+            "were invisible to step 2 (R5-MN3)")
+        assert _positions_row(state) is None  # no fills -> nothing booked
+
+    def test_pending_row_still_resting_on_api_is_repaired_then_lifecycled(
+            self, state, client, enabled):
+        """Crash AFTER place succeeded but before confirm: the order IS
+        on the API under a server order_id the local row never learned.
+        Step-1 must repair the row (confirm_order_submitted) so its
+        adopt-and-kill lifecycle marks land on the row instead of
+        matching nothing."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3b", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3b", "client_order_id": "ls-mn3b",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 2, "remaining_count": 2,
+             "status": "resting", "created_time": _rfc3339(now - 120)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()  # adopt + repair + cancel (mock cancel succeeds)
+        row = state.conn.execute(
+            "SELECT order_id, status FROM pending_orders "
+            "WHERE client_order_id='ls-mn3b'").fetchone()
+        assert row["order_id"] == "oid-mn3b", (
+            "step-1 must repair the pending row with the server "
+            "order_id (R5-MN3)")
+        assert row["status"] == "canceled", (
+            "the adopted quote's lifecycle mark must land on the "
+            "repaired row — pre-fix the server-id mark matched nothing "
+            "and the row stayed 'pending' forever (R5-MN3)")
+
+    def test_main_pipeline_pending_rows_untouched(self, state, client,
+                                                  enabled):
+        state.insert_bot_order("mk-mn3c", TICKER, EVENT, "BTC", "yes", 2,
+                               80, False)
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert _pending_status(state, "mk-mn3c") == "pending", (
+            "boot step-2 is scoped to ls- rows — main-pipeline pending "
+            "rows are owned by the executor/reconciler (R5-MN3)")

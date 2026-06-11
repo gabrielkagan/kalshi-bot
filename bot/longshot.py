@@ -600,9 +600,14 @@ class LongshotEngine:
            put pre-restart fills outside the fetch bound) — then route
            through _cancel_quote (final fill poll before pop).
         2. NO-LONGER-RESTING ls- rows (local pending_orders still
-           status='resting' but absent from the API list — fully filled or
-           expired pre-restart): fetch fills bounded by the row's
-           created_at, record positions, and mark the row filled/canceled.
+           status='resting' OR stranded in 'pending' — R5-MN3, a crash
+           between insert_bot_order and confirm_order_submitted — but
+           absent from the API list — fully filled or expired
+           pre-restart, or never acknowledged): fetch fills bounded by
+           the row's created_at, record positions, and mark the row
+           filled/canceled. Step 1 repairs API-present 'pending' rows
+           via confirm_order_submitted first, so step 2 only sees
+           pending rows with no live order.
 
         On get_orders failure the latch stays unset so the next tick
         retries; a fills-fetch failure in step 2 also leaves the latch
@@ -655,6 +660,22 @@ class LongshotEngine:
                 already = order_id in self._resting
             if already:
                 continue  # retry pass — keep the existing entry's dedup set
+            # R5-MN3: repair a crash-between-place-and-confirm row. The
+            # ledger row was inserted status='pending' with
+            # order_id=client_order_id; if the process died before
+            # confirm_order_submitted, the row never learned the server
+            # order_id — every later lifecycle mark (keyed on the server
+            # id) would match nothing and the row would stay 'pending'
+            # forever. confirm_order_submitted is a no-op for
+            # already-confirmed rows (WHERE status='pending'), and the
+            # flip also moves the row OUT of step 2's pending scope so
+            # step 1 cleanly owns API-present orders. DB failure must
+            # not break adoption — log and continue.
+            try:
+                self._state.confirm_order_submitted(coid, order_id)
+            except Exception:
+                logging.warning("longshot boot pending-row repair failed "
+                                "for %s", coid, exc_info=True)
             buy_side = o.get("side") or "yes"
             sell_side = "no" if buy_side == "yes" else "yes"
             price = (o.get("no_price") if buy_side == "no"
@@ -713,10 +734,21 @@ class LongshotEngine:
         # recorded and the row would stay 'resting' forever.
         all_fetched = True
         try:
+            # R5-MN3: 'pending' included — a crash between
+            # insert_bot_order and confirm_order_submitted strands the
+            # row in 'pending' (order_id=client_order_id, no server id),
+            # invisible to a status='resting'-only query forever.
+            # API-present pending rows were repaired to 'resting' with
+            # the server order_id by step 1 above (this query runs
+            # AFTER that loop), so any 'pending' row reaching here has
+            # no order resting on Kalshi. 'pending' is otherwise only a
+            # transient state WITHIN the executor's synchronous
+            # placement call on MainThread — the same thread that runs
+            # this boot step — so no live placement can race this scan.
             rows = self._state.conn.execute(
                 "SELECT order_id, client_order_id, ticker, event_ticker, "
                 "asset, side, count, price_cents, created_at "
-                "FROM pending_orders WHERE status='resting' "
+                "FROM pending_orders WHERE status IN ('resting','pending') "
                 "AND client_order_id LIKE ?",
                 (C.LONGSHOT_CLIENT_OID_PREFIX + "%",)).fetchall()
         except Exception:
@@ -727,8 +759,14 @@ class LongshotEngine:
             if r["order_id"] in api_order_ids:
                 continue  # still resting — step 1 owns it
             _buy_side = r["side"] or "yes"
+            # R5-MN3: a 'pending' row carries no server order_id (its
+            # order_id column holds the client_order_id from
+            # insert_bot_order); mark_order_status matches either
+            # column, but fall back to client_order_id explicitly so a
+            # NULL-order_id legacy shape still gets marked.
+            _row_key = r["order_id"] or r["client_order_id"]
             q = {
-                "order_id": r["order_id"],
+                "order_id": _row_key,
                 "client_order_id": r["client_order_id"],
                 "ticker": r["ticker"],
                 "event_ticker": r["event_ticker"] or "",
@@ -746,18 +784,18 @@ class LongshotEngine:
                 # OWN recorded_fill_count when non-NULL; (ticker, side)
                 # aggregate only for legacy rows (see method docstring).
                 "boot_skip_remaining": self._boot_skip_seed(
-                    r["order_id"], r["ticker"] or "", _buy_side),
+                    _row_key, r["ticker"] or "", _buy_side),
             }
             if not self._poll_fills(q):
-                all_fetched = False  # retry next tick; row stays 'resting'
+                all_fetched = False  # retry next tick; row keeps its status
                 continue
             status = ("filled" if q["count"] > 0 and q["filled"] >= q["count"]
                       else "canceled")
-            self._mark_pending(r["order_id"], status)
+            self._mark_pending(_row_key, status)
             logging.warning(
                 "LONGSHOT_BOOT_GONE: %s %s no longer resting on Kalshi — "
                 "recorded %d/%d pre-restart fill contracts, row marked %s",
-                r["ticker"], r["order_id"], q["filled"], q["count"], status)
+                r["ticker"], _row_key, q["filled"], q["count"], status)
         if all_fetched:
             self._boot_reconciled = True
 
