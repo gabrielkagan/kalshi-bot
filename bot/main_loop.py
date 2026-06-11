@@ -173,6 +173,7 @@ from bot.fetchers.deribit import DeribitDVOLFetcher
 
 # Sprint 8 + 9 big-class peers
 from bot.executor import OrderExecutor
+from bot.longshot import LongshotEngine  # Bit L-1 — longshot premium-harvest maker overlay
 from bot.order_flow import KalshiOrderFlowTracker, OrderFlowEngine  # Bit 9.3.5 — clean-leaf; replaces __init__ late-binding markers
 from bot.scanner import OpportunityScanner
 from bot.settlement import SettlementTracker, discover_active_windows
@@ -488,6 +489,14 @@ class MainLoop:
             self.client, self.state, self.logger,
             main_loop=self, kalshi_feed=self.kalshi_feed)
         self.executor._kalshi_oft = self.kalshi_oft
+        # Bit L-1: longshot premium-harvest engine. Scanner reaches it via
+        # self._ml.longshot_engine for per-market evaluation; the executor
+        # reaches it via the same attribute inside _execute_longshot_maker
+        # (authorize + register_resting); _tick() drives its lifecycle
+        # sweep alongside executor.tick(). Inert while
+        # bot.constants.LONGSHOT_ENABLED is False (shipped default).
+        self.longshot_engine = LongshotEngine(self.client, self.state,
+                                              logger=self.logger)
         self.tracker = SettlementTracker(self.client, self.state, self.logger,
                                          main_loop=self)
         self._shutdown = threading.Event()
@@ -1631,6 +1640,14 @@ class MainLoop:
             self.executor.process_dc_retries()
         except Exception:
             logging.warning("DC retry processing failed", exc_info=True)
+
+        # Longshot lifecycle sweep (Bit L-1): T-3min cancel, kill-switch/
+        # auto-disable cancel, maker fill polling. No-ops every tick while
+        # LONGSHOT_ENABLED=False and no quotes are resting.
+        try:
+            self.longshot_engine.tick()
+        except Exception:
+            logging.warning("longshot tick failed", exc_info=True)
 
         # Record CASH balance for HWM tracking (once per tick).
         # Uses available cash only — NOT portfolio value (cash + positions).

@@ -47,7 +47,7 @@ from bot.helpers.breakers import (
 from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # Sprint 10.5a (2026-05-11)
 from kalshi_wire.auth import load_private_key as _wire_load_private_key
 from kalshi_wire.auth import sign as _wire_sign
-from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live as _tm_is_live  # modular live/shadow backstop
+from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live as _tm_is_live, strategy_is_live as _tm_strategy_is_live, strategy_from_client_order_id as _tm_strategy_from_coid  # modular live/shadow backstop
 
 
 class KalshiClient:
@@ -272,8 +272,15 @@ class KalshiClient:
         # is intentionally ungated (reduces exposure). Together that makes a
         # runtime flag-flip a kill-switch even for a resting order on an open
         # position. Non-crypto tickers (asset_from_ticker→None) untouched.
+        # R1-M4: strategy-aware form — recovers 'longshot' from the ls-
+        # client_order_id prefix (the only strategy signal at this API
+        # boundary) so LONGSHOT_LIVE_OVERRIDE can pass longshot orders
+        # while everything else keeps plain is_live semantics. Mirrors the
+        # executor.execute() chokepoint exactly (the two must never
+        # disagree, else override-mode placements die here).
         _tm_asset = _tm_asset_from_ticker(ticker)
-        if _tm_asset is not None and not _tm_is_live(_tm_asset):
+        if _tm_asset is not None and not _tm_strategy_is_live(
+                _tm_strategy_from_coid(client_order_id), _tm_asset):
             logging.warning(
                 "SHADOW_BLOCK: %s %s %s count=%s — trading-mode shadow, no order placed",
                 ticker, side, action, count)
@@ -382,12 +389,15 @@ class KalshiClient:
                      recovery_seconds=120)
     def get_fills(self, ticker: Optional[str] = None,
                   min_ts: Optional[int] = None,
-                  limit: int = 200) -> Optional[Dict]:
+                  limit: int = 200,
+                  cursor: Optional[str] = None) -> Optional[Dict]:
         params: Dict = {"limit": limit}
         if ticker:
             params["ticker"] = ticker
         if min_ts is not None:
             params["min_ts"] = min_ts
+        if cursor:
+            params["cursor"] = cursor
         return self._request("GET", f"{API_PATH_PREFIX}/portfolio/fills",
                              params=params)
 

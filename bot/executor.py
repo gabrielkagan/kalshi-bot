@@ -93,7 +93,7 @@ from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 from bot.helpers.tm_sweep import tm_compute_contracts, tm_sweep_extract_depths
 from bot.helpers.orderbook import best_yes_ask_cents, convert_orderbook_fp  # Bit 86b9vpp2z (2026-05-11): orderbook utilities relocated from OpportunityScanner staticmethods to bot/helpers/orderbook.py. This direct top-level import RETIRES the `_get_opportunity_scanner()` cycle-break helper that previously existed in this module — OrderExecutor no longer needs a runtime back-edge to bot.scanner just to access the pure-utility orderbook functions.
 from bot.kalshi_client import KalshiClient
-from bot.trading_mode import asset_from_ticker as tm_asset_from_ticker, is_live as tm_is_live, mode_reason as tm_mode_reason  # modular live/shadow gate
+from bot.trading_mode import asset_from_ticker as tm_asset_from_ticker, is_live as tm_is_live, mode_reason as tm_mode_reason, strategy_is_live as tm_strategy_is_live  # modular live/shadow gate
 from bot.engines.probability import ProbabilityEngine
 from bot.logger import Logger
 from bot.state import StateManager
@@ -516,6 +516,141 @@ class OrderExecutor:
                 total += cost
         return total
 
+    def _execute_longshot_maker(self, candidate: Dict) -> Optional[Dict]:
+        """Longshot premium-harvest maker placement (Bit L-1).
+
+        Reached ONLY from execute() — i.e. strictly BELOW the trading-mode
+        gate (bot/trading_mode.py), which stays the single live/shadow
+        chokepoint (plus the kalshi_client.place_order backstop). Posts a
+        post-only limit BUY of the candidate's buy side at 100-ask (= a
+        maker SELL of the deep-OTM side), then hands lifecycle (T-3min
+        cancel, condition-flip cancel, fill polling) to the LongshotEngine
+        registered on MainLoop. No taker escalation, no maker tail, no
+        per-asset lock. See bot/longshot.py +
+        kb/decisions/longshot-twap-live-small-plan.md.
+        """
+        ticker = candidate["ticker"]
+        engine = getattr(self._ml, "longshot_engine", None) if self._ml else None
+        if engine is None:
+            logging.warning(
+                "LONGSHOT_SKIP_no_engine: %s — candidate reached execute() "
+                "without a LongshotEngine on MainLoop", ticker)
+            return None
+        # Live-read kill switch (mirrors the engine-side check — a constants
+        # flip between scan and execute must stop placement).
+        if not bot.constants.LONGSHOT_ENABLED:
+            logging.info("LONGSHOT_SKIP_disabled: %s", ticker)
+            return None
+        if OBSERVATION_MODE:
+            logging.info(
+                "OBSERVATION MODE: Would post longshot maker for %s at %dc "
+                "for %d contracts", ticker,
+                candidate.get("longshot_buy_price_cents", -1),
+                candidate.get("position_size", 0))
+            return None
+        # R1-C2 stopgap (durable composite-PK rebuild ticketed 86badbf9t):
+        # positions PK is (ticker), so a longshot fill on a ticker the main
+        # pipeline also trades would INSERT OR REPLACE the main row (and
+        # vice versa). Never quote a ticker with main-pipeline order flow
+        # in flight: a resting main maker (_active_orders) or any pending
+        # non-longshot order on the ticker blocks placement. Longshot's own
+        # orders are recognized by the ls- client_oid prefix. Fail-closed
+        # on query failure (skipping a quote is always safe).
+        _ls_main_conflict = any(
+            (o or {}).get("ticker") == ticker
+            for o in self._active_orders.values())
+        if not _ls_main_conflict:
+            try:
+                _ls_main_conflict = any(
+                    not (ro.get("client_order_id") or "").startswith(
+                        bot.constants.LONGSHOT_CLIENT_OID_PREFIX)
+                    for ro in self._state.get_resting_orders(ticker))
+            except Exception:
+                logging.warning("longshot pending-order conflict query "
+                                "failed for %s", ticker, exc_info=True)
+                _ls_main_conflict = True
+        if _ls_main_conflict:
+            logging.info(
+                "LONGSHOT_SKIP_main_conflict: %s has main-pipeline order "
+                "flow in flight (ticker-PK stopgap, 86badbf9t)", ticker)
+            return None
+        # Execute-time cap re-check (scan->execute race: a sister fill may
+        # have consumed the per-window-side or collateral cap).
+        count = engine.authorize(candidate)
+        if count <= 0:
+            logging.info("LONGSHOT_SKIP_authorize: %s caps consumed", ticker)
+            return None
+        buy_side = candidate["longshot_buy_side"]
+        price = int(candidate["longshot_buy_price_cents"])
+        # R1-M1: prefix marks the order as longshot's for boot orphan
+        # reconciliation (LongshotEngine._boot_reconcile_orphans) and the
+        # per-strategy live-gate recognition in kalshi_client.place_order.
+        client_oid = (bot.constants.LONGSHOT_CLIENT_OID_PREFIX
+                      + str(uuid.uuid4()))
+        # Persist BEFORE submission (order-ledger crash-safety contract,
+        # mirrors the maker-first path / ticket 86ba0jb1g).
+        self._state.insert_bot_order(
+            client_oid, ticker, candidate["event_ticker"],
+            candidate["asset"], buy_side, count, price, False)
+        _price_kwarg = {"no_price": price} if buy_side == "no" else {"yes_price": price}
+        resp = self._client.place_order(
+            ticker=ticker, side=buy_side, action="buy",
+            count=count, client_order_id=client_oid,
+            post_only=True, **_price_kwarg,
+        )
+        if resp is None:
+            self._state.mark_order_status(client_oid, "api_error")
+            logging.warning(
+                "LONGSHOT_MAKER_REJECTED: %s %s %dct @ %dc (post_only)",
+                ticker, buy_side, count, price)
+            return None
+        order_id = (resp.get("order") or {}).get("order_id")
+        if not order_id:
+            # R2-MN3: non-None response with an empty/missing order dict —
+            # we cannot key the cancel/fill lifecycle on an id Kalshi never
+            # acknowledged (the old client_oid fallback registered a
+            # phantom quote). Do NOT register; mark the ledger row off the
+            # placeable path and best-effort cancel via the client_oid
+            # (Kalshi cancel accepts it if the order somehow rested).
+            logging.warning(
+                "LONGSHOT_PLACE_MALFORMED: %s resp carried no order_id "
+                "(order=%r) — not registering; best-effort cancel via "
+                "client_oid %s", ticker, resp.get("order"), client_oid)
+            self._state.mark_order_status(client_oid, "api_error")
+            try:
+                self._client.cancel_order(client_oid)
+            except Exception:
+                logging.warning(
+                    "LONGSHOT_PLACE_MALFORMED cancel attempt failed for %s",
+                    client_oid, exc_info=True)
+            return None
+        self._state.confirm_order_submitted(client_oid, order_id)
+        engine.register_resting(
+            order_id=order_id, client_order_id=client_oid, ticker=ticker,
+            event_ticker=candidate["event_ticker"], asset=candidate["asset"],
+            sell_side=candidate["longshot_sell_side"], buy_side=buy_side,
+            buy_price_cents=price, count=count,
+            seconds_to_close=candidate["seconds_to_close"])
+        logging.info(
+            "LONGSHOT_MAKER_POSTED: %s sell_%s@%dc -> buy_%s %dct @ %dc "
+            "order=%s stc=%.0fs",
+            ticker, candidate["longshot_sell_side"],
+            candidate.get("longshot_ask_cents", -1), buy_side, count, price,
+            order_id, candidate["seconds_to_close"])
+        return {
+            "order_id": order_id,
+            "client_order_id": client_oid,
+            "ticker": ticker,
+            "event_ticker": candidate["event_ticker"],
+            "asset": candidate["asset"],
+            "side": buy_side,
+            "price_cents": price,
+            "count": count,
+            "is_taker": False,
+            "strategy": "longshot",
+            "entry_path": "longshot_maker",
+        }
+
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Sprint B Bit B.2b — seed decision_id ONCE at the top of
@@ -559,8 +694,12 @@ class OrderExecutor:
         # untouched. If a governed 15M asset isn't live-enabled, the candidate was
         # still evaluated + logged by the scanner — we just place NO real order.
         # Read live so a flag flip is a runtime kill-switch. See bot/trading_mode.py.
+        # R1-M4: strategy-aware form — identical to is_live for every main-
+        # pipeline strategy; only candidate strategy 'longshot' can pass via
+        # LONGSHOT_LIVE_OVERRIDE (longshot-only go-live).
         _tm_asset = tm_asset_from_ticker(ticker)
-        if _tm_asset is not None and not tm_is_live(_tm_asset):
+        if _tm_asset is not None and not tm_strategy_is_live(
+                candidate.get("strategy"), _tm_asset):
             logging.info(
                 "SHADOW_SKIP: %s %s reason=%s — evaluated, no live order placed",
                 ticker, candidate.get("strategy"), tm_mode_reason(_tm_asset))
@@ -662,6 +801,15 @@ class OrderExecutor:
         if (candidate.get("product_type") == "weather"
                 and candidate.get("side") == "no"):
             return self._execute_weather_no_taker(candidate)
+
+        # ── LONGSHOT PREMIUM-HARVEST MAKER PATH (Bit L-1) ──
+        # Dispatched AFTER the trading-mode gate + unified exposure caps
+        # (single live/shadow chokepoint respected, never duplicated) and
+        # BEFORE Gate 1 — a resting longshot quote must neither consume nor
+        # be blocked by the per-asset maker lock of the main pipeline.
+        # No escalation, no maker-tail: rest at 100-ask, hold to settlement.
+        if candidate.get("strategy") == "longshot":
+            return self._execute_longshot_maker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
         # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.

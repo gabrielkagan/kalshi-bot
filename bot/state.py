@@ -91,6 +91,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # bot.* leaf imports
 from bot.constants import (
     DB_PATH,
+    LONGSHOT_CLIENT_OID_PREFIX,
     OB_CACHE_EVICT_AGE_SECONDS,
     OB_CACHE_FRESHNESS_SECONDS,
     SOL_RESCUE_CONTRACT_CAP,
@@ -1112,6 +1113,27 @@ class StateManager:
                 pass  # column already exists
         self.conn.commit()
 
+        # Migration: per-order recorded-fill counter (Bit L-1 R4-M2,
+        # 2026-06-11). LongshotEngine._apply_fills bumps it after each
+        # successful record_position_from_fill; boot reconciliation seeds
+        # each order's boot_skip_remaining from ITS OWN row (NULL = legacy
+        # pre-R4 row -> (ticker, side) aggregate fallback). NO DEFAULT on
+        # the ALTER: SQLite reports an ADD-COLUMN default for pre-existing
+        # rows too, which would erase the NULL-legacy distinction —
+        # insert_bot_order writes the explicit 0 for new rows instead.
+        # Lives in this ALTER loop, NOT the _create_tables executescript,
+        # and no index may reference it (schema-bootstrap DDL ordering:
+        # the executescript runs BEFORE the ALTER loops — PR #107 lesson).
+        for col_def in [
+            ("recorded_fill_count", "INTEGER"),
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE pending_orders ADD COLUMN {col_def[0]} {col_def[1]}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        self.conn.commit()
+
         # Position price observations (post-entry monitoring) — v2: spot-price primary
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS position_price_observations (
@@ -1351,14 +1373,66 @@ class StateManager:
                 # in place to restore local visibility.
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
+                # R3-M1 + R4-MN2: stamp longshot ONLY when the MOST RECENT
+                # pending_orders row on the ticker (ANY prefix, any status)
+                # is ls-prefixed — i.e. longshot was the last strategy to
+                # trade it. Pre-R4 this was an existence check on ls-
+                # history, so a weeks-old longshot quote claimed an import
+                # the MAIN pipeline most recently traded. When the recency
+                # test passes, the position lands inside the longshot
+                # rails (caps, marks, streaks) instead of the DDL default
+                # 'main'. 'longshot' mirrors bot.longshot.LONGSHOT_STRATEGY
+                # (passes through strategy_to_group unchanged).
+                _last_order = self.conn.execute(
+                    "SELECT order_id, client_order_id FROM pending_orders "
+                    "WHERE ticker=? ORDER BY created_at DESC LIMIT 1",
+                    (ticker,)).fetchone()
+                _ls_history = (
+                    _last_order
+                    if _last_order is not None
+                    and (_last_order["client_order_id"] or "").startswith(
+                        LONGSHOT_CLIENT_OID_PREFIX)
+                    else None)
                 try:
-                    self.conn.execute("""
-                        INSERT INTO positions (ticker, event_ticker, asset, side,
-                            count, avg_price_cents, total_cost_cents,
-                            opened_at, updated_at, status)
-                        VALUES (?,?,?,?,?,?,?,?,?,'open')
-                    """, (ticker, event_ticker, asset, side, count,
-                          avg_price, cost, now, now))
+                    if _ls_history:
+                        self.conn.execute("""
+                            INSERT INTO positions (ticker, event_ticker, asset,
+                                side, count, avg_price_cents, total_cost_cents,
+                                opened_at, updated_at, status,
+                                strategy, strategy_group)
+                            VALUES (?,?,?,?,?,?,?,?,?,'open',
+                                'longshot','longshot')
+                        """, (ticker, event_ticker, asset, side, count,
+                              avg_price, cost, now, now))
+                        # R4-M2: the imported contracts are "already
+                        # embodied" truth that LongshotEngine never
+                        # counter-attributed (the engine's per-order
+                        # recorded_fill_count only counts its OWN
+                        # record_position_from_fill calls). Attribute the
+                        # whole import to the MOST RECENT ls- order so its
+                        # own-row boot skip seed absorbs the fill refetch.
+                        # Single-row attribution is a best-guess when
+                        # multiple ls- orders contributed; the residual
+                        # multi-order ambiguity rides with ticket
+                        # 86badbf9t's durable rebuild.
+                        self.conn.execute(
+                            "UPDATE pending_orders SET recorded_fill_count="
+                            "COALESCE(recorded_fill_count, 0) + ? "
+                            "WHERE order_id=?",
+                            (count, _ls_history["order_id"]))
+                        logging.warning(
+                            "RECONCILE_IMPORT_LONGSHOT: ticker=%s side=%s "
+                            "count=%d — unknown position imported with "
+                            "strategy_group='longshot' (ls- pending history)",
+                            ticker, side, count)
+                    else:
+                        self.conn.execute("""
+                            INSERT INTO positions (ticker, event_ticker, asset, side,
+                                count, avg_price_cents, total_cost_cents,
+                                opened_at, updated_at, status)
+                            VALUES (?,?,?,?,?,?,?,?,?,'open')
+                        """, (ticker, event_ticker, asset, side, count,
+                              avg_price, cost, now, now))
                 except sqlite3.IntegrityError as e:
                     conflict = self.conn.execute(
                         "SELECT status FROM positions "
@@ -1573,10 +1647,23 @@ class StateManager:
         # Cancel all stale resting orders on Kalshi — clean slate on startup.
         # These are maker orders from pre-restart that were never filled or canceled.
         # Leaving them resting consumes capital and can interfere with new orders.
+        # R3-M1 carve-out: ls- (longshot) orders are ENGINE-OWNED flow —
+        # LongshotEngine._boot_reconcile_orphans adopts/reconciles them at
+        # its first tick (which runs AFTER this startup reconcile). Cancelling
+        # them here neutralized that machinery and flipping their rows off
+        # 'resting' hid them from the engine's boot step 2 query. Skip them
+        # in BOTH the cancel sweep and the local row-flip loops below.
         _stale_canceled = 0
         for order in resting_orders:
             oid = order["order_id"]
             api_order_ids.add(oid)
+            coid = order.get("client_order_id") or ""
+            if coid.startswith(LONGSHOT_CLIENT_OID_PREFIX):
+                logging.info(
+                    "RECONCILE_SKIP_LONGSHOT: %s ticker=%s — LongshotEngine "
+                    "owns ls- order lifecycle (boot step adopts at first "
+                    "tick)", oid, order.get("ticker"))
+                continue
             ticker = order["ticker"]
             try:
                 client.cancel_order(oid)
@@ -1595,6 +1682,13 @@ class StateManager:
         # Import any orders from API that we don't have locally (for history)
         for order in resting_orders:
             oid = order["order_id"]
+            # R3-M1: ls- orders were NOT canceled above — don't flip their
+            # local rows to 'canceled' (a lie that hides them from the
+            # engine's boot step 2) and don't INSERT a synthetic 'canceled'
+            # history row (the engine adopts straight from the API list).
+            if (order.get("client_order_id") or "").startswith(
+                    LONGSHOT_CLIENT_OID_PREFIX):
+                continue
             existing = self.conn.execute(
                 "SELECT 1 FROM pending_orders WHERE order_id=?", (oid,)
             ).fetchone()
@@ -1631,11 +1725,20 @@ class StateManager:
                   remaining, price,
                   order.get("created_time", now), now))
 
-        # Mark local resting orders not on API as canceled
+        # Mark local resting orders not on API as canceled.
+        # R3-M1: ls- rows are skipped — a longshot order absent from the
+        # API list (fully filled / expired pre-restart) is reconciled by
+        # LongshotEngine._boot_reconcile_orphans step 2, which NEEDS the
+        # row still 'resting' to find it (fills recorded, row then marked
+        # filled/canceled by the engine).
         local_rows = self.conn.execute(
-            "SELECT order_id FROM pending_orders WHERE status='resting'"
+            "SELECT order_id, client_order_id FROM pending_orders "
+            "WHERE status='resting'"
         ).fetchall()
         for row in local_rows:
+            if (row["client_order_id"] or "").startswith(
+                    LONGSHOT_CLIENT_OID_PREFIX):
+                continue
             if row["order_id"] not in api_order_ids:
                 self.conn.execute("""
                     UPDATE pending_orders SET status='canceled', updated_at=?
@@ -3709,11 +3812,15 @@ class StateManager:
                         phase="begin_immediate")
                     raise
                 time.sleep(0.025 + random.random() * 0.050)
+        # recorded_fill_count starts at an EXPLICIT 0 (Bit L-1 R4-M2):
+        # NULL is reserved for legacy pre-R4 rows so longshot boot
+        # reconciliation can tell "this order recorded nothing yet" (0)
+        # from "this row predates the counter" (NULL -> aggregate seed).
         self.conn.execute("""
             INSERT INTO pending_orders (order_id, client_order_id, ticker,
                 event_ticker, asset, side, action, count, price_cents,
-                status, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                status, created_at, updated_at, recorded_fill_count)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)
         """, (client_order_id, client_order_id, ticker,
               event_ticker, asset, side, "buy", count, price_cents,
               "pending", now, now))
@@ -3796,10 +3903,21 @@ class StateManager:
         now_utc = datetime.datetime.now(timezone.utc)
         now_str = now_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         rows = self.conn.execute(
-            "SELECT order_id, ticker FROM pending_orders WHERE status='resting'"
+            "SELECT order_id, client_order_id, ticker FROM pending_orders "
+            "WHERE status='resting'"
         ).fetchall()
         cleaned = 0
         for row in rows:
+            # R4-MN1: ls- (longshot) rows are ENGINE-OWNED — same carve-out
+            # as _reconcile_orders (R3-M1). The settlement daemon calls this
+            # method concurrently (bot/settlement.py) and flipping a
+            # past-close ls- row to 'expired' would hide it from
+            # LongshotEngine._boot_reconcile_orphans step 2, which finds
+            # unreconciled orders via status='resting'. The engine's own
+            # stale-drop/cancel paths mark ls- rows off 'resting'.
+            if (row["client_order_id"] or "").startswith(
+                    LONGSHOT_CLIENT_OID_PREFIX):
+                continue
             ticker = row["ticker"]
             m = re.match(r'KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-', ticker)
             if not m:

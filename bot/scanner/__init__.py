@@ -1963,6 +1963,80 @@ class OpportunityScanner:
                 if _pt in (None, "15m"):
                     self._update_window_state(ticker, spot, threshold)
 
+                # ── Longshot premium-harvest overlay (Bit L-1) ──────────
+                # Per-market deep-OTM maker-sell evaluation, delegated to
+                # bot/longshot.py (engine owns condition logic + risk rails
+                # + eval-row writes with filter_stage longshot_live/shadow).
+                # Candidates join the normal list and are partitioned out as
+                # an overlay at the scan() tail (bracket_no pattern), so
+                # they flow through executor.execute() — the trading-mode
+                # chokepoint — like every other order. Placed early in the
+                # market loop (right after the threshold sanity gate) so
+                # main-pipeline price/prob gates downstream can't starve
+                # the deep-OTM strikes this strategy targets. The engine
+                # no-ops cheaply (no orderbook fetch) unless a side is
+                # plausibly in the 4-15c band. LONGSHOT_ENABLED read live
+                # (runtime kill-switch pattern).
+                if (_pt in (None, "15m") and self._ml is not None
+                        and bot.constants.LONGSHOT_ENABLED):
+                    _ls_engine = getattr(self._ml, "longshot_engine", None)
+                    # R1-C2 stopgap: skip tickers the main pipeline holds
+                    # open (positions PK is (ticker) — a longshot fill
+                    # would clobber the main row; durable composite-PK
+                    # rebuild ticketed 86badbf9t). None (query failure)
+                    # also skips: fail-closed for placement.
+                    if (_ls_engine is not None
+                            and _ls_engine
+                            .has_open_main_pipeline_position(ticker)
+                            is False):
+                        try:
+                            _ls_cands = _ls_engine.evaluate_market(
+                                ticker=ticker,
+                                # R1-MN2: .get — sibling sites in this
+                                # loop tolerate a missing event_ticker
+                                event_ticker=window.get("event_ticker",
+                                                        ""),
+                                asset=asset,
+                                product_type=_pt or "15m",
+                                spot=spot,
+                                threshold=threshold,
+                                seconds_to_close=seconds_remaining,
+                                blended_rv=blended_rv,
+                                orderbook_fetch=(
+                                    lambda _t=ticker:
+                                    self._get_orderbook_cached(_t)[0]),
+                                config_snapshot_id=self._ml.config_snapshot_id,
+                                balance_at_scan=self._get_balance_cached(),
+                            )
+                            if _ls_cands:
+                                # R4-M1 defensive mirror of the engine's
+                                # opposite-side self-collision guard
+                                # (one open longshot row per ticker —
+                                # ticker-PK stopgap, 86badbf9t): a
+                                # stale-cache evaluate must not slip an
+                                # opposite-side candidate through.
+                                # `is False` keeps None (query failure)
+                                # fail-closed, like the overlay gate above.
+                                # R5-M2: the registry-side twin extends
+                                # the same invariant to RESTING quotes
+                                # (incl. CANCEL_FILL_MISMATCH-held ones)
+                                # — registry quotes are future rows.
+                                _ls_cands = [
+                                    c for c in _ls_cands
+                                    if _ls_engine
+                                    .has_opposite_side_longshot_position(
+                                        c["ticker"],
+                                        c["longshot_buy_side"]) is False
+                                    and not _ls_engine
+                                    .has_opposite_side_resting_quote(
+                                        c["ticker"],
+                                        c["longshot_buy_side"])]
+                                candidates.extend(_ls_cands)
+                        except Exception:
+                            logging.warning(
+                                "longshot evaluate_market failed for %s",
+                                ticker, exc_info=True)
+
                 # Early NBBO price filter for multi-strike events (SPX: 60-400 markets).
                 # Skip probability computation for strikes clearly outside entry range.
                 if _pt in ("spx_hourly", "hourly", "weather"):
@@ -6931,13 +7005,14 @@ class OpportunityScanner:
         _tm_candidates = [c for c in candidates if c.get("strategy", "").startswith("terminal_momentum")]
         _bn_candidates = [c for c in candidates if c.get("strategy") == "bracket_no"]
         _lpne_candidates = [c for c in candidates if c.get("strategy") == "low_price_near_expiry"]
+        _longshot_candidates = [c for c in candidates if c.get("strategy") == "longshot"]
         _dc_tickers = {c["ticker"] for c in _dc_candidates}
         _tm_tickers = {c["ticker"] for c in _tm_candidates}
         # Remove weekend/overnight discount candidates that overlap with DC (DC takes priority)
         _main_candidates = [c for c in candidates
                             if not c.get("strategy", "").startswith("decided_")
                             and not c.get("strategy", "").startswith("terminal_momentum")
-                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry")
+                            and c.get("strategy") not in ("bracket_no", "low_price_near_expiry", "longshot")
                             and not (c.get("strategy") in ("weekend_discount", "overnight_discount") and c["ticker"] in (_dc_tickers | _tm_tickers))]
         candidates = _main_candidates  # single-asset filter only applies to main pipeline
 
@@ -7099,6 +7174,11 @@ class OpportunityScanner:
 
         # LPNE overlay: add all low-price near-expiry candidates
         selected.extend(_lpne_candidates)
+
+        # Longshot overlay: add all longshot candidates (Bit L-1 — engine
+        # already enforced per-window-side + collateral caps; the executor
+        # re-checks via LongshotEngine.authorize at placement time)
+        selected.extend(_longshot_candidates)
 
         # ── 96¢ × {SOL,XRP} × 2-5min STC danger-band filter (strategy-aware) ──
         # Strips bleeder-strategy candidates from the cell while preserving
@@ -10099,10 +10179,23 @@ class OpportunityScanner:
         return event_ticker
 
     def _get_occupied_timeslots(self) -> Dict[str, set]:
-        """Return {timeslot: set(assets)} for timeslots with open positions or resting orders."""
+        """Return {timeslot: set(assets)} for timeslots with open positions or resting orders.
+
+        Longshot rows are EXCLUDED (Bit L-1 R2-C1): the longshot overlay
+        lives INSIDE the market loop, so a longshot resting quote / open
+        position counting as occupancy would drop the whole (timeslot,
+        asset) window from eligible_windows on the very next tick —
+        starving the engine's condition-flip cancel + _mark_inputs AND the
+        main pipeline's evaluation of that window. Longshot's own caps are
+        enforced engine-side (per-(window, side) + collateral), and the
+        ticker-PK collision stopgap keeps it off main-pipeline tickers, so
+        the single-asset-per-timeslot rule never applied to it.
+        """
         occupied: Dict[str, set] = {}
 
         for pos in self._state.get_open_positions():
+            if pos.get("strategy_group") == "longshot":
+                continue  # R2-C1: longshot positions don't occupy the slot
             et = pos.get("event_ticker", "")
             asset = pos.get("asset", "")
             ts = self._window_timeslot(et)
@@ -10110,6 +10203,9 @@ class OpportunityScanner:
                 occupied.setdefault(ts, set()).add(asset)
 
         for order in self._state.get_resting_orders():
+            if (order.get("client_order_id") or "").startswith(
+                    bot.constants.LONGSHOT_CLIENT_OID_PREFIX):
+                continue  # R2-C1: longshot resting quotes don't occupy
             et = order.get("event_ticker", "")
             asset = order.get("asset", "")
             ts = self._window_timeslot(et)

@@ -122,6 +122,31 @@ ASSET_LIVE_TRADING = {              # per-asset live enable (ALL 9 crypto 15M se
     "HYPE": False, "DOGE": False, "BNB": False, "ADA": False, "BCH": False,
 }
 
+# ── Longshot premium-harvest maker strategy (Bit L-1, 2026-06-11) ─────────────
+# Validated via scripts/research/genhunt/02b_longshot_fillable_validation.py:
+# fillable-only +4.58c/ct, day-bootstrap CI [+2.82, +6.26], 12/12 days positive,
+# all 6 assets positive, conditioning gap +4.32c, 10s-cancel pickoff -0.16c.
+# Plan: kb/decisions/longshot-twap-live-small-plan.md. Mechanics: for each open
+# 15M crypto window at STC 180..720s, for each side whose executable ask is in
+# 4-15c, if p_normal(side) <= ask * LONGSHOT_EDGE_RATIO we SELL that side as a
+# maker (post the opposite side's bid at 100-ask) and hold to settlement.
+# Live/shadow control stays with the trading_mode gate at executor.execute()
+# (single chokepoint — never duplicated here). Engine: bot/longshot.py.
+# Regression lock: tests/integration/test_longshot_strategy.py.
+LONGSHOT_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
+LONGSHOT_MIN_ASK_CENTS = 4         # sold-side executable ask band lower edge (validated 4-15c)
+LONGSHOT_MAX_ASK_CENTS = 15        # sold-side executable ask band upper edge
+LONGSHOT_MIN_STC_SECONDS = 180.0   # T-3min: stop quoting / cancel resting below this STC
+LONGSHOT_MAX_STC_SECONDS = 720.0   # T-12min: earliest entry
+LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in prob units, i.e. ask_cents/100)
+LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
+LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
+LONGSHOT_DAILY_LOSS_CAP_DOLLARS = 20.0  # realized longshot PnL today <= -cap -> same-day auto-disable (LONGSHOT_DAILY_CAP_HIT)
+LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed losing days -> persistent disable
+LONGSHOT_STREAK_RESET_UTC_DATE = ""  # operator re-enable: losing days on/before this UTC date are ignored ("" = never reset)
+LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
+LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED (R1-M4)
+
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi
 # KXADA15M/KXBCH15M, runs the full scan→evaluate pipeline, writes
