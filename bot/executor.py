@@ -548,6 +548,32 @@ class OrderExecutor:
                 candidate.get("longshot_buy_price_cents", -1),
                 candidate.get("position_size", 0))
             return None
+        # R1-C2 stopgap (durable composite-PK rebuild ticketed 86badbf9t):
+        # positions PK is (ticker), so a longshot fill on a ticker the main
+        # pipeline also trades would INSERT OR REPLACE the main row (and
+        # vice versa). Never quote a ticker with main-pipeline order flow
+        # in flight: a resting main maker (_active_orders) or any pending
+        # non-longshot order on the ticker blocks placement. Longshot's own
+        # orders are recognized by the ls- client_oid prefix. Fail-closed
+        # on query failure (skipping a quote is always safe).
+        _ls_main_conflict = any(
+            (o or {}).get("ticker") == ticker
+            for o in self._active_orders.values())
+        if not _ls_main_conflict:
+            try:
+                _ls_main_conflict = any(
+                    not (ro.get("client_order_id") or "").startswith(
+                        bot.constants.LONGSHOT_CLIENT_OID_PREFIX)
+                    for ro in self._state.get_resting_orders(ticker))
+            except Exception:
+                logging.warning("longshot pending-order conflict query "
+                                "failed for %s", ticker, exc_info=True)
+                _ls_main_conflict = True
+        if _ls_main_conflict:
+            logging.info(
+                "LONGSHOT_SKIP_main_conflict: %s has main-pipeline order "
+                "flow in flight (ticker-PK stopgap, 86badbf9t)", ticker)
+            return None
         # Execute-time cap re-check (scan->execute race: a sister fill may
         # have consumed the per-window-side or collateral cap).
         count = engine.authorize(candidate)

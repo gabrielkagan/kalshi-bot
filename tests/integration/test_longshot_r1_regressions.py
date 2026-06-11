@@ -223,3 +223,105 @@ class TestM1BootOrphanReconciliation:
             "SELECT client_order_id FROM pending_orders WHERE ticker=?",
             (TICKER,)).fetchone()
         assert row["client_order_id"] == coid
+
+
+# ── C2: positions ticker-PK collision stopgap ────────────────────────────────
+
+@pytest.fixture
+def wired(state):
+    from bot.executor import OrderExecutor
+    client = MagicMock()
+    client.get_fills.return_value = {"fills": []}
+    client.get_orders.return_value = {"orders": []}
+    client.cancel_order.return_value = {"order": {"status": "canceled"}}
+    client.place_order.return_value = {"order": {"order_id": "oid-live-1"}}
+    eng = LongshotEngine(client, state)
+    ml = MagicMock()
+    ml.longshot_engine = eng
+    executor = OrderExecutor(client, state, MagicMock(),
+                             main_loop=ml, kalshi_feed=None)
+    return executor, eng, client
+
+
+class TestC2PositionsPKCollisionStopgap:
+    """R1-C2: positions PK is (ticker) and record_position_from_fill uses
+    INSERT OR REPLACE — a longshot fill on a ticker the main pipeline also
+    holds clobbers the main row (and vice versa). L-1-scope STOPGAP keeps
+    longshot off any ticker with main-pipeline flow; the durable composite-
+    PK rebuild is ticketed 86badbf9t."""
+
+    def test_no_quote_when_main_position_open(self, engine, state, enabled):
+        state.record_position_from_fill(
+            TICKER, EVENT, "BTC", "yes", 2, 95, strategy="MAKER_PATIENT",
+            is_taker=True)
+        assert _eval(engine) == []
+
+    def test_no_quote_when_null_strategy_group_position_open(self, engine,
+                                                             state, enabled):
+        # legacy rows can carry NULL strategy_group — must count as main
+        state.conn.execute(
+            "INSERT INTO positions (ticker, event_ticker, asset, side, count,"
+            " avg_price_cents, total_cost_cents, opened_at, updated_at,"
+            " status) VALUES (?,?,?,?,?,?,?,?,?,'open')",
+            (TICKER, EVENT, "BTC", "yes", 1, 95, 95,
+             "2026-06-11T12:00:00Z", "2026-06-11T12:00:00Z"))
+        state.conn.commit()
+        assert _eval(engine) == []
+
+    def test_authorize_blocks_when_main_position_appears_after_scan(
+            self, engine, state, enabled):
+        cands = _eval(engine)
+        assert len(cands) == 1
+        state.record_position_from_fill(
+            TICKER, EVENT, "BTC", "yes", 2, 95, strategy="MAKER_PATIENT",
+            is_taker=True)
+        assert engine.authorize(cands[0]) == 0
+
+    def test_executor_blocks_when_main_maker_active_on_ticker(self, wired,
+                                                              enabled):
+        executor, eng, client = wired
+        cands = _eval(eng)
+        assert len(cands) == 1
+        executor._active_orders["BTC"] = {"ticker": TICKER,
+                                          "order_id": "oid-main"}
+        assert executor.execute(cands[0]) is None
+        client.place_order.assert_not_called()
+
+    def test_executor_blocks_when_main_resting_order_on_ticker(self, wired,
+                                                               state,
+                                                               enabled):
+        executor, eng, client = wired
+        cands = _eval(eng)
+        assert len(cands) == 1
+        state.insert_bot_order("coid-main-1", TICKER, EVENT, "BTC", "yes",
+                               1, 95, False)
+        state.confirm_order_submitted("coid-main-1", "oid-main-1")
+        assert executor.execute(cands[0]) is None
+        client.place_order.assert_not_called()
+
+    def test_executor_allows_when_only_own_ls_order_on_ticker(self, wired,
+                                                              state,
+                                                              enabled):
+        # longshot's OWN resting order (ls- prefix) must not self-block
+        executor, eng, client = wired
+        cands = _eval(eng)
+        assert len(cands) == 1
+        state.insert_bot_order("ls-own-1", TICKER, EVENT, "BTC", "no",
+                               1, 92, False)
+        state.confirm_order_submitted("ls-own-1", "oid-ls-1")
+        assert executor.execute(cands[0]) is not None
+        client.place_order.assert_called_once()
+
+    def test_scanner_overlay_guards_on_main_position(self):
+        # source pin: the scanner longshot overlay must consult
+        # has_open_main_pipeline_position before evaluate_market
+        # (defense-in-depth at the scan layer; same C2 stopgap).
+        import pathlib
+        src = pathlib.Path("bot/scanner/__init__.py").read_text()
+        start = src.index("Longshot premium-harvest overlay")
+        block = src[start:start + 3500]
+        guard = block.index("has_open_main_pipeline_position")
+        call = block.index("evaluate_market")
+        assert guard < call, (
+            "scanner overlay must check has_open_main_pipeline_position "
+            "BEFORE calling evaluate_market (R1-C2)")

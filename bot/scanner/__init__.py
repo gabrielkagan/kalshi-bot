@@ -1980,7 +1980,15 @@ class OpportunityScanner:
                 if (_pt in (None, "15m") and self._ml is not None
                         and bot.constants.LONGSHOT_ENABLED):
                     _ls_engine = getattr(self._ml, "longshot_engine", None)
-                    if _ls_engine is not None:
+                    # R1-C2 stopgap: skip tickers the main pipeline holds
+                    # open (positions PK is (ticker) — a longshot fill
+                    # would clobber the main row; durable composite-PK
+                    # rebuild ticketed 86badbf9t). None (query failure)
+                    # also skips: fail-closed for placement.
+                    if (_ls_engine is not None
+                            and _ls_engine
+                            .has_open_main_pipeline_position(ticker)
+                            is False):
                         try:
                             _ls_cands = _ls_engine.evaluate_market(
                                 ticker=ticker,

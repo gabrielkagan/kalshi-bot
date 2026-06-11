@@ -425,9 +425,48 @@ class LongshotEngine:
             return [q for q in self._resting.values()
                     if q["ticker"] == ticker]
 
+    def has_open_main_pipeline_position(self, ticker: str) -> Optional[bool]:
+        """R1-C2 stopgap predicate: True iff any OPEN positions row on this
+        ticker belongs to a non-longshot strategy_group (NULL counts as
+        main — legacy rows predate the column). None on query failure
+        (callers treat None as a conflict: fail-closed for placement).
+
+        Why: the positions table PK is (ticker) and
+        record_position_from_fill uses INSERT OR REPLACE keyed on
+        (ticker, strategy_group) lookup — a longshot fill landing on a
+        ticker the main pipeline holds would REPLACE the main row. This
+        predicate (consumed by _allowed_size + the scanner overlay) plus
+        the executor _active_orders/pending-order guard keep longshot off
+        such tickers. REMAINDER for ticket 86badbf9t (durable composite-PK
+        rebuild): the reverse race — the MAIN pipeline initiating on a
+        ticker where longshot already holds a row AFTER these checks ran —
+        is NOT guarded at L-1 scope.
+        """
+        try:
+            row = self._state.conn.execute(
+                "SELECT 1 FROM positions WHERE ticker=? AND status='open' "
+                "AND (strategy_group IS NULL OR strategy_group != ?) "
+                "LIMIT 1",
+                (ticker, LONGSHOT_STRATEGY)).fetchone()
+        except Exception:
+            logging.warning("longshot main-conflict query failed",
+                            exc_info=True)
+            return None
+        return row is not None
+
     def _allowed_size(self, ticker: str, sell_side: str, buy_side: str,
                       buy_price_cents: int) -> int:
-        """min(per-window-side cap remainder, collateral cap remainder)."""
+        """min(per-window-side cap remainder, collateral cap remainder).
+
+        Returns 0 outright when the ticker has main-pipeline open rows
+        (R1-C2 stopgap — see has_open_main_pipeline_position)."""
+        conflict = self.has_open_main_pipeline_position(ticker)
+        if conflict is None or conflict:
+            if conflict:
+                logging.info(
+                    "LONGSHOT_SKIP_main_conflict: %s has open non-longshot "
+                    "position rows (ticker-PK stopgap, 86badbf9t)", ticker)
+            return 0
         # Per-(window, side) cap: open longshot positions on this
         # (ticker, buy_side) + unfilled resting contracts on the same side.
         try:
