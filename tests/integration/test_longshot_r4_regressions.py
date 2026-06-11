@@ -566,3 +566,60 @@ class TestMN2LsHistoryStampIsRecency:
         assert row["strategy_group"] == "longshot", (
             "longshot most recently traded this ticker — the import must "
             "land inside the longshot rails (R4-MN2)")
+
+
+# ── MN3: boot step-1 adoption must compare like units ────────────────────────
+
+class TestMN3BootAdoptionUnitMix:
+    """R4-MN3: step-1 adoption registered count=REMAINING while
+    q['filled'] accumulates CUMULATIVE fetched fills (skipped pre-restart
+    contracts included), so a 2-of-3-prefilled orphan popped as 'filled'
+    (2 >= 1) with a (2/1) LONGSHOT_FILL log even though the remainder was
+    actually canceled. Fix: register count = remaining + skip (cumulative
+    units on both sides of the pop condition); money behavior unchanged
+    (the skip budget already prevented re-recording)."""
+
+    def test_two_of_three_prefilled_orphan_ends_canceled(
+            self, state, client, enabled, caplog):
+        now = time.time()
+        # Pre-restart: 2 of 3 contracts filled AND recorded (counter=2).
+        _record_longshot(state, side="no", count=2)
+        _seed_pending_resting(state, client_oid="ls-mn3", order_id="oid-mn3",
+                              count=3, created_epoch=now - 600)
+        state.conn.execute(
+            "UPDATE pending_orders SET recorded_fill_count=2 "
+            "WHERE order_id='oid-mn3'")
+        state.conn.commit()
+        # Still resting on Kalshi with 1 remaining; the 2 old fills come
+        # back on the boot poll (created_time-bounded fetch).
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3", "client_order_id": "ls-mn3",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 3, "remaining_count": 1,
+             "status": "resting", "created_time": _rfc3339(now - 600)},
+        ]}
+        client.get_fills.side_effect = _min_ts_respecting_fills([
+            {"order_id": "oid-mn3", "trade_id": "t-mn3", "count": 2,
+             "ts": now - 500, "created_time": _rfc3339(now - 500)},
+        ])
+        engine = LongshotEngine(client, state)
+        with caplog.at_level(logging.INFO):
+            engine.tick()
+        # The 1-contract remainder was CANCELED (boot_orphan path), not
+        # filled — the row's terminal status must say so.
+        assert _pending_status(state, "oid-mn3") == "canceled", (
+            "a partially-prefilled boot orphan whose remainder is "
+            "canceled must end 'canceled' — the unit mix (filled "
+            "cumulative vs count remaining) marked it 'filled' (R4-MN3)")
+        # Money behavior identical: nothing re-recorded.
+        assert _positions_row(state)["count"] == 2
+        # No (filled/count) log drift: filled must never exceed count.
+        for rec in caplog.records:
+            msg = rec.getMessage()
+            if "LONGSHOT_FILL:" not in msg:
+                continue
+            m = re.search(r"\((\d+)/(\d+)\)", msg)
+            assert m is not None
+            assert int(m.group(1)) <= int(m.group(2)), (
+                f"LONGSHOT_FILL log drift (filled > count): {msg!r} "
+                "(R4-MN3)")

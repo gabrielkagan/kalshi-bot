@@ -651,16 +651,26 @@ class LongshotEngine:
                 remaining = int(o.get("count") or 0)
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
+            _skip = self._boot_skip_seed(order_id, ticker, buy_side)
+            # R4-MN3: register count in CUMULATIVE units (remaining +
+            # already-recorded skip). _apply_fills accumulates q["filled"]
+            # over ALL fetched fills — skipped pre-restart contracts
+            # included — so the pop condition (filled >= count) and the
+            # LONGSHOT_FILL (filled/count) log need count in the same
+            # units. Pre-fix count=remaining made a 2-of-3-prefilled
+            # orphan pop as 'filled' (2 >= 1, with a (2/1) log) even
+            # though the remainder was actually CANCELED; money behavior
+            # was already safe (the skip budget prevented re-recording).
             self.register_resting(
                 order_id=order_id, client_order_id=coid, ticker=ticker,
                 event_ticker=event_ticker, asset=asset,
                 sell_side=sell_side, buy_side=buy_side,
-                buy_price_cents=int(price), count=int(remaining),
+                buy_price_cents=int(price),
+                count=int(remaining) + _skip,
                 seconds_to_close=0.0,
                 fill_min_ts=_boot_fill_min_ts(o.get("created_time"),
                                               ticker, now),
-                boot_fill_skip=self._boot_skip_seed(order_id, ticker,
-                                                    buy_side))
+                boot_fill_skip=_skip)
             logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
                             "final fill poll + cancel", ticker, order_id)
             self._cancel_quote(order_id, "boot_orphan")
