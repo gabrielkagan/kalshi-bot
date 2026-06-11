@@ -252,6 +252,13 @@ class TestM2BootFillDeltaApply:
             is_taker=False, fill_source="longshot_maker")
         _seed_pending_resting(state, client_oid="ls-r3d", order_id="oid-d",
                               count=2, created_epoch=now - 600)
+        # R4-M2: production recording goes through _apply_fills, which
+        # bumps the order's per-order recorded_fill_count — mirror that
+        # here since this test records directly via the StateManager.
+        state.conn.execute(
+            "UPDATE pending_orders SET recorded_fill_count=2 "
+            "WHERE order_id='oid-d'")
+        state.conn.commit()
         client.get_fills.side_effect = _min_ts_respecting_fills([
             {"order_id": "oid-d", "trade_id": "t-d1", "count": 2,
              "ts": now - 300, "created_time": _rfc3339(now - 300)},
@@ -310,6 +317,12 @@ class TestM2BootFillDeltaApply:
             is_taker=False, fill_source="longshot_maker")
         _seed_pending_resting(state, client_oid="ls-r3g", order_id="oid-g",
                               count=3, created_epoch=now - 600)
+        # R4-M2: mirror the _apply_fills counter bump (see comment in
+        # test_pre_restart_recorded_fill_not_double_counted).
+        state.conn.execute(
+            "UPDATE pending_orders SET recorded_fill_count=1 "
+            "WHERE order_id='oid-g'")
+        state.conn.commit()
         client.get_fills.side_effect = _min_ts_respecting_fills([
             {"order_id": "oid-g", "trade_id": "t-g2", "count": 2,
              "ts": now - 200, "created_time": _rfc3339(now - 200)},

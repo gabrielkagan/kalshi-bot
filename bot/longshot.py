@@ -269,13 +269,14 @@ class LongshotEngine:
         orphan reconciliation passes the order's created_time instead so
         fills landed BEFORE the restart stay inside the fetch bound.
 
-        ``boot_fill_skip`` (R3-M2) is the number of already-recorded
-        contracts the fill-apply path must SKIP (oldest fills first)
-        before recording positions — boot reconciliation passes the
-        ticker/side's existing open longshot count so re-fetched
-        pre-restart fills (record_position_from_fill ACCUMULATES and
-        seen_trade_ids is reborn empty at restart) are not
-        double-counted. Fresh placements leave it 0.
+        ``boot_fill_skip`` (R3-M2 + R4-M2) is the number of
+        already-recorded contracts the fill-apply path must SKIP (oldest
+        fills first) before recording positions — boot reconciliation
+        passes the order's OWN ``recorded_fill_count`` (per-order seed;
+        (ticker, side) aggregate only for legacy NULL rows) so
+        re-fetched pre-restart fills (record_position_from_fill
+        ACCUMULATES and seen_trade_ids is reborn empty at restart) are
+        not double-counted. Fresh placements leave it 0.
         """
         now = time.time()
         with self._lock:
@@ -597,14 +598,18 @@ class LongshotEngine:
         (delta-apply): record_position_from_fill ACCUMULATES,
         seen_trade_ids is in-memory (reborn empty here), and the R2-M1
         created_time bound re-fetches fills already recorded pre-restart
-        or just imported by StateManager._reconcile_positions. Existing
-        open longshot rows for the (ticker, side) embody that
-        recorded/imported truth, so both steps seed the quote with
-        ``boot_skip_remaining`` = that count and _apply_fills records
-        only max(0, fetched - existing) contracts, oldest fills first.
+        or just imported by StateManager._reconcile_positions. R4-M2
+        seed: both steps seed ``boot_skip_remaining`` from the order's
+        OWN ``pending_orders.recorded_fill_count`` (maintained by
+        _apply_fills + the RECONCILE_IMPORT_LONGSHOT attribution) via
+        _boot_skip_seed; the (ticker, side) open-row aggregate is the
+        LEGACY fallback for NULL (pre-R4) rows only — the aggregate
+        misattributes across sequential same-(ticker, side) orders and
+        silently drops a real later-order fill. _apply_fills records
+        only max(0, fetched - skip) contracts, oldest fills first.
         This also makes step-2 retries after a PARTIAL snapshot (R3-MN1)
-        idempotent: the rebuilt quote's skip absorbs what the partial
-        pass already recorded.
+        idempotent: the rebuilt quote's skip re-reads the counter the
+        partial pass already incremented.
         """
         now = time.time()
         try:
@@ -654,8 +659,8 @@ class LongshotEngine:
                 seconds_to_close=0.0,
                 fill_min_ts=_boot_fill_min_ts(o.get("created_time"),
                                               ticker, now),
-                boot_fill_skip=self._existing_longshot_count(ticker,
-                                                             buy_side))
+                boot_fill_skip=self._boot_skip_seed(order_id, ticker,
+                                                    buy_side))
             logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
                             "final fill poll + cancel", ticker, order_id)
             self._cancel_quote(order_id, "boot_orphan")
@@ -694,10 +699,11 @@ class LongshotEngine:
                 "fill_min_ts": _boot_fill_min_ts(r["created_at"],
                                                  r["ticker"] or "", now),
                 "stc_at_register": 0.0,
-                # R3-M2 delta-apply: existing open rows already embody
-                # recorded/imported truth (see method docstring).
-                "boot_skip_remaining": self._existing_longshot_count(
-                    r["ticker"] or "", _buy_side),
+                # R3-M2 delta-apply + R4-M2 per-order seed: the order's
+                # OWN recorded_fill_count when non-NULL; (ticker, side)
+                # aggregate only for legacy rows (see method docstring).
+                "boot_skip_remaining": self._boot_skip_seed(
+                    r["order_id"], r["ticker"] or "", _buy_side),
             }
             if not self._poll_fills(q):
                 all_fetched = False  # retry next tick; row stays 'resting'
@@ -712,12 +718,62 @@ class LongshotEngine:
         if all_fetched:
             self._boot_reconciled = True
 
+    def _boot_skip_seed(self, order_id: str, ticker: str, side: str) -> int:
+        """R4-M2: per-order boot delta-apply skip seed.
+
+        Seeds from the order's OWN ``pending_orders.recorded_fill_count``
+        when non-NULL (the counter _apply_fills maintains, plus the
+        RECONCILE_IMPORT_LONGSHOT attribution); falls back to the
+        (ticker, side) aggregate ONLY for legacy NULL rows (pre-R4
+        schema). The aggregate misattributes across SEQUENTIAL
+        same-(ticker, side) orders — order-1 partially fills (recorded)
+        then cancels, order-2 quotes the remainder, crash before
+        order-2's fills are polled: the aggregate (=order-1's count)
+        would skip a REAL order-2 fill, a permanent under-record.
+        Query failure -> 0 (fail toward recording, same direction as
+        _existing_longshot_count)."""
+        try:
+            row = self._state.conn.execute(
+                "SELECT recorded_fill_count FROM pending_orders "
+                "WHERE order_id=? OR client_order_id=?",
+                (order_id, order_id)).fetchone()
+        except Exception:
+            logging.warning("longshot boot-skip-seed query failed",
+                            exc_info=True)
+            return 0
+        if row is not None and row["recorded_fill_count"] is not None:
+            return max(0, int(row["recorded_fill_count"]))
+        return self._existing_longshot_count(ticker, side)
+
+    def _increment_recorded_fill_count(self, order_id: str, n: int) -> None:
+        """R4-M2: bump the order's per-order recorded-fill counter after a
+        SUCCESSFUL record_position_from_fill (the delta-skip branch never
+        increments — skipped contracts were recorded by an earlier pass).
+        Matches order_id OR client_order_id (mark_order_status pattern).
+        Failure is logged and swallowed: an under-counted counter seeds a
+        smaller boot skip, which fails toward recording (bounded
+        live-small double-count healed by the next reconcile) instead of
+        silently losing a position."""
+        try:
+            self._state.conn.execute(
+                "UPDATE pending_orders SET recorded_fill_count = "
+                "COALESCE(recorded_fill_count, 0) + ? "
+                "WHERE order_id=? OR client_order_id=?",
+                (int(n), order_id, order_id))
+            self._state.conn.commit()
+        except Exception:
+            logging.warning(
+                "longshot recorded_fill_count bump failed for %s (+%d)",
+                order_id, n, exc_info=True)
+
     def _existing_longshot_count(self, ticker: str, side: str) -> int:
         """R3-M2: open longshot contracts already recorded for
-        (ticker, side) — the boot delta-apply skip seed. Returns 0 on
-        query failure (fail toward recording: a bounded live-small
-        double-count is healed by the next restart's reconcile, whereas
-        a too-large skip silently loses a real position forever)."""
+        (ticker, side) — the LEGACY (NULL recorded_fill_count) boot
+        delta-apply skip seed; per-order rows seed from their own counter
+        via _boot_skip_seed (R4-M2). Returns 0 on query failure (fail
+        toward recording: a bounded live-small double-count is healed by
+        the next restart's reconcile, whereas a too-large skip silently
+        loses a real position forever)."""
         try:
             return int(self._state.conn.execute(
                 "SELECT COALESCE(SUM(count), 0) FROM positions "
@@ -1221,6 +1277,13 @@ class LongshotEngine:
                     logging.error("longshot record_position_from_fill failed "
                                   "for %s", q["ticker"], exc_info=True)
                     continue
+                # R4-M2: per-order recorded-fill counter — bumped ONLY
+                # after a successful record (the skip branch above never
+                # reaches here with record_count > 0 contracts of its
+                # own). Seeds this order's boot_skip_remaining at the
+                # next restart.
+                self._increment_recorded_fill_count(q["order_id"],
+                                                    record_count)
             q["filled"] += fill_count
             logging.info(
                 "LONGSHOT_FILL: %s %s %dct @ %dc (%d/%d) trade=%s",

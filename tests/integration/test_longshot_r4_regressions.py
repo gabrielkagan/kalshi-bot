@@ -294,3 +294,189 @@ class TestM1OppositeSideSelfCollision:
         assert len(same) == 1, (
             "a SAME-side candidate must survive the overlay filter — the "
             "guard is opposite-side only (R4-M1)")
+
+
+# ── M2: per-order recorded-fill counter for the boot skip seed ───────────────
+
+def _recorded_fill_count(state, order_id):
+    return state.conn.execute(
+        "SELECT recorded_fill_count FROM pending_orders WHERE order_id=?",
+        (order_id,)).fetchone()["recorded_fill_count"]
+
+
+class TestM2PerOrderRecordedFillCounter:
+    """R4-M2: the boot delta-apply skip must seed from EACH ORDER'S OWN
+    recorded-fill counter — the (ticker, side) aggregate misattributes
+    across sequential same-(ticker, side) orders and silently drops a
+    real fill of the later order. Aggregate remains the NULL-legacy
+    fallback only."""
+
+    def test_fresh_insert_initializes_counter_to_zero(self, state):
+        _seed_pending_resting(state, client_oid="ls-m2z", order_id="oid-m2z")
+        assert _recorded_fill_count(state, "oid-m2z") == 0, (
+            "fresh pending_orders rows must start at 0 (non-NULL) so boot "
+            "seeds the order's OWN counter, never the aggregate (R4-M2)")
+
+    def test_counter_increments_on_record_and_survives_calls(
+            self, engine, state, client, enabled):
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-m2c", order_id="oid-m2c",
+                              count=3)
+        engine.register_resting(
+            order_id="oid-m2c", client_order_id="ls-m2c", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=3, seconds_to_close=600.0)
+        with engine._lock:
+            q = engine._resting["oid-m2c"]
+        engine._apply_fills(q, [{"order_id": "oid-m2c", "trade_id": "t-m2c1",
+                                 "count": 1}])
+        assert _recorded_fill_count(state, "oid-m2c") == 1
+        engine._apply_fills(q, [{"order_id": "oid-m2c", "trade_id": "t-m2c2",
+                                 "count": 2}])
+        assert _recorded_fill_count(state, "oid-m2c") == 3, (
+            "the counter must accumulate across _apply_fills calls (R4-M2)")
+
+    def test_delta_skip_branch_does_not_increment(self, engine, state,
+                                                  client, enabled):
+        engine._boot_reconciled = True
+        _record_longshot(state, side="no", count=2)
+        _seed_pending_resting(state, client_oid="ls-m2s", order_id="oid-m2s",
+                              count=2)
+        engine.register_resting(
+            order_id="oid-m2s", client_order_id="ls-m2s", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=2, seconds_to_close=600.0,
+            boot_fill_skip=2)
+        with engine._lock:
+            q = engine._resting["oid-m2s"]
+        engine._apply_fills(q, [{"order_id": "oid-m2s", "trade_id": "t-m2s1",
+                                 "count": 2}])
+        assert _recorded_fill_count(state, "oid-m2s") == 0, (
+            "skipped (already-recorded) contracts must NOT bump the "
+            "counter — they were never recorded by THIS pass (R4-M2)")
+
+    def test_two_sequential_orders_same_ticker_side(self, state, client,
+                                                    enabled):
+        """THE R4-M2 scenario: order-1 partially fills 1 (recorded) ->
+        canceled; order-2 quotes the remainder; crash with order-2's fills
+        unpolled; restart must record order-2's fills IN FULL (the
+        aggregate seed =1 from order-1 skipped a real order-2 fill)."""
+        now = time.time()
+        # order-1: 1 of 3 fills pre-crash (recorded via the engine path,
+        # which bumps its per-order counter), then canceled.
+        engine1 = LongshotEngine(client, state)
+        engine1._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-m2o1",
+                              order_id="oid-m2o1", count=3,
+                              created_epoch=now - 700)
+        engine1.register_resting(
+            order_id="oid-m2o1", client_order_id="ls-m2o1", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=3, seconds_to_close=600.0)
+        # ts must be >= the live quote's fill_min_ts (registration time,
+        # i.e. ~now) minus the fetch slack for the pre-crash poll to see it.
+        fill_o1 = {"order_id": "oid-m2o1", "trade_id": "t-m2o1", "count": 1,
+                   "ts": now - 30, "created_time": _rfc3339(now - 30)}
+        client.get_fills.side_effect = _min_ts_respecting_fills([fill_o1])
+        engine1.tick()
+        engine1._cancel_quote("oid-m2o1", "test_requote")
+        assert _pending_status(state, "oid-m2o1") == "canceled"
+        assert _positions_row(state)["count"] == 1
+
+        # order-2: quotes the remainder (2). Crash before any fill poll.
+        _seed_pending_resting(state, client_oid="ls-m2o2",
+                              order_id="oid-m2o2", count=2,
+                              created_epoch=now - 400)
+
+        # Restart: order-2 fully filled pre-crash (absent from API list).
+        fill_o2 = {"order_id": "oid-m2o2", "trade_id": "t-m2o2", "count": 2,
+                   "ts": now - 300, "created_time": _rfc3339(now - 300)}
+        client.get_fills.side_effect = _min_ts_respecting_fills(
+            [fill_o1, fill_o2])
+        engine2 = LongshotEngine(client, state)
+        engine2.tick()
+        row = _positions_row(state)
+        assert row["count"] == 3, (
+            "order-2's REAL fills must be recorded in full — the "
+            "(ticker, side) aggregate seed (=1 from order-1) skipped one "
+            "of them, a permanent under-record (R4-M2)")
+        assert _pending_status(state, "oid-m2o2") == "filled"
+
+    def test_single_order_case_unchanged(self, state, client, enabled):
+        """Single order whose fills were recorded pre-crash (counter
+        incremented by _apply_fills): restart must not double-count."""
+        now = time.time()
+        engine1 = LongshotEngine(client, state)
+        engine1._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-m2u", order_id="oid-m2u",
+                              count=2, created_epoch=now - 600)
+        engine1.register_resting(
+            order_id="oid-m2u", client_order_id="ls-m2u", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=2, seconds_to_close=600.0)
+        fill = {"order_id": "oid-m2u", "trade_id": "t-m2u", "count": 2,
+                "ts": now - 300, "created_time": _rfc3339(now - 300)}
+        client.get_fills.side_effect = _min_ts_respecting_fills([fill])
+        engine1.tick()  # records 2, counter=2, quote popped as filled
+        # Crash erased the pop's row flip? No — simulate the worst case:
+        # the row is still 'resting' at restart (pop never committed).
+        state.conn.execute(
+            "UPDATE pending_orders SET status='resting' "
+            "WHERE order_id='oid-m2u'")
+        state.conn.commit()
+        engine2 = LongshotEngine(client, state)
+        engine2.tick()
+        assert _positions_row(state)["count"] == 2, (
+            "single-order restart must not double-count (own counter =2 "
+            "absorbs the refetch) (R4-M2)")
+        assert _pending_status(state, "oid-m2u") == "filled"
+
+    def test_null_legacy_row_falls_back_to_aggregate(self, state, client,
+                                                     enabled):
+        """Pre-R4 rows have recorded_fill_count=NULL — the (ticker, side)
+        aggregate fallback must still absorb the refetch."""
+        now = time.time()
+        _record_longshot(state, side="no", count=2)
+        _seed_pending_resting(state, client_oid="ls-m2l", order_id="oid-m2l",
+                              count=2, created_epoch=now - 600)
+        state.conn.execute(
+            "UPDATE pending_orders SET recorded_fill_count=NULL "
+            "WHERE order_id='oid-m2l'")
+        state.conn.commit()
+        client.get_fills.side_effect = _min_ts_respecting_fills([
+            {"order_id": "oid-m2l", "trade_id": "t-m2l", "count": 2,
+             "ts": now - 300, "created_time": _rfc3339(now - 300)},
+        ])
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert _positions_row(state)["count"] == 2, (
+            "NULL-legacy rows must fall back to the (ticker, side) "
+            "aggregate seed (R4-M2)")
+        assert _pending_status(state, "oid-m2l") == "filled"
+
+    def test_reconcile_import_attributes_to_most_recent_ls_order(
+            self, state, client, enabled):
+        """RECONCILE_IMPORT_LONGSHOT contracts are 'already embodied'
+        truth the engine never counter-attributed — the import must bump
+        the most recent ls- order's counter so its own-row seed absorbs
+        the boot refetch."""
+        now = time.time()
+        _seed_pending_resting(state, client_oid="ls-m2r", order_id="oid-m2r",
+                              side="yes", count=2, price=10,
+                              created_epoch=now - 600)
+        client.get_positions.return_value = {"market_positions": [
+            {"ticker": TICKER, "position": 2, "market_exposure": 20},
+        ]}
+        state.reconcile_with_api(client)
+        assert _positions_row(state)["strategy_group"] == "longshot"
+        assert _recorded_fill_count(state, "oid-m2r") == 2, (
+            "the import must attribute the embodied contracts to the most "
+            "recent ls- order's recorded_fill_count (R4-M2)")
+        client.get_fills.side_effect = _min_ts_respecting_fills([
+            {"order_id": "oid-m2r", "trade_id": "t-m2r", "count": 2,
+             "ts": now - 300, "created_time": _rfc3339(now - 300)},
+        ])
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert _positions_row(state)["count"] == 2, (
+            "boot refetch after a reconcile import must be a no-op")

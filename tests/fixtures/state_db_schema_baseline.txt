@@ -271,7 +271,7 @@
     idx_ols_ticker_time                                           unique=0  origin=c  partial=0  cols=['ticker', 'observation_time']
     idx_ols_order_id                                              unique=0  origin=c  partial=0  cols=['order_id']
 
-## pending_orders (12 columns)
+## pending_orders (13 columns)
   cid=  0  name=order_id                                            type=TEXT                  notnull=0  pk=1  dflt=None
   cid=  1  name=client_order_id                                     type=TEXT                  notnull=0  pk=0  dflt=None
   cid=  2  name=ticker                                              type=TEXT                  notnull=1  pk=0  dflt=None
@@ -284,6 +284,7 @@
   cid=  9  name=status                                              type=TEXT                  notnull=1  pk=0  dflt="'resting'"
   cid= 10  name=created_at                                          type=TEXT                  notnull=1  pk=0  dflt=None
   cid= 11  name=updated_at                                          type=TEXT                  notnull=1  pk=0  dflt=None
+  cid= 12  name=recorded_fill_count                                 type=INTEGER               notnull=0  pk=0  dflt=None
   Indexes (2):
     idx_pending_orders_ticker                                     unique=0  origin=c  partial=0  cols=['ticker']
     sqlite_autoindex_pending_orders_1                             unique=1  origin=pk  partial=0  cols=['order_id']
@@ -775,7 +776,7 @@ CREATE TABLE pending_orders (
                 status TEXT NOT NULL DEFAULT 'resting',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
-            )
+            , recorded_fill_count INTEGER)
 
 --- [table] position_price_observations ---
 CREATE TABLE position_price_observations (
