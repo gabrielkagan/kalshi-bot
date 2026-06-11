@@ -161,7 +161,7 @@ LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strateg
 TWAPLOCK_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
 TWAPLOCK_P_LOCK_THRESHOLD = 0.99   # STRICTER than the validated 0.95: Coinbase-anchored MVP index adds proxy error vs the honest 4-venue index; undercounting costs frequency, not correctness (degraded-index lesson)
 TWAPLOCK_TWAP_WINDOW_SECONDS = 60.0  # Kalshi settles on a 60s TWAP of its reference index
-TWAPLOCK_ENTRY_WINDOW_SECONDS = 120.0  # only act in the final 120s of the window
+TWAPLOCK_ENTRY_WINDOW_SECONDS = 90.0  # only act in the final 90s — the validated decision grid starts at DEC_FROM=90 (01b_twap_lock_validation.py); no backtest evidence for (90, 120], so we don't trade it (R1-MN1)
 TWAPLOCK_MAX_CONTRACTS_PER_ENTRY = 2   # live-small sizing (plan doc: 1-2 ct/entry)
 TWAPLOCK_MAX_ENTRIES_PER_WINDOW = 1    # one shot per window per asset
 TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1ct) - this margin

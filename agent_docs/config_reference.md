@@ -59,7 +59,7 @@ Engine `bot/twaplock.py`; plan `kb/decisions/longshot-twap-live-small-plan.md`.
 Validated via `scripts/research/genhunt/01b_twap_lock_validation.py`
 (+14.4¢/ct, day-bootstrap CI [+11.1, +17.7], n=359 over 12 days, 29.9
 locks/day on the honest 4-venue index, print cross-check 99.2%, all 7 assets
-positive). In the final ~2min of a 15M window, compute `p_lock` from the
+positive). In the final 90s of a 15M window (the validated decision grid), compute `p_lock` from the
 accrued Coinbase-anchored settlement-TWAP (per-asset spot ring buffer fed
 from the scanner's per-tick read) + a remaining-variance term from
 `blended_rv`; when the locked side clears the threshold, BUY it as a TAKER
@@ -74,7 +74,7 @@ cancel sweeps). Live/shadow control stays with the trading-mode gate at
 | TWAPLOCK_ENABLED | False | Master enable; default OFF — flipped only at explicit operator go-live |
 | TWAPLOCK_P_LOCK_THRESHOLD | 0.99 | STRICTER than the validated 0.95: the Coinbase-anchored MVP index adds proxy error vs the honest 4-venue validation index; undercounting costs frequency, not correctness (degraded-index lesson) |
 | TWAPLOCK_TWAP_WINDOW_SECONDS | 60.0 | Kalshi settles on a 60s TWAP of its reference index |
-| TWAPLOCK_ENTRY_WINDOW_SECONDS | 120.0 | Only act in the final 120s of the window (engine-side `_MIN_SUBMIT_STC_SECONDS`=5.0 lower bound guards the settlement race) |
+| TWAPLOCK_ENTRY_WINDOW_SECONDS | 90.0 | Only act in the final 90s of the window — the validated decision grid's DEC_FROM (`01b_twap_lock_validation.py`); the engine-side `_MIN_SUBMIT_STC_SECONDS`=10.0 lower bound is the grid's DEC_TO and also guards the settlement race. No backtest evidence for (90, 120] or [5, 10), so neither is traded (R1-MN1) |
 | TWAPLOCK_MAX_CONTRACTS_PER_ENTRY | 2 | Live-small sizing (plan doc: 1-2 ct/entry) |
 | TWAPLOCK_MAX_ENTRIES_PER_WINDOW | 1 | One shot per window per asset — in-memory latch + DB-derived (ANY tw- pending_orders row on the ticker consumed the shot, even a zero-fill canceled IOC; survives restart) |
 | TWAPLOCK_MIN_EDGE_CENTS | 3 | Executable ask must be ≤ 100 − taker_fee(1ct) − this margin |

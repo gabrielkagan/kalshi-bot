@@ -2038,7 +2038,7 @@ class OpportunityScanner:
                                 ticker, exc_info=True)
 
                 # ── TWAP-lock endgame overlay (Bit T-1) ─────────────────
-                # Final-120s lock detection, delegated to bot/twaplock.py
+                # Final-90s lock detection, delegated to bot/twaplock.py
                 # (engine owns p_lock math + risk rails + eval-row writes
                 # with filter_stage twaplock_live/shadow). Candidates join
                 # the normal list and are partitioned out as an overlay at

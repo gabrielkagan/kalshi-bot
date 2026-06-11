@@ -152,7 +152,10 @@ class TestTwaplockConstants:
         assert C.TWAPLOCK_MIN_EDGE_CENTS == 3
 
     def test_entry_window(self):
-        assert C.TWAPLOCK_ENTRY_WINDOW_SECONDS == 120.0
+        # Validated decision grid (01b_twap_lock_validation.py
+        # DEC_FROM/DEC_TO = 90..10): no backtest evidence outside [10, 90].
+        assert C.TWAPLOCK_ENTRY_WINDOW_SECONDS == 90.0
+        assert twaplock_mod._MIN_SUBMIT_STC_SECONDS == 10.0
         assert C.TWAPLOCK_TWAP_WINDOW_SECONDS == 60.0
 
     def test_live_override_defaults_off(self):
@@ -296,7 +299,10 @@ class TestConditionLogic:
         assert _eval(engine) == []
 
     @pytest.mark.parametrize("stc,expected", [
-        (121.0, 0), (120.0, 1), (90.0, 1), (5.0, 1), (4.9, 0), (0.0, 0)])
+        # Validated grid edges (DEC_FROM=90 / DEC_TO=10): no evidence for
+        # (90, 120] or [5, 10) — both former edges are now OUTSIDE.
+        (120.0, 0), (90.1, 0), (90.0, 1), (45.0, 1), (10.0, 1), (9.9, 0),
+        (5.0, 0), (0.0, 0)])
     def test_entry_window_edges(self, engine, enabled, stc, expected,
                                 monkeypatch):
         # pin the lock signal so only the STC gate varies

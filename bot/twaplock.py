@@ -7,8 +7,10 @@ assets positive). Plan: kb/decisions/longshot-twap-live-small-plan.md.
 
 Mechanics: Kalshi settles each 15M crypto window on a 60s TWAP of its
 reference index (final ``TWAPLOCK_TWAP_WINDOW_SECONDS`` before close). In
-the final ``TWAPLOCK_ENTRY_WINDOW_SECONDS`` (120s) this engine computes
-the LIVE Coinbase-anchored estimate of the settlement TWAP:
+the final ``TWAPLOCK_ENTRY_WINDOW_SECONDS`` (90s — the validated decision
+grid's DEC_FROM; entries stop below ``_MIN_SUBMIT_STC_SECONDS`` = 10s, the
+grid's DEC_TO) this engine computes the LIVE Coinbase-anchored estimate of
+the settlement TWAP:
 
 * ``accrued`` — time-weighted mean of per-tick Coinbase spot over the
   ELAPSED portion of the final-60s window (per-asset ring buffer fed from
@@ -85,11 +87,13 @@ TWAPLOCK_STRATEGY = "twaplock"
 TWAPLOCK_FILTER_STAGE_LIVE = "twaplock_live"
 TWAPLOCK_FILTER_STAGE_SHADOW = "twaplock_shadow"
 
-# Below this STC an IOC races settlement (API round trip + matching);
-# mirrors the MIN_ORDER_SUBMIT_STC_S settlement-race class with margin.
-_MIN_SUBMIT_STC_SECONDS = 5.0
+# Below this STC an IOC races settlement (API round trip + matching) —
+# the MIN_ORDER_SUBMIT_STC_S settlement-race class — AND the validated
+# decision grid ends here (01b_twap_lock_validation.py DEC_TO=10): no
+# backtest evidence for [5, 10), so we don't trade it (R1-MN1).
+_MIN_SUBMIT_STC_SECONDS = 10.0
 
-# Per-asset spot ring buffer: covers the 120s entry window + slack at the
+# Per-asset spot ring buffer: covers the 90s entry window + slack at the
 # scanner's per-tick cadence; samples older than this are pruned.
 _SPOT_BUFFER_TTL_SECONDS = 180.0
 _SPOT_BUFFER_MAXLEN = 720
