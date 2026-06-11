@@ -708,6 +708,12 @@ class LongshotEngine:
                 # filled >= count and ended 'canceled', not 'filled'.
                 # R7-M1 adjacent: count_fp-primary twin (same
                 # FP-transition class on the original-size field).
+                # R8-MN2 CAVEAT: 'count_fp'/'count' as ORDER-object field
+                # names are uncorroborated elsewhere in the repo (they are
+                # fills-object names; the only other /orders reader uses
+                # remaining_count_* only). This branch fires only when BOTH
+                # remaining fields are absent — verify the live /orders
+                # schema before trusting it (go-live checklist item).
                 _orig = fp_str_to_int(o.get("count_fp")) or int(
                     o.get("count") or 0)
                 remaining = max(0, _orig - _skip)
@@ -1440,7 +1446,10 @@ class LongshotEngine:
                 "LONGSHOT_FILL: %s %s %dct @ %dc (%d/%d) trade=%s",
                 q["ticker"], q["buy_side"], fill_count,
                 q["buy_price_cents"], q["filled"], q["count"], trade_id)
-        if q["filled"] >= q["count"]:
+        # R8-MN1: count > 0 guard mirrors boot step-2's form — a zero-count
+        # adoption (all count fields absent, zero skip) must not pop as
+        # 'filled' on its first poll when nothing filled.
+        if q["count"] > 0 and q["filled"] >= q["count"]:
             with self._lock:
                 _popped = self._resting.pop(q["order_id"], None)
             # R2-C1: fully filled -> ledger row leaves 'resting' (idempotent
