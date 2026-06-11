@@ -556,7 +556,11 @@ class OrderExecutor:
             return None
         buy_side = candidate["longshot_buy_side"]
         price = int(candidate["longshot_buy_price_cents"])
-        client_oid = str(uuid.uuid4())
+        # R1-M1: prefix marks the order as longshot's for boot orphan
+        # reconciliation (LongshotEngine._boot_reconcile_orphans) and the
+        # per-strategy live-gate recognition in kalshi_client.place_order.
+        client_oid = (bot.constants.LONGSHOT_CLIENT_OID_PREFIX
+                      + str(uuid.uuid4()))
         # Persist BEFORE submission (order-ledger crash-safety contract,
         # mirrors the maker-first path / ticket 86ba0jb1g).
         self._state.insert_bot_order(

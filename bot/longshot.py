@@ -151,6 +151,8 @@ class LongshotEngine:
         self._resting: Dict[str, Dict] = {}
         self._disabled_reason: Optional[str] = None
         self._disabled_utc_date: Optional[str] = None
+        # R1-M1: one-shot boot orphan reconciliation latch (first tick).
+        self._boot_reconciled = False
 
     # ── public surface ────────────────────────────────────────────────────
 
@@ -344,6 +346,11 @@ class LongshotEngine:
         """
         if now is None:
             now = time.time()
+        # R1-M1: boot orphan reconciliation runs FIRST, even when disabled —
+        # orphans from a pre-restart enabled run must still be cancelled
+        # (cancel only reduces exposure).
+        if not self._boot_reconciled:
+            self._boot_reconcile_orphans()
         if not C.LONGSHOT_ENABLED:
             self._cancel_all("longshot_disabled")
             return
@@ -366,6 +373,52 @@ class LongshotEngine:
                 self._cancel_quote(q["order_id"], "t_minus_3min")
 
     # ── internals ─────────────────────────────────────────────────────────
+
+    def _boot_reconcile_orphans(self) -> None:
+        """R1-M1: adopt-and-kill longshot orders that survived a restart.
+
+        The _resting registry is in-memory only, so a restart orphans any
+        live quote (no T-3min cancel, no fill recording). Every longshot
+        client_order_id carries LONGSHOT_CLIENT_OID_PREFIX at placement;
+        on the first tick we list open orders, adopt the prefixed ones as
+        synthetic resting entries, then route them through _cancel_quote
+        (which final-polls fills before popping). On API failure the latch
+        stays unset so the next tick retries.
+        """
+        try:
+            resp = self._client.get_orders(status="resting")
+        except Exception:
+            logging.warning("LONGSHOT_BOOT_RECONCILE_FAILED — retry next "
+                            "tick", exc_info=True)
+            return
+        if resp is None:
+            logging.warning("LONGSHOT_BOOT_RECONCILE_FAILED (api None) — "
+                            "retry next tick")
+            return
+        self._boot_reconciled = True
+        for o in (resp.get("orders") or []):
+            coid = o.get("client_order_id") or ""
+            if not coid.startswith(C.LONGSHOT_CLIENT_OID_PREFIX):
+                continue
+            order_id = o.get("order_id")
+            ticker = o.get("ticker") or ""
+            if not order_id or not ticker:
+                continue
+            buy_side = o.get("side") or "yes"
+            sell_side = "no" if buy_side == "yes" else "yes"
+            price = (o.get("no_price") if buy_side == "no"
+                     else o.get("yes_price")) or 0
+            event_ticker = ticker.rsplit("-", 1)[0]
+            asset = trading_mode.asset_from_ticker(ticker) or ""
+            self.register_resting(
+                order_id=order_id, client_order_id=coid, ticker=ticker,
+                event_ticker=event_ticker, asset=asset,
+                sell_side=sell_side, buy_side=buy_side,
+                buy_price_cents=int(price), count=int(o.get("count") or 0),
+                seconds_to_close=0.0)
+            logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
+                            "final fill poll + cancel", ticker, order_id)
+            self._cancel_quote(order_id, "boot_orphan")
 
     def _resting_for_ticker(self, ticker: str) -> List[Dict]:
         with self._lock:

@@ -144,6 +144,7 @@ LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open long
 LONGSHOT_DAILY_LOSS_CAP_DOLLARS = 20.0  # realized longshot PnL today <= -cap -> same-day auto-disable (LONGSHOT_DAILY_CAP_HIT)
 LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed losing days -> persistent disable
 LONGSHOT_STREAK_RESET_UTC_DATE = ""  # operator re-enable: losing days on/before this UTC date are ignored ("" = never reset)
+LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
 
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi
