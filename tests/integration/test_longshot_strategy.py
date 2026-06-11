@@ -11,11 +11,14 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit L-1 spec:
   reduced by open longshot positions + resting longshot quotes.
 - Collateral cap: LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS across resting
   quotes + open longshot positions.
-- Daily loss cap: realized longshot PnL today <= -LONGSHOT_DAILY_LOSS_CAP_DOLLARS
+- Daily loss cap: realized live-small PnL today <= -LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS
   -> same-day auto-disable (in-memory latch + LONGSHOT_DAILY_CAP_HIT signature).
-- Consecutive losing days: LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE completed
+  Bit T-1 retargeted the rail to the COMBINED helper (bot/strategy_caps.py,
+  strategy IN ('longshot','twaplock')); with no twaplock activity seeded, the
+  combined sums reduce to the original per-strategy semantics tested here.
+- Consecutive losing days: LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE completed
   losing days -> persistent (DB-derived) auto-disable;
-  LONGSHOT_STREAK_RESET_UTC_DATE clears the latch.
+  LIVE_SMALL_STREAK_RESET_UTC_DATE clears the latch.
 - evaluated_opportunities row write with filter_stage='longshot_live' /
   'longshot_shadow' (cell-block string-literal discipline) — labeling consults
   bot.trading_mode read-only; the GATE stays at executor.execute().
@@ -128,11 +131,17 @@ class TestLongshotConstants:
     def test_risk_rails(self):
         assert C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE == 3
         assert C.LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS == 150.0
-        assert C.LONGSHOT_DAILY_LOSS_CAP_DOLLARS == 20.0
-        assert C.LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE == 3
+        # Bit T-1: the per-strategy LONGSHOT_DAILY_LOSS_CAP_DOLLARS /
+        # LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE constants were RETIRED
+        # into the COMBINED live-small rails (bot/strategy_caps.py).
+        assert C.LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS == 20.0
+        assert C.LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE == 3
+        assert not hasattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS")
+        assert not hasattr(C, "LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE")
 
     def test_streak_reset_override_exists(self):
-        assert C.LONGSHOT_STREAK_RESET_UTC_DATE == ""
+        assert C.LIVE_SMALL_STREAK_RESET_UTC_DATE == ""
+        assert not hasattr(C, "LONGSHOT_STREAK_RESET_UTC_DATE")
 
 
 # ── p_normal math ────────────────────────────────────────────────────────────
@@ -345,7 +354,7 @@ class TestAutoDisable:
         for i in (1, 2, 3):
             d = (today - datetime.timedelta(days=i)).isoformat()
             _seed_settled(state, f"KXBTC15M-26JUN{i:02d}0900-T99", -100, d)
-        monkeypatch.setattr(C, "LONGSHOT_STREAK_RESET_UTC_DATE",
+        monkeypatch.setattr(C, "LIVE_SMALL_STREAK_RESET_UTC_DATE",
                             today.isoformat(), raising=False)
         assert len(_eval(engine)) == 1
 

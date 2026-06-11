@@ -141,11 +141,51 @@ LONGSHOT_MAX_STC_SECONDS = 720.0   # T-12min: earliest entry
 LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in prob units, i.e. ask_cents/100)
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
-LONGSHOT_DAILY_LOSS_CAP_DOLLARS = 20.0  # realized longshot PnL today <= -cap -> same-day auto-disable (LONGSHOT_DAILY_CAP_HIT)
-LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed losing days -> persistent disable
-LONGSHOT_STREAK_RESET_UTC_DATE = ""  # operator re-enable: losing days on/before this UTC date are ignored ("" = never reset)
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
 LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED (R1-M4)
+
+# ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
+# Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
+# +14.4c/ct, day-bootstrap CI [+11.1, +17.7], n=359 over 12 days, 29.9
+# locks/day on the honest 4-venue index, print cross-check 99.2%, all 7
+# assets positive. Plan: kb/decisions/longshot-twap-live-small-plan.md.
+# Mechanics: in the final ~2min of a 15M crypto window Kalshi settles on a
+# 60s TWAP of its reference index. Compute the accrued TWAP fraction from
+# live Coinbase spot; once the locked side's probability p_lock clears
+# TWAPLOCK_P_LOCK_THRESHOLD (remaining variance cannot flip the outcome),
+# BUY that side as a TAKER (IOC) if the executable ask leaves
+# >= fee + TWAPLOCK_MIN_EDGE_CENTS vs ~100c settlement; hold to settlement.
+# Live/shadow control stays with the trading_mode gate at executor.execute()
+# (single chokepoint — never duplicated here). Engine: bot/twaplock.py.
+# Regression lock: tests/integration/test_twaplock_strategy.py.
+TWAPLOCK_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
+TWAPLOCK_P_LOCK_THRESHOLD = 0.99   # STRICTER than the validated 0.95: Coinbase-anchored MVP index adds proxy error vs the honest 4-venue index; undercounting costs frequency, not correctness (degraded-index lesson)
+TWAPLOCK_TWAP_WINDOW_SECONDS = 60.0  # Kalshi settles on a 60s TWAP of its reference index
+TWAPLOCK_ENTRY_WINDOW_SECONDS = 120.0  # only act in the final 120s of the window
+TWAPLOCK_MAX_CONTRACTS_PER_ENTRY = 2   # live-small sizing (plan doc: 1-2 ct/entry)
+TWAPLOCK_MAX_ENTRIES_PER_WINDOW = 1    # one shot per window per asset
+TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1ct) - this margin
+TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
+TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED
+
+# ── Live-small shared risk rails (longshot + twaplock COMBINED; Bit T-1) ──────
+# Single source of truth consumed by BOTH engines' disable latches via
+# bot/strategy_caps.py (plan-doc requirement: "$20/day cap, both strategies
+# combined, realized+marked"; the Bit L-1 per-strategy cap constant
+# LONGSHOT_DAILY_LOSS_CAP_DOLLARS was retired into this combined rail).
+LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS = 20.0  # combined realized+marked PnL today across ('longshot','twaplock') <= -cap -> same-day auto-disable of BOTH
+LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed COMBINED losing days -> persistent disable of BOTH
+LIVE_SMALL_STREAK_RESET_UTC_DATE = ""  # operator re-enable: combined losing days on/before this UTC date are ignored ("" = never reset)
+
+# Engine-owned client_order_id prefixes — the reconciler carve-outs in
+# bot/state.py (_reconcile_orders / cleanup_expired_resting_orders /
+# RECONCILE_IMPORT stamping) and trading_mode.strategy_from_client_order_id
+# key off this map. Extend it when a new engine-owned strategy lands.
+ENGINE_OWNED_OID_PREFIX_TO_STRATEGY = {
+    LONGSHOT_CLIENT_OID_PREFIX: "longshot",
+    TWAPLOCK_CLIENT_OID_PREFIX: "twaplock",
+}
+ENGINE_OWNED_CLIENT_OID_PREFIXES = tuple(ENGINE_OWNED_OID_PREFIX_TO_STRATEGY)
 
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi

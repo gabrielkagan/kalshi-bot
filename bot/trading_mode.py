@@ -32,32 +32,42 @@ def is_live(asset: str) -> bool:
 
 
 def strategy_is_live(strategy, asset: str) -> bool:
-    """Per-strategy live gate (R1-M4): ``is_live(asset)`` OR a strategy-
-    scoped override. Today the only override is longshot
-    (``LONGSHOT_LIVE_OVERRIDE`` — lets the operator go live with the
-    longshot premium-harvest strategy alone while the main pipeline stays
-    shadow). For every other strategy this is EXACTLY ``is_live(asset)``
-    — main-pipeline behavior unchanged. Consulted at the two existing
-    chokepoints only: ``executor.execute()`` (which passes the
-    candidate's strategy) and the ``kalshi_client.place_order`` backstop
-    (which recovers the strategy from the ``ls-`` client_order_id prefix
-    via :func:`strategy_from_client_order_id`)."""
+    """Per-strategy live gate (R1-M4, extended at Bit T-1):
+    ``is_live(asset)`` OR a strategy-scoped override. Two overrides exist
+    — longshot (``LONGSHOT_LIVE_OVERRIDE``) and twaplock
+    (``TWAPLOCK_LIVE_OVERRIDE``) — each lets the operator go live with
+    that ONE strategy while the main pipeline (and the sibling strategy)
+    stays shadow. For every other strategy this is EXACTLY
+    ``is_live(asset)`` — main-pipeline behavior unchanged. Consulted at
+    the two existing chokepoints only: ``executor.execute()`` (which
+    passes the candidate's strategy) and the ``kalshi_client.place_order``
+    backstop (which recovers the strategy from the engine-owned
+    client_order_id prefix — ``ls-``/``tw-`` — via
+    :func:`strategy_from_client_order_id`). Override flags are read live
+    via module-attribute access (runtime kill-switch pattern)."""
     if is_live(asset):
         return True
-    return strategy == "longshot" and bool(_c.LONGSHOT_LIVE_OVERRIDE)
+    if strategy == "longshot":
+        return bool(_c.LONGSHOT_LIVE_OVERRIDE)
+    if strategy == "twaplock":
+        return bool(_c.TWAPLOCK_LIVE_OVERRIDE)
+    return False
 
 
 def strategy_from_client_order_id(client_order_id) -> "str | None":
     """Recover the gate-relevant strategy from a client_order_id.
 
-    Longshot stamps ``LONGSHOT_CLIENT_OID_PREFIX`` ('ls-') on every
-    placement (R1-M1), which is the only signal available at the
-    ``place_order`` API boundary (no candidate dict there). Returns
-    'longshot' for prefixed ids, None otherwise (None → plain
-    ``is_live`` semantics in :func:`strategy_is_live`)."""
-    if isinstance(client_order_id, str) and client_order_id.startswith(
-            _c.LONGSHOT_CLIENT_OID_PREFIX):
-        return "longshot"
+    Engine-owned strategies stamp a prefix on every placement (longshot
+    'ls-' per R1-M1; twaplock 'tw-' per Bit T-1) — the only signal
+    available at the ``place_order`` API boundary (no candidate dict
+    there). The prefix→strategy map is single-sourced in
+    ``bot.constants.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY``. Returns the
+    strategy for prefixed ids, None otherwise (None → plain ``is_live``
+    semantics in :func:`strategy_is_live`)."""
+    if isinstance(client_order_id, str):
+        for prefix, strategy in _c.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY.items():
+            if client_order_id.startswith(prefix):
+                return strategy
     return None
 
 

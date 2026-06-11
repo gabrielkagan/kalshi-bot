@@ -435,7 +435,8 @@ class TestM3DailyCapMarkedTerm:
     def test_marked_only_can_trip_cap(self, engine, state, enabled,
                                       monkeypatch, caplog):
         # zero realized; cap shrunk to $2 so the 276c marked loss trips it
-        monkeypatch.setattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS", 2.0,
+        # (Bit T-1: cap constant is the COMBINED live-small rail now)
+        monkeypatch.setattr(C, "LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS", 2.0,
                             raising=False)
         state.record_position_from_fill(
             TICKER2, EVENT2, "BTC", "no", 3, 92, strategy="longshot",
@@ -448,7 +449,7 @@ class TestM3DailyCapMarkedTerm:
 
     def test_sold_no_side_itm_when_spot_below_strike(self, engine, state,
                                                      enabled, monkeypatch):
-        monkeypatch.setattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS", 2.0,
+        monkeypatch.setattr(C, "LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS", 2.0,
                             raising=False)
         # bought YES (sold NO); NO is ITM when spot < threshold
         state.record_position_from_fill(
