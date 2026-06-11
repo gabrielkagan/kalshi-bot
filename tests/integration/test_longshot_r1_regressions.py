@@ -505,6 +505,74 @@ class TestM6SingleFillsFetchPerTick:
         engine._client.get_fills.assert_not_called()
 
 
+# ── MN1: eval-row write dedup per (ticker, side) ─────────────────────────────
+
+class TestMN1EvalRowDedup:
+    """R1-MN1: evaluate_market wrote an evaluated_opportunities row every
+    tick while the condition held (~once per scan tick per side). Dedup
+    per (ticker, side) mirrors the scanner's _eval_opp_seen pattern —
+    candidates still emit every tick; only the DB write is once."""
+
+    def test_row_written_once_per_ticker_side(self, engine, state, enabled,
+                                              monkeypatch):
+        calls = []
+        orig = state.insert_evaluated_opportunity
+
+        def _spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        monkeypatch.setattr(state, "insert_evaluated_opportunity", _spy)
+        assert len(_eval(engine)) == 1
+        assert len(_eval(engine)) == 1  # candidate still emitted
+        assert len(calls) == 1, "eval row must be written once per "\
+                                "(ticker, side), not per tick"
+
+    def test_other_ticker_still_writes(self, engine, state, enabled,
+                                       monkeypatch):
+        calls = []
+        orig = state.insert_evaluated_opportunity
+
+        def _spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        monkeypatch.setattr(state, "insert_evaluated_opportunity", _spy)
+        _eval(engine, ticker=TICKER)
+        _eval(engine, ticker=TICKER2)
+        assert len(calls) == 2
+
+
+# ── MN4: mid-flight trading-mode flip cancels resting quotes ─────────────────
+
+class TestMN4ModeFlipCancelsResting:
+    """R1-MN4: the trading-mode gate only protects NEW placements; a
+    live->shadow flip mid-flight left already-resting longshot quotes
+    working (cancel_order is intentionally ungated, so the engine must
+    cancel them itself on tick)."""
+
+    def test_mode_flip_cancels_resting(self, engine, enabled, monkeypatch):
+        _register(engine, order_id="oid-mn4", stc=600.0)
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,
+                            raising=False)
+        engine.tick()
+        cancelled = [c.args[0] for c in
+                     engine._client.cancel_order.call_args_list]
+        assert "oid-mn4" in cancelled
+        assert engine.resting_count() == 0
+
+    def test_no_cancel_when_override_keeps_longshot_live(self, engine,
+                                                         enabled,
+                                                         monkeypatch):
+        _register(engine, order_id="oid-mn4b", stc=600.0)
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        engine.tick()
+        engine._client.cancel_order.assert_not_called()
+        assert engine.resting_count() == 1
+
+
 # ── M4: per-strategy live override (longshot-only go-live) ──────────────────
 
 def _main_candidate(**overrides):

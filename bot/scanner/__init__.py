@@ -1992,7 +1992,10 @@ class OpportunityScanner:
                         try:
                             _ls_cands = _ls_engine.evaluate_market(
                                 ticker=ticker,
-                                event_ticker=window["event_ticker"],
+                                # R1-MN2: .get — sibling sites in this
+                                # loop tolerate a missing event_ticker
+                                event_ticker=window.get("event_ticker",
+                                                        ""),
                                 asset=asset,
                                 product_type=_pt or "15m",
                                 spot=spot,

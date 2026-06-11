@@ -73,6 +73,11 @@ _STALE_DROP_GRACE_SECONDS = 120.0
 # x 200 fills is far beyond anything live-small sizing can produce.
 _MAX_FILL_PAGES = 5
 
+# R1-MN1/M3: per-ticker bookkeeping (_eval_row_seen, _mark_inputs) is
+# pruned on tick once older than this — windows are 15 minutes, so 30
+# minutes comfortably outlives any live entry.
+_SEEN_TTL_SECONDS = 1800.0
+
 _SQRT2 = math.sqrt(2.0)
 
 
@@ -166,6 +171,10 @@ class LongshotEngine:
         # captured per evaluate_market call, used to MARK open positions
         # (sold side currently ITM = full loss) against the daily cap.
         self._mark_inputs: Dict[str, Tuple[float, float, float]] = {}
+        # R1-MN1: (ticker, side) -> ts of the one eval-row write (mirrors
+        # the scanner's _eval_opp_seen dedup; candidates still emit every
+        # tick — only the DB write is deduped). Pruned via _SEEN_TTL.
+        self._eval_row_seen: Dict[Tuple[str, str], float] = {}
 
     # ── public surface ────────────────────────────────────────────────────
 
@@ -289,27 +298,35 @@ class LongshotEngine:
             live = trading_mode.strategy_is_live(LONGSHOT_STRATEGY, asset)
             filter_stage = (LONGSHOT_FILTER_STAGE_LIVE if live
                             else LONGSHOT_FILTER_STAGE_SHADOW)
-            try:
-                self._state.insert_evaluated_opportunity(
-                    ticker, event_ticker, asset, filter_stage,
-                    spot_price=spot, threshold=threshold,
-                    volatility=blended_rv,
-                    market_price=ask,  # the SOLD side's executable ask
-                    seconds_to_close=seconds_to_close,
-                    calibrated_prob=round(p_buy, 6),
-                    raw_prob=round(p_buy, 6),
-                    edge=round(edge, 6),
-                    strategy=LONGSHOT_STRATEGY,
-                    position_size=size,
-                    z_score=round(z, 4) if z is not None else None,
-                    side=buy_side,
-                    product_type=product_type or "15m",
-                    config_snapshot_id=config_snapshot_id,
-                )
-            except Exception:
-                logging.warning(
-                    "insert_evaluated_opportunity failed (%s)", filter_stage,
-                    exc_info=True)
+            # R1-MN1: one eval row per (ticker, side) — not one per tick
+            # (mirrors scanner _eval_opp_seen). Candidates still emit.
+            _seen_key = (ticker, buy_side)
+            with self._lock:
+                _row_seen = _seen_key in self._eval_row_seen
+                if not _row_seen:
+                    self._eval_row_seen[_seen_key] = time.time()
+            if not _row_seen:
+                try:
+                    self._state.insert_evaluated_opportunity(
+                        ticker, event_ticker, asset, filter_stage,
+                        spot_price=spot, threshold=threshold,
+                        volatility=blended_rv,
+                        market_price=ask,  # the SOLD side's executable ask
+                        seconds_to_close=seconds_to_close,
+                        calibrated_prob=round(p_buy, 6),
+                        raw_prob=round(p_buy, 6),
+                        edge=round(edge, 6),
+                        strategy=LONGSHOT_STRATEGY,
+                        position_size=size,
+                        z_score=round(z, 4) if z is not None else None,
+                        side=buy_side,
+                        product_type=product_type or "15m",
+                        config_snapshot_id=config_snapshot_id,
+                    )
+                except Exception:
+                    logging.warning(
+                        "insert_evaluated_opportunity failed (%s)",
+                        filter_stage, exc_info=True)
             candidates.append({
                 "ticker": ticker,
                 "event_ticker": event_ticker,
@@ -382,6 +399,17 @@ class LongshotEngine:
             self._cancel_all(self._disabled_reason)
             return
 
+        # R1-MN1/M3: prune per-ticker bookkeeping past TTL (15M windows
+        # are long gone after 30 min; keeps both dicts bounded).
+        with self._lock:
+            cutoff = now - _SEEN_TTL_SECONDS
+            self._eval_row_seen = {k: ts for k, ts
+                                   in self._eval_row_seen.items()
+                                   if ts >= cutoff}
+            self._mark_inputs = {k: v for k, v
+                                 in self._mark_inputs.items()
+                                 if v[2] >= cutoff}
+
         # R1-M6: ONE unfiltered paginated fills fetch per tick, dispatched
         # across all resting quotes (was one REST call per quote).
         with self._lock:
@@ -391,6 +419,18 @@ class LongshotEngine:
             if fills is not None:
                 for q in quotes:
                     self._apply_fills(q, fills)
+
+        # R1-MN4: a live->shadow trading-mode flip mid-flight must cancel
+        # already-resting quotes. The executor gate only protects NEW
+        # placements and cancel_order is intentionally ungated, so the
+        # engine cancels its own quotes here (after the bulk poll, like
+        # every other cancel sweep — C1 ordering).
+        with self._lock:
+            quotes = list(self._resting.values())
+        for q in quotes:
+            if not trading_mode.strategy_is_live(LONGSHOT_STRATEGY,
+                                                 q["asset"]):
+                self._cancel_quote(q["order_id"], "mode_flip")
 
         with self._lock:
             quotes = list(self._resting.values())
@@ -602,6 +642,17 @@ class LongshotEngine:
         daily_cap clears at the next UTC day; consec_days is recomputed
         every call so LONGSHOT_STREAK_RESET_UTC_DATE takes effect without
         a restart.
+
+        R1-MN3 fail-open/fail-closed asymmetry (INTENTIONAL): query
+        failures here `return` early, PRESERVING the last latch state —
+        i.e. fail-OPEN when the engine was enabled. The sizing-side
+        queries (_allowed_size / has_open_main_pipeline_position) fail-
+        CLOSED (size 0 / conflict) instead. The constraint: failing
+        closed here would let one transient `database is locked` blip
+        flip a healthy engine into a cancel-all sweep of every resting
+        quote (a destructive, order-working action), while failing open
+        on sizing would PLACE orders on unverified caps. Skipped quotes
+        are always safe; spurious mass-cancels are not.
         """
         today = datetime.datetime.now(timezone.utc).date()
         today_iso = today.isoformat()
