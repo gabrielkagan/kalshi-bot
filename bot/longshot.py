@@ -652,6 +652,16 @@ class LongshotEngine:
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)
+            # R5-M3: seed the REAL remaining window life — the stale-drop
+            # backstop measures `stc_at_register - elapsed < -grace`, so
+            # the pre-fix 0.0 seed made it fire 120s after RESTART, not
+            # 120s after the real close, abandoning the entry (and its
+            # fill polling) while the order could still be live and
+            # filling on Kalshi. Unparseable ticker -> 0.0 (backstop
+            # falls back to restart-anchored, the old conservative shape).
+            _close_epoch = _close_epoch_from_ticker(ticker)
+            _stc = (max(0.0, _close_epoch - now)
+                    if _close_epoch is not None else 0.0)
             # R4-MN3: register count in CUMULATIVE units (remaining +
             # already-recorded skip). _apply_fills accumulates q["filled"]
             # over ALL fetched fills — skipped pre-restart contracts
@@ -667,7 +677,7 @@ class LongshotEngine:
                 sell_side=sell_side, buy_side=buy_side,
                 buy_price_cents=int(price),
                 count=int(remaining) + _skip,
-                seconds_to_close=0.0,
+                seconds_to_close=_stc,
                 fill_min_ts=_boot_fill_min_ts(o.get("created_time"),
                                               ticker, now),
                 boot_fill_skip=_skip)

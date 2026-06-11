@@ -405,3 +405,77 @@ class TestM2OppositeSideRestingQuote:
         assert len(same) == 1, (
             "a SAME-side candidate must survive the overlay registry "
             "mirror (R5-M2 guard is opposite-side only)")
+
+
+# ── M3: boot adoption must seed the REAL seconds_to_close ────────────────────
+
+class TestM3BootAdoptionSeedsRealClose:
+    """R5-M3: step-1 adoption registered seconds_to_close=0.0, so the
+    stale-drop backstop (remaining < -120s) measured 120s from RESTART,
+    not from the real window close — an adopted orphan with minutes of
+    real life left was dropped (and its entry's caps/fill-polling
+    abandoned) while the order could still be live and filling on
+    Kalshi."""
+
+    def _adopt_orphan(self, state, client, ticker, *, order_id="oid-m3",
+                      client_oid="ls-m3", created_epoch=None):
+        now = time.time()
+        _seed_pending_resting(
+            state, client_oid=client_oid, order_id=order_id, ticker=ticker,
+            event=ticker.rsplit("-", 1)[0],
+            created_epoch=created_epoch or (now - 300))
+        client.get_orders.return_value = {"orders": [
+            {"order_id": order_id, "client_order_id": client_oid,
+             "ticker": ticker, "side": "no", "action": "buy",
+             "no_price": 92, "count": 3, "remaining_count": 3,
+             "status": "resting",
+             "created_time": _rfc3339(created_epoch or (now - 300))},
+        ]}
+        client.cancel_order.return_value = None  # cancel keeps failing
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        return engine
+
+    def test_adopted_orphan_with_real_life_not_stale_dropped_at_120s(
+            self, state, client, enabled):
+        now = time.time()
+        ticker = _ticker_closing_at(now + 600)
+        engine = self._adopt_orphan(state, client, ticker)
+        assert engine.resting_count() == 1
+        with engine._lock:
+            q = next(iter(engine._resting.values()))
+        # The encoded close is minute-truncated; ~9-10 min of life left.
+        assert q["stc_at_register"] > 400.0, (
+            "adoption must seed seconds_to_close from the ticker's real "
+            "close epoch, not 0.0 (R5-M3)")
+        # 200s after restart: window still has minutes left — the
+        # stale-drop backstop must NOT fire (pre-fix: stc=0.0 made
+        # remaining = -200 < -120 and dropped the live order's entry).
+        engine.tick(now=now + 200)
+        assert engine.resting_count() == 1, (
+            "an adopted orphan with real window life left was "
+            "stale-dropped 120s after RESTART instead of 120s after the "
+            "real close (R5-M3)")
+
+    def test_adopted_orphan_still_stale_drops_past_real_close(
+            self, state, client, enabled):
+        """The backstop must still fire once the REAL close + grace has
+        passed (cancel kept failing -> Kalshi auto-canceled at close)."""
+        now = time.time()
+        ticker = _ticker_closing_at(now + 600)
+        engine = self._adopt_orphan(state, client, ticker)
+        engine.tick(now=now + 600 + 200)  # > close + 120s grace
+        assert engine.resting_count() == 0, (
+            "the stale-drop backstop must still fire past the real "
+            "close + grace (R5-M3 keeps the backstop, just re-anchors it)")
+
+    def test_unparseable_ticker_falls_back_to_zero(self, state, client,
+                                                   enabled):
+        ticker = "KXWEIRDSERIES-NOTADATE-T104"
+        engine = self._adopt_orphan(state, client, ticker)
+        assert engine.resting_count() == 1
+        with engine._lock:
+            q = next(iter(engine._resting.values()))
+        assert q["stc_at_register"] == 0.0, (
+            "an unparseable ticker must fall back to 0.0 — adoption must "
+            "never crash on it (R5-M3)")
