@@ -272,10 +272,13 @@ class KalshiClient:
         # is intentionally ungated (reduces exposure). Together that makes a
         # runtime flag-flip a kill-switch even for a resting order on an open
         # position. Non-crypto tickers (asset_from_ticker→None) untouched.
-        # R1-M4: strategy-aware form — recovers 'longshot' from the ls-
-        # client_order_id prefix (the only strategy signal at this API
-        # boundary) so LONGSHOT_LIVE_OVERRIDE can pass longshot orders
-        # while everything else keeps plain is_live semantics. Mirrors the
+        # Strategy-aware form (longshot R1-M4, generalized at Bit T-1):
+        # recovers the engine-owned strategy from the client_order_id
+        # prefix (the only strategy signal at this API boundary) via the
+        # single-sourced bot.constants.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY
+        # map ('ls-' -> longshot, 'tw-' -> twaplock) so each engine's
+        # *_LIVE_OVERRIDE flag can pass that ONE strategy's orders while
+        # everything else keeps plain is_live semantics. Mirrors the
         # executor.execute() chokepoint exactly (the two must never
         # disagree, else override-mode placements die here).
         _tm_asset = _tm_asset_from_ticker(ticker)
