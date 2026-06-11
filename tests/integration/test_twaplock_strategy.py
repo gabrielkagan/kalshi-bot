@@ -17,8 +17,9 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit T-1 spec
 - Accrued ring-buffer math: time-weighted (step-hold) mean over the
   elapsed portion of the final-60s TWAP window; requires a sample at or
   before window start.
-- Entry window edges: only TWAPLOCK_MIN_SUBMIT_STC_SECONDS <= stc <=
-  TWAPLOCK_ENTRY_WINDOW_SECONDS (final 120s).
+- Entry window edges: only when the module-private
+  bot/twaplock.py::_MIN_SUBMIT_STC_SECONDS <= stc <=
+  C.TWAPLOCK_ENTRY_WINDOW_SECONDS (the validated decision grid).
 - Fee + margin gate: locked-side executable ask must satisfy
   ask <= 100 - taker_fee(1ct, ask) - TWAPLOCK_MIN_EDGE_CENTS.
 - One entry per window per asset (TWAPLOCK_MAX_ENTRIES_PER_WINDOW=1):
