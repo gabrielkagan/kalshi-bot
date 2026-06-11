@@ -510,3 +510,59 @@ class TestMN1CleanupExpiredCarveOut:
         assert _pending_status(state, "oid-mn1m") == "expired", (
             "non-longshot past-close rows must still expire (R4-MN1 "
             "carve-out is ls- only)")
+
+
+# ── MN2: ls--history stamp must be recency, not existence ───────────────────
+
+class TestMN2LsHistoryStampIsRecency:
+    """R4-MN2: _reconcile_positions stamped strategy_group='longshot' on
+    ANY ls- pending history. A ticker longshot quoted weeks ago that the
+    main pipeline traded since would have its unknown-position import
+    claimed by longshot. The stamp must check the MOST RECENT
+    pending_orders row for the ticker (any prefix) and fire only when
+    THAT row is ls-prefixed."""
+
+    def test_old_ls_history_newer_main_order_imports_main(
+            self, state, client, enabled):
+        now = time.time()
+        # Old ls- order, long settled.
+        _seed_pending_resting(state, client_oid="ls-mn2a",
+                              order_id="oid-mn2a", side="yes", count=2,
+                              price=10, created_epoch=now - 86400)
+        state.mark_order_status("oid-mn2a", "filled")
+        # Newer MAIN order on the same ticker.
+        _seed_pending_resting(state, client_oid="mk-mn2a",
+                              order_id="oid-mn2am", side="yes", count=2,
+                              price=80, created_epoch=now - 300)
+        state.mark_order_status("oid-mn2am", "filled")
+        client.get_positions.return_value = {"market_positions": [
+            {"ticker": TICKER, "position": 2, "market_exposure": 160},
+        ]}
+        state.reconcile_with_api(client)
+        row = _positions_row(state)
+        assert row is not None
+        assert row["strategy_group"] == "main", (
+            "the MAIN pipeline most recently traded this ticker — the "
+            "import must stay 'main'; existence of OLD ls- history must "
+            "not claim it for longshot (R4-MN2)")
+
+    def test_recent_ls_after_old_main_imports_longshot(
+            self, state, client, enabled):
+        now = time.time()
+        _seed_pending_resting(state, client_oid="mk-mn2b",
+                              order_id="oid-mn2bm", side="yes", count=2,
+                              price=80, created_epoch=now - 86400)
+        state.mark_order_status("oid-mn2bm", "filled")
+        _seed_pending_resting(state, client_oid="ls-mn2b",
+                              order_id="oid-mn2b", side="yes", count=2,
+                              price=10, created_epoch=now - 300)
+        state.mark_order_status("oid-mn2b", "filled")
+        client.get_positions.return_value = {"market_positions": [
+            {"ticker": TICKER, "position": 2, "market_exposure": 20},
+        ]}
+        state.reconcile_with_api(client)
+        row = _positions_row(state)
+        assert row is not None
+        assert row["strategy_group"] == "longshot", (
+            "longshot most recently traded this ticker — the import must "
+            "land inside the longshot rails (R4-MN2)")

@@ -1373,18 +1373,26 @@ class StateManager:
                 # in place to restore local visibility.
                 asset = self._asset_from_ticker(ticker)
                 event_ticker = self._event_ticker_from_ticker(ticker)
-                # R3-M1: if this ticker has ls- pending-order history (any
-                # status, most recent first), the position is longshot flow
-                # — stamp strategy_group + strategy so it lands inside the
-                # longshot rails (caps, marks, streaks) instead of the DDL
-                # default 'main'. 'longshot' mirrors
-                # bot.longshot.LONGSHOT_STRATEGY (passes through
-                # strategy_to_group unchanged).
-                _ls_history = self.conn.execute(
-                    "SELECT order_id FROM pending_orders WHERE ticker=? "
-                    "AND client_order_id LIKE ? "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (ticker, LONGSHOT_CLIENT_OID_PREFIX + "%")).fetchone()
+                # R3-M1 + R4-MN2: stamp longshot ONLY when the MOST RECENT
+                # pending_orders row on the ticker (ANY prefix, any status)
+                # is ls-prefixed — i.e. longshot was the last strategy to
+                # trade it. Pre-R4 this was an existence check on ls-
+                # history, so a weeks-old longshot quote claimed an import
+                # the MAIN pipeline most recently traded. When the recency
+                # test passes, the position lands inside the longshot
+                # rails (caps, marks, streaks) instead of the DDL default
+                # 'main'. 'longshot' mirrors bot.longshot.LONGSHOT_STRATEGY
+                # (passes through strategy_to_group unchanged).
+                _last_order = self.conn.execute(
+                    "SELECT order_id, client_order_id FROM pending_orders "
+                    "WHERE ticker=? ORDER BY created_at DESC LIMIT 1",
+                    (ticker,)).fetchone()
+                _ls_history = (
+                    _last_order
+                    if _last_order is not None
+                    and (_last_order["client_order_id"] or "").startswith(
+                        LONGSHOT_CLIENT_OID_PREFIX)
+                    else None)
                 try:
                     if _ls_history:
                         self.conn.execute("""
