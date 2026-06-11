@@ -260,13 +260,22 @@ class LongshotEngine:
                          ticker: str, event_ticker: str, asset: str,
                          sell_side: str, buy_side: str, buy_price_cents: int,
                          count: int, seconds_to_close: float,
-                         fill_min_ts: Optional[float] = None) -> None:
+                         fill_min_ts: Optional[float] = None,
+                         boot_fill_skip: int = 0) -> None:
         """Track a successfully-posted maker quote for lifecycle management.
 
         ``fill_min_ts`` (R2-M1) is the epoch lower bound for fill polling;
         defaults to registration time (correct for fresh placements). Boot
         orphan reconciliation passes the order's created_time instead so
         fills landed BEFORE the restart stay inside the fetch bound.
+
+        ``boot_fill_skip`` (R3-M2) is the number of already-recorded
+        contracts the fill-apply path must SKIP (oldest fills first)
+        before recording positions — boot reconciliation passes the
+        ticker/side's existing open longshot count so re-fetched
+        pre-restart fills (record_position_from_fill ACCUMULATES and
+        seen_trade_ids is reborn empty at restart) are not
+        double-counted. Fresh placements leave it 0.
         """
         now = time.time()
         with self._lock:
@@ -286,6 +295,7 @@ class LongshotEngine:
                 "fill_min_ts": float(fill_min_ts) if fill_min_ts is not None
                 else now,
                 "stc_at_register": float(seconds_to_close),
+                "boot_skip_remaining": max(0, int(boot_fill_skip)),
             }
 
     def evaluate_market(self, *, ticker: str, event_ticker: str, asset: str,
@@ -574,6 +584,19 @@ class LongshotEngine:
         unset (rows still 'resting' are re-examined; step 1 re-adoption is
         idempotent — an order_id already in _resting is not re-registered,
         preserving its seen_trade_ids dedup).
+
+        R3-M2 invariant — boot fill application is RECONCILE-AWARE
+        (delta-apply): record_position_from_fill ACCUMULATES,
+        seen_trade_ids is in-memory (reborn empty here), and the R2-M1
+        created_time bound re-fetches fills already recorded pre-restart
+        or just imported by StateManager._reconcile_positions. Existing
+        open longshot rows for the (ticker, side) embody that
+        recorded/imported truth, so both steps seed the quote with
+        ``boot_skip_remaining`` = that count and _apply_fills records
+        only max(0, fetched - existing) contracts, oldest fills first.
+        This also makes step-2 retries after a PARTIAL snapshot (R3-MN1)
+        idempotent: the rebuilt quote's skip absorbs what the partial
+        pass already recorded.
         """
         now = time.time()
         try:
@@ -622,7 +645,9 @@ class LongshotEngine:
                 buy_price_cents=int(price), count=int(remaining),
                 seconds_to_close=0.0,
                 fill_min_ts=_boot_fill_min_ts(o.get("created_time"),
-                                              ticker, now))
+                                              ticker, now),
+                boot_fill_skip=self._existing_longshot_count(ticker,
+                                                             buy_side))
             logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
                             "final fill poll + cancel", ticker, order_id)
             self._cancel_quote(order_id, "boot_orphan")
@@ -645,13 +670,14 @@ class LongshotEngine:
         for r in rows:
             if r["order_id"] in api_order_ids:
                 continue  # still resting — step 1 owns it
+            _buy_side = r["side"] or "yes"
             q = {
                 "order_id": r["order_id"],
                 "client_order_id": r["client_order_id"],
                 "ticker": r["ticker"],
                 "event_ticker": r["event_ticker"] or "",
                 "asset": r["asset"] or "",
-                "buy_side": r["side"] or "yes",
+                "buy_side": _buy_side,
                 "buy_price_cents": int(r["price_cents"] or 0),
                 "count": int(r["count"] or 0),
                 "filled": 0,
@@ -660,6 +686,10 @@ class LongshotEngine:
                 "fill_min_ts": _boot_fill_min_ts(r["created_at"],
                                                  r["ticker"] or "", now),
                 "stc_at_register": 0.0,
+                # R3-M2 delta-apply: existing open rows already embody
+                # recorded/imported truth (see method docstring).
+                "boot_skip_remaining": self._existing_longshot_count(
+                    r["ticker"] or "", _buy_side),
             }
             if not self._poll_fills(q):
                 all_fetched = False  # retry next tick; row stays 'resting'
@@ -673,6 +703,23 @@ class LongshotEngine:
                 r["ticker"], r["order_id"], q["filled"], q["count"], status)
         if all_fetched:
             self._boot_reconciled = True
+
+    def _existing_longshot_count(self, ticker: str, side: str) -> int:
+        """R3-M2: open longshot contracts already recorded for
+        (ticker, side) — the boot delta-apply skip seed. Returns 0 on
+        query failure (fail toward recording: a bounded live-small
+        double-count is healed by the next restart's reconcile, whereas
+        a too-large skip silently loses a real position forever)."""
+        try:
+            return int(self._state.conn.execute(
+                "SELECT COALESCE(SUM(count), 0) FROM positions "
+                "WHERE ticker=? AND side=? AND strategy_group=? "
+                "AND status='open'",
+                (ticker, side, LONGSHOT_STRATEGY)).fetchone()[0] or 0)
+        except Exception:
+            logging.warning("longshot existing-count query failed",
+                            exc_info=True)
+            return 0
 
     def _mark_pending(self, order_id: str, status: str) -> None:
         """R2-C1: flip the pending_orders row off status='resting' whenever
@@ -1033,10 +1080,24 @@ class LongshotEngine:
 
     def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
         """Record this quote's new fills as positions (dispatch by
-        order_id; dedup by trade_id, synthetic key when absent)."""
-        for f in fills:
-            if f.get("order_id") != q["order_id"]:
-                continue
+        order_id; dedup by trade_id, synthetic key when absent).
+
+        R3-M2: when the quote carries a boot-reconcile skip budget
+        (``boot_skip_remaining`` > 0 — see _boot_reconcile_orphans
+        docstring), the OLDEST fills are consumed against the budget
+        WITHOUT recording (they are already embodied in existing open
+        longshot rows); only the excess is recorded. Skipped contracts
+        still count toward ``q["filled"]`` — the order WAS filled, the
+        position just already exists locally.
+        """
+        matched = [f for f in fills
+                   if f.get("order_id") == q["order_id"]]
+        if q.get("boot_skip_remaining"):
+            # Oldest first so the skip budget consumes the pre-restart
+            # fills (the recorded ones) and post-restart fills survive.
+            matched.sort(key=lambda f: _parse_event_ts(
+                f.get("created_time") or f.get("ts")) or 0.0)
+        for f in matched:
             trade_id = f.get("trade_id") or f.get("id")
             if not trade_id:
                 trade_id = "syn_%s_%s_%s" % (
@@ -1056,19 +1117,28 @@ class LongshotEngine:
                 # never be recorded by a later, well-formed snapshot.
                 continue
             q["seen_trade_ids"].add(trade_id)
-            try:
-                self._state.record_position_from_fill(
-                    q["ticker"], q["event_ticker"], q["asset"],
-                    q["buy_side"], fill_count, q["buy_price_cents"],
-                    strategy=LONGSHOT_STRATEGY,
-                    seconds_to_close=q["stc_at_register"],
-                    is_taker=False, fill_source="longshot_maker",
-                    execution_method="longshot_maker",
-                    maker_price_cents=q["buy_price_cents"])
-            except Exception:
-                logging.error("longshot record_position_from_fill failed "
-                              "for %s", q["ticker"], exc_info=True)
-                continue
+            skip = min(int(q.get("boot_skip_remaining") or 0), fill_count)
+            if skip:
+                q["boot_skip_remaining"] -= skip
+                logging.info(
+                    "LONGSHOT_BOOT_FILL_DELTA: %s trade=%s skipped %d/%d "
+                    "already-recorded contracts (R3-M2 delta-apply)",
+                    q["ticker"], trade_id, skip, fill_count)
+            record_count = fill_count - skip
+            if record_count > 0:
+                try:
+                    self._state.record_position_from_fill(
+                        q["ticker"], q["event_ticker"], q["asset"],
+                        q["buy_side"], record_count, q["buy_price_cents"],
+                        strategy=LONGSHOT_STRATEGY,
+                        seconds_to_close=q["stc_at_register"],
+                        is_taker=False, fill_source="longshot_maker",
+                        execution_method="longshot_maker",
+                        maker_price_cents=q["buy_price_cents"])
+                except Exception:
+                    logging.error("longshot record_position_from_fill failed "
+                                  "for %s", q["ticker"], exc_info=True)
+                    continue
             q["filled"] += fill_count
             logging.info(
                 "LONGSHOT_FILL: %s %s %dct @ %dc (%d/%d) trade=%s",
