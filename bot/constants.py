@@ -145,6 +145,7 @@ LONGSHOT_DAILY_LOSS_CAP_DOLLARS = 20.0  # realized longshot PnL today <= -cap ->
 LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed losing days -> persistent disable
 LONGSHOT_STREAK_RESET_UTC_DATE = ""  # operator re-enable: losing days on/before this UTC date are ignored ("" = never reset)
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
+LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED (R1-M4)
 
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi

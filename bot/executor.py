@@ -93,7 +93,7 @@ from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 from bot.helpers.tm_sweep import tm_compute_contracts, tm_sweep_extract_depths
 from bot.helpers.orderbook import best_yes_ask_cents, convert_orderbook_fp  # Bit 86b9vpp2z (2026-05-11): orderbook utilities relocated from OpportunityScanner staticmethods to bot/helpers/orderbook.py. This direct top-level import RETIRES the `_get_opportunity_scanner()` cycle-break helper that previously existed in this module — OrderExecutor no longer needs a runtime back-edge to bot.scanner just to access the pure-utility orderbook functions.
 from bot.kalshi_client import KalshiClient
-from bot.trading_mode import asset_from_ticker as tm_asset_from_ticker, is_live as tm_is_live, mode_reason as tm_mode_reason  # modular live/shadow gate
+from bot.trading_mode import asset_from_ticker as tm_asset_from_ticker, is_live as tm_is_live, mode_reason as tm_mode_reason, strategy_is_live as tm_strategy_is_live  # modular live/shadow gate
 from bot.engines.probability import ProbabilityEngine
 from bot.logger import Logger
 from bot.state import StateManager
@@ -675,8 +675,12 @@ class OrderExecutor:
         # untouched. If a governed 15M asset isn't live-enabled, the candidate was
         # still evaluated + logged by the scanner — we just place NO real order.
         # Read live so a flag flip is a runtime kill-switch. See bot/trading_mode.py.
+        # R1-M4: strategy-aware form — identical to is_live for every main-
+        # pipeline strategy; only candidate strategy 'longshot' can pass via
+        # LONGSHOT_LIVE_OVERRIDE (longshot-only go-live).
         _tm_asset = tm_asset_from_ticker(ticker)
-        if _tm_asset is not None and not tm_is_live(_tm_asset):
+        if _tm_asset is not None and not tm_strategy_is_live(
+                candidate.get("strategy"), _tm_asset):
             logging.info(
                 "SHADOW_SKIP: %s %s reason=%s — evaluated, no live order placed",
                 ticker, candidate.get("strategy"), tm_mode_reason(_tm_asset))

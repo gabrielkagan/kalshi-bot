@@ -457,3 +457,147 @@ class TestM3DailyCapMarkedTerm:
         out = _eval(engine, ticker=TICKER2, spot=100.0, threshold=110.0)
         assert out == []
         assert engine.disabled_reason() == "daily_cap"
+
+
+# ── M4: per-strategy live override (longshot-only go-live) ──────────────────
+
+def _main_candidate(**overrides):
+    base = {
+        "ticker": TICKER, "event_ticker": EVENT, "asset": "BTC",
+        "best_yes_ask": 92, "position_size": 5, "calibrated_prob": 0.96,
+        "edge": 0.03, "seconds_to_close": 400, "strategy": "above",
+        "balance_at_scan": 50000, "spot": 68500.0, "threshold": 68000.0,
+        "blended_rv": 0.0004, "z_score": 2.5, "vol_regime": "normal",
+        "kelly_f": 0.15, "product_type": "15m", "ofa_adjustment": 0.0,
+        "ob_snapshot": {"ask_depth": 10}, "calibrated_prob_raw": 0.95,
+        "drawdown_scaler": 1.0,
+    }
+    base.update(overrides)
+    return base
+
+
+def _mocked_main_executor():
+    from bot.executor import OrderExecutor
+    client = MagicMock()
+    client.get_orderbook.return_value = None
+    client.place_order.return_value = {"order": {"order_id": "ord-m"}}
+    return OrderExecutor(client=client, state=MagicMock(),
+                         logger=MagicMock(), main_loop=MagicMock(),
+                         kalshi_feed=None), client
+
+
+class TestM4PerStrategyLiveOverride:
+    """R1-M4: there was no way to go live with longshot ONLY — flipping
+    GLOBAL_LIVE_TRADING would wake the whole main pipeline. Fix:
+    LONGSHOT_LIVE_OVERRIDE constant + trading_mode.strategy_is_live
+    (single-chokepoint design per bot/trading_mode.py / PR #158),
+    consulted at executor.execute() and at the place_order backstop via
+    the ls- client_oid prefix. Main pipeline behavior UNCHANGED."""
+
+    def test_override_default_off(self):
+        assert C.LONGSHOT_LIVE_OVERRIDE is False
+
+    def test_strategy_is_live_truth_table(self, monkeypatch):
+        from bot import trading_mode as tm
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,
+                            raising=False)
+        assert tm.strategy_is_live("longshot", "BTC") is False
+        assert tm.strategy_is_live("above", "BTC") is False
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        assert tm.strategy_is_live("longshot", "BTC") is True
+        assert tm.strategy_is_live("above", "BTC") is False  # main UNCHANGED
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", True)
+        monkeypatch.setattr(C, "ASSET_LIVE_TRADING", {"BTC": True})
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,
+                            raising=False)
+        assert tm.strategy_is_live("longshot", "BTC") is True
+        assert tm.strategy_is_live("above", "BTC") is True
+
+    def test_override_on_global_shadow_longshot_places_main_does_not(
+            self, wired, enabled, monkeypatch):
+        from unittest.mock import patch
+        executor, eng, client = wired
+        cands = _eval(eng)
+        assert len(cands) == 1
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        assert executor.execute(cands[0]) is not None
+        client.place_order.assert_called_once()
+        assert client.place_order.call_args.kwargs["post_only"] is True
+        # main pipeline stays shadow under the same flags
+        main_ex, main_client = _mocked_main_executor()
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(observation_only=False,
+                                              min_entry_price=86)
+            assert main_ex.execute(_main_candidate()) is None
+        main_client.place_order.assert_not_called()
+
+    def test_override_off_global_shadow_nothing_places(self, wired, enabled,
+                                                       monkeypatch):
+        from unittest.mock import patch
+        executor, eng, client = wired
+        cands = _eval(eng)
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,
+                            raising=False)
+        assert executor.execute(cands[0]) is None
+        client.place_order.assert_not_called()
+        main_ex, main_client = _mocked_main_executor()
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(observation_only=False,
+                                              min_entry_price=86)
+            assert main_ex.execute(_main_candidate()) is None
+        main_client.place_order.assert_not_called()
+
+    def test_both_live_both_place(self, wired, enabled):
+        from unittest.mock import patch
+        # integration conftest sets GLOBAL + all assets live
+        executor, eng, client = wired
+        cands = _eval(eng)
+        assert executor.execute(cands[0]) is not None
+        client.place_order.assert_called_once()
+        main_ex, main_client = _mocked_main_executor()
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(observation_only=False,
+                                              min_entry_price=86)
+            main_ex.execute(_main_candidate())
+        main_client.place_order.assert_called_once()
+
+    def test_place_order_backstop_recognizes_ls_prefix(self, monkeypatch):
+        from bot.kalshi_client import KalshiClient
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "ASSET_LIVE_TRADING", {"BTC": False})
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        client = MagicMock()
+        client._request.return_value = {"order": {"order_id": "ok"}}
+        # ls- prefixed order passes the backstop under the override
+        result = KalshiClient.place_order(
+            client, TICKER, "no", "buy", 1, no_price=92,
+            client_order_id="ls-abc123", post_only=True)
+        client._request.assert_called_once()
+        assert result == {"order": {"order_id": "ok"}}
+        # non-prefixed (main pipeline) order is still blocked
+        client._request.reset_mock()
+        result = KalshiClient.place_order(
+            client, TICKER, "yes", "buy", 1, yes_price=95,
+            client_order_id="b2c3-main")
+        assert result is None
+        client._request.assert_not_called()
+
+    def test_place_order_backstop_blocks_ls_prefix_without_override(
+            self, monkeypatch):
+        from bot.kalshi_client import KalshiClient
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "ASSET_LIVE_TRADING", {"BTC": False})
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,
+                            raising=False)
+        client = MagicMock()
+        result = KalshiClient.place_order(
+            client, TICKER, "no", "buy", 1, no_price=92,
+            client_order_id="ls-abc123", post_only=True)
+        assert result is None
+        client._request.assert_not_called()

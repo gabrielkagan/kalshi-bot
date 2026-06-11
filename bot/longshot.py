@@ -279,7 +279,10 @@ class LongshotEngine:
                 continue
             p_buy = 1.0 - p_by_side[sell_side]
             edge = p_buy - (buy_price / 100.0)
-            live = trading_mode.is_live(asset)
+            # R1-M4: strategy-aware (LONGSHOT_LIVE_OVERRIDE) so eval rows
+            # label longshot_live under a longshot-only go-live. Still
+            # READ-ONLY labeling — the gate stays at executor.execute().
+            live = trading_mode.strategy_is_live(LONGSHOT_STRATEGY, asset)
             filter_stage = (LONGSHOT_FILTER_STAGE_LIVE if live
                             else LONGSHOT_FILTER_STAGE_SHADOW)
             try:

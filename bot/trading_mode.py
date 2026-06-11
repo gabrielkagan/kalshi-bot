@@ -31,6 +31,36 @@ def is_live(asset: str) -> bool:
     return bool(_c.ASSET_LIVE_TRADING.get(asset, _c.ASSET_LIVE_TRADING_DEFAULT))
 
 
+def strategy_is_live(strategy, asset: str) -> bool:
+    """Per-strategy live gate (R1-M4): ``is_live(asset)`` OR a strategy-
+    scoped override. Today the only override is longshot
+    (``LONGSHOT_LIVE_OVERRIDE`` — lets the operator go live with the
+    longshot premium-harvest strategy alone while the main pipeline stays
+    shadow). For every other strategy this is EXACTLY ``is_live(asset)``
+    — main-pipeline behavior unchanged. Consulted at the two existing
+    chokepoints only: ``executor.execute()`` (which passes the
+    candidate's strategy) and the ``kalshi_client.place_order`` backstop
+    (which recovers the strategy from the ``ls-`` client_order_id prefix
+    via :func:`strategy_from_client_order_id`)."""
+    if is_live(asset):
+        return True
+    return strategy == "longshot" and bool(_c.LONGSHOT_LIVE_OVERRIDE)
+
+
+def strategy_from_client_order_id(client_order_id) -> "str | None":
+    """Recover the gate-relevant strategy from a client_order_id.
+
+    Longshot stamps ``LONGSHOT_CLIENT_OID_PREFIX`` ('ls-') on every
+    placement (R1-M1), which is the only signal available at the
+    ``place_order`` API boundary (no candidate dict there). Returns
+    'longshot' for prefixed ids, None otherwise (None → plain
+    ``is_live`` semantics in :func:`strategy_is_live`)."""
+    if isinstance(client_order_id, str) and client_order_id.startswith(
+            _c.LONGSHOT_CLIENT_OID_PREFIX):
+        return "longshot"
+    return None
+
+
 def mode_reason(asset: str) -> str:
     """Why the gate decided as it did — for structured logging at the chokepoint.
     Returns 'live' | 'global_shadow' | 'asset_shadow'."""
