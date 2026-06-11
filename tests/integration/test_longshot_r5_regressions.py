@@ -331,3 +331,77 @@ class TestM1RecordFailureRetried:
         assert engine.resting_count() == 0
         assert _pending_status(state, "oid-m1p") == "filled"
         assert _positions_row(state)["count"] == 1
+
+
+# ── M2: opposite-side RESTING quote must block like an open row ─────────────
+
+class TestM2OppositeSideRestingQuote:
+    """R5-M2: the R4-M1 side-collision guard read POSITION rows only. An
+    opposite-side resting quote (or a CANCEL_FILL_MISMATCH-held one whose
+    fill is not yet recorded) is a FUTURE row on the same ticker-PK —
+    sell-YES rests, spot crosses, quote picked off, same-tick refresh
+    cancels with a fill mismatch; sell-NO qualifies and posts; the YES
+    fill records next poll; the later NO fill accumulates under side
+    'no'. Registry quotes must extend the one-open-longshot-row-per-
+    ticker invariant."""
+
+    def test_allowed_size_blocks_on_opposite_side_resting_quote(
+            self, engine, state, client, enabled):
+        _register(engine, buy_side="no", sell_side="yes", count=1)
+        assert engine._allowed_size(TICKER, "no", "yes", 8) == 0, (
+            "a RESTING opposite-side quote is a future positions row — "
+            "_allowed_size must return 0 (R5-M2)")
+
+    def test_allowed_size_blocks_on_mismatch_held_quote(
+            self, engine, state, client, enabled):
+        """A CANCEL_FILL_MISMATCH-held entry (needs_clean_poll) is still
+        registered with an unrecorded fill — the most dangerous shape."""
+        q = _register(engine, buy_side="no", sell_side="yes", count=1)
+        q["needs_clean_poll"] = True
+        assert engine._allowed_size(TICKER, "no", "yes", 8) == 0, (
+            "a mismatch-held opposite-side quote must block (R5-M2)")
+
+    def test_same_side_topup_still_allowed(self, engine, state, client,
+                                           enabled):
+        _register(engine, buy_side="no", sell_side="yes", count=1)
+        assert engine._allowed_size(TICKER, "yes", "no", 92) == (
+            C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE - 1), (
+            "same-side top-up must stay allowed up to the per-window-side "
+            "cap (R5-M2 guard is opposite-side only)")
+
+    def test_predicate_reports_registry_conflict(self, engine, state,
+                                                 client, enabled):
+        _register(engine, buy_side="no", sell_side="yes", count=1)
+        assert engine.has_opposite_side_resting_quote(TICKER, "yes") is True
+        assert engine.has_opposite_side_resting_quote(TICKER, "no") is False
+        assert engine.has_opposite_side_resting_quote(
+            "KXBTC15M-26JUN111215-T104", "yes") is False
+
+    def test_scan_overlay_filters_opposite_side_resting_quote(
+            self, state, client, enabled):
+        """Defensive mirror at the scanner overlay: a stale-cache
+        evaluate emitting an opposite-side candidate while an
+        opposite-side quote rests must be dropped at scan level too."""
+        engine = LongshotEngine(client, state)
+        engine._boot_reconciled = True
+        _register(engine, buy_side="no", sell_side="yes", count=1)
+        engine.evaluate_market = lambda **kw: [_stale_candidate("yes")]
+        scanner, _ml = _build_scanner(state, engine, client)
+        selected = scanner.scan([_window()]) or []
+        assert [c for c in selected if c.get("strategy") == "longshot"] \
+            == [], (
+            "the scanner overlay must filter a candidate opposing a "
+            "RESTING longshot quote (R5-M2 defensive mirror)")
+
+    def test_scan_overlay_passes_same_side_with_resting_quote(
+            self, state, client, enabled):
+        engine = LongshotEngine(client, state)
+        engine._boot_reconciled = True
+        _register(engine, buy_side="no", sell_side="yes", count=1)
+        engine.evaluate_market = lambda **kw: [_stale_candidate("no")]
+        scanner, _ml = _build_scanner(state, engine, client)
+        selected = scanner.scan([_window()]) or []
+        same = [c for c in selected if c.get("strategy") == "longshot"]
+        assert len(same) == 1, (
+            "a SAME-side candidate must survive the overlay registry "
+            "mirror (R5-M2 guard is opposite-side only)")

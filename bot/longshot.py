@@ -883,6 +883,27 @@ class LongshotEngine:
             return None
         return row is not None
 
+    def has_opposite_side_resting_quote(self, ticker: str,
+                                        buy_side: str) -> bool:
+        """R5-M2: registry-side twin of
+        has_opposite_side_longshot_position — True iff any REGISTERED
+        quote on this ticker has ``q["buy_side"] != buy_side``. Registry
+        quotes ARE future positions rows (a fill records under their
+        buy_side), so the one-open-longshot-row-per-ticker invariant
+        (R4-M1, ticker-PK stopgap 86badbf9t) must cover them too:
+        sell-YES rests -> spot crosses -> quote picked off; the same-tick
+        refresh cancel hits CANCEL_FILL_MISMATCH (fill held, unrecorded);
+        sell-NO qualifies — the position-row guard alone sees nothing,
+        sell-NO posts, and the two fills accumulate under one side.
+        Mismatch-held entries are still in the registry, so they block
+        here by construction. Pure in-memory scan under the engine lock —
+        no query, no failure mode. Consumed by _allowed_size (inside the
+        same RLock hold as the registry sizing scan) and mirrored
+        defensively at the scanner overlay."""
+        with self._lock:
+            return any(q["ticker"] == ticker and q["buy_side"] != buy_side
+                       for q in self._resting.values())
+
     def _allowed_size(self, ticker: str, sell_side: str, buy_side: str,
                       buy_price_cents: int) -> int:
         """min(per-window-side cap remainder, collateral cap remainder).
@@ -891,7 +912,9 @@ class LongshotEngine:
         (R1-C2 stopgap — see has_open_main_pipeline_position) OR an open
         longshot row on the OPPOSITE side (R4-M1 self-collision guard —
         see has_opposite_side_longshot_position: one open longshot row
-        per ticker until 86badbf9t's composite-PK rebuild)."""
+        per ticker until 86badbf9t's composite-PK rebuild) OR a
+        REGISTERED quote on the OPPOSITE side (R5-M2 — registry quotes
+        are future rows; see has_opposite_side_resting_quote)."""
         conflict = self.has_open_main_pipeline_position(ticker)
         if conflict is None or conflict:
             if conflict:
@@ -923,6 +946,19 @@ class LongshotEngine:
                             exc_info=True)
             return 0
         with self._lock:
+            # R5-M2: opposite-side REGISTERED quote — same invariant as
+            # the open-row guard above (registry quotes are future rows;
+            # a CANCEL_FILL_MISMATCH-held entry with an unrecorded fill
+            # is exactly the shape that reproduced the R4-M1 corruption).
+            # RLock re-entry keeps the check inside the SAME lock hold
+            # as the sizing scan below.
+            if self.has_opposite_side_resting_quote(ticker, buy_side):
+                logging.info(
+                    "LONGSHOT_SKIP_side_conflict: %s has a RESTING "
+                    "longshot quote on the opposite side — one open "
+                    "longshot row per ticker (ticker-PK stopgap, "
+                    "86badbf9t)", ticker)
+                return 0
             resting_same = sum(
                 max(0, q["count"] - q["filled"])
                 for q in self._resting.values()

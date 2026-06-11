@@ -2017,12 +2017,20 @@ class OpportunityScanner:
                                 # opposite-side candidate through.
                                 # `is False` keeps None (query failure)
                                 # fail-closed, like the overlay gate above.
+                                # R5-M2: the registry-side twin extends
+                                # the same invariant to RESTING quotes
+                                # (incl. CANCEL_FILL_MISMATCH-held ones)
+                                # — registry quotes are future rows.
                                 _ls_cands = [
                                     c for c in _ls_cands
                                     if _ls_engine
                                     .has_opposite_side_longshot_position(
                                         c["ticker"],
-                                        c["longshot_buy_side"]) is False]
+                                        c["longshot_buy_side"]) is False
+                                    and not _ls_engine
+                                    .has_opposite_side_resting_quote(
+                                        c["ticker"],
+                                        c["longshot_buy_side"])]
                                 candidates.extend(_ls_cands)
                         except Exception:
                             logging.warning(
