@@ -169,6 +169,8 @@ forbidden_modules =
     bot.scanner
     bot.shadows
     bot.snapshots
+    bot.strategy_caps
+    bot.twaplock
     bot.clients
     bot.kalshi_client
     bot.logger
