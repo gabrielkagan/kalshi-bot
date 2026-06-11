@@ -459,6 +459,52 @@ class TestM3DailyCapMarkedTerm:
         assert engine.disabled_reason() == "daily_cap"
 
 
+# ── M6: ONE paginated unfiltered get_fills per tick ──────────────────────────
+
+class TestM6SingleFillsFetchPerTick:
+    """R1-M6: fill polling issued one get_fills REST call PER resting
+    quote per tick. One unfiltered, cursor-paginated call per tick is
+    dispatched across all resting quotes by order_id instead."""
+
+    def test_one_unfiltered_call_dispatched_across_quotes(self, engine,
+                                                          state, enabled):
+        _register(engine, order_id="oid-a", ticker=TICKER, stc=600.0)
+        _register(engine, order_id="oid-b", ticker=TICKER2, stc=600.0)
+        engine._client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-a", "trade_id": "t-a", "count": 2},
+            {"order_id": "oid-b", "trade_id": "t-b", "count": 1},
+        ]}
+        engine.tick()
+        engine._client.get_fills.assert_called_once()
+        kwargs = engine._client.get_fills.call_args.kwargs
+        assert kwargs.get("ticker") is None, "must be UNFILTERED (one call)"
+        rows = {r["ticker"]: r["count"] for r in state.conn.execute(
+            "SELECT ticker, count FROM positions WHERE status='open'")}
+        assert rows == {TICKER: 2, TICKER2: 1}
+
+    def test_pagination_follows_cursor(self, engine, state, enabled):
+        _register(engine, order_id="oid-p", ticker=TICKER, stc=600.0)
+        engine._client.get_fills.side_effect = [
+            {"fills": [{"order_id": "oid-p", "trade_id": "t-p1",
+                        "count": 1}], "cursor": "cur-1"},
+            {"fills": [{"order_id": "oid-p", "trade_id": "t-p2",
+                        "count": 2}]},
+        ]
+        engine.tick()
+        assert engine._client.get_fills.call_count == 2
+        second = engine._client.get_fills.call_args_list[1].kwargs
+        assert second.get("cursor") == "cur-1"
+        row = state.conn.execute(
+            "SELECT count FROM positions WHERE ticker=? AND status='open'",
+            (TICKER,)).fetchone()
+        assert row is not None and row["count"] == 3
+        assert engine.resting_count() == 0  # 3/3 filled -> popped
+
+    def test_no_fetch_when_no_quotes_resting(self, engine, enabled):
+        engine.tick()
+        engine._client.get_fills.assert_not_called()
+
+
 # ── M4: per-strategy live override (longshot-only go-live) ──────────────────
 
 def _main_candidate(**overrides):

@@ -389,12 +389,15 @@ class KalshiClient:
                      recovery_seconds=120)
     def get_fills(self, ticker: Optional[str] = None,
                   min_ts: Optional[int] = None,
-                  limit: int = 200) -> Optional[Dict]:
+                  limit: int = 200,
+                  cursor: Optional[str] = None) -> Optional[Dict]:
         params: Dict = {"limit": limit}
         if ticker:
             params["ticker"] = ticker
         if min_ts is not None:
             params["min_ts"] = min_ts
+        if cursor:
+            params["cursor"] = cursor
         return self._request("GET", f"{API_PATH_PREFIX}/portfolio/fills",
                              params=params)
 

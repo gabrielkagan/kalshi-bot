@@ -69,6 +69,10 @@ LONGSHOT_FILTER_STAGE_SHADOW = "longshot_shadow"
 # poll instead of being re-cancelled forever.
 _STALE_DROP_GRACE_SECONDS = 120.0
 
+# R1-M6: cursor-pagination bound on the per-tick fills snapshot. 5 pages
+# x 200 fills is far beyond anything live-small sizing can produce.
+_MAX_FILL_PAGES = 5
+
 _SQRT2 = math.sqrt(2.0)
 
 
@@ -378,10 +382,15 @@ class LongshotEngine:
             self._cancel_all(self._disabled_reason)
             return
 
+        # R1-M6: ONE unfiltered paginated fills fetch per tick, dispatched
+        # across all resting quotes (was one REST call per quote).
         with self._lock:
             quotes = list(self._resting.values())
-        for q in quotes:
-            self._poll_fills(q)
+        if quotes:
+            fills = self._fetch_fills_snapshot()
+            if fills is not None:
+                for q in quotes:
+                    self._apply_fills(q, fills)
 
         with self._lock:
             quotes = list(self._resting.values())
@@ -718,16 +727,49 @@ class LongshotEngine:
         logging.info("LONGSHOT_CANCEL: %s %s reason=%s", q["ticker"],
                      order_id, reason)
 
+    def _fetch_fills_snapshot(self) -> Optional[List[Dict]]:
+        """R1-M6: ONE unfiltered, cursor-paginated get_fills pass.
+
+        min_ts is bounded to the earliest registered quote (minus slack)
+        so the result set stays tiny; pages are followed up to
+        _MAX_FILL_PAGES. Returns None on a first-page failure (callers
+        skip this tick); a mid-pagination failure returns the partial
+        list — per-quote trade_id dedup makes re-reads idempotent.
+        """
+        with self._lock:
+            if not self._resting:
+                return []
+            min_reg = min(q["registered_ts"]
+                          for q in self._resting.values())
+        fills: List[Dict] = []
+        cursor: Optional[str] = None
+        for _page in range(_MAX_FILL_PAGES):
+            try:
+                resp = self._client.get_fills(
+                    min_ts=int(min_reg) - 60, cursor=cursor)
+            except Exception:
+                logging.warning("longshot get_fills failed", exc_info=True)
+                return fills if fills else None
+            if resp is None:
+                return fills if fills else None
+            fills.extend(resp.get("fills") or [])
+            cursor = resp.get("cursor")
+            if not cursor:
+                break
+        return fills
+
     def _poll_fills(self, q: Dict) -> None:
-        """Poll REST fills for one resting quote; record new fills as
-        positions (dedup by trade_id; synthetic key when absent)."""
-        try:
-            resp = self._client.get_fills(ticker=q["ticker"])
-        except Exception:
-            logging.warning("longshot get_fills failed for %s", q["ticker"],
-                            exc_info=True)
+        """Final per-quote poll (cancel / boot-orphan / stale-drop paths):
+        one snapshot fetch applied to this quote only. The per-tick bulk
+        path in tick() fetches ONCE and dispatches via _apply_fills."""
+        fills = self._fetch_fills_snapshot()
+        if fills is None:
             return
-        fills = (resp or {}).get("fills") or []
+        self._apply_fills(q, fills)
+
+    def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
+        """Record this quote's new fills as positions (dispatch by
+        order_id; dedup by trade_id, synthetic key when absent)."""
         for f in fills:
             if f.get("order_id") != q["order_id"]:
                 continue
