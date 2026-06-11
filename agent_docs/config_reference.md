@@ -43,7 +43,7 @@ gate at `executor.execute()` (single chokepoint). Regression lock:
 | LONGSHOT_EDGE_RATIO | 0.5 | Condition: p_normal ≤ ask × ratio (prob units = ask_cents/200 at 0.5) |
 | LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE | 3 | Live-small sizing per (ticker, side); counts open positions + resting quotes |
 | LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS | 150.0 | Across resting quotes + open longshot positions |
-| LONGSHOT_DAILY_LOSS_CAP_DOLLARS | 20.0 | Realized + MARKED longshot PnL today ≤ −cap → same-day auto-disable (log: LONGSHOT_DAILY_CAP_HIT). Marked term (R1-M3): open longshot positions whose sold side is currently ITM (latest engine-input spot vs strike) count as full loss (total_cost_cents) — plan doc "realized+marked" |
+| LONGSHOT_DAILY_LOSS_CAP_DOLLARS | 20.0 | Realized + MARKED longshot PnL today ≤ −cap → same-day auto-disable (log: LONGSHOT_DAILY_CAP_HIT). Marked term (R1-M3): open longshot positions whose sold side is currently ITM (latest engine-input spot vs strike) count as full loss (total_cost_cents) — plan doc "realized+marked". R2-MN4: cap is PER-STRATEGY (WHERE strategy='longshot'); Bit T-1 must make it the combined cap before dual-live |
 | LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE | 3 | N consecutive completed losing days → persistent disable |
 | LONGSHOT_STREAK_RESET_UTC_DATE | "" | Operator re-enable: losing days on/before this UTC date ignored ("" = never reset) |
 | LONGSHOT_CLIENT_OID_PREFIX | "ls-" | client_order_id prefix on every longshot maker (R1-M1/M4): boot orphan reconciliation (first-tick adopt-and-kill of restart survivors) + `place_order` backstop strategy recognition (`trading_mode.strategy_from_client_order_id`) |
