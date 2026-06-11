@@ -13,7 +13,9 @@ is the durable fix, not an optional extra.
 """
 from __future__ import annotations
 
+import datetime
 import time
+from datetime import timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -279,3 +281,191 @@ class TestC1OccupancyStarvation:
         assert scanner._session_total_scanned > scanned_tick1, (
             "main-pipeline evaluation of the window must continue on the "
             "tick after a longshot quote is posted (R2-C1)")
+
+
+# ── M1: boot-orphan fills must be recoverable (min_ts bound) ─────────────────
+
+def _rfc3339(epoch):
+    return datetime.datetime.fromtimestamp(epoch, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def _min_ts_respecting_fills(fills):
+    """get_fills side_effect that filters like the real API: only fills
+    with ts >= min_ts are returned. This is what makes the pre-fix
+    min_ts=now-60 bound a real data loss instead of a mock artifact."""
+    def _side(min_ts=None, cursor=None, **kw):
+        out = [f for f in fills
+               if min_ts is None or f.get("ts", 0) >= min_ts]
+        return {"fills": out}
+    return _side
+
+
+class TestM1BootOrphanFillRecovery:
+    """R2-M1: adopted orphans derived the fills min_ts from registered_ts
+    (= restart time), so any fill landed BEFORE the restart was outside
+    the fetch bound and never recorded; and ls- orders that were no
+    longer resting at boot (fully filled / expired pre-restart) were
+    never reconciled at all."""
+
+    def test_fill_landed_5min_before_restart_recorded(self, engine, state,
+                                                      client, enabled):
+        now = time.time()
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-orph-r2", "client_order_id": "ls-orph-r2",
+             "ticker": TICKER, "side": "no", "no_price": 92, "count": 3,
+             "remaining_count": 2, "status": "resting",
+             "created_time": _rfc3339(now - 600)},
+        ]}
+        client.get_fills.side_effect = _min_ts_respecting_fills([
+            {"order_id": "oid-orph-r2", "trade_id": "t-pre-restart",
+             "count": 1, "ts": now - 300},
+        ])
+        engine.tick()
+        row = state.conn.execute(
+            "SELECT side, count FROM positions WHERE ticker=? "
+            "AND status='open'", (TICKER,)).fetchone()
+        assert row is not None, (
+            "fill landed 5 min before restart must be recorded — min_ts "
+            "bound from registered_ts loses pre-restart fills (R2-M1)")
+        assert row["side"] == "no"
+        assert row["count"] == 1
+
+    def test_fully_filled_pre_restart_order_recorded(self, engine, state,
+                                                     client, enabled):
+        now = time.time()
+        # ls- order persisted pre-restart, fully filled before the restart:
+        # Kalshi no longer lists it as resting, only the local row remains.
+        _seed_pending_resting(state, client_oid="ls-gone-1",
+                              order_id="oid-gone-1", count=3)
+        state.conn.execute(
+            "UPDATE pending_orders SET created_at=? WHERE order_id=?",
+            (_rfc3339(now - 600), "oid-gone-1"))
+        state.conn.commit()
+        # main-pipeline resting row must NOT be touched by the reconcile
+        _seed_pending_resting(state, client_oid="coid-main-r2",
+                              order_id="oid-main-r2", ticker=TICKER2,
+                              event=EVENT2, side="yes", price=95)
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.side_effect = _min_ts_respecting_fills([
+            {"order_id": "oid-gone-1", "trade_id": "t-gone-1",
+             "count": 3, "ts": now - 300},
+        ])
+        engine.tick()
+        row = state.conn.execute(
+            "SELECT side, count, strategy_group FROM positions "
+            "WHERE ticker=? AND status='open'", (TICKER,)).fetchone()
+        assert row is not None, (
+            "fully-filled-pre-restart ls- order must be reconciled against "
+            "fills at boot (R2-M1)")
+        assert row["count"] == 3
+        assert row["strategy_group"] == "longshot"
+        status = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-gone-1'"
+        ).fetchone()["status"]
+        assert status == "filled"
+        main_status = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-main-r2'"
+        ).fetchone()["status"]
+        assert main_status == "resting", "main-pipeline rows untouched"
+
+    def test_expired_unfilled_pre_restart_row_marked_canceled(
+            self, engine, state, client, enabled):
+        now = time.time()
+        _seed_pending_resting(state, client_oid="ls-exp-1",
+                              order_id="oid-exp-1", count=3)
+        state.conn.execute(
+            "UPDATE pending_orders SET created_at=? WHERE order_id=?",
+            (_rfc3339(now - 600), "oid-exp-1"))
+        state.conn.commit()
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.side_effect = _min_ts_respecting_fills([])
+        engine.tick()
+        status = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-exp-1'"
+        ).fetchone()["status"]
+        assert status == "canceled"
+        assert state.conn.execute(
+            "SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+
+
+# ── M2: FP-primary field extraction + dedup-stamp-after-validation ───────────
+
+class TestM2FpFieldsAndDedupStamp:
+    """R2-M2: three sites read only the legacy non-_fp fields (count /
+    fill_count / count) instead of the canonical FP-primary extraction
+    chains (executor.py _on_fill / executor.py taker-submit /
+    state.py:1622 patterns), and _apply_fills stamped seen_trade_ids
+    BEFORE the fill_count<=0 validation — a zero-parse fill was
+    permanently blacklisted instead of retried."""
+
+    def test_count_fp_only_fill_recorded(self, engine, state, client,
+                                         enabled):
+        _register(engine, order_id="oid-m2fp", stc=600.0)
+        client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-m2fp", "trade_id": "t-fp",
+                       "count_fp": "2"}]}  # NO legacy count field
+        engine.tick()
+        row = state.conn.execute(
+            "SELECT count FROM positions WHERE ticker=? AND status='open'",
+            (TICKER,)).fetchone()
+        assert row is not None, (
+            "count_fp-only shaped fill must be recorded (R2-M2)")
+        assert row["count"] == 2
+
+    def test_zero_parse_fill_not_permanently_blacklisted(self, engine, state,
+                                                         client, enabled):
+        _register(engine, order_id="oid-m2z", stc=600.0)
+        # malformed snapshot: count fields missing/unparsable -> 0 contracts
+        client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-m2z", "trade_id": "t-z"}]}
+        engine.tick(now=1000.0)
+        assert state.conn.execute(
+            "SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+        # next snapshot carries the count -> must be recorded, not skipped
+        # via a stale seen_trade_ids stamp
+        client.get_fills.return_value = {
+            "fills": [{"order_id": "oid-m2z", "trade_id": "t-z",
+                       "count": 2}]}
+        engine.tick(now=2000.0)
+        row = state.conn.execute(
+            "SELECT count FROM positions WHERE ticker=? AND status='open'",
+            (TICKER,)).fetchone()
+        assert row is not None, (
+            "zero-parse fill must be retried on the next snapshot — "
+            "dedup stamp must come AFTER the count validation (R2-M2)")
+        assert row["count"] == 2
+
+    def test_cancel_reconcile_reads_fill_count_fp(self, engine, state, client,
+                                                  enabled, caplog):
+        _register(engine, order_id="oid-m2c", stc=170.0)
+        client.get_fills.return_value = {"fills": []}
+        # DELETE response carries ONLY the FP field — legacy fill_count absent
+        client.cancel_order.return_value = {
+            "order": {"status": "canceled", "fill_count_fp": "2"}}
+        with caplog.at_level("WARNING"):
+            engine.tick()
+        assert engine.resting_count() == 1, (
+            "fill_count_fp on the cancel response must keep the entry "
+            "registered for a fill-poll retry (R2-M2)")
+        assert "LONGSHOT_CANCEL_FILL_MISMATCH" in caplog.text
+
+    def test_boot_adoption_uses_remaining_count_fp(self, engine, state,
+                                                   client, enabled):
+        now = time.time()
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-m2b", "client_order_id": "ls-m2b",
+             "ticker": TICKER, "side": "no", "no_price": 92,
+             # FP-primary remaining; legacy fields absent (state.py:1622
+             # extraction pattern). Stale `count` would be the ORIGINAL
+             # size, not what's still resting.
+             "remaining_count_fp": "2", "status": "resting",
+             "created_time": _rfc3339(now - 300)},
+        ]}
+        # cancel fails so the adopted entry stays registered and inspectable
+        client.cancel_order.return_value = None
+        engine.tick()
+        assert engine.resting_count() == 1
+        with engine._lock:
+            q = engine._resting["oid-m2b"]
+        assert q["count"] == 2

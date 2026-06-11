@@ -59,6 +59,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import bot.constants as C
 from bot import trading_mode
+from bot.helpers.strings import fp_str_to_int
 
 LONGSHOT_STRATEGY = "longshot"
 LONGSHOT_FILTER_STAGE_LIVE = "longshot_live"
@@ -79,6 +80,74 @@ _MAX_FILL_PAGES = 5
 _SEEN_TTL_SECONDS = 1800.0
 
 _SQRT2 = math.sqrt(2.0)
+
+# R2-M1: 15M window length — fallback lower bound for the fills min_ts of
+# a boot-reconciled order when created_time is unavailable (window open =
+# close - 900s; an order cannot predate its window).
+_WINDOW_SECONDS = 900.0
+
+_MONTH_MAP = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+              "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+
+
+def _parse_event_ts(value) -> Optional[float]:
+    """Best-effort epoch-seconds parse of an order timestamp.
+
+    Kalshi REST returns RFC3339 strings (``2026-06-11T12:00:00Z`` /
+    fractional / ``+00:00`` offset); the local pending_orders ledger
+    stores the same shape. Numeric epoch passes through. None/garbage ->
+    None (callers fall back to window-open / now-window bounds)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    try:
+        s = str(value).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def _close_epoch_from_ticker(ticker: str) -> Optional[float]:
+    """Window close epoch from a 15M ticker (KXBTC15M-26JUN111200-T104).
+
+    Same close-time-in-ET (+4h to UTC during EDT) convention as
+    ``StateManager.cleanup_expired_resting_orders`` (bot/state.py)."""
+    import re
+    m = re.match(r"KX\w+15M-(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})-",
+                 ticker or "")
+    if not m:
+        return None
+    yy, mon, dd, hh, mm = m.groups()
+    mon_num = _MONTH_MAP.get(mon)
+    if not mon_num:
+        return None
+    try:
+        close_et = datetime.datetime(2000 + int(yy), mon_num, int(dd),
+                                     int(hh), int(mm))
+        close_utc = close_et.replace(tzinfo=timezone.utc) \
+            + datetime.timedelta(hours=4)
+        return close_utc.timestamp()
+    except (ValueError, OverflowError):
+        return None
+
+
+def _boot_fill_min_ts(created_time, ticker: str, now: float) -> float:
+    """R2-M1: fills lower bound for a boot-reconciled order — the order's
+    created_time when parseable, else window open (close - 900s), else
+    now - 900s (an order cannot predate its 15M window)."""
+    created_ts = _parse_event_ts(created_time)
+    if created_ts is not None:
+        return created_ts
+    close_epoch = _close_epoch_from_ticker(ticker)
+    if close_epoch is not None:
+        return close_epoch - _WINDOW_SECONDS
+    return now - _WINDOW_SECONDS
 
 
 def compute_p_normal(spot: Optional[float], threshold: Optional[float],
@@ -190,8 +259,16 @@ class LongshotEngine:
     def register_resting(self, *, order_id: str, client_order_id: str,
                          ticker: str, event_ticker: str, asset: str,
                          sell_side: str, buy_side: str, buy_price_cents: int,
-                         count: int, seconds_to_close: float) -> None:
-        """Track a successfully-posted maker quote for lifecycle management."""
+                         count: int, seconds_to_close: float,
+                         fill_min_ts: Optional[float] = None) -> None:
+        """Track a successfully-posted maker quote for lifecycle management.
+
+        ``fill_min_ts`` (R2-M1) is the epoch lower bound for fill polling;
+        defaults to registration time (correct for fresh placements). Boot
+        orphan reconciliation passes the order's created_time instead so
+        fills landed BEFORE the restart stay inside the fetch bound.
+        """
+        now = time.time()
         with self._lock:
             self._resting[order_id] = {
                 "order_id": order_id,
@@ -205,7 +282,9 @@ class LongshotEngine:
                 "count": int(count),
                 "filled": 0,
                 "seen_trade_ids": set(),
-                "registered_ts": time.time(),
+                "registered_ts": now,
+                "fill_min_ts": float(fill_min_ts) if fill_min_ts is not None
+                else now,
                 "stc_at_register": float(seconds_to_close),
             }
 
@@ -468,16 +547,30 @@ class LongshotEngine:
     # ── internals ─────────────────────────────────────────────────────────
 
     def _boot_reconcile_orphans(self) -> None:
-        """R1-M1: adopt-and-kill longshot orders that survived a restart.
+        """R1-M1 + R2-M1: reconcile longshot orders that survived a restart.
 
         The _resting registry is in-memory only, so a restart orphans any
         live quote (no T-3min cancel, no fill recording). Every longshot
-        client_order_id carries LONGSHOT_CLIENT_OID_PREFIX at placement;
-        on the first tick we list open orders, adopt the prefixed ones as
-        synthetic resting entries, then route them through _cancel_quote
-        (which final-polls fills before popping). On API failure the latch
-        stays unset so the next tick retries.
+        client_order_id carries LONGSHOT_CLIENT_OID_PREFIX at placement.
+        On the first tick:
+
+        1. STILL-RESTING orphans (Kalshi /orders status=resting): adopt as
+           synthetic resting entries — with fill_min_ts derived from the
+           order's created_time (R2-M1; registered_ts = restart time would
+           put pre-restart fills outside the fetch bound) — then route
+           through _cancel_quote (final fill poll before pop).
+        2. NO-LONGER-RESTING ls- rows (local pending_orders still
+           status='resting' but absent from the API list — fully filled or
+           expired pre-restart): fetch fills bounded by the row's
+           created_at, record positions, and mark the row filled/canceled.
+
+        On get_orders failure the latch stays unset so the next tick
+        retries; a fills-fetch failure in step 2 also leaves the latch
+        unset (rows still 'resting' are re-examined; step 1 re-adoption is
+        idempotent — an order_id already in _resting is not re-registered,
+        preserving its seen_trade_ids dedup).
         """
+        now = time.time()
         try:
             resp = self._client.get_orders(status="resting")
         except Exception:
@@ -488,8 +581,12 @@ class LongshotEngine:
             logging.warning("LONGSHOT_BOOT_RECONCILE_FAILED (api None) — "
                             "retry next tick")
             return
-        self._boot_reconciled = True
-        for o in (resp.get("orders") or []):
+        api_orders = resp.get("orders") or []
+        api_order_ids = {o.get("order_id") for o in api_orders
+                         if o.get("order_id")}
+
+        # Step 1 — adopt-and-kill still-resting orphans.
+        for o in api_orders:
             coid = o.get("client_order_id") or ""
             if not coid.startswith(C.LONGSHOT_CLIENT_OID_PREFIX):
                 continue
@@ -497,21 +594,80 @@ class LongshotEngine:
             ticker = o.get("ticker") or ""
             if not order_id or not ticker:
                 continue
+            with self._lock:
+                already = order_id in self._resting
+            if already:
+                continue  # retry pass — keep the existing entry's dedup set
             buy_side = o.get("side") or "yes"
             sell_side = "no" if buy_side == "yes" else "yes"
             price = (o.get("no_price") if buy_side == "no"
                      else o.get("yes_price")) or 0
+            # R2-M2: FP-primary remaining-count extraction
+            # (state.py:1622 pattern) — `count` is the ORIGINAL size.
+            remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
+                o.get("remaining_count") or 0)
+            if not remaining:
+                remaining = int(o.get("count") or 0)
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             self.register_resting(
                 order_id=order_id, client_order_id=coid, ticker=ticker,
                 event_ticker=event_ticker, asset=asset,
                 sell_side=sell_side, buy_side=buy_side,
-                buy_price_cents=int(price), count=int(o.get("count") or 0),
-                seconds_to_close=0.0)
+                buy_price_cents=int(price), count=int(remaining),
+                seconds_to_close=0.0,
+                fill_min_ts=_boot_fill_min_ts(o.get("created_time"),
+                                              ticker, now))
             logging.warning("LONGSHOT_BOOT_ORPHAN: adopted %s %s — "
                             "final fill poll + cancel", ticker, order_id)
             self._cancel_quote(order_id, "boot_orphan")
+
+        # Step 2 — reconcile ls- rows that are no longer resting on Kalshi
+        # (fully filled / expired pre-restart): their fills were never
+        # recorded and the row would stay 'resting' forever.
+        all_fetched = True
+        try:
+            rows = self._state.conn.execute(
+                "SELECT order_id, client_order_id, ticker, event_ticker, "
+                "asset, side, count, price_cents, created_at "
+                "FROM pending_orders WHERE status='resting' "
+                "AND client_order_id LIKE ?",
+                (C.LONGSHOT_CLIENT_OID_PREFIX + "%",)).fetchall()
+        except Exception:
+            logging.warning("longshot boot non-resting query failed",
+                            exc_info=True)
+            return  # latch unset — retry next tick
+        for r in rows:
+            if r["order_id"] in api_order_ids:
+                continue  # still resting — step 1 owns it
+            q = {
+                "order_id": r["order_id"],
+                "client_order_id": r["client_order_id"],
+                "ticker": r["ticker"],
+                "event_ticker": r["event_ticker"] or "",
+                "asset": r["asset"] or "",
+                "buy_side": r["side"] or "yes",
+                "buy_price_cents": int(r["price_cents"] or 0),
+                "count": int(r["count"] or 0),
+                "filled": 0,
+                "seen_trade_ids": set(),
+                "registered_ts": now,
+                "fill_min_ts": _boot_fill_min_ts(r["created_at"],
+                                                 r["ticker"] or "", now),
+                "stc_at_register": 0.0,
+            }
+            if not self._poll_fills(q):
+                all_fetched = False  # retry next tick; row stays 'resting'
+                continue
+            status = ("filled" if q["count"] > 0 and q["filled"] >= q["count"]
+                      else "canceled")
+            self._mark_pending(r["order_id"], status)
+            logging.warning(
+                "LONGSHOT_BOOT_GONE: %s %s no longer resting on Kalshi — "
+                "recorded %d/%d pre-restart fill contracts, row marked %s",
+                r["ticker"], r["order_id"], q["filled"], q["count"], status)
+        if all_fetched:
+            self._boot_reconciled = True
 
     def _mark_pending(self, order_id: str, status: str) -> None:
         """R2-C1: flip the pending_orders row off status='resting' whenever
@@ -787,7 +943,12 @@ class LongshotEngine:
         # tick re-polls, and the re-cancel hits the 404 idempotent path.
         api_filled = None
         if isinstance(resp, dict):
-            api_filled = (resp.get("order") or {}).get("fill_count")
+            # R2-M2: FP-primary reconcile (executor.py taker-submit
+            # fill_count_fp pattern) — a DELETE response carrying only
+            # fill_count_fp must not read as "no fills".
+            _ord = resp.get("order") or {}
+            api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
+                _ord.get("fill_count")
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             logging.warning(
                 "LONGSHOT_CANCEL_FILL_MISMATCH: %s %s api_filled=%d "
@@ -805,26 +966,31 @@ class LongshotEngine:
         logging.info("LONGSHOT_CANCEL: %s %s reason=%s", q["ticker"],
                      order_id, reason)
 
-    def _fetch_fills_snapshot(self) -> Optional[List[Dict]]:
+    def _fetch_fills_snapshot(self, min_ts: Optional[float] = None,
+                              ) -> Optional[List[Dict]]:
         """R1-M6: ONE unfiltered, cursor-paginated get_fills pass.
 
-        min_ts is bounded to the earliest registered quote (minus slack)
-        so the result set stays tiny; pages are followed up to
-        _MAX_FILL_PAGES. Returns None on a first-page failure (callers
-        skip this tick); a mid-pagination failure returns the partial
-        list — per-quote trade_id dedup makes re-reads idempotent.
+        min_ts defaults to the earliest registered quote's fill_min_ts
+        (minus slack) so the result set stays tiny; pages are followed up
+        to _MAX_FILL_PAGES. R2-M1: callers reconciling orders that are no
+        longer in _resting (boot non-resting reconcile / final polls)
+        pass an explicit ``min_ts`` — that also bypasses the
+        empty-registry early return. Returns None on a first-page failure
+        (callers skip this tick); a mid-pagination failure returns the
+        partial list — per-quote trade_id dedup makes re-reads idempotent.
         """
-        with self._lock:
-            if not self._resting:
-                return []
-            min_reg = min(q["registered_ts"]
-                          for q in self._resting.values())
+        if min_ts is None:
+            with self._lock:
+                if not self._resting:
+                    return []
+                min_ts = min(q.get("fill_min_ts", q["registered_ts"])
+                             for q in self._resting.values())
         fills: List[Dict] = []
         cursor: Optional[str] = None
         for _page in range(_MAX_FILL_PAGES):
             try:
                 resp = self._client.get_fills(
-                    min_ts=int(min_reg) - 60, cursor=cursor)
+                    min_ts=int(min_ts) - 60, cursor=cursor)
             except Exception:
                 logging.warning("longshot get_fills failed", exc_info=True)
                 return fills if fills else None
@@ -836,14 +1002,19 @@ class LongshotEngine:
                 break
         return fills
 
-    def _poll_fills(self, q: Dict) -> None:
+    def _poll_fills(self, q: Dict) -> bool:
         """Final per-quote poll (cancel / boot-orphan / stale-drop paths):
-        one snapshot fetch applied to this quote only. The per-tick bulk
-        path in tick() fetches ONCE and dispatches via _apply_fills."""
-        fills = self._fetch_fills_snapshot()
+        one snapshot fetch applied to this quote only, bounded by the
+        quote's own fill_min_ts (R2-M1 — works even when the quote is not
+        in _resting, e.g. boot non-resting reconcile). The per-tick bulk
+        path in tick() fetches ONCE and dispatches via _apply_fills.
+        Returns False when the fetch failed outright (caller may retry)."""
+        fills = self._fetch_fills_snapshot(
+            min_ts=q.get("fill_min_ts", q.get("registered_ts")))
         if fills is None:
-            return
+            return False
         self._apply_fills(q, fills)
+        return True
 
     def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
         """Record this quote's new fills as positions (dispatch by
@@ -858,10 +1029,18 @@ class LongshotEngine:
                     f.get("price", ""))
             if trade_id in q["seen_trade_ids"]:
                 continue
-            q["seen_trade_ids"].add(trade_id)
-            fill_count = int(f.get("count") or 0)
+            # R2-M2: FP-primary count extraction (executor.py _on_fill /
+            # settlement.py loss-cross-check pattern) — fills shaped with
+            # only count_fp must not parse to 0.
+            fill_count = fp_str_to_int(f.get("count_fp")) or int(
+                f.get("count") or 0)
             if fill_count <= 0:
+                # R2-M2: do NOT stamp seen_trade_ids on a zero-parse fill —
+                # stamping before validation permanently blacklisted the
+                # trade_id, so a transiently-malformed snapshot row could
+                # never be recorded by a later, well-formed snapshot.
                 continue
+            q["seen_trade_ids"].add(trade_id)
             try:
                 self._state.record_position_from_fill(
                     q["ticker"], q["event_ticker"], q["asset"],
