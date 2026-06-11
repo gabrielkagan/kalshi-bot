@@ -57,6 +57,22 @@ EVENT = "KXBTC15M-26JUN111200"
 
 # ── fixtures / helpers ───────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _isolate_mark_providers():
+    """R1-MN3: bot.strategy_caps._mark_providers is MODULE-GLOBAL state —
+    every LongshotEngine/TwaplockEngine construction registers a mark
+    provider bound to that test's StateManager. Snapshot + clear before
+    each test and restore after, so a provider closed over a dead tmp-DB
+    never leaks into another test's combined-cap math (or across files on
+    the same xdist worker). Sister fixture in test_twaplock_strategy.py."""
+    from bot import strategy_caps
+    saved = dict(strategy_caps._mark_providers)
+    strategy_caps._mark_providers.clear()
+    yield
+    strategy_caps._mark_providers.clear()
+    strategy_caps._mark_providers.update(saved)
+
+
 @pytest.fixture
 def state(tmp_path):
     s = StateManager(str(tmp_path / "test_longshot.db"))
