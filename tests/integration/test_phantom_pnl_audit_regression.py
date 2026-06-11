@@ -17,6 +17,7 @@ These tests pin the audit's core ``run_audit`` entry-point:
   T5. Re-running with the same ``audit_run_id`` is idempotent (UNIQUE clause).
 """
 import importlib
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 import sqlite3
@@ -90,7 +91,13 @@ class TestPhantomPnlAudit(unittest.TestCase):
         if pnl_cents is None:
             pnl_cents = revenue_cents - (count * entry)
         if settled_at is None:
-            settled_at = "2026-05-18T05:30:00Z"
+            # Relative date: a hardcoded "2026-05-18" timestamp aged out of
+            # the audit's days=14 window on 2026-06-01 and silently broke
+            # all 8 window-dependent tests (the age-at-filter-cutoff class
+            # from the 2026-05-17 xdist cascade lesson). Seed 2 days back so
+            # rows are always inside any window >= 3 days.
+            settled_at = (datetime.now(timezone.utc) - timedelta(days=2)
+                          ).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.conn.execute(
             "INSERT INTO settled_trades (ticker, event_ticker, asset, "
             "market_result, side, count, entry_price_cents, revenue_cents, "
