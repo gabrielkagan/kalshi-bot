@@ -509,10 +509,18 @@ class LongshotEngine:
         with self._lock:
             quotes = list(self._resting.values())
         if quotes:
-            fills = self._fetch_fills_snapshot()
+            fills, complete = self._fetch_fills_snapshot()
             if fills is not None:
                 for q in quotes:
                     self._apply_fills(q, fills)
+                if complete:
+                    # R3-MN2: a COMPLETE bulk poll on this (subsequent)
+                    # tick satisfies the clean-poll requirement that a
+                    # CANCEL_FILL_MISMATCH placed on the quote — the
+                    # 404-path terminal pop in _cancel_quote may proceed
+                    # again. Partial polls leave the hold in place.
+                    for q in quotes:
+                        q.pop("needs_clean_poll", None)
 
         # R1-MN4: a live->shadow trading-mode flip mid-flight must cancel
         # already-resting quotes. The executor gate only protects NEW
@@ -992,6 +1000,20 @@ class LongshotEngine:
                     "%s) — retry next tick", q["ticker"], order_id, reason,
                     resp.get("_status_code"))
                 return
+            # R3-MN2: if a previous cancel kept this entry via
+            # CANCEL_FILL_MISMATCH, the mismatched fills have NOT been
+            # re-polled yet — a terminal pop here would lose them
+            # forever (the 404 response carries no fill data). Hold the
+            # entry until one clean (complete) fills poll lands on a
+            # SUBSEQUENT tick (tick()'s bulk poll clears the hold); the
+            # stale-drop backstop still bounds the worst case.
+            if q.get("needs_clean_poll"):
+                logging.warning(
+                    "LONGSHOT_CANCEL_GONE_DEFERRED: %s %s reason=%s — 404 "
+                    "after fill mismatch; waiting for a clean fills poll "
+                    "before the terminal pop (R3-MN2)",
+                    q["ticker"], order_id, reason)
+                return
             logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
                          "already expired/cancelled on Kalshi (404)",
                          q["ticker"], order_id, reason)
@@ -1012,6 +1034,10 @@ class LongshotEngine:
             api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
                 _ord.get("fill_count")
         if isinstance(api_filled, int) and api_filled > q["filled"]:
+            # R3-MN2: require one clean (complete) fills poll on a
+            # SUBSEQUENT tick before any 404-path terminal pop —
+            # cleared by tick()'s bulk poll when complete.
+            q["needs_clean_poll"] = True
             logging.warning(
                 "LONGSHOT_CANCEL_FILL_MISMATCH: %s %s api_filled=%d "
                 "recorded=%d — keeping entry for fill-poll retry",
@@ -1029,7 +1055,7 @@ class LongshotEngine:
                      order_id, reason)
 
     def _fetch_fills_snapshot(self, min_ts: Optional[float] = None,
-                              ) -> Optional[List[Dict]]:
+                              ) -> Tuple[Optional[List[Dict]], bool]:
         """R1-M6: ONE unfiltered, cursor-paginated get_fills pass.
 
         min_ts defaults to the earliest registered quote's fill_min_ts
@@ -1037,14 +1063,22 @@ class LongshotEngine:
         to _MAX_FILL_PAGES. R2-M1: callers reconciling orders that are no
         longer in _resting (boot non-resting reconcile / final polls)
         pass an explicit ``min_ts`` — that also bypasses the
-        empty-registry early return. Returns None on a first-page failure
-        (callers skip this tick); a mid-pagination failure returns the
-        partial list — per-quote trade_id dedup makes re-reads idempotent.
+        empty-registry early return.
+
+        R3-MN1: returns ``(fills, complete)``. ``fills`` is None on a
+        first-page failure (callers skip this tick); a mid-pagination
+        failure returns the partial list with ``complete=False`` —
+        per-quote trade_id dedup makes re-reads idempotent. A cursor
+        still present after _MAX_FILL_PAGES also means ``complete=False``
+        (page-cap exhaustion). Callers making TERMINAL decisions
+        (boot step-2 row marking, the MN2 404-pop hold) must treat
+        ``complete=False`` as a fetch failure; recording the partial
+        page's fills still proceeds.
         """
         if min_ts is None:
             with self._lock:
                 if not self._resting:
-                    return []
+                    return ([], True)
                 min_ts = min(q.get("fill_min_ts", q["registered_ts"])
                              for q in self._resting.values())
         fills: List[Dict] = []
@@ -1055,14 +1089,14 @@ class LongshotEngine:
                     min_ts=int(min_ts) - 60, cursor=cursor)
             except Exception:
                 logging.warning("longshot get_fills failed", exc_info=True)
-                return fills if fills else None
+                return (fills, False) if fills else (None, False)
             if resp is None:
-                return fills if fills else None
+                return (fills, False) if fills else (None, False)
             fills.extend(resp.get("fills") or [])
             cursor = resp.get("cursor")
             if not cursor:
-                break
-        return fills
+                return (fills, True)
+        return (fills, False)  # page-cap exhausted with a live cursor
 
     def _poll_fills(self, q: Dict) -> bool:
         """Final per-quote poll (cancel / boot-orphan / stale-drop paths):
@@ -1070,13 +1104,15 @@ class LongshotEngine:
         quote's own fill_min_ts (R2-M1 — works even when the quote is not
         in _resting, e.g. boot non-resting reconcile). The per-tick bulk
         path in tick() fetches ONCE and dispatches via _apply_fills.
-        Returns False when the fetch failed outright (caller may retry)."""
-        fills = self._fetch_fills_snapshot(
+        Returns False when the fetch failed outright OR was PARTIAL
+        (R3-MN1 — partial snapshots must not drive terminal decisions;
+        the partial page's fills are still applied before returning)."""
+        fills, complete = self._fetch_fills_snapshot(
             min_ts=q.get("fill_min_ts", q.get("registered_ts")))
         if fills is None:
             return False
         self._apply_fills(q, fills)
-        return True
+        return complete
 
     def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
         """Record this quote's new fills as positions (dispatch by
