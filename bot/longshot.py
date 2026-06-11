@@ -59,7 +59,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import bot.constants as C
 from bot import trading_mode
-from bot.helpers.strings import fp_str_to_int
+from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 
 LONGSHOT_STRATEGY = "longshot"
 LONGSHOT_FILTER_STAGE_LIVE = "longshot_live"
@@ -678,8 +678,19 @@ class LongshotEngine:
                                 "for %s", coid, exc_info=True)
             buy_side = o.get("side") or "yes"
             sell_side = "no" if buy_side == "yes" else "yes"
-            price = (o.get("no_price") if buy_side == "no"
-                     else o.get("yes_price")) or 0
+            # R7-M1: dollars-first price extraction — post-FP-transition
+            # /orders objects carry *_price_dollars and the deprecated
+            # integer fields read as None (kb/failures/ppo-monitor-bugs
+            # Feb-26 lesson; mirrors state.py _reconcile_orders). The
+            # pre-fix legacy-only read adopted orphans at
+            # buy_price_cents=0 -> zero cost basis on recovered fills ->
+            # daily-cap/streak rails blind to exactly the boot-path
+            # losses the R1-M1/R2-M1 machinery exists to capture.
+            _pd = (o.get("no_price_dollars") if buy_side == "no"
+                   else o.get("yes_price_dollars"))
+            price = dollars_str_to_cents(_pd) if _pd else (
+                (o.get("no_price") if buy_side == "no"
+                 else o.get("yes_price")) or 0)
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)
@@ -695,7 +706,11 @@ class LongshotEngine:
                 # adds the skip back for R4-MN3 cumulative units), so a
                 # fully-recorded orphan could never reach
                 # filled >= count and ended 'canceled', not 'filled'.
-                remaining = max(0, int(o.get("count") or 0) - _skip)
+                # R7-M1 adjacent: count_fp-primary twin (same
+                # FP-transition class on the original-size field).
+                _orig = fp_str_to_int(o.get("count_fp")) or int(
+                    o.get("count") or 0)
+                remaining = max(0, _orig - _skip)
             # R5-M3: seed the REAL remaining window life — the stale-drop
             # backstop measures `stc_at_register - elapsed < -grace`, so
             # the pre-fix 0.0 seed made it fire 120s after RESTART, not
