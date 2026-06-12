@@ -622,7 +622,21 @@ class VolatilityEngine:
         return math.sqrt(max(0.0, bv))
 
     def _estimate_beta(self, asset: str, reference: str = "BTC") -> float:
-        """Cross-asset beta: cov(r_asset, r_ref) / var(r_ref). Clamped [0.5, 3.0]."""
+        """Cross-asset beta: cov(r_asset, r_ref) / var(r_ref). Clamped [0.5, 3.0].
+
+        DEAD CODE as of Bit V.2 (2026-06-12) — no production caller.
+        Its only consumers were the beta×BTC-DVOL fabrication paths in
+        ``_get_implied_vol`` / ``_get_implied_vol_hourly``, killed in Bit
+        V.2. The estimator is unsalvageable for vol scaling: regression
+        beta = corr×(σa/σb) understates the VOL RATIO at 5s horizons
+        (Epps effect), the per-asset deques are appended at scan cadence
+        with jitter so index-alignment ≠ time-alignment (covariance → 0),
+        and the 0.5 clamp floor produced the cross-asset-identical
+        ~8.5e-5 blended_rv cluster observed live on 2026-06-12.
+        Postmortem: kb/failures/vol-engine-beta-dvol-deflation-jun12.md
+        (local-only KB). Deletion is a follow-up Bit; kept here so the
+        Bit V.2 diff stays reviewable.
+        """
         if asset == reference:
             return 1.0
 
@@ -654,34 +668,39 @@ class VolatilityEngine:
         return max(0.5, min(3.0, beta))
 
     def _get_implied_vol(self, asset: str) -> Optional[float]:
-        """Get implied vol in per-5-second scale. BTC/ETH direct, SOL/XRP via beta."""
+        """Get implied vol in per-5-second scale. BTC/ETH direct; None otherwise.
+
+        Bit V.2 (2026-06-12): assets outside DERIBIT_DVOL_CURRENCIES
+        have NO implied vol — the former ``btc_dvol × _estimate_beta``
+        fabrication deflated alt vol up to ~6x (cross-asset-identical
+        ~8.5e-5 cluster against a ~3e-4 tape) and the inverse-variance
+        blend then locked onto the deflated value quadratically. Alts
+        return None and take the existing rv/EGARCH fallback path.
+        """
         if self._dvol is None:
             return None
 
         if asset in DERIBIT_DVOL_CURRENCIES:
             return self._dvol.get_dvol(asset)
 
-        # SOL/XRP: scale BTC DVOL by cross-asset beta
-        btc_dvol = self._dvol.get_dvol("BTC")
-        if btc_dvol is None:
-            return None
-        beta = self._estimate_beta(asset, "BTC")
-        return btc_dvol * beta
+        # Bit V.2: no beta-scaled fabrication for alts.
+        return None
 
     def _get_implied_vol_hourly(self, asset: str) -> Optional[float]:
-        """Get hourly-averaged implied vol in per-5-second scale. BTC/ETH direct, SOL/XRP via beta."""
+        """Get hourly-averaged implied vol in per-5-second scale. BTC/ETH direct; None otherwise.
+
+        Bit V.2 (2026-06-12): same kill as ``_get_implied_vol`` — no
+        beta-scaled BTC-DVOL fabrication for assets outside
+        DERIBIT_DVOL_CURRENCIES.
+        """
         if self._dvol is None:
             return None
 
         if asset in DERIBIT_DVOL_CURRENCIES:
             return self._dvol.get_dvol_hourly_avg(asset)
 
-        # SOL/XRP: scale BTC hourly avg DVOL by cross-asset beta
-        btc_dvol_hourly = self._dvol.get_dvol_hourly_avg("BTC")
-        if btc_dvol_hourly is None:
-            return None
-        beta = self._estimate_beta(asset, "BTC")
-        return btc_dvol_hourly * beta
+        # Bit V.2: no beta-scaled fabrication for alts.
+        return None
 
     # ── Core computation ─────────────────────────────────────────────────
 
@@ -933,13 +952,24 @@ class VolatilityEngine:
 
         if iv is not None and iv > 0 and rv_blended > 0:
             # Inverse-variance weighting
+            # DIMENSIONAL-INCOHERENCE flag (Bit V.2, 2026-06-12): the two
+            # "variances" are not commensurable — var_rv is a squared RK
+            # TERM-STRUCTURE SPREAD (rk_1min − rk_15min)² while var_iv is a
+            # squared 10%-of-level (0.1·iv)². w_iv therefore rises exactly
+            # when the RK term structure slopes (i.e. when realized vol is
+            # moving), which is when IV should matter LESS. Redesign is
+            # ticketed separately — do not retune these weights here.
             var_rv = (rk_1min - rk_15min) ** 2   # spread as proxy for RV uncertainty
             var_iv = (iv * 0.10) ** 2             # 10% uncertainty on IV
             # Avoid division by zero
             if var_rv + var_iv > 0:
                 w_rv = var_iv / (var_rv + var_iv)
                 w_iv = var_rv / (var_rv + var_iv)
-                blended = w_rv * rv_blended + w_iv * iv
+                # Bit V.2 (2026-06-12): blend IV against `blended` (the
+                # EGARCH-promoted value from Step 3c), NOT `rv_blended` —
+                # the old form silently discarded the promoted EGARCH
+                # variance-space blend whenever IV fired.
+                blended = w_rv * blended + w_iv * iv
                 iv_rv_blend_method = "inverse_variance"
 
             # Step 5: IV-RV regime detection
