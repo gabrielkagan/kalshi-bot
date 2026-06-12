@@ -31,6 +31,13 @@ Fix shape pinned here:
 * BTC/ETH keep direct DVOL.
 * The IV blend now blends against ``blended`` (the EGARCH-promoted
   value), preserving the EGARCH layer for BTC/ETH.
+
+SUPERSESSION NOTE (Bit V.4, 2026-06-12): the IV blend itself was
+removed later the same day — DVOL is diagnostic-only and never mutates
+sigma (see tests/integration/test_vol_engine_iv_diagnostic_only_regression.py).
+The getter contracts pinned here (alts None / BTC-ETH direct DVOL)
+are unchanged; the EGARCH-survival pin below now asserts the V.4 form
+(EGARCH-promoted value IS the final blend, untouched by IV).
 """
 
 import math
@@ -260,17 +267,19 @@ def test_alt_blended_rv_tracks_tape_not_dvol_anchor_regression():
 # ─────────────────────────────────────────────────────────────────────
 
 def test_egarch_blend_survives_iv_blend_for_btc_regression():
-    """Latent bug #3 in the RCA: the IV blend line computed
-    ``w_rv * rv_blended + w_iv * iv``, discarding the promoted EGARCH
-    variance-space blend (``blended = egarch_blend_sigma``) whenever IV
-    fired. Post-fix the IV blend must use ``blended`` (the
-    EGARCH-promoted value) as the RV-side input.
+    """Latent bug #3 in the RCA: pre-V.2, the IV blend line discarded
+    the promoted EGARCH variance-space blend whenever IV fired. Bit V.2
+    fixed the blend to use the EGARCH-promoted value; Bit V.4
+    (2026-06-12, same day) then removed the IV blend entirely — DVOL is
+    diagnostic-only. The pin's intent (the promoted EGARCH layer
+    survives into the final ``blended_rv``) holds in its strongest
+    form: with IV present and the EGARCH layer promoted (w_eg=1.0),
+    ``blended_rv`` IS the EGARCH sigma, untouched by IV.
 
     Construction: rv ≈ 2e-4 tape, EGARCH sigma pinned at 4e-4 (ratio
-    2.0, inside the [1/3, 3] clamp) with MZ weight w_eg=1.0 so
-    ``egarch_blend_sigma == egarch_sigma``; BTC DVOL at 2.5e-4 so the
-    IV branch fires without tripping the stress override
-    (iv_rv_spread vs rv_blended = 0.25 < IV_RV_SPREAD_THRESHOLD=0.50).
+    2.0, inside the clamp) with MZ weight w_eg=1.0 so
+    ``egarch_blend_sigma == egarch_sigma``; BTC DVOL present at 2.5e-4
+    so any surviving IV-blend code path would contaminate the result.
     """
     egarch_sigma = 4e-4
     iv = 2.5e-4
@@ -292,25 +301,12 @@ def test_egarch_blend_survives_iv_blend_for_btc_regression():
     assert result["egarch_blend_var"] is not None
     egarch_blend_sigma = math.sqrt(result["egarch_blend_var"])
     assert egarch_blend_sigma == pytest.approx(egarch_sigma, rel=1e-9)
-    assert result["iv_rv_blend_method"] == "inverse_variance"
 
-    # Recompute the inverse-variance weights from the result's own
-    # fields (same formula as the engine).
-    var_rv = (result["rv_1min"] - result["rv_15min"]) ** 2
-    var_iv = (iv * 0.10) ** 2
-    w_rv = var_iv / (var_rv + var_iv)
-    w_iv = var_rv / (var_rv + var_iv)
-    assert w_rv > 0, "degenerate weights — test construction broken"
-
-    expected_post_fix = w_rv * egarch_blend_sigma + w_iv * iv
-    pre_fix_value = w_rv * result["rv_only_blended"] + w_iv * iv
-    # The two targets must be distinguishable for the pin to mean anything.
-    assert abs(expected_post_fix - pre_fix_value) > 1e-6, (
-        "test construction broken — EGARCH and RV blends indistinguishable"
-    )
-    assert result["blended_rv"] == pytest.approx(expected_post_fix, rel=1e-9), (
-        f"IV blend discarded the promoted EGARCH layer: blended_rv="
-        f"{result['blended_rv']:.6e}, expected w_rv*egarch_blend + w_iv*iv="
-        f"{expected_post_fix:.6e} (pre-fix dead-EGARCH value: "
-        f"{pre_fix_value:.6e})"
+    # Bit V.4 contract: IV present, diagnostics live, blend untouched.
+    assert result["iv_rv_blend_method"] == "rv_only"
+    assert result["dvol_5s"] == iv
+    assert result["blended_rv"] == pytest.approx(egarch_sigma, rel=1e-9), (
+        f"blended_rv={result['blended_rv']:.6e} != EGARCH-promoted "
+        f"{egarch_sigma:.6e} — IV contaminated the blend (Bit V.4 "
+        f"removed all IV blending; DVOL is diagnostic-only)"
     )

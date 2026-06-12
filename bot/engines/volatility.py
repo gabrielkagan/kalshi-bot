@@ -8,7 +8,8 @@ volatility estimates). Subsequent bits move ``ProbabilityEngine``
 
 Realized-Kernel (Barndorff-Nielsen 2008) microstructure-noise-robust
 volatility estimator with bipower-variation jump separation, EGARCH
-variance-space blending, optional Deribit DVOL implied-vol blend,
+variance-space blending, Deribit DVOL diagnostics (diagnostic-only
+since Bit V.4, 2026-06-12 — IV is never blended into sigma),
 and a two-tier (legacy + adaptive) jump regime detector. Maintains
 its own per-asset rolling buffers of 5-second log returns (up to 15
 min) and persists state across restarts via two JSON sidecar files
@@ -17,8 +18,8 @@ for the EWMA-percentile detector).
 
 Imports are deliberate: stdlib (``json``, ``logging``, ``math``,
 ``os``, ``time``, ``collections.deque``, ``typing``) +
-``bot.constants`` (35 explicit names — every RK / JUMP / VOL /
-DERIBIT / IV / BETA tunable) + ``config`` (``ASSETS`` plus the 3
+``bot.constants`` (34 explicit names — every RK / JUMP / VOL /
+DERIBIT / BETA tunable; the IV stress-override tunable was deleted in Bit V.4) + ``config`` (``ASSETS`` plus the 3
 EGARCH_* names that still live in ``bot/config.py`` because the EGARCH
 blend predates Bit 3.1 constant-extraction) + ``models``
 (``compute_tv_rk_weights``, the time-varying RK-weight schedule
@@ -62,7 +63,6 @@ from typing import Dict, List, Optional, Tuple
 from bot.constants import (
     BETA_LOOKBACK_RETURNS,
     DERIBIT_DVOL_CURRENCIES,
-    IV_RV_SPREAD_THRESHOLD,
     JUMP_ADAPTIVE_DECAY_CAP,
     JUMP_ADAPTIVE_DECAY_MAX_BOOST,
     JUMP_ADAPTIVE_DECAY_MIN_BOOST,
@@ -113,7 +113,8 @@ class VolatilityEngine:
     """Realized Kernel + Deribit DVOL volatility engine.
 
     Uses microstructure-noise-robust Realized Kernel (Barndorff-Nielsen 2008),
-    bipower variation for jump separation, and optional Deribit DVOL blending.
+    bipower variation for jump separation; Deribit DVOL is diagnostic-only
+    (Bit V.4, 2026-06-12 — never blended into sigma).
     Maintains its own rolling buffer of log returns per asset (up to 15 min).
     """
 
@@ -944,42 +945,27 @@ class VolatilityEngine:
                     )
             self._rk_last_summary[f"dvol_h_{asset}"] = now
 
-        # Step 4: DVOL blending (if available)
+        # Step 4: DVOL diagnostics (Bit V.4, 2026-06-12) — IV is NEVER
+        # blended into sigma. The former `inverse_variance` branch was
+        # dimensionally incoherent (w_iv rose with the RK term-structure
+        # slope, i.e. exactly when realized vol was moving) and measured
+        # QLIKE-negative on BTC/ETH journal counterfactuals; the former
+        # `stress_override` branch (0.3·rv + 0.7·iv on (iv−rv)/rv > 0.5)
+        # was a level-spread trigger that variance-risk-premium + the
+        # diurnal trough satisfy every quiet evening — it fired on
+        # 60-91% of BTC/ETH ticks through the 2026-06-12 soak night and
+        # breached the vol-honesty band 1.8-2.7x. BTC/ETH now take the
+        # same RV/EGARCH path as every other asset. The diagnostics
+        # below stay live so a future event term can be fitted from
+        # ΔDVOL shadow history; the contract is pinned by
+        # tests/integration/test_vol_engine_iv_diagnostic_only_regression.py.
         iv = self._get_implied_vol(asset)
         dvol_5s = iv  # for diagnostics
         iv_rv_spread = None
         iv_rv_blend_method = "rv_only"
 
         if iv is not None and iv > 0 and rv_blended > 0:
-            # Inverse-variance weighting
-            # DIMENSIONAL-INCOHERENCE (redesign ticketed: 86badv7xj) flag (Bit V.2, 2026-06-12): the two
-            # "variances" are not commensurable — var_rv is a squared RK
-            # TERM-STRUCTURE SPREAD (rk_1min − rk_15min)² while var_iv is a
-            # squared 10%-of-level (0.1·iv)². w_iv therefore rises exactly
-            # when the RK term structure slopes (i.e. when realized vol is
-            # moving), which is when IV should matter LESS. Redesign is
-            # ticketed separately — do not retune these weights here.
-            var_rv = (rk_1min - rk_15min) ** 2   # spread as proxy for RV uncertainty
-            var_iv = (iv * 0.10) ** 2             # 10% uncertainty on IV
-            # Avoid division by zero
-            if var_rv + var_iv > 0:
-                w_rv = var_iv / (var_rv + var_iv)
-                w_iv = var_rv / (var_rv + var_iv)
-                # Bit V.2 (2026-06-12): blend IV against `blended` (the
-                # EGARCH-promoted value from Step 3c), NOT `rv_blended` —
-                # the old form silently discarded the promoted EGARCH
-                # variance-space blend whenever IV fired.
-                blended = w_rv * blended + w_iv * iv
-                iv_rv_blend_method = "inverse_variance"
-
-            # Step 5: IV-RV regime detection
             iv_rv_spread = (iv - rv_blended) / rv_blended
-            if iv_rv_spread > IV_RV_SPREAD_THRESHOLD:
-                # NOTE: still blends against rv_blended (EGARCH layer
-                # bypassed) — same class as the fixed blend above; tracked
-                # in ticket 86badv7xj. BTC/ETH-only branch post-V.2.
-                blended = 0.3 * rv_blended + 0.7 * iv
-                iv_rv_blend_method = "stress_override"
 
         # Step 6: Jump regime — exponential decay (legacy)
         regime = "normal"
