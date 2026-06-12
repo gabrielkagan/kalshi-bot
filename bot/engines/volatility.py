@@ -952,7 +952,7 @@ class VolatilityEngine:
 
         if iv is not None and iv > 0 and rv_blended > 0:
             # Inverse-variance weighting
-            # DIMENSIONAL-INCOHERENCE flag (Bit V.2, 2026-06-12): the two
+            # DIMENSIONAL-INCOHERENCE (redesign ticketed: 86badv7xj) flag (Bit V.2, 2026-06-12): the two
             # "variances" are not commensurable — var_rv is a squared RK
             # TERM-STRUCTURE SPREAD (rk_1min − rk_15min)² while var_iv is a
             # squared 10%-of-level (0.1·iv)². w_iv therefore rises exactly
@@ -975,6 +975,9 @@ class VolatilityEngine:
             # Step 5: IV-RV regime detection
             iv_rv_spread = (iv - rv_blended) / rv_blended
             if iv_rv_spread > IV_RV_SPREAD_THRESHOLD:
+                # NOTE: still blends against rv_blended (EGARCH layer
+                # bypassed) — same class as the fixed blend above; tracked
+                # in ticket 86badv7xj. BTC/ETH-only branch post-V.2.
                 blended = 0.3 * rv_blended + 0.7 * iv
                 iv_rv_blend_method = "stress_override"
 

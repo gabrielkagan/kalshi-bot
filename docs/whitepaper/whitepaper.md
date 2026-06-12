@@ -355,7 +355,7 @@ Returns above an adaptive threshold are flagged as jumps and excluded from RK es
 
 ### 3.3.7 DVOL integration
 
-When Deribit's DVOL implied volatility (BTC, ETH only — SOL/XRP/HYPE/DOGE/BNB have no public IV index, and since June 2026 receive no implied-vol input at all; see 3.3.8) diverges materially from realized, the engine blends in the implied estimate using inverse-variance weighting against the EGARCH-blended realized estimate. This respects forward-looking information during regime changes while anchoring to observed data.
+Deribit's DVOL implied volatility is consumed for BTC and ETH only — SOL/XRP/HYPE/DOGE/BNB have no public IV index, and since June 2026 receive no implied-vol input at all (see 3.3.8). Whenever IV is available, the engine blends it against the EGARCH-blended realized estimate using inverse-variance weighting. When IV exceeds realized by more than 50%, a separate stress override applies a fixed 0.3/0.7 realized/implied blend instead (currently against the raw realized-kernel blend; routing it through the EGARCH layer is a tracked follow-up). This respects forward-looking information during regime changes while anchoring to observed data.
 
 ### 3.3.8 Cross-asset beta (removed 2026-06)
 
