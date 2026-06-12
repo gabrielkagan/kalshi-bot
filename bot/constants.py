@@ -142,7 +142,7 @@ LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in 
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
-LONGSHOT_LIVE_OVERRIDE = True      # LIVE since 2026-06-12: longshot trades live solo (main pipeline stays shadow); trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS (R1-M4; asset-scoped at R4-M1)
+LONGSHOT_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~12:05Z (operator): live loss rate 4/11 windows (36%) vs ~6% backtest, p~0.3-3% — adverse-selection signature; autopsy in flight. Engine stays ENABLED in shadow (free would-be-fill measurement). Was LIVE 10:51-12:05Z.
 # Longshot live universe (R4-M1 mechanism): the ONLY assets longshot may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
