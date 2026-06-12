@@ -371,3 +371,80 @@ class TestScannerSeam:
         state._scan_tape_rv_cache["BTC"] = 3e-4  # stale prior tick
         scanner.scan([_window()])
         assert state._scan_tape_rv_cache.get("BTC") is None
+
+
+# ── 4. Event-time staleness gate at the seam (R1-M1 fix round) ──────────────
+# The live CoinbaseFeed sampler re-stamps the LAST-KNOWN price with a fresh
+# time.time() every 1s unconditionally (bot/feeds/coinbase.py::_sampler_loop
+# step-hold), so a frozen WS feed presents a gapless buffer of flat,
+# freshly-stamped samples — trailing_rv300's per-grid-point BUFFER-time
+# staleness guard can never fire live, and rv300 reads LOW (~0) off the
+# step-held flat segment. The seam must consult the Bit-S.1 EVENT-time
+# staleness signal (state._scan_spot_staleness_cache, written from the WS
+# tick timestamp in the same scanner block) and treat rv300 as None when
+# the spot is unmeasured or >30s event-stale — restoring the validated
+# backtest's abstention (02_longshot_tick_floor STALE_S=30.0 applies to
+# EVENT time in the research timeline, which has no re-stamping sampler).
+
+
+def _frozen_feed_buffer(now, *, span_s=400, price=100.0):
+    """The live frozen-feed shape: flat price, fresh 1s stamps to `now`."""
+    return [(now - span_s + i, price) for i in range(span_s + 1)]
+
+
+class TestEventTimeStalenessGate:
+    def test_frozen_feed_pops_cache_and_falls_back_with_info_log(
+            self, state, client, overlays_enabled, caplog):
+        """Frozen-feed shape: buffer full of fresh-stamped flat prices
+        (rv300 would read 0.0 — LOW, not None) + event-time staleness 45s
+        → the seam must treat rv300 as None: pop the cache slot (even
+        over a prior tick's honest value), fire the throttled TAPE_RV_NONE
+        fallback at INFO (not debug — MN1), and hand the engines plain
+        blended_rv."""
+        import logging as _logging
+        now0 = time.time()
+        buf = _frozen_feed_buffer(now0)
+        blended = 1.5e-4
+        scanner, ls, tw = _build_scanner(
+            state, client, blended_rv=blended, buffer=buf)
+        # Feed froze 45s ago: last real WS tick is 45s old even though the
+        # sampler kept re-stamping the buffer.
+        scanner._feed.get_price_with_ts.return_value = (
+            100.0, time.monotonic() - 45.0)
+        state._scan_tape_rv_cache["BTC"] = 3e-4  # prior tick's honest value
+        with caplog.at_level(_logging.INFO):
+            scanner.scan([_window()])
+        assert state._scan_tape_rv_cache.get("BTC") is None, (
+            "event-stale tick must POP the rv300 slot — a step-held flat "
+            "buffer reads rv300~0.0 and silently reverts max() to the "
+            "broken blended_rv (R1-M1)")
+        assert ls.calls and tw.calls
+        assert ls.calls[0]["blended_rv"] == blended
+        assert tw.calls[0]["blended_rv"] == blended
+        assert "TAPE_RV_NONE" in caplog.text, (
+            "fallback log must fire (at INFO) when rv300 is unavailable")
+
+    def test_event_fresh_feed_keeps_tape_estimate(
+            self, state, client, overlays_enabled):
+        """Sanity twin: a fresh WS tick (staleness ~0, the default harness
+        shape) must NOT trip the gate — rv300 still computed + cached."""
+        now0 = time.time()
+        buf = _make_walk_buffer(now0, per5s_vol=2e-4, seed=13)
+        scanner, _ls, _tw = _build_scanner(
+            state, client, blended_rv=1e-4, buffer=buf)
+        scanner.scan([_window()])
+        assert state._scan_tape_rv_cache.get("BTC") is not None
+
+    def test_unmeasured_staleness_pops_cache(
+            self, state, client, overlays_enabled):
+        """get_price_with_ts None (warmup) → staleness cache popped →
+        rv300 must be treated as None too (no event-time signal = no
+        honest tape estimate), independent of buffer contents."""
+        now0 = time.time()
+        buf = _make_walk_buffer(now0, per5s_vol=2e-4, seed=21)
+        scanner, _ls, _tw = _build_scanner(
+            state, client, blended_rv=1e-4, buffer=buf)
+        scanner._feed.get_price_with_ts.return_value = None
+        state._scan_tape_rv_cache["BTC"] = 3e-4  # prior tick's honest value
+        scanner.scan([_window()])
+        assert state._scan_tape_rv_cache.get("BTC") is None

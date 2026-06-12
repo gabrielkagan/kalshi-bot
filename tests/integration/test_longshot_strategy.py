@@ -104,11 +104,22 @@ def _ob(yes_ask_cents=8, yes_bid_cents=3):
 
 
 def _eval(eng, *, yes_ask_cents=8, yes_bid_cents=3, stc=600.0, spot=100.0,
-          threshold=110.0, blended_rv=0.0001, ticker=TICKER, ob=None):
+          threshold=110.0, blended_rv=0.0001, ticker=TICKER, ob=None,
+          asset="BTC", spot_staleness=0.0):
+    """``spot_staleness`` seeds the scanner-owned Bit-S.1 per-asset cache
+    (``state._scan_spot_staleness_cache``) that the frozen/unmeasured-spot
+    gate (R1-M1 fix round, Bit V.1 — mirror of twaplock R2-MN1) reads —
+    default 0.0 = fresh WS tick this tick, so every test that isn't ABOUT
+    the gate sails through it. ``None`` pops the slot (warmup / scanner
+    honest-NULL)."""
+    if spot_staleness is None:
+        eng._state._scan_spot_staleness_cache.pop(asset, None)
+    else:
+        eng._state._scan_spot_staleness_cache[asset] = spot_staleness
     if ob is None:
         ob = _ob(yes_ask_cents, yes_bid_cents)
     return eng.evaluate_market(
-        ticker=ticker, event_ticker=EVENT, asset="BTC", product_type="15m",
+        ticker=ticker, event_ticker=EVENT, asset=asset, product_type="15m",
         spot=spot, threshold=threshold, seconds_to_close=stc,
         blended_rv=blended_rv, orderbook_fetch=lambda: ob,
         config_snapshot_id=None, balance_at_scan=50000)
@@ -239,12 +250,74 @@ class TestConditionLogic:
         assert len(_eval(engine, yes_ask_cents=8)) == 0
 
     def test_no_orderbook_no_candidate(self, engine, enabled):
+        # fresh staleness — isolate the orderbook branch from the
+        # frozen-spot gate (same idiom as test_twaplock_strategy.py:359).
+        engine._state._scan_spot_staleness_cache["BTC"] = 0.0
         out = engine.evaluate_market(
             ticker=TICKER, event_ticker=EVENT, asset="BTC", product_type="15m",
             spot=100.0, threshold=110.0, seconds_to_close=600.0,
             blended_rv=0.0001, orderbook_fetch=lambda: None,
             config_snapshot_id=None, balance_at_scan=50000)
         assert out == []
+
+
+# ── frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1) ───────────────────
+
+class TestSpotStalenessGate:
+    """Mirror of twaplock's R2-MN1 frozen-spot gate (TWAPLOCK_SPOT_STALE).
+    The CoinbaseFeed sampler re-stamps the last-known price with fresh
+    timestamps every 1s, so a frozen WS feed is invisible to buffer-shape
+    guards — only the Bit-S.1 EVENT-time staleness cache
+    (state._scan_spot_staleness_cache) can see the freeze, and longshot's
+    p_normal would otherwise be priced off a stale spot AND a deflated
+    tape rv. The validated backtest (02_longshot_tick_floor STALE_S=30.0)
+    ABSTAINED at every decision point whose spot was >30s event-stale;
+    pre-fix the live engine had NO such gate (twaplock had its 5s gate,
+    longshot none — R1-M1)."""
+
+    def test_constant_exists(self):
+        assert C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS == 30.0
+
+    def test_stale_reading_blocks_and_writes_no_row(self, engine, state,
+                                                    enabled, caplog):
+        import logging as _logging
+        with caplog.at_level(_logging.INFO):
+            cands = _eval(
+                engine,
+                spot_staleness=C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS + 1.0)
+        assert cands == []
+        assert "LONGSHOT_SPOT_STALE" in caplog.text
+        n = state.conn.execute(
+            "SELECT COUNT(*) FROM evaluated_opportunities WHERE "
+            "filter_stage LIKE 'longshot%'").fetchone()[0]
+        assert n == 0
+
+    def test_missing_cache_entry_blocks(self, engine, enabled):
+        """Warmup / scanner honest-NULL pop: no reading = no signal."""
+        assert _eval(engine, spot_staleness=None) == []
+
+    def test_fresh_reading_passes(self, engine, enabled):
+        assert len(_eval(engine, spot_staleness=0.5)) == 1
+
+    def test_boundary_at_threshold_passes(self, engine, enabled):
+        """Gate is strict-greater-than: exactly the constant still trades
+        (same boundary semantics as twaplock's gate)."""
+        assert len(_eval(
+            engine,
+            spot_staleness=C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS)) == 1
+
+    def test_stale_log_throttled_per_asset(self, engine, enabled, caplog):
+        """Longshot evaluates every 15M ticker in the STC band every tick
+        — on gapped feeds (BNB: 34% of 1-min intervals stale) an
+        unthrottled log would spam per ticker. 60s/asset throttle (the
+        TAPE_RV_NONE idiom); candidates still blocked on every stale
+        call."""
+        import logging as _logging
+        with caplog.at_level(_logging.INFO):
+            assert _eval(engine, spot_staleness=31.0) == []
+            assert _eval(engine, spot_staleness=31.0,
+                         ticker=TICKER + "X") == []
+        assert caplog.text.count("LONGSHOT_SPOT_STALE") == 1
 
 
 # ── evaluated_opportunities rows ─────────────────────────────────────────────

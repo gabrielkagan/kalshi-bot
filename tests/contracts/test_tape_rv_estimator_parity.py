@@ -19,8 +19,25 @@ Pins (structural anchors, not line numbers):
    — the max-selected honest vol — NOT the raw ``blended_rv`` name. A
    refactor that reverts an overlay to the raw engine estimate goes RED
    here even if behavioral tests are green.
-5. ``_strategy_vol`` is assigned via ``max(blended_rv, ...)`` somewhere
-   in ``scan()`` (never price risk off the smaller estimate).
+5. ``_strategy_vol`` is assigned via ``max(blended_rv, _tape_rv300)``
+   somewhere in ``scan()`` (never price risk off the smaller estimate),
+   where ``_tape_rv300`` is derived from the ``_scan_tape_rv_cache`` read
+   (R1-MN4 tighten: the second ``max()`` arg must be the cache-derived
+   name — a refactor that maxes against anything else goes RED).
+6. R1-M1 (fix round) — EVENT-time staleness gate at the seam: the live
+   CoinbaseFeed sampler re-stamps the last-known price every 1s, so the
+   helper's BUFFER-time guard can never fire on a frozen feed. ``scan()``
+   must gate the cache write on the Bit-S.1 event-time signal: it
+   top-imports ``TAPE_RV_MAX_STALENESS_S`` from ``bot.helpers.tape_rv``
+   and compares the ``_scan_spot_staleness_cache`` reading against it
+   before trusting ``trailing_rv300``; the helper's ``max_staleness_s``
+   default and the seam gate share that one constant (= 30.0, the
+   validated backtest's abstention horizon — 02's ``STALE_S``).
+7. R1-M1 (fix round) — ``bot/longshot.py::evaluate_market`` carries its
+   own frozen/unmeasured-spot gate (the twaplock ``TWAPLOCK_SPOT_STALE``
+   pattern): reads ``_scan_spot_staleness_cache`` and compares against
+   ``C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS`` (= 30.0, lockstep with the
+   tape-rv horizon).
 """
 from __future__ import annotations
 
@@ -31,6 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCANNER_PATH = REPO_ROOT / "bot" / "scanner" / "__init__.py"
 TAPE_RV_PATH = REPO_ROOT / "bot" / "helpers" / "tape_rv.py"
 STATE_PATH = REPO_ROOT / "bot" / "state.py"
+LONGSHOT_PATH = REPO_ROOT / "bot" / "longshot.py"
 
 _STDLIB_ALLOWED = {"math", "bisect", "typing", "__future__"}
 
@@ -179,19 +197,145 @@ def test_both_overlays_pass_strategy_vol_not_raw_blended_rv():
 
 
 def test_strategy_vol_assigned_via_max_of_blended_and_tape():
+    """R1-MN4 tighten: the SECOND max() arg must be the cache-derived
+    ``_tape_rv300`` name (pinned cache-derived by the sister test below)
+    — `max(blended_rv, <anything else>)` no longer satisfies this pin."""
     fn = _scan_func(_tree(SCANNER_PATH))
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign):
             targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
             if "_strategy_vol" not in targets:
                 continue
-            if (isinstance(node.value, ast.Call)
-                    and isinstance(node.value.func, ast.Name)
-                    and node.value.func.id == "max"
-                    and any(isinstance(a, ast.Name) and a.id == "blended_rv"
-                            for a in node.value.args)):
+            v = node.value
+            if (isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Name)
+                    and v.func.id == "max"
+                    and len(v.args) == 2
+                    and isinstance(v.args[0], ast.Name)
+                    and v.args[0].id == "blended_rv"
+                    and isinstance(v.args[1], ast.Name)
+                    and v.args[1].id == "_tape_rv300"):
                 return
     raise AssertionError(
-        "scan() must assign _strategy_vol = max(blended_rv, <tape rv300>) "
+        "scan() must assign _strategy_vol = max(blended_rv, _tape_rv300) "
         "on the rv300-available path — never price strategy risk off the "
-        "smaller estimate")
+        "smaller estimate, and the second arg must be the cache-derived "
+        "_tape_rv300 name (R1-MN4)")
+
+
+def test_tape_rv300_name_is_cache_derived():
+    """Companion to the max() pin: ``_tape_rv300`` must be assigned from
+    ``self._state._scan_tape_rv_cache.get(...)`` inside scan() — making
+    the second max() arg provably the per-asset cache reading."""
+    fn = _scan_func(_tree(SCANNER_PATH))
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if "_tape_rv300" not in targets:
+                continue
+            v = node.value
+            if (isinstance(v, ast.Call)
+                    and isinstance(v.func, ast.Attribute)
+                    and v.func.attr == "get"
+                    and isinstance(v.func.value, ast.Attribute)
+                    and v.func.value.attr == "_scan_tape_rv_cache"):
+                return
+    raise AssertionError(
+        "_tape_rv300 must be read from self._state._scan_tape_rv_cache"
+        ".get(asset) inside scan()")
+
+
+# ── 6. Event-time staleness gate at the seam (R1-M1 fix round) ───────────────
+
+def test_tape_rv_module_exports_staleness_constant_30s():
+    """Single source of truth for the abstention horizon: the helper's
+    module constant is 30.0 (02's STALE_S) and IS the default for the
+    ``max_staleness_s`` kwarg."""
+    import inspect
+
+    from bot.helpers import tape_rv
+
+    assert tape_rv.TAPE_RV_MAX_STALENESS_S == 30.0
+    sig = inspect.signature(tape_rv.trailing_rv300)
+    assert (sig.parameters["max_staleness_s"].default
+            == tape_rv.TAPE_RV_MAX_STALENESS_S)
+
+
+def test_scanner_top_imports_tape_rv_max_staleness_constant():
+    tree = _tree(SCANNER_PATH)
+    for node in tree.body:
+        if (isinstance(node, ast.ImportFrom)
+                and node.module == "bot.helpers.tape_rv"
+                and any(a.name == "TAPE_RV_MAX_STALENESS_S"
+                        for a in node.names)):
+            return
+    raise AssertionError(
+        "bot/scanner/__init__.py must top-import TAPE_RV_MAX_STALENESS_S "
+        "from bot.helpers.tape_rv — the seam's event-time gate and the "
+        "helper's buffer-time guard share one horizon constant")
+
+
+def test_scan_gates_tape_rv_on_event_time_staleness():
+    """The seam must compare the Bit-S.1 event-time staleness reading
+    against TAPE_RV_MAX_STALENESS_S inside scan() — the live sampler's
+    1s re-stamping makes the helper's buffer-time guard blind to a
+    frozen feed (R1-M1)."""
+    fn = _scan_func(_tree(SCANNER_PATH))
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Compare):
+            names = {n.id for n in ast.walk(node)
+                     if isinstance(n, ast.Name)}
+            if "TAPE_RV_MAX_STALENESS_S" in names:
+                return
+    raise AssertionError(
+        "scan() must compare the _scan_spot_staleness_cache reading "
+        "against TAPE_RV_MAX_STALENESS_S before trusting trailing_rv300 "
+        "— frozen-but-resampled feeds otherwise read rv300~0 and max() "
+        "silently reverts to the broken blended_rv")
+
+
+# ── 7. Longshot frozen/unmeasured-spot gate (R1-M1 fix round) ────────────────
+
+def _longshot_evaluate_market(tree: ast.Module) -> ast.FunctionDef:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "LongshotEngine":
+            for item in node.body:
+                if (isinstance(item, ast.FunctionDef)
+                        and item.name == "evaluate_market"):
+                    return item
+    raise AssertionError("LongshotEngine.evaluate_market not found")
+
+
+def test_longshot_staleness_constant_lockstep_with_backtest_horizon():
+    import bot.constants as C
+    from bot.helpers import tape_rv
+
+    assert C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS == 30.0, (
+        "30.0s is the validated backtest's abstention horizon "
+        "(02_longshot_tick_floor STALE_S) — changing it breaks "
+        "estimator/abstention parity (L-VOL-1)")
+    assert (C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS
+            == tape_rv.TAPE_RV_MAX_STALENESS_S)
+
+
+def test_longshot_evaluate_market_gates_on_staleness_cache():
+    """Mirror of the twaplock TWAPLOCK_SPOT_STALE pattern: the engine
+    reads the scanner-owned Bit-S.1 cache and compares against
+    LONGSHOT_MAX_SPOT_STALENESS_SECONDS (pre-fix longshot had NO
+    staleness gate — twaplock did)."""
+    fn = _longshot_evaluate_market(_tree(LONGSHOT_PATH))
+    reads_cache = any(
+        isinstance(n, ast.Attribute)
+        and n.attr == "_scan_spot_staleness_cache"
+        for n in ast.walk(fn))
+    assert reads_cache, (
+        "LongshotEngine.evaluate_market must read "
+        "_scan_spot_staleness_cache (R1-M1 — longshot had no spot "
+        "staleness gate)")
+    compares_constant = any(
+        isinstance(n, ast.Attribute)
+        and n.attr == "LONGSHOT_MAX_SPOT_STALENESS_SECONDS"
+        for n in ast.walk(fn))
+    assert compares_constant, (
+        "LongshotEngine.evaluate_market must compare the reading against "
+        "C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS")
