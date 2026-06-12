@@ -18,10 +18,18 @@ Formula provenance (function-name anchors, not line numbers):
   ``[now - window_s, now]`` with a per-grid-point staleness guard
   (``STALE_S = 30.0`` in that script), take per-step log returns,
   SAMPLE stdev.
-- ``scripts/research/fairvalue_extract.py::_realized_vol`` — identical
-  construction minus the staleness guard (its ``_spot_at`` has none);
-  the guard here is the 02 superset, which is the script the kill
-  criteria were evaluated on.
+- ``scripts/research/fairvalue_extract.py::_realized_vol`` — same grid
+  construction with two NAMED divergences (R1-MN3): (a) no staleness
+  guard (its ``_spot_at`` has none; the guard here is the 02 superset,
+  and 02 is the script the kill criteria were evaluated on); (b)
+  non-positive-price handling — fairvalue_extract ABORTS (``if s is
+  None or s <= 0: return None`` at the first non-positive grid
+  sample), whereas 02 PAIR-SKIPS (filters out log returns whose
+  DENOMINATOR ``samples[i-1]`` is non-positive and would raise an
+  uncaught ``ValueError`` on a non-positive numerator over a positive
+  denominator). This helper follows 02's pair-skip, with a defensive
+  ``None`` in place of 02's uncaught ``ValueError`` (see step 2 of the
+  function docstring).
 
 **Sample (not population) stdev**: both research scripts divide the
 squared deviations by ``len(rets) - 1``

@@ -223,7 +223,7 @@ TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1
 # the same direction as the stricter-than-validated 0.99 p_lock threshold.
 TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
-TWAPLOCK_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~13:0xZ (operator): longshot autopsy found blended_rv running 1.4-4x BELOW tape vol on alts — p_lock consumes the SAME input, so "0.99 locked" may be ~0.9. Zero fills while live (3 IOC misses). Re-arm only after vol-engine RCA + honest-vol rewire + shadow soak.
+TWAPLOCK_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 12:57Z (operator; PR #164 merge 040fe826): longshot autopsy found blended_rv running 1.4-4x BELOW tape vol on alts — p_lock consumes the SAME input, so "0.99 locked" may be ~0.9. Zero fills while live (3 IOC misses). Re-arm only after vol-engine RCA + honest-vol rewire + shadow soak.
 # Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the
