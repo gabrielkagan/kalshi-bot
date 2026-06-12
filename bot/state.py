@@ -184,6 +184,18 @@ class StateManager:
         # _effective_decision_spot ONLY for assets in SYNTHETIC_RTI_LIVE_ASSETS
         # (default empty ⇒ feeds no decision).
         self._scan_rti_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
+        # Bit V.1 (2026-06-12): per-asset trailing-300s tape realized vol
+        # (bot.helpers.tape_rv.trailing_rv300 — exact parity with the
+        # research scripts' rv_5s; see kb/failures/vol-engine-beta-dvol-
+        # deflation-jun12.md L-VOL-1). Staged once per asset per scan tick
+        # by the scanner's Coinbase spot/vol seam from
+        # CoinbaseFeed.get_buffer; consumed in the same tick by the
+        # longshot/twaplock overlays as max(blended_rv, rv300). Honest-NULL:
+        # the scanner POPS the slot when rv300 is None (short buffer,
+        # stale feed, mid-buffer gap) — mirrors _scan_spot_staleness_cache.
+        # Bit V.3 (filed) adds the evaluated_opportunities persistence +
+        # honesty alert on top of this cache.
+        self._scan_tape_rv_cache: Dict[str, float] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute

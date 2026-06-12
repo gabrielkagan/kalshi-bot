@@ -324,6 +324,7 @@ from bot.helpers import (
     tm_shadow_kelly_contracts_with_bound,  # Sim C, ticket 86ba0v7fc, 2026-05-19
 )
 from bot.helpers.band_calibration import calibrated_prob_for_sizing  # P4.1 (86b9zjrp7) — band-calibrated probability for 15M Kelly sizing only
+from bot.helpers.tape_rv import trailing_rv300  # Bit V.1 (2026-06-12) — estimator-parity tape RV for the live-small overlays (kb/failures/vol-engine-beta-dvol-deflation-jun12.md L-VOL-1)
 from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adverse-selection gate
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
@@ -409,6 +410,10 @@ class OpportunityScanner:
         self._scan_15m_iter_heartbeat_ts: float = 0.0
         self._dc_skip_cooldown: Dict[str, float] = {}  # ticker → expiry timestamp (60s after "no asks" skip)
         self._shadow_cal_last_log: Dict[str, float] = {}
+        # Bit V.1: per-asset throttle (60s) for the rv300-unavailable
+        # debug log at the live-small vol seam — fires routinely during
+        # the first ~5min post-restart while the spot buffer refills.
+        self._tape_rv_none_log_ts: Dict[str, float] = {}
         # Hourly per-window tracking (reset each scan tick)
         self._hourly_window_counts: Dict[str, int] = {}
         self._hourly_window_risk: Dict[str, float] = {}
@@ -1593,6 +1598,12 @@ class OpportunityScanner:
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
         _scan_loop_start = time.perf_counter()
+        # Bit V.1 (2026-06-12): per-TICK memo so the tape-RV seam below
+        # computes trailing_rv300 once per asset even when the same asset
+        # surfaces in multiple windows (15M + hourly share the Coinbase
+        # spot/vol branch). The durable per-asset stash lives in
+        # self._state._scan_tape_rv_cache (cross-tick, honest-NULL pop).
+        _tape_rv_assets_done: set = set()
         for window in eligible_windows:
             # Per-window timer (Phase 1 of scan-loop optimization).
             # SCAN_WINDOW_SLOW fires when one window's iteration body
@@ -1705,6 +1716,33 @@ class OpportunityScanner:
                         self._state._scan_spot_staleness_cache[asset] = (
                             spot_staleness_seconds
                         )
+                # Bit V.1 (2026-06-12): estimator-parity tape RV, once per
+                # asset per tick (kb/failures/vol-engine-beta-dvol-
+                # deflation-jun12.md). trailing_rv300 over the CoinbaseFeed
+                # 1s buffer is the SAME formula the validated longshot/
+                # twaplock backtests conditioned on (rv_5s in
+                # scripts/research/genhunt/02_longshot_tick_floor.py::_rv /
+                # fairvalue_extract._realized_vol). Staged into the
+                # per-asset StateManager cache (mirrors
+                # _scan_spot_staleness_cache incl. the honest-NULL pop);
+                # consumed below as _strategy_vol = max(blended_rv, rv300)
+                # for the live-small overlays. try/except: a feed-shape
+                # surprise must degrade to "no tape estimate", never kill
+                # the scan tick.
+                if asset is not None and asset not in _tape_rv_assets_done:
+                    _tape_rv_assets_done.add(asset)
+                    try:
+                        _rv300_now = trailing_rv300(
+                            self._feed.get_buffer(asset), time.time())
+                    except Exception:
+                        logging.debug(
+                            "TAPE_RV_COMPUTE_FAILED: %s", asset,
+                            exc_info=True)
+                        _rv300_now = None
+                    if _rv300_now is None:
+                        self._state._scan_tape_rv_cache.pop(asset, None)
+                    else:
+                        self._state._scan_tape_rv_cache[asset] = _rv300_now
                 if spot is None or spot <= 0:
                     # Trace row — Coinbase price feed gap or restart warmup.
                     # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
@@ -1799,6 +1837,34 @@ class OpportunityScanner:
                 continue
 
             blended_rv = vol_est["blended_rv"]
+
+            # ── Bit V.1 (2026-06-12): honest vol for the live-small
+            # strategy overlays (longshot compute_p_normal + twaplock
+            # compute_p_lock). blended_rv for non-BTC/ETH assets can be
+            # clamp(beta, 0.5, 3.0) × BTC_DVOL — 1.4-4x understated on
+            # the day-one autopsy tape (kb/failures/vol-engine-beta-dvol-
+            # deflation-jun12.md). The validated backtests conditioned on
+            # trailing-300s tape RV, so the overlays consume
+            # max(blended_rv, rv300): conservative for short-vol/lock
+            # math — never price risk off the SMALLER estimate. rv300
+            # None (warmup, feed gap) → blended_rv fallback + throttled
+            # debug log. Main-pipeline raw_prob is OUT OF SCOPE here
+            # (separate ticket per the postmortem); Bit V.2 kills the
+            # beta×DVOL path itself.
+            _strategy_vol = blended_rv
+            if _pt in (None, "15m"):
+                _tape_rv300 = self._state._scan_tape_rv_cache.get(asset)
+                if _tape_rv300 is not None:
+                    _strategy_vol = max(blended_rv, _tape_rv300)
+                else:
+                    _now_lt = time.time()
+                    if (_now_lt - self._tape_rv_none_log_ts.get(asset, 0.0)
+                            >= 60.0):
+                        self._tape_rv_none_log_ts[asset] = _now_lt
+                        logging.debug(
+                            "TAPE_RV_NONE: %s rv300 unavailable this tick "
+                            "— live-small overlays fall back to "
+                            "blended_rv=%.6g", asset, blended_rv)
 
             # Extract shadow diagnostics for per-evaluation logging
             # _shadow_diag: fields that match insert_evaluated_opportunity/insert_rejection params
@@ -2001,7 +2067,10 @@ class OpportunityScanner:
                                 spot=spot,
                                 threshold=threshold,
                                 seconds_to_close=seconds_remaining,
-                                blended_rv=blended_rv,
+                                # Bit V.1: max(blended_rv, tape rv300) —
+                                # estimator parity with the validated
+                                # backtest (see _strategy_vol assignment).
+                                blended_rv=_strategy_vol,
                                 orderbook_fetch=(
                                     lambda _t=ticker:
                                     self._get_orderbook_cached(_t)[0]),
@@ -2066,7 +2135,10 @@ class OpportunityScanner:
                                 spot=spot,
                                 threshold=threshold,
                                 seconds_to_close=seconds_remaining,
-                                blended_rv=blended_rv,
+                                # Bit V.1: max(blended_rv, tape rv300) —
+                                # estimator parity with the validated
+                                # backtest (see _strategy_vol assignment).
+                                blended_rv=_strategy_vol,
                                 orderbook_fetch=(
                                     lambda _t=ticker:
                                     self._get_orderbook_cached(_t)[0]),
