@@ -13,16 +13,20 @@ V.3 is the soak's measurement layer (re-arm gate per
 zero monitor breaches):
 
 1. SCHEMA CHAIN (mirrors the Bit-S.1 ``spot_staleness_seconds`` 8-site
-   pattern exactly): persist ``tape_rv300 REAL`` + ``raw_blended_rv
-   REAL`` on ``evaluated_opportunities``, auto-filled from the two V.1
-   per-asset StateManager caches (``_scan_tape_rv_cache`` /
-   ``_scan_raw_blended_rv_cache``). The raw cache is OVERWRITE-ONLY
-   (never popped — V.1-R5), so its auto-fill is GATED on the tape cache
-   having a value for the asset: tape-present is the freshness
-   certificate (the tape cache pops on every dishonest/stale tick), and
-   the only consumer of raw_blended_rv — the honesty ratio — is
-   undefined without the tape denominator anyway. Pairing invariant on
-   auto-filled rows: raw non-NULL ⇒ tape non-NULL.
+   pattern): persist ``tape_rv300 REAL`` + ``raw_blended_rv REAL`` on
+   ``evaluated_opportunities``, auto-filled ATOMICALLY from the single
+   per-asset pair cache ``StateManager._scan_vol_pair_cache[asset] =
+   (raw_blended_rv, tape_rv300)`` (V.3-R1-M1 fix round — the previous
+   two independent caches let stale mixed-tick pairs leak onto the
+   cooldown-branch and hourly-pass inserts, contaminating the soak
+   medians). The pair is written AND popped only at the scanner's 15M
+   ``_strategy_vol`` seam (plus a pop in the loss-cooldown branch and
+   on every rv300-None vol pass), so both halves come from the same
+   tick by construction. PERSIST-BOTH-OR-NEITHER: the cache only ever
+   holds complete pairs, the auto-fill fills both columns or neither,
+   and it is GATED to ``product_type in (None, '15m')`` — hourly /
+   SPX / weather rows are both-NULL by construction. Pairing invariant
+   on auto-filled rows: raw non-NULL ⇔ tape non-NULL.
 2. MONITOR: ``bot/helpers/vol_honesty.py::VolHonestyMonitor`` — per
    asset, an in-memory deque of (ts, raw/tape) ratio samples fed by the
    scanner at the V.1 ``_strategy_vol`` seam; every ≥60s per asset,
@@ -203,13 +207,12 @@ def test_insert_defaults_vol_honesty_to_null():
         os.unlink(path)
 
 
-def test_insert_auto_fills_both_from_caches_when_tape_present():
-    """Behavioral: both V.1 caches populated → both columns auto-fill
+def test_insert_auto_fills_both_from_pair_cache():
+    """Behavioral: pair cache populated → both columns auto-fill atomically
     (the no-per-site-threading contract across the 115+ insert sites)."""
     sm, path = _build_temp_state_db()
     try:
-        sm._scan_tape_rv_cache["HYPE"] = 2.9e-4
-        sm._scan_raw_blended_rv_cache["HYPE"] = 9.0e-5
+        sm._scan_vol_pair_cache["HYPE"] = (9.0e-5, 2.9e-4)
         sm.insert_evaluated_opportunity(
             ticker="KXHYPE15MTEST-T-AUTO",
             event_ticker="KXHYPE15MTEST",
@@ -225,10 +228,10 @@ def test_insert_auto_fills_both_from_caches_when_tape_present():
         ).fetchone()
         assert row is not None
         assert row[0] == pytest.approx(2.9e-4), (
-            f"tape_rv300 auto-fill from _scan_tape_rv_cache broken; got {row[0]}"
+            f"tape_rv300 auto-fill from _scan_vol_pair_cache broken; got {row[0]}"
         )
         assert row[1] == pytest.approx(9.0e-5), (
-            f"raw_blended_rv auto-fill from _scan_raw_blended_rv_cache broken; "
+            f"raw_blended_rv auto-fill from _scan_vol_pair_cache broken; "
             f"got {row[1]}"
         )
     finally:
@@ -236,36 +239,71 @@ def test_insert_auto_fills_both_from_caches_when_tape_present():
         os.unlink(path)
 
 
-def test_raw_auto_fill_gated_on_tape_cache_presence():
-    """NULL-honesty pin for the OVERWRITE-ONLY raw cache (V.1-R5): the raw
-    cache is never popped, so without a gate a stale engine estimate from
-    an arbitrarily old tick could leak onto rows whose tape side honestly
-    abstained. Gate = the TAPE cache must hold a value for the asset
-    (tape-present certifies the most recent seam pass produced an honest
-    rv300; the ratio is undefined without the denominator anyway).
-    Raw cache set + tape cache EMPTY → BOTH columns NULL."""
+def test_auto_fill_skipped_for_non_15m_product_type():
+    """V.3-R1-M1 regression, path (2): hourly rows share the Coinbase scan
+    branch with 15M, but the pair is only seamed on 15M passes — pre-fix a
+    FRESH tape paired with a FROZEN raw leaked onto hourly inserts. The
+    auto-fill is gated to product_type in (None, '15m'): an hourly insert
+    with a POPULATED pair cache persists both columns NULL."""
     sm, path = _build_temp_state_db()
     try:
-        sm._scan_raw_blended_rv_cache["HYPE"] = 9.0e-5
-        # _scan_tape_rv_cache deliberately EMPTY (popped: rv300 was None)
+        sm._scan_vol_pair_cache["BTC"] = (9.0e-5, 2.9e-4)
         sm.insert_evaluated_opportunity(
-            ticker="KXHYPE15MTEST-T-GATE",
-            event_ticker="KXHYPE15MTEST",
-            asset="HYPE",
-            filter_stage="candidate",
-            spot_price=30.0,
-            product_type="15m",
+            ticker="KXBTCD-TEST-T-HRLY",
+            event_ticker="KXBTCD-TEST",
+            asset="BTC",
+            filter_stage="hourly_observation",
+            spot_price=100.0,
+            product_type="hourly",
         )
         row = sm.conn.execute(
             "SELECT tape_rv300, raw_blended_rv FROM evaluated_opportunities "
-            "WHERE ticker='KXHYPE15MTEST-T-GATE'"
+            "WHERE ticker='KXBTCD-TEST-T-HRLY'"
         ).fetchone()
         assert row is not None
-        assert row[0] is None, "tape_rv300 must be NULL when cache empty"
-        assert row[1] is None, (
-            f"raw_blended_rv must be NULL when the tape cache has no value "
-            f"for the asset (overwrite-only raw cache gate); got {row[1]}"
+        assert row[0] is None and row[1] is None, (
+            f"hourly-pass insert leaked the vol pair: {row} — auto-fill "
+            "must be gated to product_type in (None, '15m') (V.3-R1-M1)"
         )
+    finally:
+        sm.conn.close()
+        os.unlink(path)
+
+
+def test_auto_fill_is_both_or_neither():
+    """PERSIST-BOTH-OR-NEITHER (V.3-R1-M1): when a caller passes exactly
+    ONE side explicitly, the cache must NOT fill the other — that would
+    fabricate a mixed-tick pair (explicit reading from one tick, cached
+    half from another). The soak ratio needs same-tick halves only."""
+    sm, path = _build_temp_state_db()
+    try:
+        sm._scan_vol_pair_cache["HYPE"] = (9.0e-5, 2.9e-4)
+        sm.insert_evaluated_opportunity(
+            ticker="KXHYPE15MTEST-T-ONLYTAPE",
+            event_ticker="KXHYPE15MTEST",
+            asset="HYPE",
+            filter_stage="candidate",
+            tape_rv300=1.0e-4,  # explicit tape, NO raw
+            product_type="15m",
+        )
+        sm.insert_evaluated_opportunity(
+            ticker="KXHYPE15MTEST-T-ONLYRAW",
+            event_ticker="KXHYPE15MTEST",
+            asset="HYPE",
+            filter_stage="candidate",
+            raw_blended_rv=2.0e-4,  # explicit raw, NO tape
+            product_type="15m",
+        )
+        r1 = sm.conn.execute(
+            "SELECT tape_rv300, raw_blended_rv FROM evaluated_opportunities "
+            "WHERE ticker='KXHYPE15MTEST-T-ONLYTAPE'").fetchone()
+        r2 = sm.conn.execute(
+            "SELECT tape_rv300, raw_blended_rv FROM evaluated_opportunities "
+            "WHERE ticker='KXHYPE15MTEST-T-ONLYRAW'").fetchone()
+        assert r1 == (pytest.approx(1.0e-4), None), (
+            f"explicit tape + cached raw produced a mixed-tick pair: {r1}")
+        assert r2 == (None, pytest.approx(2.0e-4)), (
+            f"explicit raw + cached tape produced a mixed-tick pair: {r2}")
     finally:
         sm.conn.close()
         os.unlink(path)
@@ -275,8 +313,7 @@ def test_explicit_vol_honesty_kwargs_win_over_caches():
     """Caller-supplied values override the cache lookups."""
     sm, path = _build_temp_state_db()
     try:
-        sm._scan_tape_rv_cache["HYPE"] = 2.9e-4
-        sm._scan_raw_blended_rv_cache["HYPE"] = 9.0e-5
+        sm._scan_vol_pair_cache["HYPE"] = (9.0e-5, 2.9e-4)
         sm.insert_evaluated_opportunity(
             ticker="KXHYPE15MTEST-T-WIN",
             event_ticker="KXHYPE15MTEST",

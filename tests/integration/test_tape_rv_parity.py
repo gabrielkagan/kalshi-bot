@@ -14,8 +14,14 @@ Two test surfaces:
    longshot + twaplock overlays must receive ``max(blended_rv, rv300)``
    — never price risk off the SMALLER estimate — with a clean
    blended_rv fallback (no crash) when rv300 is None, and the per-asset
-   ``StateManager._scan_tape_rv_cache`` stash must be written (honest-NULL
-   pop on None, mirroring ``_scan_spot_staleness_cache``).
+   ATOMIC pair stash ``StateManager._scan_vol_pair_cache[asset] =
+   (raw_blended_rv, tape_rv300)`` must be written at the 15M seam ONLY
+   (V.3-R1-M1 fix round: the previous two independent caches —
+   ``_scan_tape_rv_cache`` + ``_scan_raw_blended_rv_cache`` — let stale
+   mixed-tick pairs leak onto cooldown/hourly inserts; both halves now
+   come from the same tick by construction), with honest-NULL pop on
+   None (mirroring ``_scan_spot_staleness_cache``) plus pops on the
+   never-seamed cooldown path.
 """
 from __future__ import annotations
 
@@ -348,29 +354,31 @@ class TestScannerSeam:
         assert ls.calls[0]["blended_rv"] == blended
         assert tw.calls[0]["blended_rv"] == blended
 
-    def test_scanner_writes_scan_tape_rv_cache(
+    def test_scanner_writes_vol_pair_cache_at_seam(
             self, state, client, overlays_enabled):
         now0 = time.time()
         buf = _make_walk_buffer(now0, per5s_vol=2e-4, seed=9)
         scanner, _ls, _tw = _build_scanner(
             state, client, blended_rv=1e-4, buffer=buf)
         scanner.scan([_window()])
-        cached = state._scan_tape_rv_cache.get("BTC")
-        assert cached is not None, (
-            "_scan_tape_rv_cache must be staged per asset per tick "
-            "(mirrors _scan_spot_staleness_cache)")
+        pair = state._scan_vol_pair_cache.get("BTC")
+        assert pair is not None, (
+            "_scan_vol_pair_cache must be staged per asset per tick at "
+            "the 15M seam (V.3-R1-M1 atomic pair)")
+        raw_b, rv300 = pair
+        assert raw_b == 1e-4, "pair[0] must be the RAW engine blended_rv"
         refs = _reference_candidates(buf, now0)
-        assert any(abs(cached - r) < 1e-12 for r in refs)
+        assert any(abs(rv300 - r) < 1e-12 for r in refs)
 
     def test_cache_slot_popped_when_rv300_goes_none(
             self, state, client, overlays_enabled):
-        """Honest-NULL: a prior tick's rv300 must not linger once the
+        """Honest-NULL: a prior tick's pair must not linger once the
         buffer goes dead (mirror of the _scan_spot_staleness_cache pop)."""
         scanner, _ls, _tw = _build_scanner(
             state, client, blended_rv=1e-4, buffer=[100.0] * 120)
-        state._scan_tape_rv_cache["BTC"] = 3e-4  # stale prior tick
+        state._scan_vol_pair_cache["BTC"] = (1e-4, 3e-4)  # stale prior tick
         scanner.scan([_window()])
-        assert state._scan_tape_rv_cache.get("BTC") is None
+        assert state._scan_vol_pair_cache.get("BTC") is None
 
 
 # ── 4. Event-time staleness gate at the seam (R1-M1 fix round) ──────────────
@@ -411,11 +419,12 @@ class TestEventTimeStalenessGate:
         # sampler kept re-stamping the buffer.
         scanner._feed.get_price_with_ts.return_value = (
             100.0, time.monotonic() - 45.0)
-        state._scan_tape_rv_cache["BTC"] = 3e-4  # prior tick's honest value
+        # prior tick's honest pair
+        state._scan_vol_pair_cache["BTC"] = (1e-4, 3e-4)
         with caplog.at_level(_logging.INFO):
             scanner.scan([_window()])
-        assert state._scan_tape_rv_cache.get("BTC") is None, (
-            "event-stale tick must POP the rv300 slot — a step-held flat "
+        assert state._scan_vol_pair_cache.get("BTC") is None, (
+            "event-stale tick must POP the pair slot — a step-held flat "
             "buffer reads rv300~0.0 and silently reverts max() to the "
             "broken blended_rv (R1-M1)")
         assert ls.calls and tw.calls
@@ -433,7 +442,7 @@ class TestEventTimeStalenessGate:
         scanner, _ls, _tw = _build_scanner(
             state, client, blended_rv=1e-4, buffer=buf)
         scanner.scan([_window()])
-        assert state._scan_tape_rv_cache.get("BTC") is not None
+        assert state._scan_vol_pair_cache.get("BTC") is not None
 
     def test_unmeasured_staleness_pops_cache(
             self, state, client, overlays_enabled):
@@ -445,33 +454,34 @@ class TestEventTimeStalenessGate:
         scanner, _ls, _tw = _build_scanner(
             state, client, blended_rv=1e-4, buffer=buf)
         scanner._feed.get_price_with_ts.return_value = None
-        state._scan_tape_rv_cache["BTC"] = 3e-4  # prior tick's honest value
+        # prior tick's honest pair
+        state._scan_vol_pair_cache["BTC"] = (1e-4, 3e-4)
         scanner.scan([_window()])
-        assert state._scan_tape_rv_cache.get("BTC") is None
+        assert state._scan_vol_pair_cache.get("BTC") is None
 
 
-# ── 5. R1-M2: raw vol pair separately recoverable (V.3 ratio source) ─────────
+# ── 5. R1-M2 + V.3-R1-M1: raw vol pair recoverable ATOMICALLY ────────────────
 # The engines persist their vol kwarg into eval rows (volatility= keys), so
 # post-V.1 rows carry max(blended_rv, rv300) — the HONEST INPUT THE DECISION
 # USED, correct for decision provenance, but useless for the V.3 re-arm
 # ratio: max(b, rv300)/rv300 >= 1 ALWAYS, so the planned deflation gate
 # (per-asset median blended_rv/rv300 in [0.8, 1.25]) could never detect
-# deflation off the rows alone. Both RAW values must be separately
-# recoverable at eval-row write time: rv300 already lives in
-# _scan_tape_rv_cache; the RAW engine blended_rv gets its own per-asset
-# stash (_scan_raw_blended_rv_cache) written at the _strategy_vol seam.
-# V.3 sources the ratio from these VOL-ENGINE caches, NOT from the rows'
-# volatility column.
+# deflation off the rows alone. Both RAW values must be recoverable at
+# eval-row write time — and (V.3-R1-M1 fix round) recoverable as a SAME-TICK
+# pair: the single _scan_vol_pair_cache[asset] = (raw_blended_rv, tape_rv300)
+# is written AND popped only where both halves are in hand (the 15M
+# _strategy_vol seam), persist-both-or-neither. V.3 sources the ratio from
+# this VOL-ENGINE pair cache, NOT from the rows' volatility column.
 
 
 class TestRawVolPairRecoverable:
-    def test_raw_blended_and_rv300_separately_recoverable(
+    def test_raw_blended_and_rv300_recoverable_as_same_tick_pair(
             self, state, client, overlays_enabled):
         """Deflated blended (9e-5) + honest tape (3e-4): the engines see
-        max() = rv300, but BOTH raw sources must remain readable —
-        raw blended from _scan_raw_blended_rv_cache, rv300 from
-        _scan_tape_rv_cache — so the V.3 ratio raw_b/rv300 (~0.3 here,
-        deflation!) is computable instead of pinned at >= 1."""
+        max() = rv300, but BOTH raw sources must remain readable as ONE
+        atomic same-tick pair in _scan_vol_pair_cache — so the V.3 ratio
+        raw_b/rv300 (~0.3 here, deflation!) is computable instead of
+        pinned at >= 1, and can never mix ticks."""
         now0 = time.time()
         buf = _make_walk_buffer(now0, per5s_vol=3e-4, seed=42)
         deflated = 9e-5
@@ -479,12 +489,13 @@ class TestRawVolPairRecoverable:
             state, client, blended_rv=deflated, buffer=buf)
         scanner.scan([_window()])
         assert ls.calls and tw.calls
-        raw_b = state._scan_raw_blended_rv_cache.get("BTC")
-        rv300 = state._scan_tape_rv_cache.get("BTC")
-        assert raw_b == deflated, (
-            "raw engine blended_rv must be stashed per asset — the eval "
+        pair = state._scan_vol_pair_cache.get("BTC")
+        assert pair is not None, (
+            "the (raw, tape) pair must be stashed per asset — the eval "
             "rows' volatility column carries max(b, rv300) and cannot "
             "source the V.3 deflation ratio (R1-M2)")
+        raw_b, rv300 = pair
+        assert raw_b == deflated
         assert rv300 is not None
         refs = _reference_candidates(buf, now0)
         assert any(abs(rv300 - r) < 1e-12 for r in refs)
@@ -492,14 +503,81 @@ class TestRawVolPairRecoverable:
         assert ls.calls[0]["blended_rv"] == max(raw_b, rv300)
         assert raw_b / rv300 < 0.8
 
-    def test_raw_blended_stashed_even_when_rv300_unavailable(
+    def test_pair_absent_when_rv300_unavailable(
             self, state, client, overlays_enabled):
-        """rv300 None (junk buffer) → tape cache popped, but the raw
-        blended stash still updates (V.3's honest-NULL semantics: ratio
-        is NULL because the DENOMINATOR is missing, not because the
-        numerator silently went stale)."""
+        """rv300 None (junk buffer) → NO pair entry at all
+        (persist-both-or-neither, V.3-R1-M1): the soak ratio needs BOTH
+        halves, so a raw without its same-tick tape is most honestly
+        represented as both-NULL — the pre-fix overwrite-only raw stash
+        is exactly what leaked stale numerators."""
         scanner, _ls, _tw = _build_scanner(
             state, client, blended_rv=1.5e-4, buffer=[100.0] * 120)
         scanner.scan([_window()])
-        assert state._scan_raw_blended_rv_cache.get("BTC") == 1.5e-4
-        assert state._scan_tape_rv_cache.get("BTC") is None
+        assert state._scan_vol_pair_cache.get("BTC") is None
+
+
+# ── 6. V.3-R1-M1 regression: stale pairs must not leak onto never-seamed
+# inserts. Pre-fix, two paths contaminated the soak medians:
+# (1) the 15M loss-cooldown branch inserts its silent_loss_cooldown trace
+#     row and `continue`s BEFORE the vol seam — for up to 2h (the cooldown
+#     window) neither cache was refreshed nor popped, so the frozen
+#     pre-cooldown pair auto-filled every trace row;
+# (2) the tape write ran in the shared 15m+hourly vol branch while the raw
+#     write was 15m-gated — on hourly passes a FRESH tape paired with a
+#     FROZEN raw, defeating the tape-present freshness gate.
+# Post-fix: pair popped in the cooldown branch; auto-fill gated to
+# product_type in (None, '15m') so hourly rows are both-NULL by
+# construction; pair write seam-only.
+
+
+class TestStaleVolPairLeakRegression:
+    def test_cooldown_branch_insert_has_null_vol_pair_regression(
+            self, state, client, overlays_enabled):
+        """V.3 R1-M1 path (1): a recent 15M loss puts BTC in cooldown; the
+        trace insert fires before the vol seam. A stale pre-cooldown pair
+        pre-loaded in the cache must NOT auto-fill the row — the branch
+        pops the pair (and the row reads honest NULLs)."""
+        import datetime as _dt
+        now_iso = _dt.datetime.now(
+            _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        state.conn.execute(
+            "INSERT INTO settled_trades (ticker, event_ticker, asset, "
+            "market_result, side, count, entry_price_cents, revenue_cents, "
+            "fee_cents, pnl_cents, settled_at, product_type) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("KXBTC15M-OLD-T100", "KXBTC15M-OLD", "BTC", "no", "yes",
+             1, 90, 0, 1, -91, now_iso, "15m"))
+        state.conn.commit()
+        scanner, _ls, _tw = _build_scanner(
+            state, client, blended_rv=1e-4,
+            buffer=_make_walk_buffer(time.time(), per5s_vol=2e-4, seed=3))
+        # Frozen pre-cooldown pair (the leak source).
+        state._scan_vol_pair_cache["BTC"] = (9e-5, 3e-4)
+        scanner.scan([_window()])
+        row = state.conn.execute(
+            "SELECT tape_rv300, raw_blended_rv FROM evaluated_opportunities "
+            "WHERE filter_stage='silent_loss_cooldown' AND asset='BTC'"
+        ).fetchone()
+        assert row is not None, (
+            "harness failure: cooldown trace row not inserted — the "
+            "loss-cooldown branch was not reached")
+        assert row[0] is None and row[1] is None, (
+            f"stale pair leaked onto the cooldown trace row: {row} — the "
+            "cooldown branch must pop _scan_vol_pair_cache (V.3-R1-M1)")
+        assert state._scan_vol_pair_cache.get("BTC") is None, (
+            "cooldown branch must pop the pair slot")
+
+    def test_hourly_window_does_not_write_vol_pair_cache_regression(
+            self, state, client, overlays_enabled):
+        """V.3 R1-M1 path (2), producer side: an hourly-only pass runs the
+        shared Coinbase vol branch (tape computed) but must NOT touch the
+        pair cache — the write site is the 15M seam only."""
+        now0 = time.time()
+        buf = _make_walk_buffer(now0, per5s_vol=2e-4, seed=17)
+        scanner, _ls, _tw = _build_scanner(
+            state, client, blended_rv=1e-4, buffer=buf)
+        hourly = dict(_window(), product_type="hourly", markets=[])
+        scanner.scan([hourly])
+        assert state._scan_vol_pair_cache.get("BTC") is None, (
+            "hourly pass wrote the vol pair cache — pair writes must be "
+            "15M-seam-only (V.3-R1-M1)")
