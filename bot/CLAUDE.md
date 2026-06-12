@@ -416,6 +416,53 @@ Per-asset cache + auto-fill closes the class. Precedent for the cache
 pattern: `_scan_cx_gap_cache` (per-asset Coinbase-Kraken gap, Apr 23
 phase-1 features).
 
+## `tape_rv300` / `raw_blended_rv` schema chain (Bit V.3, 2026-06-12)
+
+Vol-honesty pair on `evaluated_opportunities` — the soak's measurement
+layer for L-VOL-2 (`kb/failures/vol-engine-beta-dvol-deflation-jun12.md`:
+engine vol ran 1.4-4x below the tape for ~4 months and nothing compared
+them). Follows the `spot_staleness_seconds` 8-site pattern above, with
+the producer caches already shipped by Bit V.1:
+
+1. Producer caches (V.1, pre-existing): `bot/scanner/__init__.py` vol
+   seam writes `StateManager._scan_tape_rv_cache[asset]` (honest-NULL
+   pop) + `_scan_raw_blended_rv_cache[asset]` (overwrite-only, never
+   popped — V.1-R5) once per asset per tick.
+2. `bot/state.py::__init__` — both cache dicts (V.1, pre-existing;
+   comments updated to point at the V.3 consumers).
+3. `bot/state.py::_create_tables` migration loop — `("tape_rv300",
+   "REAL")` + `("raw_blended_rv", "REAL")` appended after `rti_*`
+   (fresh-DB cids 147/148, before the `_calmlp_migrate_schema` cols).
+4. `bot/state.py::insert_evaluated_opportunity` — two Optional kwargs;
+   INSERT columns + VALUES placeholders + value-tuple tail; auto-fill:
+   tape via bare `.get` (pop discipline makes missing → honest NULL),
+   raw GATED on `_scan_tape_rv_cache.get(asset) is not None` (the
+   overwrite-only raw cache has no freshness signal of its own; the
+   ratio is undefined without the tape denominator anyway — pairing
+   invariant: auto-filled raw non-NULL ⇒ tape non-NULL); COALESCE in
+   the ON CONFLICT upsert (FIRST/decision-time reading survives).
+5. `bot/scanner/__init__.py` — Bit V.3 monitor wiring at the same seam:
+   `self._vol_honesty = VolHonestyMonitor()` (helpers-leaf,
+   `bot/helpers/vol_honesty.py`) fed once per asset per tick with the
+   RAW pair (never the max()'d `_strategy_vol`, where ratio ≥ 1
+   always); breach → WARN `VOL_HONESTY_BREACH` (60s/asset) + Telegram
+   via `_telegram_state._TELEGRAM.send(..., dedup_key=
+   "vol_honesty_<asset>")` (1/hour/asset, monitor-side throttle).
+6. `tests/fixtures/state_db_schema_baseline.txt` — 154 → 156 cols;
+   cal_mlp_* renumbered +2 (149-155).
+7. `tests/contracts/test_vol_honesty_instrumentation.py` — 21 pins
+   (columns/types/kwargs/persist/NULL-honesty/auto-fill/raw-gate/
+   explicit-kwarg-wins/COALESCE/fixture + monitor band/throttles/
+   min-samples/None-tape + scanner wiring).
+8. `agent_docs/db_schema.md` — entries under `evaluated_opportunities`;
+   constants in `agent_docs/config_reference.md` § Vol-honesty monitor.
+
+Offline consumer: the `/live-small` skill's soak section reads
+per-asset median/p10/p90 of `raw_blended_rv / tape_rv300` per UTC day
+against the pre-registered [0.8, 1.25] re-arm gate
+(`kb/decisions/longshot-twap-live-small-plan.md`). The monitor's wider
+[0.6, 1.8] band is the always-on tripwire, not the soak pass-bar.
+
 ## Engine → CalEngine wiring (one-commit rule)
 
 Engine → CalEngine wiring ships in ONE commit:
