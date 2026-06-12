@@ -651,6 +651,157 @@ class OrderExecutor:
             "entry_path": "longshot_maker",
         }
 
+    def _execute_twaplock_taker(self, candidate: Dict) -> Optional[Dict]:
+        """TWAP-lock endgame taker placement (Bit T-1).
+
+        Reached ONLY from execute() — strictly BELOW the trading-mode gate
+        (bot/trading_mode.py), which stays the single live/shadow
+        chokepoint (plus the kalshi_client.place_order backstop). Submits
+        an IOC BUY of the locked side at the executable ask, reads the
+        fill synchronously from the order response (FP-primary:
+        ``fill_count_fp`` via fp_str_to_int, legacy ``fill_count``
+        fallback — the L-1 R7 lesson applied from day 1), records the
+        position at the LIMIT price (conservative — actual fills are
+        <= limit; startup positions-API reconcile corrects prices, same
+        posture as the ghost-fill Layer A register) and holds to
+        settlement. NO resting lifecycle: an IOC never rests, so there is
+        no registry, no cancel sweep, no fill polling thread. The
+        post-fill record path (record_position_from_fill +
+        mark_order_status) has NO retry-on-busy by design (R2-MN3
+        advisory): it matches the pre-existing synchronous-taker
+        posture, and a transient DB failure there self-heals via the
+        engine's boot sweep + the startup positions-API reconcile. See
+        bot/twaplock.py + kb/decisions/longshot-twap-live-small-plan.md.
+        """
+        ticker = candidate["ticker"]
+        engine = getattr(self._ml, "twaplock_engine", None) if self._ml else None
+        if engine is None:
+            logging.warning(
+                "TWAPLOCK_SKIP_no_engine: %s — candidate reached execute() "
+                "without a TwaplockEngine on MainLoop", ticker)
+            return None
+        # Live-read kill switch (mirrors the engine-side check — a constants
+        # flip between scan and execute must stop placement).
+        if not bot.constants.TWAPLOCK_ENABLED:
+            logging.info("TWAPLOCK_SKIP_disabled: %s", ticker)
+            return None
+        if OBSERVATION_MODE:
+            logging.info(
+                "OBSERVATION MODE: Would IOC twaplock %s %s at %dc for %d "
+                "contracts", ticker, candidate.get("side"),
+                candidate.get("twaplock_ask_cents", -1),
+                candidate.get("position_size", 0))
+            return None
+        # Execute-time re-check (scan->execute race): one-shot latch +
+        # cross-strategy ticker exclusion (ANY open position or ANY
+        # pending/resting order row — ticker-PK stopgap, 86badbf9t) +
+        # combined live-small disable rails, all inside authorize().
+        count = engine.authorize(candidate)
+        if count <= 0:
+            logging.info("TWAPLOCK_SKIP_authorize: %s blocked", ticker)
+            return None
+        side = candidate["side"]
+        price = int(candidate["twaplock_ask_cents"])
+        # tw- prefix marks the order as twaplock's for the state.py
+        # reconciler carve-outs + the per-strategy live-gate recognition
+        # in kalshi_client.place_order (mirrors longshot's ls-).
+        client_oid = (bot.constants.TWAPLOCK_CLIENT_OID_PREFIX
+                      + str(uuid.uuid4()))
+        # Consume the one-shot BEFORE the API call: a failed/ambiguous
+        # placement still spends the window's shot (frequency loss is
+        # cheap; a hot retry loop into a settling market is not).
+        engine.register_entry(ticker)
+        # Persist BEFORE submission (order-ledger crash-safety contract,
+        # mirrors the maker-first path / ticket 86ba0jb1g).
+        self._state.insert_bot_order(
+            client_oid, ticker, candidate["event_ticker"],
+            candidate["asset"], side, count, price, True)
+        _price_kwarg = {"no_price": price} if side == "no" else {"yes_price": price}
+        resp = self._client.place_order(
+            ticker=ticker, side=side, action="buy",
+            count=count, client_order_id=client_oid,
+            time_in_force="immediate_or_cancel", **_price_kwarg,
+        )
+        if resp is None:
+            self._state.mark_order_status(client_oid, "api_error")
+            logging.warning(
+                "TWAPLOCK_IOC_REJECTED: %s %s %dct @ %dc (api error)",
+                ticker, side, count, price)
+            return None
+        order = resp.get("order") or {}
+        order_id = order.get("order_id")
+        if not order_id:
+            # Malformed response — no id to key anything on. An IOC never
+            # rests, so no cancel attempt is needed; if a fill happened
+            # invisibly, the startup positions-API reconcile imports it
+            # (tw- pending history stamps strategy_group='twaplock').
+            logging.warning(
+                "TWAPLOCK_PLACE_MALFORMED: %s resp carried no order_id "
+                "(order=%r) — ledger row marked api_error",
+                ticker, resp.get("order"))
+            self._state.mark_order_status(client_oid, "api_error")
+            return None
+        self._state.confirm_order_submitted(client_oid, order_id)
+        # FP-primary fill read from the synchronous IOC response. A
+        # malformed count field (R1-MN5) DEGRADES to the 0-fill path
+        # below (row canceled, no position) — it must never raise past
+        # confirm_order_submitted, which would strand the row 'resting'
+        # and crash the scan tick. The money side of a fill hidden by a
+        # garbage count is owned by the startup positions-API reconcile
+        # (same posture as the no-order_id branch above).
+        try:
+            filled = fp_str_to_int(order.get("fill_count_fp")) or (
+                order.get("fill_count") or 0)
+            filled = min(int(filled), count)
+        except (TypeError, ValueError):
+            logging.warning(
+                "TWAPLOCK_FILL_PARSE_MALFORMED: %s order=%s unparseable "
+                "fill count (fill_count_fp=%r fill_count=%r) — treating "
+                "as 0-fill; positions-API reconcile owns any hidden fill",
+                ticker, order_id, order.get("fill_count_fp"),
+                order.get("fill_count"))
+            filled = 0
+        if filled <= 0:
+            self._state.mark_order_status(order_id, "canceled")
+            logging.info(
+                "TWAPLOCK_IOC_NO_FILL: %s %s %dct @ %dc — auto-canceled "
+                "unfilled (one-shot consumed)", ticker, side, count, price)
+            return None
+        self._state.record_position_from_fill(
+            ticker=ticker,
+            event_ticker=candidate["event_ticker"],
+            asset=candidate["asset"],
+            side=side,
+            count=filled,
+            price_cents=price,
+            strategy="twaplock",  # passes through strategy_to_group unchanged
+            seconds_to_close=candidate.get("seconds_to_close"),
+            calibrated_prob=candidate.get("calibrated_prob"),
+            edge=candidate.get("edge"),
+            is_taker=True,
+            fill_source="twaplock_taker",
+            execution_method="ioc",
+        )
+        self._state.mark_order_status(order_id, "filled")
+        logging.info(
+            "TWAPLOCK_IOC_FILLED: %s buy_%s %d/%dct @ %dc p_lock=%s "
+            "order=%s stc=%.0fs", ticker, side, filled, count, price,
+            candidate.get("twaplock_p_lock"), order_id,
+            candidate.get("seconds_to_close") or -1)
+        return {
+            "order_id": order_id,
+            "client_order_id": client_oid,
+            "ticker": ticker,
+            "event_ticker": candidate["event_ticker"],
+            "asset": candidate["asset"],
+            "side": side,
+            "price_cents": price,
+            "count": filled,
+            "is_taker": True,
+            "strategy": "twaplock",
+            "entry_path": "twaplock_taker",
+        }
+
     def execute(self, candidate: Dict) -> Optional[Dict]:
         """Always submit maker order. Escalation to taker happens in tick()."""
         # Sprint B Bit B.2b — seed decision_id ONCE at the top of
@@ -694,9 +845,10 @@ class OrderExecutor:
         # untouched. If a governed 15M asset isn't live-enabled, the candidate was
         # still evaluated + logged by the scanner — we just place NO real order.
         # Read live so a flag flip is a runtime kill-switch. See bot/trading_mode.py.
-        # R1-M4: strategy-aware form — identical to is_live for every main-
-        # pipeline strategy; only candidate strategy 'longshot' can pass via
-        # LONGSHOT_LIVE_OVERRIDE (longshot-only go-live).
+        # R1-M4 (extended at Bit T-1): strategy-aware form — identical to
+        # is_live for every main-pipeline strategy; only candidate strategies
+        # 'longshot' / 'twaplock' can pass via their LONGSHOT_LIVE_OVERRIDE /
+        # TWAPLOCK_LIVE_OVERRIDE flags (single-strategy go-live).
         _tm_asset = tm_asset_from_ticker(ticker)
         if _tm_asset is not None and not tm_strategy_is_live(
                 candidate.get("strategy"), _tm_asset):
@@ -810,6 +962,15 @@ class OrderExecutor:
         # No escalation, no maker-tail: rest at 100-ask, hold to settlement.
         if candidate.get("strategy") == "longshot":
             return self._execute_longshot_maker(candidate)
+
+        # ── TWAP-LOCK ENDGAME TAKER PATH (Bit T-1) ──
+        # Same placement as longshot: AFTER the trading-mode gate + unified
+        # exposure caps, BEFORE Gate 1 (an IOC resolves synchronously and
+        # must neither consume nor be blocked by the main pipeline's
+        # per-asset maker lock). No escalation, no maker tail, no cooldown:
+        # the engine's one-shot-per-window latch is the retry guard.
+        if candidate.get("strategy") == "twaplock":
+            return self._execute_twaplock_taker(candidate)
 
         # Gate 1: Per-asset lock for maker-first assets only.
         # Taker-first (SOL): IOC resolves synchronously (<1s), no concurrent order risk.

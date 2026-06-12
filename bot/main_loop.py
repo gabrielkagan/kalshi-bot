@@ -177,6 +177,7 @@ from bot.longshot import LongshotEngine  # Bit L-1 — longshot premium-harvest 
 from bot.order_flow import KalshiOrderFlowTracker, OrderFlowEngine  # Bit 9.3.5 — clean-leaf; replaces __init__ late-binding markers
 from bot.scanner import OpportunityScanner
 from bot.settlement import SettlementTracker, discover_active_windows
+from bot.twaplock import TwaplockEngine  # Bit T-1 — TWAP-lock endgame taker overlay
 
 # Pre-Bit-3.1 leftover-in-config + market_config + models
 from bot.config import ASSETS
@@ -496,6 +497,15 @@ class MainLoop:
         # sweep alongside executor.tick(). Inert while
         # bot.constants.LONGSHOT_ENABLED is False (shipped default).
         self.longshot_engine = LongshotEngine(self.client, self.state,
+                                              logger=self.logger)
+        # Bit T-1: TWAP-lock endgame engine. Scanner reaches it via
+        # self._ml.twaplock_engine for per-market evaluation (which also
+        # feeds the per-asset spot ring buffer); the executor reaches it
+        # via the same attribute inside _execute_twaplock_taker (authorize
+        # + register_entry); _tick() drives its boot sweep + bookkeeping
+        # prune. Inert while bot.constants.TWAPLOCK_ENABLED is False
+        # (shipped default).
+        self.twaplock_engine = TwaplockEngine(self.client, self.state,
                                               logger=self.logger)
         self.tracker = SettlementTracker(self.client, self.state, self.logger,
                                          main_loop=self)
@@ -1648,6 +1658,14 @@ class MainLoop:
             self.longshot_engine.tick()
         except Exception:
             logging.warning("longshot tick failed", exc_info=True)
+
+        # Twaplock housekeeping (Bit T-1): one-shot boot sweep of stranded
+        # tw- ledger rows + per-ticker bookkeeping prune. NO order-working
+        # actions (an IOC never rests — there is nothing to cancel).
+        try:
+            self.twaplock_engine.tick()
+        except Exception:
+            logging.warning("twaplock tick failed", exc_info=True)
 
         # Record CASH balance for HWM tracking (once per tick).
         # Uses available cash only — NOT portfolio value (cash + positions).

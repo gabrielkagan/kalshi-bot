@@ -32,32 +32,53 @@ def is_live(asset: str) -> bool:
 
 
 def strategy_is_live(strategy, asset: str) -> bool:
-    """Per-strategy live gate (R1-M4): ``is_live(asset)`` OR a strategy-
-    scoped override. Today the only override is longshot
-    (``LONGSHOT_LIVE_OVERRIDE`` — lets the operator go live with the
-    longshot premium-harvest strategy alone while the main pipeline stays
-    shadow). For every other strategy this is EXACTLY ``is_live(asset)``
-    — main-pipeline behavior unchanged. Consulted at the two existing
-    chokepoints only: ``executor.execute()`` (which passes the
-    candidate's strategy) and the ``kalshi_client.place_order`` backstop
-    (which recovers the strategy from the ``ls-`` client_order_id prefix
-    via :func:`strategy_from_client_order_id`)."""
-    if is_live(asset):
-        return True
-    return strategy == "longshot" and bool(_c.LONGSHOT_LIVE_OVERRIDE)
+    """Per-strategy live gate (R1-M4, extended at Bit T-1; asset-scoped at
+    R4-M1): for the two engine-owned strategies the result is
+    ``(is_live(asset) OR <override>) AND asset in <validated set>``. Two
+    overrides exist — longshot (``LONGSHOT_LIVE_OVERRIDE``) and twaplock
+    (``TWAPLOCK_LIVE_OVERRIDE``) — each lets the operator go live with
+    that ONE strategy while the main pipeline (and the sibling strategy)
+    stays shadow. The live-universe check (``LONGSHOT_LIVE_ASSETS`` =
+    the 02b positive set + BNB per the 2026-06-12 operator directive —
+    see the constants comment; ``TWAPLOCK_LIVE_ASSETS`` mirrors 01b
+    TRACKED) deliberately gates the WHOLE strategy branch, not just the
+    override leg: even in a future dual-live posture (GLOBAL +
+    ASSET_LIVE_TRADING flipped on), a strategy trades only its declared
+    live universe — an asset being main-pipeline live says nothing about
+    longshot/twaplock edge there, and ADA/BCH stay excluded (Kalshi 15M
+    series not yet listed; T1 zero-live-orders shadow designation
+    ADA_15M_SHADOW/BCH_15M_SHADOW). For every other strategy this is
+    EXACTLY ``is_live(asset)`` — main-pipeline behavior unchanged.
+    Consulted at the two existing chokepoints only: ``executor.execute()``
+    (which passes the candidate's strategy) and the
+    ``kalshi_client.place_order`` backstop (which recovers the strategy
+    from the engine-owned client_order_id prefix — ``ls-``/``tw-`` — via
+    :func:`strategy_from_client_order_id`). Override flags + asset sets
+    are read live via module-attribute access (runtime kill-switch
+    pattern)."""
+    if strategy == "longshot":
+        return ((is_live(asset) or bool(_c.LONGSHOT_LIVE_OVERRIDE))
+                and asset in _c.LONGSHOT_LIVE_ASSETS)
+    if strategy == "twaplock":
+        return ((is_live(asset) or bool(_c.TWAPLOCK_LIVE_OVERRIDE))
+                and asset in _c.TWAPLOCK_LIVE_ASSETS)
+    return is_live(asset)
 
 
 def strategy_from_client_order_id(client_order_id) -> "str | None":
     """Recover the gate-relevant strategy from a client_order_id.
 
-    Longshot stamps ``LONGSHOT_CLIENT_OID_PREFIX`` ('ls-') on every
-    placement (R1-M1), which is the only signal available at the
-    ``place_order`` API boundary (no candidate dict there). Returns
-    'longshot' for prefixed ids, None otherwise (None → plain
-    ``is_live`` semantics in :func:`strategy_is_live`)."""
-    if isinstance(client_order_id, str) and client_order_id.startswith(
-            _c.LONGSHOT_CLIENT_OID_PREFIX):
-        return "longshot"
+    Engine-owned strategies stamp a prefix on every placement (longshot
+    'ls-' per R1-M1; twaplock 'tw-' per Bit T-1) — the only signal
+    available at the ``place_order`` API boundary (no candidate dict
+    there). The prefix→strategy map is single-sourced in
+    ``bot.constants.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY``. Returns the
+    strategy for prefixed ids, None otherwise (None → plain ``is_live``
+    semantics in :func:`strategy_is_live`)."""
+    if isinstance(client_order_id, str):
+        for prefix, strategy in _c.ENGINE_OWNED_OID_PREFIX_TO_STRATEGY.items():
+            if client_order_id.startswith(prefix):
+                return strategy
     return None
 
 

@@ -11,11 +11,14 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit L-1 spec:
   reduced by open longshot positions + resting longshot quotes.
 - Collateral cap: LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS across resting
   quotes + open longshot positions.
-- Daily loss cap: realized longshot PnL today <= -LONGSHOT_DAILY_LOSS_CAP_DOLLARS
+- Daily loss cap: realized live-small PnL today <= -LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS
   -> same-day auto-disable (in-memory latch + LONGSHOT_DAILY_CAP_HIT signature).
-- Consecutive losing days: LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE completed
+  Bit T-1 retargeted the rail to the COMBINED helper (bot/strategy_caps.py,
+  strategy IN ('longshot','twaplock')); with no twaplock activity seeded, the
+  combined sums reduce to the original per-strategy semantics tested here.
+- Consecutive losing days: LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE completed
   losing days -> persistent (DB-derived) auto-disable;
-  LONGSHOT_STREAK_RESET_UTC_DATE clears the latch.
+  LIVE_SMALL_STREAK_RESET_UTC_DATE clears the latch.
 - evaluated_opportunities row write with filter_stage='longshot_live' /
   'longshot_shadow' (cell-block string-literal discipline) — labeling consults
   bot.trading_mode read-only; the GATE stays at executor.execute().
@@ -42,6 +45,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import bot.constants as C
+import bot.trading_mode as tm
 from bot.state import StateManager
 
 import bot.longshot as longshot_mod
@@ -53,6 +57,22 @@ EVENT = "KXBTC15M-26JUN111200"
 
 
 # ── fixtures / helpers ───────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _isolate_mark_providers():
+    """R1-MN3: bot.strategy_caps._mark_providers is MODULE-GLOBAL state —
+    every LongshotEngine/TwaplockEngine construction registers a mark
+    provider bound to that test's StateManager. Snapshot + clear before
+    each test and restore after, so a provider closed over a dead tmp-DB
+    never leaks into another test's combined-cap math (or across files on
+    the same xdist worker). Sister fixture in test_twaplock_strategy.py."""
+    from bot import strategy_caps
+    saved = dict(strategy_caps._mark_providers)
+    strategy_caps._mark_providers.clear()
+    yield
+    strategy_caps._mark_providers.clear()
+    strategy_caps._mark_providers.update(saved)
+
 
 @pytest.fixture
 def state(tmp_path):
@@ -128,11 +148,17 @@ class TestLongshotConstants:
     def test_risk_rails(self):
         assert C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE == 3
         assert C.LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS == 150.0
-        assert C.LONGSHOT_DAILY_LOSS_CAP_DOLLARS == 20.0
-        assert C.LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE == 3
+        # Bit T-1: the per-strategy LONGSHOT_DAILY_LOSS_CAP_DOLLARS /
+        # LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE constants were RETIRED
+        # into the COMBINED live-small rails (bot/strategy_caps.py).
+        assert C.LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS == 20.0
+        assert C.LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE == 3
+        assert not hasattr(C, "LONGSHOT_DAILY_LOSS_CAP_DOLLARS")
+        assert not hasattr(C, "LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE")
 
     def test_streak_reset_override_exists(self):
-        assert C.LONGSHOT_STREAK_RESET_UTC_DATE == ""
+        assert C.LIVE_SMALL_STREAK_RESET_UTC_DATE == ""
+        assert not hasattr(C, "LONGSHOT_STREAK_RESET_UTC_DATE")
 
 
 # ── p_normal math ────────────────────────────────────────────────────────────
@@ -345,7 +371,7 @@ class TestAutoDisable:
         for i in (1, 2, 3):
             d = (today - datetime.timedelta(days=i)).isoformat()
             _seed_settled(state, f"KXBTC15M-26JUN{i:02d}0900-T99", -100, d)
-        monkeypatch.setattr(C, "LONGSHOT_STREAK_RESET_UTC_DATE",
+        monkeypatch.setattr(C, "LIVE_SMALL_STREAK_RESET_UTC_DATE",
                             today.isoformat(), raising=False)
         assert len(_eval(engine)) == 1
 
@@ -519,3 +545,50 @@ class TestExecutorChokepoint:
             is_taker=False, fill_source="longshot_maker")
         assert executor.execute(cands[0]) is None
         client.place_order.assert_not_called()
+
+    def test_override_unvalidated_asset_places_nothing(self, wired, enabled,
+                                                       monkeypatch):
+        """M1 fix round: LONGSHOT_LIVE_OVERRIDE must not arm assets outside
+        LONGSHOT_LIVE_ASSETS at the executor chokepoint — ADA/BCH (Kalshi
+        15M series not yet listed; zero corpus windows; T1 shadow
+        designation). BNB passes per the 2026-06-12 operator directive.
+        feedback_shadow_flag_comprehensive_may10 class."""
+        executor, engine, client = wired
+        cands = _eval(engine)
+        assert len(cands) == 1
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        for shadow_asset, shadow_ticker in (
+                ("ADA", "KXADA15M-26JUN111200-T1"),
+                ("BCH", "KXBCH15M-26JUN111200-T500")):
+            cand = dict(cands[0], ticker=shadow_ticker, asset=shadow_asset)
+            assert executor.execute(cand) is None
+        client.place_order.assert_not_called()
+        # the 7 live-universe assets DO pass strategy_is_live under the
+        # override (BNB included per the 2026-06-12 operator directive —
+        # see the LONGSHOT_LIVE_ASSETS constants comment)
+        for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"):
+            assert tm.strategy_is_live("longshot", a) is True, a
+
+    def test_backstop_blocks_ls_order_on_unvalidated_asset(self,
+                                                           monkeypatch):
+        """M1 fix round: the place_order backstop refuses an ls- order on
+        any asset outside LONGSHOT_LIVE_ASSETS even with the override ON."""
+        from bot.kalshi_client import KalshiClient
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        for shadow_ticker in ("KXADA15M-26JUN111200-T1",
+                              "KXBCH15M-26JUN111200-T500"):
+            client = MagicMock()
+            result = KalshiClient.place_order(
+                client, shadow_ticker, "no", "buy", 1, no_price=92,
+                client_order_id="ls-x1")
+            assert result is None
+            client._request.assert_not_called()
+        # a validated asset passes through under the override
+        client = MagicMock()
+        client._request.return_value = {"order": {"order_id": "ok"}}
+        KalshiClient.place_order(
+            client, "KXBTC15M-26JUN111200-T110", "no", "buy", 1,
+            no_price=92, client_order_id="ls-x2")
+        client._request.assert_called_once()

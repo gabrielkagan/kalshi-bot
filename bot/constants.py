@@ -141,11 +141,106 @@ LONGSHOT_MAX_STC_SECONDS = 720.0   # T-12min: earliest entry
 LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in prob units, i.e. ask_cents/100)
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
-LONGSHOT_DAILY_LOSS_CAP_DOLLARS = 20.0  # realized longshot PnL today <= -cap -> same-day auto-disable (LONGSHOT_DAILY_CAP_HIT)
-LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed losing days -> persistent disable
-LONGSHOT_STREAK_RESET_UTC_DATE = ""  # operator re-enable: losing days on/before this UTC date are ignored ("" = never reset)
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
-LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED (R1-M4)
+LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS; main pipeline UNAFFECTED (R1-M4; asset-scoped at R4-M1)
+# Longshot live universe (R4-M1 mechanism): the ONLY assets longshot may ever
+# trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
+# (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
+# validation run (scripts/research/genhunt/02b_longshot_fillable_validation.py,
+# committed in this branch): its "all 6 assets positive" headline covers
+# the 6 pre-directive assets (all below except BNB). BNB is EXCLUDED from the 02b UNIVERSE tuple by construction
+# ("BNB excluded (no replayable spot source — same honest subset as #02)", per
+# the script's pre-registration docstring), so longshot has ZERO evidence on
+# BNB. ADA/BCH sat in the 02b UNIVERSE (Coinbase spot replays exist) but
+# contributed ZERO windows — no KXADA15M/KXBCH15M markets existed in the
+# 2026-05-30..06-10 corpus (GENHUNT report: "ADA/BCH listing day-zero ...
+# waiting on markets that don't exist yet") — AND they carry the T1
+# zero-live-orders shadow designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True,
+# 2026-05-30): excluded on BOTH grounds.
+# OPERATOR DIRECTIVE (2026-06-12, go-live scoping): "when we do a go live it
+# should be everything available" — BNB is INCLUDED below despite the 02b
+# evidence gap (the gap is a corpus artifact: no replayable spot source in
+# the research corpus; the LIVE engine computes p_normal from the bot's own
+# feeds, which cover BNB — it trades live in the main pipeline). Risk is
+# bounded by the live-small rails (3ct/window, $150 collateral, combined
+# $20/day cap); per-asset evidence accrues from the live evaluation. ADA/BCH
+# remain excluded: their Kalshi 15M series do not exist yet (zero corpus
+# windows) — add when listed, with the directive standing.
+LONGSHOT_LIVE_ASSETS = frozenset(
+    {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
+
+# ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
+# Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
+# +14.4c/ct, day-bootstrap CI [+11.1, +17.7], n=359 over 12 days, 29.9
+# locks/day on the honest 4-venue index, print cross-check 99.2%, all 7
+# assets positive. Plan: kb/decisions/longshot-twap-live-small-plan.md.
+# Mechanics: in the final ~2min of a 15M crypto window Kalshi settles on a
+# 60s TWAP of its reference index. Compute the accrued TWAP fraction from
+# live Coinbase spot; once the locked side's probability p_lock clears
+# TWAPLOCK_P_LOCK_THRESHOLD (remaining variance cannot flip the outcome),
+# BUY that side as a TAKER (IOC) if the executable ask leaves
+# >= fee + TWAPLOCK_MIN_EDGE_CENTS vs ~100c settlement; hold to settlement.
+# Live/shadow control stays with the trading_mode gate at executor.execute()
+# (single chokepoint — never duplicated here). Engine: bot/twaplock.py.
+# Regression lock: tests/integration/test_twaplock_strategy.py.
+TWAPLOCK_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
+TWAPLOCK_P_LOCK_THRESHOLD = 0.99   # STRICTER than the validated 0.95: Coinbase-anchored MVP index adds proxy error vs the honest 4-venue index; undercounting costs frequency, not correctness (degraded-index lesson)
+TWAPLOCK_TWAP_WINDOW_SECONDS = 60.0  # Kalshi settles on a 60s TWAP of its reference index
+TWAPLOCK_ENTRY_WINDOW_SECONDS = 90.0  # only act in the final 90s — the validated decision grid starts at DEC_FROM=90 (01b_twap_lock_validation.py); no backtest evidence for (90, 120], so we don't trade it (R1-MN1)
+TWAPLOCK_MAX_CONTRACTS_PER_ENTRY = 2   # live-small sizing (plan doc: 1-2 ct/entry)
+# One entry per window per asset is STRUCTURAL, not a knob: the engine's
+# in-memory latch is binary and ANY tw- pending_orders row on the ticker
+# consumes the shot. The former TWAPLOCK_MAX_ENTRIES_PER_WINDOW constant
+# was RETIRED at R1-MN4 (a value other than 1 could never be honored);
+# pinned-absent by tests/integration/test_twaplock_strategy.py.
+TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1ct) - this margin
+# Frozen-spot false-lock gate (R2-MN1): a frozen Coinbase WS price keeps
+# feeding the engine's ring buffer with FRESH receive timestamps, so the
+# accrued TWAP freezes at a stale price and p_lock can clear the threshold
+# spuriously (the absent-sample -> None layer in bot/twaplock.py::
+# _accrued_mean does NOT catch this — samples keep arriving, they're just
+# stale). The scanner's per-asset WS staleness reading (Bit S.1 cache,
+# bot/state.py _scan_spot_staleness_cache) must exist and be <= this many
+# seconds or the engine emits NO SIGNAL (log: TWAPLOCK_SPOT_STALE — info,
+# not warning: it fires routinely on thin assets). The S.2 RCA pre-flight
+# (ticket 86ba1wrh7, 2026-05-21) measured Coinbase 1-min candle coverage
+# May 9-21 at BNB 65.9% / HYPE 89.5% / DOGE 99.2% (BTC/ETH/SOL/XRP ~100%)
+# — so this gate trades frequency on thin assets for signal integrity,
+# the same direction as the stricter-than-validated 0.99 p_lock threshold.
+TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
+TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
+TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in TWAPLOCK_LIVE_ASSETS; main pipeline UNAFFECTED (asset-scoped at R4-M1)
+# Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
+# trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
+# (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the
+# TRACKED tuple in scripts/research/genhunt/01b_twap_lock_validation.py
+# (committed in this branch) — the 7 assets the +14.4c/ct "all 7 assets
+# positive" verdict covers (BNB on a single-venue Kraken index, flagged in the
+# per-asset breakdown but positive). ADA/BCH are NOT in 01b TRACKED (no
+# KXADA15M/KXBCH15M markets existed in the 2026-05-30..06-10 corpus — GENHUNT
+# report "ADA/BCH listing day-zero") AND carry the T1 zero-live-orders shadow
+# designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True, 2026-05-30): excluded on
+# BOTH grounds.
+TWAPLOCK_LIVE_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
+
+# ── Live-small shared risk rails (longshot + twaplock COMBINED; Bit T-1) ──────
+# Single source of truth consumed by BOTH engines' disable latches via
+# bot/strategy_caps.py (plan-doc requirement: "$20/day cap, both strategies
+# combined, realized+marked"; the Bit L-1 per-strategy cap constant
+# LONGSHOT_DAILY_LOSS_CAP_DOLLARS was retired into this combined rail).
+LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS = 20.0  # combined realized+marked PnL today across ('longshot','twaplock') <= -cap -> same-day auto-disable of BOTH
+LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed COMBINED losing days -> persistent disable of BOTH
+LIVE_SMALL_STREAK_RESET_UTC_DATE = ""  # operator re-enable: combined losing days on/before this UTC date are ignored ("" = never reset)
+
+# Engine-owned client_order_id prefixes — the reconciler carve-outs in
+# bot/state.py (_reconcile_orders / cleanup_expired_resting_orders /
+# RECONCILE_IMPORT stamping) and trading_mode.strategy_from_client_order_id
+# key off this map. Extend it when a new engine-owned strategy lands.
+ENGINE_OWNED_OID_PREFIX_TO_STRATEGY = {
+    LONGSHOT_CLIENT_OID_PREFIX: "longshot",
+    TWAPLOCK_CLIENT_OID_PREFIX: "twaplock",
+}
+ENGINE_OWNED_CLIENT_OID_PREFIXES = tuple(ENGINE_OWNED_OID_PREFIX_TO_STRATEGY)
 
 # T1 onboarding (2026-05-30, branch ada-bch-15m-shadow-t1): ADA + BCH 15M
 # SHADOW observation. Bot subscribes to Coinbase ADA-USD/BCH-USD + Kalshi

@@ -89,3 +89,73 @@ def test_asset_from_ticker_matches_only_crypto_15m():
     assert tm.asset_from_ticker("KXHIGHNYC-26MAY29-T75") is None    # weather
     assert tm.asset_from_ticker("") is None
     assert tm.asset_from_ticker("GARBAGE") is None
+
+
+# ── per-strategy validated-universe scoping (Bit T-1 M1 fix round) ───────────
+# RCA class: feedback_shadow_flag_comprehensive_may10 — the strategy
+# live-overrides were asset-UNSCOPED, so at go-live they would have armed
+# longshot/twaplock on ADA/BCH (T1 zero-live-orders shadow designation,
+# ADA_15M_SHADOW/BCH_15M_SHADOW) and on assets with no validation evidence
+# (BNB for longshot). Fix: each strategy branch in strategy_is_live is gated
+# by its validated asset set — applied to the WHOLE branch (override leg AND
+# the future GLOBAL+asset dual-live leg).
+
+_TWAPLOCK_VALIDATED = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB")
+# BNB included per the 2026-06-12 operator directive ("everything
+# available" at go-live) — 02b evidence gap is a corpus artifact (no
+# replayable spot); see the LONGSHOT_LIVE_ASSETS constants comment.
+_LONGSHOT_LIVE_UNIVERSE = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE",
+                           "BNB")
+
+
+def test_strategy_live_assets_constants_pin():
+    # twaplock: mirrors TRACKED in scripts/research/genhunt/
+    # 01b_twap_lock_validation.py ("all 7 assets positive").
+    assert C.TWAPLOCK_LIVE_ASSETS == frozenset(_TWAPLOCK_VALIDATED)
+    # longshot: the 02b "all 6 assets positive" set + BNB per the
+    # 2026-06-12 operator directive (constants comment carries the RCA).
+    assert C.LONGSHOT_LIVE_ASSETS == frozenset(_LONGSHOT_LIVE_UNIVERSE)
+    # ADA/BCH: T1 zero-live-orders shadow + zero validation windows — never
+    # live-eligible for either strategy.
+    for s in (C.TWAPLOCK_LIVE_ASSETS, C.LONGSHOT_LIVE_ASSETS):
+        assert "ADA" not in s
+        assert "BCH" not in s
+
+
+def test_twaplock_override_scoped_to_validated_universe(monkeypatch):
+    _set(monkeypatch, glob=False, assets={})
+    monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", True, raising=False)
+    monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False, raising=False)
+    for a in _TWAPLOCK_VALIDATED:
+        assert tm.strategy_is_live("twaplock", a) is True, a
+    assert tm.strategy_is_live("twaplock", "ADA") is False
+    assert tm.strategy_is_live("twaplock", "BCH") is False
+
+
+def test_longshot_override_scoped_to_validated_universe(monkeypatch):
+    _set(monkeypatch, glob=False, assets={})
+    monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+    monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", False, raising=False)
+    for a in _LONGSHOT_LIVE_UNIVERSE:
+        assert tm.strategy_is_live("longshot", a) is True, a
+    assert tm.strategy_is_live("longshot", "ADA") is False
+    assert tm.strategy_is_live("longshot", "BCH") is False
+
+
+def test_dual_live_still_respects_validated_universe(monkeypatch):
+    # Future dual-live posture: GLOBAL on + asset live. The strategy must
+    # STILL respect its validated universe (asset-set check applies to the
+    # whole strategy branch, not just the override leg) while the main
+    # pipeline goes live normally.
+    _set(monkeypatch, glob=True, assets={"ADA": True, "BNB": True})
+    monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False, raising=False)
+    monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", False, raising=False)
+    assert tm.is_live("ADA") is True
+    assert tm.strategy_is_live(None, "ADA") is True       # main pipeline
+    assert tm.strategy_is_live("above", "ADA") is True    # main pipeline
+    assert tm.strategy_is_live("twaplock", "ADA") is False
+    assert tm.strategy_is_live("longshot", "ADA") is False
+    # BNB: inside BOTH live universes (longshot per the 2026-06-12
+    # operator directive)
+    assert tm.strategy_is_live("twaplock", "BNB") is True
+    assert tm.strategy_is_live("longshot", "BNB") is True

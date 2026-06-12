@@ -39,11 +39,15 @@ so a constants flip is a runtime kill-switch):
   open longshot positions AND resting longshot quotes.
 * ``LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS`` across all resting quotes
   + open longshot positions.
-* ``LONGSHOT_DAILY_LOSS_CAP_DOLLARS`` — realized longshot PnL today at or
-  below -cap -> same-day auto-disable (log signature LONGSHOT_DAILY_CAP_HIT).
-* ``LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE`` consecutive completed losing
-  days -> persistent disable; operator clears via
-  ``LONGSHOT_STREAK_RESET_UTC_DATE``.
+* ``LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS`` — COMBINED realized+marked PnL
+  today across ``strategy IN ('longshot','twaplock')`` at or below -cap ->
+  same-day auto-disable (log signature LONGSHOT_DAILY_CAP_HIT). Single
+  source of truth: bot/strategy_caps.py (Bit T-1 retargeted the Bit L-1
+  per-strategy rail here, closing the R2-MN4 note — both engines latch
+  off the same combined numbers).
+* ``LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE`` consecutive completed
+  COMBINED losing days -> persistent disable; operator clears via
+  ``LIVE_SMALL_STREAK_RESET_UTC_DATE``.
 
 Regression lock: tests/integration/test_longshot_strategy.py.
 """
@@ -58,7 +62,7 @@ from datetime import timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 import bot.constants as C
-from bot import trading_mode
+from bot import strategy_caps, trading_mode
 from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 
 LONGSHOT_STRATEGY = "longshot"
@@ -244,6 +248,12 @@ class LongshotEngine:
         # the scanner's _eval_opp_seen dedup; candidates still emit every
         # tick — only the DB write is deduped). Pruned via _SEEN_TTL.
         self._eval_row_seen: Dict[Tuple[str, str], float] = {}
+        # Bit T-1: the COMBINED live-small cap sums marked open losses
+        # across engines — register this engine's R1-M3 mark so the
+        # sibling (twaplock) latch sees it too. Same-key re-registration
+        # replaces a stale closure on restart/fresh-instance.
+        strategy_caps.register_mark_provider(
+            LONGSHOT_STRATEGY, self._marked_open_loss_cents)
 
     # ── public surface ────────────────────────────────────────────────────
 
@@ -1120,11 +1130,15 @@ class LongshotEngine:
         return marked
 
     def _refresh_disabled(self) -> None:
-        """Re-derive the auto-disable latch from settled_trades.
+        """Re-derive the auto-disable latch from the COMBINED rails.
 
-        daily_cap clears at the next UTC day; consec_days is recomputed
-        every call so LONGSHOT_STREAK_RESET_UTC_DATE takes effect without
-        a restart.
+        Bit T-1 retargeted the Bit L-1 per-strategy queries to
+        bot/strategy_caps.py (single source of truth shared with
+        TwaplockEngine — realized + marked PnL summed across
+        ``strategy IN ('longshot','twaplock')`` vs the LIVE_SMALL_*
+        constants; closes the R2-MN4 note). daily_cap clears at the next
+        UTC day; consec_days is recomputed every call so
+        LIVE_SMALL_STREAK_RESET_UTC_DATE takes effect without a restart.
 
         R1-MN3 fail-open/fail-closed asymmetry (INTENTIONAL): query
         failures here `return` early, PRESERVING the last latch state —
@@ -1140,31 +1154,26 @@ class LongshotEngine:
         today = datetime.datetime.now(timezone.utc).date()
         today_iso = today.isoformat()
 
-        # Same-day daily loss cap: realized (fee-inclusive) + MARKED —
-        # open longshot positions whose sold side is currently ITM count
-        # as full loss (R1-M3; plan doc "realized+marked").
-        # R2-MN4: this cap is PER-STRATEGY today (WHERE strategy='longshot'
-        # below) — main-pipeline losses don't count toward it and vice
-        # versa. Bit T-1 must replace the per-strategy caps with a
-        # COMBINED account-level daily loss cap before dual-live.
+        # Same-day daily loss cap: COMBINED realized (fee-inclusive) +
+        # MARKED across both live-small engines (this engine's R1-M3 mark
+        # + twaplock's, via the strategy_caps mark-provider registry).
         try:
-            today_pnl = self._state.conn.execute(
-                "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) "
-                "FROM settled_trades WHERE strategy=? "
-                "AND substr(settled_at, 1, 10) = ?",
-                (LONGSHOT_STRATEGY, today_iso)).fetchone()[0] or 0
+            hit, realized, marked = strategy_caps.combined_daily_cap_hit(
+                self._state.conn, today_iso)
         except Exception:
-            logging.warning("longshot daily-pnl query failed", exc_info=True)
+            logging.warning("longshot combined daily-cap query failed",
+                            exc_info=True)
             return
-        marked_cents = self._marked_open_loss_cents()
-        cap_cents = int(round(C.LONGSHOT_DAILY_LOSS_CAP_DOLLARS * 100))
-        if today_pnl - marked_cents <= -cap_cents:
+        if hit:
             if self._disabled_reason != "daily_cap":
+                cap_cents = int(round(
+                    C.LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS * 100))
                 logging.warning(
-                    "LONGSHOT_DAILY_CAP_HIT: longshot PnL today realized "
-                    "%dc + marked -%dc <= -%dc — auto-disabled for the "
-                    "rest of the UTC day", today_pnl, marked_cents,
-                    cap_cents)
+                    "LONGSHOT_DAILY_CAP_HIT: COMBINED live-small PnL today "
+                    "realized %dc + marked -%dc <= -%dc (strategies=%s) — "
+                    "auto-disabled for the rest of the UTC day",
+                    realized, marked, cap_cents,
+                    ",".join(strategy_caps.LIVE_SMALL_STRATEGIES))
             self._disabled_reason = "daily_cap"
             self._disabled_utc_date = today_iso
             return
@@ -1173,33 +1182,22 @@ class LongshotEngine:
             self._disabled_reason = None
             self._disabled_utc_date = None
 
-        # Consecutive completed losing days (calendar days before today).
-        n_disable = C.LONGSHOT_CONSECUTIVE_LOSING_DAYS_DISABLE
-        reset_date = (C.LONGSHOT_STREAK_RESET_UTC_DATE or "").strip()
-        streak = 0
-        for back in range(1, n_disable + 1):
-            day_iso = (today - datetime.timedelta(days=back)).isoformat()
-            if reset_date and day_iso <= reset_date:
-                break
-            try:
-                row = self._state.conn.execute(
-                    "SELECT SUM(pnl_cents - COALESCE(fee_cents, 0)) "
-                    "FROM settled_trades WHERE strategy=? "
-                    "AND substr(settled_at, 1, 10) = ?",
-                    (LONGSHOT_STRATEGY, day_iso)).fetchone()
-            except Exception:
-                logging.warning("longshot streak query failed", exc_info=True)
-                return
-            day_pnl = row[0] if row else None
-            if day_pnl is None or day_pnl >= 0:
-                break  # no activity or non-losing day ends the streak
-            streak += 1
+        # Consecutive completed COMBINED losing days (before today).
+        n_disable = C.LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE
+        try:
+            streak = strategy_caps.combined_consecutive_losing_days(
+                self._state.conn, today, n_disable=n_disable,
+                reset_date=C.LIVE_SMALL_STREAK_RESET_UTC_DATE)
+        except Exception:
+            logging.warning("longshot combined streak query failed",
+                            exc_info=True)
+            return
         if streak >= n_disable:
             if self._disabled_reason != "consec_days":
                 logging.warning(
-                    "LONGSHOT_CONSEC_DAYS_DISABLE: %d consecutive losing "
-                    "days — auto-disabled until operator sets "
-                    "LONGSHOT_STREAK_RESET_UTC_DATE", streak)
+                    "LONGSHOT_CONSEC_DAYS_DISABLE: %d consecutive COMBINED "
+                    "losing days — auto-disabled until operator sets "
+                    "LIVE_SMALL_STREAK_RESET_UTC_DATE", streak)
             self._disabled_reason = "consec_days"
         elif self._disabled_reason == "consec_days":
             self._disabled_reason = None
