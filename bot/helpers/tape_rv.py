@@ -18,6 +18,16 @@ Formula provenance (function-name anchors, not line numbers):
   ``[now - window_s, now]`` with a per-grid-point staleness guard
   (``STALE_S = 30.0`` in that script), take per-step log returns,
   SAMPLE stdev.
+- ``scripts/research/genhunt/02b_longshot_fillable_validation.py::_rv_pure``
+  (+ its ``_at`` staleness read; ``STALE_S = 30.0`` there too) — the
+  TRACKED in-repo citation (neither 02 nor fairvalue_extract is
+  committed; 02b is). 02's fill-validation sibling carrying the SAME
+  grid/staleness/sample-stdev formula, restructured to a pure
+  recompute: 02's memo-cache keyed ``(id(tl), t // 5)`` while the
+  value depended on exact ``t``, making results call-order-dependent
+  (see the "signal" section comment in 02b) — ``_rv_pure`` recomputes
+  per call and is bit-stable by construction, exactly like this
+  helper.
 - ``scripts/research/fairvalue_extract.py::_realized_vol`` — same grid
   construction with two NAMED divergences (R1-MN3): (a) no staleness
   guard (its ``_spot_at`` has none; the guard here is the 02 superset,
