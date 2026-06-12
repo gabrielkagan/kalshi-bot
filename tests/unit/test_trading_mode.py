@@ -101,16 +101,20 @@ def test_asset_from_ticker_matches_only_crypto_15m():
 # the future GLOBAL+asset dual-live leg).
 
 _TWAPLOCK_VALIDATED = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB")
-_LONGSHOT_VALIDATED = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE")
+# BNB included per the 2026-06-12 operator directive ("everything
+# available" at go-live) — 02b evidence gap is a corpus artifact (no
+# replayable spot); see the LONGSHOT_LIVE_ASSETS constants comment.
+_LONGSHOT_LIVE_UNIVERSE = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE",
+                           "BNB")
 
 
 def test_strategy_live_assets_constants_pin():
     # twaplock: mirrors TRACKED in scripts/research/genhunt/
     # 01b_twap_lock_validation.py ("all 7 assets positive").
     assert C.TWAPLOCK_LIVE_ASSETS == frozenset(_TWAPLOCK_VALIDATED)
-    # longshot: the 02b "all 6 assets positive" set — BNB excluded from the
-    # 02b UNIVERSE by construction (no replayable spot source).
-    assert C.LONGSHOT_LIVE_ASSETS == frozenset(_LONGSHOT_VALIDATED)
+    # longshot: the 02b "all 6 assets positive" set + BNB per the
+    # 2026-06-12 operator directive (constants comment carries the RCA).
+    assert C.LONGSHOT_LIVE_ASSETS == frozenset(_LONGSHOT_LIVE_UNIVERSE)
     # ADA/BCH: T1 zero-live-orders shadow + zero validation windows — never
     # live-eligible for either strategy.
     for s in (C.TWAPLOCK_LIVE_ASSETS, C.LONGSHOT_LIVE_ASSETS):
@@ -132,13 +136,10 @@ def test_longshot_override_scoped_to_validated_universe(monkeypatch):
     _set(monkeypatch, glob=False, assets={})
     monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
     monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", False, raising=False)
-    for a in _LONGSHOT_VALIDATED:
+    for a in _LONGSHOT_LIVE_UNIVERSE:
         assert tm.strategy_is_live("longshot", a) is True, a
     assert tm.strategy_is_live("longshot", "ADA") is False
     assert tm.strategy_is_live("longshot", "BCH") is False
-    # BNB has NO longshot evidence (excluded from the 02b UNIVERSE) but IS
-    # twaplock-validated — the two sets must diverge exactly here.
-    assert tm.strategy_is_live("longshot", "BNB") is False
 
 
 def test_dual_live_still_respects_validated_universe(monkeypatch):
@@ -154,6 +155,7 @@ def test_dual_live_still_respects_validated_universe(monkeypatch):
     assert tm.strategy_is_live("above", "ADA") is True    # main pipeline
     assert tm.strategy_is_live("twaplock", "ADA") is False
     assert tm.strategy_is_live("longshot", "ADA") is False
-    # BNB: inside twaplock's validated set, outside longshot's
+    # BNB: inside BOTH live universes (longshot per the 2026-06-12
+    # operator directive)
     assert tm.strategy_is_live("twaplock", "BNB") is True
-    assert tm.strategy_is_live("longshot", "BNB") is False
+    assert tm.strategy_is_live("longshot", "BNB") is True

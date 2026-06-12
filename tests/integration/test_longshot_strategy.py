@@ -549,9 +549,9 @@ class TestExecutorChokepoint:
     def test_override_unvalidated_asset_places_nothing(self, wired, enabled,
                                                        monkeypatch):
         """M1 fix round: LONGSHOT_LIVE_OVERRIDE must not arm assets outside
-        LONGSHOT_LIVE_ASSETS at the executor chokepoint — ADA/BCH (T1
-        zero-live-orders shadow + zero 02b windows) AND BNB (excluded from
-        the 02b UNIVERSE — no replayable spot source, so no evidence).
+        LONGSHOT_LIVE_ASSETS at the executor chokepoint — ADA/BCH (Kalshi
+        15M series not yet listed; zero corpus windows; T1 shadow
+        designation). BNB passes per the 2026-06-12 operator directive.
         feedback_shadow_flag_comprehensive_may10 class."""
         executor, engine, client = wired
         cands = _eval(engine)
@@ -560,13 +560,14 @@ class TestExecutorChokepoint:
         monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
         for shadow_asset, shadow_ticker in (
                 ("ADA", "KXADA15M-26JUN111200-T1"),
-                ("BCH", "KXBCH15M-26JUN111200-T500"),
-                ("BNB", "KXBNB15M-26JUN111200-T700")):
+                ("BCH", "KXBCH15M-26JUN111200-T500")):
             cand = dict(cands[0], ticker=shadow_ticker, asset=shadow_asset)
             assert executor.execute(cand) is None
         client.place_order.assert_not_called()
-        # the 6 validated assets DO pass strategy_is_live under the override
-        for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"):
+        # the 7 live-universe assets DO pass strategy_is_live under the
+        # override (BNB included per the 2026-06-12 operator directive —
+        # see the LONGSHOT_LIVE_ASSETS constants comment)
+        for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"):
             assert tm.strategy_is_live("longshot", a) is True, a
 
     def test_backstop_blocks_ls_order_on_unvalidated_asset(self,
@@ -577,8 +578,7 @@ class TestExecutorChokepoint:
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
         monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
         for shadow_ticker in ("KXADA15M-26JUN111200-T1",
-                              "KXBCH15M-26JUN111200-T500",
-                              "KXBNB15M-26JUN111200-T700"):
+                              "KXBCH15M-26JUN111200-T500"):
             client = MagicMock()
             result = KalshiClient.place_order(
                 client, shadow_ticker, "no", "buy", 1, no_price=92,

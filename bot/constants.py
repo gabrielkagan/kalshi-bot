@@ -157,7 +157,17 @@ LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strateg
 # waiting on markets that don't exist yet") — AND they carry the T1
 # zero-live-orders shadow designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True,
 # 2026-05-30): excluded on BOTH grounds.
-LONGSHOT_LIVE_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"})
+# OPERATOR DIRECTIVE (2026-06-12, go-live scoping): "when we do a go live it
+# should be everything available" — BNB is INCLUDED below despite the 02b
+# evidence gap (the gap is a corpus artifact: no replayable spot source in
+# the research corpus; the LIVE engine computes p_normal from the bot's own
+# feeds, which cover BNB — it trades live in the main pipeline). Risk is
+# bounded by the live-small rails (3ct/window, $150 collateral, combined
+# $20/day cap); per-asset evidence accrues from the live evaluation. ADA/BCH
+# remain excluded: their Kalshi 15M series do not exist yet (zero corpus
+# windows) — add when listed, with the directive standing.
+LONGSHOT_LIVE_ASSETS = frozenset(
+    {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 
 # ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
 # Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
