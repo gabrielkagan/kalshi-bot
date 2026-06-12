@@ -627,7 +627,7 @@ class TestTradingModeTwaplock:
         assert tm.strategy_is_live("twaplock", "ADA") is False
         assert tm.strategy_is_live("twaplock", "BCH") is False
         assert tm.strategy_is_live("twaplock", "BNB") is True  # in TRACKED
-        assert tm.strategy_is_live("longshot", "BNB") is False  # NOT in 02b
+        assert tm.strategy_is_live("longshot", "BNB") is False  # override OFF here
 
     def test_backstop_blocks_tw_order_on_shadow_asset(self, monkeypatch):
         """M1 fix round: the place_order backstop must refuse a tw- order on

@@ -143,12 +143,12 @@ LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
 LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS; main pipeline UNAFFECTED (R1-M4; asset-scoped at R4-M1)
-# Longshot validated live universe (R4-M1): the ONLY assets longshot may ever
+# Longshot live universe (R4-M1 mechanism): the ONLY assets longshot may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
 # validation run (scripts/research/genhunt/02b_longshot_fillable_validation.py,
 # committed in this branch): its "all 6 assets positive" headline covers
-# exactly this set. BNB is EXCLUDED from the 02b UNIVERSE tuple by construction
+# the 6 pre-directive assets (all below except BNB). BNB is EXCLUDED from the 02b UNIVERSE tuple by construction
 # ("BNB excluded (no replayable spot source — same honest subset as #02)", per
 # the script's pre-registration docstring), so longshot has ZERO evidence on
 # BNB. ADA/BCH sat in the 02b UNIVERSE (Coinbase spot replays exist) but

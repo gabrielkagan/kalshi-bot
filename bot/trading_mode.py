@@ -38,15 +38,16 @@ def strategy_is_live(strategy, asset: str) -> bool:
     overrides exist — longshot (``LONGSHOT_LIVE_OVERRIDE``) and twaplock
     (``TWAPLOCK_LIVE_OVERRIDE``) — each lets the operator go live with
     that ONE strategy while the main pipeline (and the sibling strategy)
-    stays shadow. The validated-universe check (``LONGSHOT_LIVE_ASSETS``
-    mirrors the 02b positive set; ``TWAPLOCK_LIVE_ASSETS`` mirrors 01b
+    stays shadow. The live-universe check (``LONGSHOT_LIVE_ASSETS`` =
+    the 02b positive set + BNB per the 2026-06-12 operator directive —
+    see the constants comment; ``TWAPLOCK_LIVE_ASSETS`` mirrors 01b
     TRACKED) deliberately gates the WHOLE strategy branch, not just the
     override leg: even in a future dual-live posture (GLOBAL +
-    ASSET_LIVE_TRADING flipped on), a strategy must still respect the
-    universe its validation evidence covers — an asset being main-pipeline
-    live says nothing about longshot/twaplock edge there, and ADA/BCH
-    additionally carry the T1 zero-live-orders shadow designation
-    (ADA_15M_SHADOW/BCH_15M_SHADOW). For every other strategy this is
+    ASSET_LIVE_TRADING flipped on), a strategy trades only its declared
+    live universe — an asset being main-pipeline live says nothing about
+    longshot/twaplock edge there, and ADA/BCH stay excluded (Kalshi 15M
+    series not yet listed; T1 zero-live-orders shadow designation
+    ADA_15M_SHADOW/BCH_15M_SHADOW). For every other strategy this is
     EXACTLY ``is_live(asset)`` — main-pipeline behavior unchanged.
     Consulted at the two existing chokepoints only: ``executor.execute()``
     (which passes the candidate's strategy) and the
