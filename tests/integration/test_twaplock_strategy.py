@@ -164,8 +164,9 @@ def _today_utc():
 # ── constants ────────────────────────────────────────────────────────────────
 
 class TestTwaplockConstants:
-    def test_enabled_defaults_off(self):
-        assert C.TWAPLOCK_ENABLED is False
+    def test_enabled_live_since_go_live(self):
+        # Flipped True at the 2026-06-12 operator go-live ($400 live-small).
+        assert C.TWAPLOCK_ENABLED is True
 
     def test_p_lock_threshold_stricter_than_validated(self):
         # Validation used 0.95 on the honest 4-venue index; the
@@ -188,8 +189,9 @@ class TestTwaplockConstants:
         assert twaplock_mod._MIN_SUBMIT_STC_SECONDS == 10.0
         assert C.TWAPLOCK_TWAP_WINDOW_SECONDS == 60.0
 
-    def test_live_override_defaults_off(self):
-        assert C.TWAPLOCK_LIVE_OVERRIDE is False
+    def test_live_override_live_since_go_live(self):
+        # Flipped True at the 2026-06-12 operator go-live.
+        assert C.TWAPLOCK_LIVE_OVERRIDE is True
 
     def test_client_oid_prefix(self):
         assert C.TWAPLOCK_CLIENT_OID_PREFIX == "tw-"
@@ -286,8 +288,10 @@ class TestAccruedBuffer:
 # ── entry window + condition logic ───────────────────────────────────────────
 
 class TestConditionLogic:
-    def test_disabled_no_candidates_no_rows(self, engine, state):
-        # TWAPLOCK_ENABLED is False by default (shipped config)
+    def test_disabled_no_candidates_no_rows(self, engine, state,
+                                            monkeypatch):
+        # Explicit OFF baseline (shipped config is LIVE since 2026-06-12)
+        monkeypatch.setattr(C, "TWAPLOCK_ENABLED", False, raising=False)
         assert _eval(engine) == []
         rows = state.conn.execute(
             "SELECT COUNT(*) FROM evaluated_opportunities").fetchone()[0]
@@ -589,6 +593,8 @@ class TestEvalRows:
     def test_shadow_row_when_global_shadow(self, engine, state, enabled,
                                            monkeypatch):
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", False,
+                            raising=False)  # pin the non-override path
         cands = _eval(engine)
         # candidate still emitted — the GATE lives at executor.execute()
         assert len(cands) == 1
@@ -615,6 +621,10 @@ class TestEvalRows:
 class TestTradingModeTwaplock:
     def test_strategy_is_live_truth_table(self, monkeypatch):
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        # shipped overrides are LIVE since 2026-06-12 — pin the OFF baseline
+        # explicitly before walking the table
+        monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", False, raising=False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False, raising=False)
         assert tm.strategy_is_live("twaplock", "BTC") is False
         assert tm.strategy_is_live("above", "BTC") is False
         monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", True, raising=False)

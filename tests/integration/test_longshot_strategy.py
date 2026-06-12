@@ -131,8 +131,9 @@ def _today_utc():
 # ── constants ────────────────────────────────────────────────────────────────
 
 class TestLongshotConstants:
-    def test_enabled_defaults_off(self):
-        assert C.LONGSHOT_ENABLED is False
+    def test_enabled_live_since_go_live(self):
+        # Flipped True at the 2026-06-12 operator go-live ($400 live-small).
+        assert C.LONGSHOT_ENABLED is True
 
     def test_price_band(self):
         assert C.LONGSHOT_MIN_ASK_CENTS == 4
@@ -183,8 +184,10 @@ class TestPNormal:
 # ── condition logic ──────────────────────────────────────────────────────────
 
 class TestConditionLogic:
-    def test_disabled_no_candidates_no_rows(self, engine, state):
-        # LONGSHOT_ENABLED is False by default (shipped config)
+    def test_disabled_no_candidates_no_rows(self, engine, state,
+                                            monkeypatch):
+        # Explicit OFF baseline (shipped config is LIVE since 2026-06-12)
+        monkeypatch.setattr(C, "LONGSHOT_ENABLED", False, raising=False)
         assert _eval(engine) == []
         rows = state.conn.execute(
             "SELECT COUNT(*) FROM evaluated_opportunities").fetchone()[0]
@@ -261,6 +264,9 @@ class TestEvalRows:
     def test_shadow_row_when_global_shadow(self, engine, state, enabled,
                                            monkeypatch):
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        # shipped override is LIVE since 2026-06-12 — this test pins the
+        # NON-override global-shadow path, so force it off
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False, raising=False)
         cands = _eval(engine)
         # candidate still emitted — the GATE lives at executor.execute()
         assert len(cands) == 1
@@ -524,6 +530,9 @@ class TestExecutorChokepoint:
         cands = _eval(engine)
         assert len(cands) == 1                  # scanner side still evaluates
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        # shipped override is LIVE since 2026-06-12; this test pins the
+        # global-shadow path WITHOUT the override
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False, raising=False)
         assert executor.execute(cands[0]) is None
         client.place_order.assert_not_called()
         assert engine.resting_count() == 0
