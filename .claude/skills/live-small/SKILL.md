@@ -139,17 +139,26 @@ point estimate from below AND mean < 0 → flip that strategy's
    `evaluated_opportunities`. NEVER ratio off the `volatility` column —
    on live-small rows it carries `max(blended_rv, rv300)`, so that ratio
    is ≥ 1 by construction and can't detect deflation. NULLs are honest
-   abstention (warmup, buffer gap, event-stale spot) — count them
-   (coverage), don't impute them.
+   abstention (warmup, buffer gap, event-stale spot — plus, post
+   V.3-R1-M1, NULL-by-construction on hourly rows and the silent_%
+   trace stages: cooldown/spot-none paths skip the vol seam) — count
+   them (coverage), don't impute them.
 
    ```sql
    -- F. Per-asset/day honesty ratio: median + p10/p90 + pass-bar check.
    --    Set <SOAK_START> to the V.3 deploy timestamp.
+   --    Median = statistics.median semantics: AVG of the two middle
+   --    ranks for even n ((n+1)/2 = (n+2)/2 for odd n, so one rank).
+   --    filter_stage NOT LIKE 'silent_%' is defense-in-depth on top of
+   --    the V.3-R1-M1 atomic pair cache: trace rows that skip the vol
+   --    seam (cooldown/spot-none/vol-none) must never weight the
+   --    medians even if a future leak re-opens.
    WITH r AS (
      SELECT asset, substr(evaluation_time,1,10) AS day,
             1.0*raw_blended_rv/tape_rv300 AS ratio
      FROM evaluated_opportunities
      WHERE raw_blended_rv IS NOT NULL AND tape_rv300 > 0
+       AND filter_stage NOT LIKE 'silent_%'
        AND evaluation_time >= '<SOAK_START>'
    ),
    ranked AS (
@@ -159,10 +168,10 @@ point estimate from below AND mean < 0 → flip that strategy's
      FROM r
    )
    SELECT asset, day, n,
-          ROUND(MAX(CASE WHEN rn = (n+1)/2 THEN ratio END), 3)            AS median,
+          ROUND(AVG(CASE WHEN rn IN ((n+1)/2, (n+2)/2) THEN ratio END), 3)   AS median,
           ROUND(MAX(CASE WHEN rn = CAST(0.10*n AS INT)+1 THEN ratio END), 3) AS p10,
           ROUND(MAX(CASE WHEN rn = CAST(0.90*n AS INT)+1 THEN ratio END), 3) AS p90,
-          CASE WHEN MAX(CASE WHEN rn = (n+1)/2 THEN ratio END)
+          CASE WHEN AVG(CASE WHEN rn IN ((n+1)/2, (n+2)/2) THEN ratio END)
                     BETWEEN 0.8 AND 1.25
                THEN 'PASS' ELSE 'FAIL' END AS gate_0_8_1_25
    FROM ranked GROUP BY asset, day ORDER BY asset, day;
@@ -170,7 +179,10 @@ point estimate from below AND mean < 0 → flip that strategy's
    -- F2. Ratio coverage (honest-NULL accounting): how many eval rows
    --     carry the pair at all, per asset. Low coverage on an asset =
    --     the tape kept abstaining (spot staleness / buffer gaps) —
-   --     that's a coverage gap for gate (3), not a pass.
+   --     that's a coverage gap for gate (3), not a pass. silent_%
+   --     excluded to match F's population: those stages are
+   --     NULL-by-construction post V.3-R1-M1 (seam never reached),
+   --     so counting them would understate true pair coverage.
    SELECT asset,
           COUNT(*) AS rows_total,
           SUM(raw_blended_rv IS NOT NULL) AS rows_with_ratio,
@@ -179,6 +191,7 @@ point estimate from below AND mean < 0 → flip that strategy's
    WHERE evaluation_time >= '<SOAK_START>'
      AND asset IN ('BTC','ETH','SOL','XRP','HYPE','DOGE','BNB')
      AND product_type = '15m'
+     AND filter_stage NOT LIKE 'silent_%'
    GROUP BY asset ORDER BY pct;
 
    -- G. Selectivity match (gate 2): would-be entries per strategy/day +
