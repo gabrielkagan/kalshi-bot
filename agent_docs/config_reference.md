@@ -107,6 +107,25 @@ losses from each engine's registered mark provider).
 | ENGINE_OWNED_OID_PREFIX_TO_STRATEGY | {ls-: longshot, tw-: twaplock} | Single-sourced prefix→strategy map driving the `bot/state.py` reconciler carve-outs + `trading_mode.strategy_from_client_order_id`; extend when a new engine-owned strategy lands |
 | ENGINE_OWNED_CLIENT_OID_PREFIXES | ("ls-", "tw-") | Tuple form for `str.startswith` checks (derived from the map) |
 
+## Vol-honesty monitor (Bit V.3, 2026-06-12)
+
+L-VOL-2 (`kb/failures/vol-engine-beta-dvol-deflation-jun12.md`): continuous
+independent check of the engine's raw `blended_rv` against the tape's
+`trailing_rv300`, fed by the scanner at the V.1 `_strategy_vol` seam via
+`bot/helpers/vol_honesty.py::VolHonestyMonitor`. The alert band is
+deliberately WIDER than the pre-registered [0.8, 1.25] re-arm soak gate
+(`kb/decisions/longshot-twap-live-small-plan.md`) — the monitor is the
+always-on tripwire for the deflation CLASS (alts ran stored/realized
+0.15-0.59 for ~4 months); the soak pass-bar reads the persisted
+`tape_rv300`/`raw_blended_rv` columns via the `/live-small` soak section.
+
+| Config | Value | Notes |
+|--------|-------|-------|
+| VOL_HONESTY_LOW | 0.6 | Breach floor for median(raw_blended_rv / tape_rv300) — below BTC/ETH's honest ~0.7-1.0 weekly stored/realized baseline with margin; the broken alts ran 0.15-0.59 |
+| VOL_HONESTY_HIGH | 1.8 | Breach ceiling (inflation is dishonest too) — ≈ symmetric to 0.6 in log-space (1/0.6 ≈ 1.67) |
+| VOL_HONESTY_WINDOW_S | 600.0 | Trailing ratio window the per-asset median runs over (10 min); median not mean so one garbage tick can't trip a 10-min verdict |
+| VOL_HONESTY_ALERT_THROTTLE_S | 3600.0 | Telegram throttle per asset; the `VOL_HONESTY_BREACH` WARN keeps firing on the 60s check cadence (journal-greppable soak evidence) |
+
 ## Global / 15M
 
 | Config | Value | Notes |

@@ -371,13 +371,17 @@ def _make_monitor():
 
 def _feed_ratio(mon, asset, ratio, t0, n=20, tape=1.0e-4, step=5.0):
     """Feed n samples of a constant raw/tape ratio, advancing time by step.
-    Returns the last record() result and the final timestamp."""
-    out = None
+    Returns the FIRST non-None record() result (the Telegram message fires
+    on the first breaching 60s check, not the last tick) and the final
+    timestamp."""
+    msg = None
     t = t0
     for i in range(n):
         t = t0 + i * step
         out = mon.record(asset, ratio * tape, tape, now=t)
-    return out, t
+        if msg is None:
+            msg = out
+    return msg, t
 
 
 def test_monitor_in_band_median_never_breaches(caplog):

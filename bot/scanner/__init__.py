@@ -328,6 +328,7 @@ from bot.helpers.tape_rv import (  # Bit V.1 (2026-06-12) — estimator-parity t
     TAPE_RV_MAX_STALENESS_S,
     trailing_rv300,
 )
+from bot.helpers.vol_honesty import VolHonestyMonitor  # Bit V.3 (2026-06-12) — continuous raw-blended-rv/tape-rv300 honesty monitor (L-VOL-2); fed at the _strategy_vol seam below
 from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adverse-selection gate
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
@@ -417,6 +418,15 @@ class OpportunityScanner:
         # debug log at the live-small vol seam — fires routinely during
         # the first ~5min post-restart while the spot buffer refills.
         self._tape_rv_none_log_ts: Dict[str, float] = {}
+        # Bit V.3 (2026-06-12): continuous vol-honesty monitor (L-VOL-2,
+        # kb/failures/vol-engine-beta-dvol-deflation-jun12.md). Fed once
+        # per asset per tick at the _strategy_vol seam with the RAW
+        # engine blended_rv + tape rv300; every >=60s per asset it
+        # medians the trailing 10min of ratios and WARNs
+        # VOL_HONESTY_BREACH (+ Telegram, 1/hour/asset) outside
+        # [VOL_HONESTY_LOW, VOL_HONESTY_HIGH]. Scanner-thread-only
+        # (the monitor is not thread-safe by design).
+        self._vol_honesty = VolHonestyMonitor()
         # Hourly per-window tracking (reset each scan tick)
         self._hourly_window_counts: Dict[str, int] = {}
         self._hourly_window_risk: Dict[str, float] = {}
@@ -1607,6 +1617,11 @@ class OpportunityScanner:
         # spot/vol branch). The durable per-asset stash lives in
         # self._state._scan_tape_rv_cache (cross-tick, honest-NULL pop).
         _tape_rv_assets_done: set = set()
+        # Bit V.3: per-TICK memo so the vol-honesty monitor ingests exactly
+        # ONE (raw, tape) ratio sample per asset per tick even when the
+        # asset surfaces in multiple 15M windows — duplicate same-tick
+        # pairs would weight the trailing median toward busy ticks.
+        _vol_honesty_assets_done: set = set()
         for window in eligible_windows:
             # Per-window timer (Phase 1 of scan-loop optimization).
             # SCAN_WINDOW_SLOW fires when one window's iteration body
@@ -1891,6 +1906,27 @@ class OpportunityScanner:
                 if asset is not None:
                     self._state._scan_raw_blended_rv_cache[asset] = blended_rv
                 _tape_rv300 = self._state._scan_tape_rv_cache.get(asset)
+                # Bit V.3: feed the continuous vol-honesty monitor with the
+                # SAME pair the persistence layer records (raw engine
+                # estimate + tape rv300 — never the max()'d _strategy_vol,
+                # where ratio >= 1 always). Once per asset per tick; a
+                # breach returns a Telegram-ready message at most once per
+                # VOL_HONESTY_ALERT_THROTTLE_S per asset (the WARN log
+                # inside record() keeps the 60s check cadence). try/except:
+                # monitoring must degrade to silence, never kill the tick.
+                if asset is not None and asset not in _vol_honesty_assets_done:
+                    _vol_honesty_assets_done.add(asset)
+                    try:
+                        _vh_msg = self._vol_honesty.record(
+                            asset, blended_rv, _tape_rv300)
+                        if _vh_msg is not None and _telegram_state._TELEGRAM:
+                            _telegram_state._TELEGRAM.send(
+                                _vh_msg,
+                                dedup_key=f"vol_honesty_{asset}")
+                    except Exception:
+                        logging.debug(
+                            "vol_honesty record failed for %s", asset,
+                            exc_info=True)
                 if _tape_rv300 is not None:
                     _strategy_vol = max(blended_rv, _tape_rv300)
                 else:
