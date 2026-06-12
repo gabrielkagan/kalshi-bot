@@ -189,9 +189,11 @@ class TestTwaplockConstants:
         assert twaplock_mod._MIN_SUBMIT_STC_SECONDS == 10.0
         assert C.TWAPLOCK_TWAP_WINDOW_SECONDS == 60.0
 
-    def test_live_override_live_since_go_live(self):
-        # Flipped True at the 2026-06-12 operator go-live.
-        assert C.TWAPLOCK_LIVE_OVERRIDE is True
+    def test_live_override_paused_after_go_live(self):
+        # True at the 2026-06-12 go-live; paused same day: the longshot
+        # autopsy found blended_rv (which p_lock also consumes) running
+        # 1.4-4x below tape vol. Engine stays ENABLED (shadow rows).
+        assert C.TWAPLOCK_LIVE_OVERRIDE is False
 
     def test_client_oid_prefix(self):
         assert C.TWAPLOCK_CLIENT_OID_PREFIX == "tw-"
