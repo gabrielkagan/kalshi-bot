@@ -959,6 +959,8 @@ class VolatilityEngine:
         # below stay live so a future event term can be fitted from
         # ΔDVOL shadow history; the contract is pinned by
         # tests/integration/test_vol_engine_iv_diagnostic_only_regression.py.
+        # (Step 5, the stress override, is deleted — the historical step
+        # numbering below is retained.)
         iv = self._get_implied_vol(asset)
         dvol_5s = iv  # for diagnostics
         iv_rv_spread = None

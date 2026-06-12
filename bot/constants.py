@@ -1086,9 +1086,9 @@ DVOL_HOURLY_AVG_MIN = 3           # Need ≥3 samples for meaningful average
 
 DVOL_REQUEST_TIMEOUT = 5.0
 
-# ─── IV-RV Regime Detection ──────────────────────────────────────────────────
-# IV_RV_SPREAD_THRESHOLD deleted in Bit V.4 (2026-06-12): the stress-override
-# branch it gated is gone — DVOL is diagnostic-only, never blended.
+# ─── IV-RV regime detection (RETIRED — Bit V.4, 2026-06-12) ──────────────────
+# IV_RV_SPREAD_THRESHOLD deleted: the stress-override branch it gated is gone —
+# DVOL is diagnostic-only, never blended into sigma.
 
 BETA_LOOKBACK_RETURNS = 60        # 5 min of returns for cross-asset beta
 

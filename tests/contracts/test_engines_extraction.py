@@ -211,7 +211,7 @@ VOLATILITY_BOT_CONSTANTS = (
 
 @pytest.mark.parametrize("name", VOLATILITY_BOT_CONSTANTS)
 def test_volatility_constants_resolve_from_bot_constants(name):
-    """All RK / JUMP / VOL / DERIBIT / IV / BETA tunables live in bot.constants
+    """All RK / JUMP / VOL / DERIBIT / BETA tunables live in bot.constants
     per Bit 3.1. The volatility module imports them explicitly."""
     import bot.constants
     import bot.engines.volatility as bev
