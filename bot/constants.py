@@ -133,7 +133,7 @@ ASSET_LIVE_TRADING = {              # per-asset live enable (ALL 9 crypto 15M se
 # Live/shadow control stays with the trading_mode gate at executor.execute()
 # (single chokepoint — never duplicated here). Engine: bot/longshot.py.
 # Regression lock: tests/integration/test_longshot_strategy.py.
-LONGSHOT_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
+LONGSHOT_ENABLED = True            # LIVE since 2026-06-12 (operator go-live, $400 deposit; was default OFF)
 LONGSHOT_MIN_ASK_CENTS = 4         # sold-side executable ask band lower edge (validated 4-15c)
 LONGSHOT_MAX_ASK_CENTS = 15        # sold-side executable ask band upper edge
 LONGSHOT_MIN_STC_SECONDS = 180.0   # T-3min: stop quoting / cancel resting below this STC
@@ -142,7 +142,7 @@ LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in 
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
-LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS; main pipeline UNAFFECTED (R1-M4; asset-scoped at R4-M1)
+LONGSHOT_LIVE_OVERRIDE = True      # LIVE since 2026-06-12: longshot trades live solo (main pipeline stays shadow); trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS (R1-M4; asset-scoped at R4-M1)
 # Longshot live universe (R4-M1 mechanism): the ONLY assets longshot may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
@@ -183,7 +183,7 @@ LONGSHOT_LIVE_ASSETS = frozenset(
 # Live/shadow control stays with the trading_mode gate at executor.execute()
 # (single chokepoint — never duplicated here). Engine: bot/twaplock.py.
 # Regression lock: tests/integration/test_twaplock_strategy.py.
-TWAPLOCK_ENABLED = False           # master enable; default OFF — flipped only at explicit operator go-live
+TWAPLOCK_ENABLED = True            # LIVE since 2026-06-12 (operator go-live, $400 deposit; was default OFF)
 TWAPLOCK_P_LOCK_THRESHOLD = 0.99   # STRICTER than the validated 0.95: Coinbase-anchored MVP index adds proxy error vs the honest 4-venue index; undercounting costs frequency, not correctness (degraded-index lesson)
 TWAPLOCK_TWAP_WINDOW_SECONDS = 60.0  # Kalshi settles on a 60s TWAP of its reference index
 TWAPLOCK_ENTRY_WINDOW_SECONDS = 90.0  # only act in the final 90s — the validated decision grid starts at DEC_FROM=90 (01b_twap_lock_validation.py); no backtest evidence for (90, 120], so we don't trade it (R1-MN1)
@@ -209,7 +209,7 @@ TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1
 # the same direction as the stricter-than-validated 0.99 p_lock threshold.
 TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
-TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in TWAPLOCK_LIVE_ASSETS; main pipeline UNAFFECTED (asset-scoped at R4-M1)
+TWAPLOCK_LIVE_OVERRIDE = True      # LIVE since 2026-06-12: twaplock trades live solo (main pipeline stays shadow); trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in TWAPLOCK_LIVE_ASSETS (asset-scoped at R4-M1)
 # Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the
