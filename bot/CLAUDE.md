@@ -421,26 +421,42 @@ phase-1 features).
 Vol-honesty pair on `evaluated_opportunities` — the soak's measurement
 layer for L-VOL-2 (`kb/failures/vol-engine-beta-dvol-deflation-jun12.md`:
 engine vol ran 1.4-4x below the tape for ~4 months and nothing compared
-them). Follows the `spot_staleness_seconds` 8-site pattern above, with
-the producer caches already shipped by Bit V.1:
+them). Follows the `spot_staleness_seconds` 8-site pattern above. The
+V.3-R1-M1 fix round replaced the two V.1 producer caches with one
+ATOMIC pair cache (the split caches let stale mixed-tick pairs leak
+onto cooldown-branch + hourly-pass inserts, contaminating the soak
+medians — pairing-by-coincidence vs pairing-by-construction):
 
-1. Producer caches (V.1, pre-existing): `bot/scanner/__init__.py` vol
-   seam writes `StateManager._scan_tape_rv_cache[asset]` (honest-NULL
-   pop) + `_scan_raw_blended_rv_cache[asset]` (overwrite-only, never
-   popped — V.1-R5) once per asset per tick.
-2. `bot/state.py::__init__` — both cache dicts (V.1, pre-existing;
-   comments updated to point at the V.3 consumers).
+1. Producer cache: `bot/scanner/__init__.py` writes
+   `StateManager._scan_vol_pair_cache[asset] = (raw_blended_rv,
+   tape_rv300)` at the 15M `_strategy_vol` seam ONLY — both halves
+   same-tick by construction; rv300 read from the per-tick
+   `_tape_rv_by_asset` memo. Pops: at the seam when rv300 is None, on
+   every rv300-None vol pass in the shared 15m+hourly branch (honest-
+   NULL: warmup, buffer gap, event-stale spot — covers
+   silent_spot_none ticks), and in the 15M loss-cooldown branch
+   (which `continue`s before the seam for ≤2h). The legacy
+   `_scan_tape_rv_cache` / `_scan_raw_blended_rv_cache` are RETIRED
+   (negative-pinned).
+2. `bot/state.py::__init__` — the single pair-cache dict
+   (`_scan_vol_pair_cache: Dict[str, Tuple[float, float]]`; only ever
+   holds COMPLETE pairs — persist-both-or-neither).
 3. `bot/state.py::_create_tables` migration loop — `("tape_rv300",
    "REAL")` + `("raw_blended_rv", "REAL")` appended after `rti_*`
    (fresh-DB cids 147/148, before the `_calmlp_migrate_schema` cols).
 4. `bot/state.py::insert_evaluated_opportunity` — two Optional kwargs;
-   INSERT columns + VALUES placeholders + value-tuple tail; auto-fill:
-   tape via bare `.get` (pop discipline makes missing → honest NULL),
-   raw GATED on `_scan_tape_rv_cache.get(asset) is not None` (the
-   overwrite-only raw cache has no freshness signal of its own; the
-   ratio is undefined without the tape denominator anyway — pairing
-   invariant: auto-filled raw non-NULL ⇒ tape non-NULL); COALESCE in
-   the ON CONFLICT upsert (FIRST/decision-time reading survives).
+   INSERT columns + VALUES placeholders + value-tuple tail; auto-fill
+   reads the pair ATOMICALLY via bare `.get` (lifecycle pops make
+   missing → both honest NULL), fires only when the caller supplied
+   NEITHER kwarg (one explicit side never pairs with a cached other —
+   no fabricated mixed-tick pairs), and is GATED to `product_type in
+   (None, "15m")` — hourly/SPX/weather rows are both-NULL by
+   construction (pairing invariant on auto-filled rows: raw non-NULL
+   ⇔ tape non-NULL). Documented residual: the rare post-warmup
+   silent_vol_none branch can persist a ≤1-tick-old same-tick pair;
+   soak query F excludes `filter_stage LIKE 'silent_%'` as
+   defense-in-depth. COALESCE in the ON CONFLICT upsert
+   (FIRST/decision-time reading survives).
 5. `bot/scanner/__init__.py` — Bit V.3 monitor wiring at the same seam:
    `self._vol_honesty = VolHonestyMonitor()` (helpers-leaf,
    `bot/helpers/vol_honesty.py`) fed once per asset per tick with the
@@ -450,10 +466,13 @@ the producer caches already shipped by Bit V.1:
    "vol_honesty_<asset>")` (1/hour/asset, monitor-side throttle).
 6. `tests/fixtures/state_db_schema_baseline.txt` — 154 → 156 cols;
    cal_mlp_* renumbered +2 (149-155).
-7. `tests/contracts/test_vol_honesty_instrumentation.py` — 21 pins
-   (columns/types/kwargs/persist/NULL-honesty/auto-fill/raw-gate/
-   explicit-kwarg-wins/COALESCE/fixture + monitor band/throttles/
-   min-samples/None-tape + scanner wiring).
+7. `tests/contracts/test_vol_honesty_instrumentation.py` — pins for
+   columns/types/kwargs/persist/NULL-honesty/atomic-pair-auto-fill/
+   product-type-gate/both-or-neither/explicit-kwarg-wins/COALESCE/
+   fixture + monitor band/throttles/min-samples/None-tape + scanner
+   wiring; stale-pair leak regressions (cooldown + hourly + seam-only
+   write) in `tests/integration/test_tape_rv_parity.py::
+   TestStaleVolPairLeakRegression`.
 8. `agent_docs/db_schema.md` — entries under `evaluated_opportunities`;
    constants in `agent_docs/config_reference.md` § Vol-honesty monitor.
 
