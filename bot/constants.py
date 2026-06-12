@@ -142,7 +142,22 @@ LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in 
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
-LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED (R1-M4)
+LONGSHOT_LIVE_OVERRIDE = False     # longshot-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in LONGSHOT_LIVE_ASSETS; main pipeline UNAFFECTED (R1-M4; asset-scoped at R4-M1)
+# Longshot validated live universe (R4-M1): the ONLY assets longshot may ever
+# trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
+# (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
+# validation run (scripts/research/genhunt/02b_longshot_fillable_validation.py,
+# committed in this branch): its "all 6 assets positive" headline covers
+# exactly this set. BNB is EXCLUDED from the 02b UNIVERSE tuple by construction
+# ("BNB excluded (no replayable spot source — same honest subset as #02)", per
+# the script's pre-registration docstring), so longshot has ZERO evidence on
+# BNB. ADA/BCH sat in the 02b UNIVERSE (Coinbase spot replays exist) but
+# contributed ZERO windows — no KXADA15M/KXBCH15M markets existed in the
+# 2026-05-30..06-10 corpus (GENHUNT report: "ADA/BCH listing day-zero ...
+# waiting on markets that don't exist yet") — AND they carry the T1
+# zero-live-orders shadow designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True,
+# 2026-05-30): excluded on BOTH grounds.
+LONGSHOT_LIVE_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"})
 
 # ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
 # Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
@@ -184,7 +199,19 @@ TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1
 # the same direction as the stricter-than-validated 0.99 p_lock threshold.
 TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
-TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = is_live(asset) OR this; main pipeline UNAFFECTED
+TWAPLOCK_LIVE_OVERRIDE = False     # twaplock-ONLY go-live: trading_mode.strategy_is_live = (is_live(asset) OR this) AND asset in TWAPLOCK_LIVE_ASSETS; main pipeline UNAFFECTED (asset-scoped at R4-M1)
+# Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
+# trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
+# (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the
+# TRACKED tuple in scripts/research/genhunt/01b_twap_lock_validation.py
+# (committed in this branch) — the 7 assets the +14.4c/ct "all 7 assets
+# positive" verdict covers (BNB on a single-venue Kraken index, flagged in the
+# per-asset breakdown but positive). ADA/BCH are NOT in 01b TRACKED (no
+# KXADA15M/KXBCH15M markets existed in the 2026-05-30..06-10 corpus — GENHUNT
+# report "ADA/BCH listing day-zero") AND carry the T1 zero-live-orders shadow
+# designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True, 2026-05-30): excluded on
+# BOTH grounds.
+TWAPLOCK_LIVE_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 
 # ── Live-small shared risk rails (longshot + twaplock COMBINED; Bit T-1) ──────
 # Single source of truth consumed by BOTH engines' disable latches via

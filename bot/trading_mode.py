@@ -32,26 +32,36 @@ def is_live(asset: str) -> bool:
 
 
 def strategy_is_live(strategy, asset: str) -> bool:
-    """Per-strategy live gate (R1-M4, extended at Bit T-1):
-    ``is_live(asset)`` OR a strategy-scoped override. Two overrides exist
-    — longshot (``LONGSHOT_LIVE_OVERRIDE``) and twaplock
+    """Per-strategy live gate (R1-M4, extended at Bit T-1; asset-scoped at
+    R4-M1): for the two engine-owned strategies the result is
+    ``(is_live(asset) OR <override>) AND asset in <validated set>``. Two
+    overrides exist — longshot (``LONGSHOT_LIVE_OVERRIDE``) and twaplock
     (``TWAPLOCK_LIVE_OVERRIDE``) — each lets the operator go live with
     that ONE strategy while the main pipeline (and the sibling strategy)
-    stays shadow. For every other strategy this is EXACTLY
-    ``is_live(asset)`` — main-pipeline behavior unchanged. Consulted at
-    the two existing chokepoints only: ``executor.execute()`` (which
-    passes the candidate's strategy) and the ``kalshi_client.place_order``
-    backstop (which recovers the strategy from the engine-owned
-    client_order_id prefix — ``ls-``/``tw-`` — via
-    :func:`strategy_from_client_order_id`). Override flags are read live
-    via module-attribute access (runtime kill-switch pattern)."""
-    if is_live(asset):
-        return True
+    stays shadow. The validated-universe check (``LONGSHOT_LIVE_ASSETS``
+    mirrors the 02b positive set; ``TWAPLOCK_LIVE_ASSETS`` mirrors 01b
+    TRACKED) deliberately gates the WHOLE strategy branch, not just the
+    override leg: even in a future dual-live posture (GLOBAL +
+    ASSET_LIVE_TRADING flipped on), a strategy must still respect the
+    universe its validation evidence covers — an asset being main-pipeline
+    live says nothing about longshot/twaplock edge there, and ADA/BCH
+    additionally carry the T1 zero-live-orders shadow designation
+    (ADA_15M_SHADOW/BCH_15M_SHADOW). For every other strategy this is
+    EXACTLY ``is_live(asset)`` — main-pipeline behavior unchanged.
+    Consulted at the two existing chokepoints only: ``executor.execute()``
+    (which passes the candidate's strategy) and the
+    ``kalshi_client.place_order`` backstop (which recovers the strategy
+    from the engine-owned client_order_id prefix — ``ls-``/``tw-`` — via
+    :func:`strategy_from_client_order_id`). Override flags + asset sets
+    are read live via module-attribute access (runtime kill-switch
+    pattern)."""
     if strategy == "longshot":
-        return bool(_c.LONGSHOT_LIVE_OVERRIDE)
+        return ((is_live(asset) or bool(_c.LONGSHOT_LIVE_OVERRIDE))
+                and asset in _c.LONGSHOT_LIVE_ASSETS)
     if strategy == "twaplock":
-        return bool(_c.TWAPLOCK_LIVE_OVERRIDE)
-    return False
+        return ((is_live(asset) or bool(_c.TWAPLOCK_LIVE_OVERRIDE))
+                and asset in _c.TWAPLOCK_LIVE_ASSETS)
+    return is_live(asset)
 
 
 def strategy_from_client_order_id(client_order_id) -> "str | None":
