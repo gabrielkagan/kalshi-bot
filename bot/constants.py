@@ -172,7 +172,10 @@ LONGSHOT_LIVE_ASSETS = frozenset(
 # TWAPLOCK_MAX_SPOT_STALENESS_SECONDS below; longshot shipped WITHOUT one).
 # 30.0s = the validated backtest's abstention horizon: 02_longshot_tick_floor
 # sets STALE_S=30.0 and its decision-point reads (_at / _rv) return None —
-# i.e. the backtest ABSTAINED — whenever the spot was >30s event-stale.
+# i.e. the backtest ABSTAINED — whenever the spot was >30s event-stale
+# (tracked in-repo equivalent: scripts/research/genhunt/
+# 02b_longshot_fillable_validation.py::_at/_rv_pure, same STALE_S=30.0 —
+# the 02 script itself is not committed).
 # Live, CoinbaseFeed's sampler re-stamps a frozen price with fresh
 # timestamps every 1s, so only the Bit-S.1 event-time staleness reading
 # (state._scan_spot_staleness_cache) can see the freeze; evaluate_market
@@ -182,6 +185,22 @@ LONGSHOT_LIVE_ASSETS = frozenset(
 # bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (pinned by
 # tests/contracts/test_tape_rv_estimator_parity.py).
 LONGSHOT_MAX_SPOT_STALENESS_SECONDS = 30.0
+# Stale-episode quote-down grace (R2-M1 fix round, Bit V.1). When the
+# Bit-S.1 event-time reading stays missing/stale past the gate above for
+# MORE than this many wall-clock seconds on a ticker, evaluate_market
+# CANCELS that ticker's resting quotes (reason spot_stale; cancel_order is
+# intentionally ungated — cancels only reduce exposure) instead of leaving
+# them up un-refreshed through the episode (observed up to ~12 min). The
+# validated +4.58c economics never priced stale-episode fills — the 02b
+# fill model (scripts/research/genhunt/02b_longshot_fillable_validation.py)
+# drops them via zscore -> None on a >30s-stale spot at print time — and
+# the ONLY measured tolerance for a quote lingering past signal death is
+# 02b's 10s cancel-latency arm (LATENCY_S=10.0 at that script's constants
+# block; fills_latency10 pickoff -0.16c/ct), so the grace must stay
+# <= 10.0. Grace > 0 absorbs flickery staleness (no cancel churn — BNB
+# gaps 34% of 1-min intervals, S.2 RCA); a fresh eval clears the per-ticker
+# episode clock (bot/longshot.py::_stale_first_seen).
+LONGSHOT_STALE_CANCEL_GRACE_SECONDS = 10.0
 
 # ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
 # Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
