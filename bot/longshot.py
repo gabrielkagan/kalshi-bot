@@ -575,7 +575,7 @@ class LongshotEngine:
             # stops being evaluated — window closed mid-episode — would
             # otherwise pin its entry forever). A >TTL-long episode
             # re-latches via setdefault and re-cancels idempotently
-            # (registry already empty after the first grace expiry).
+            # (registry empty after the first SUCCESSFUL cancel; a still-failing cancel just waits one extra grace after re-latch).
             self._stale_first_seen = {k: ts for k, ts
                                       in self._stale_first_seen.items()
                                       if ts >= cutoff}

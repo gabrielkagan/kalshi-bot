@@ -187,7 +187,7 @@ LONGSHOT_LIVE_ASSETS = frozenset(
 LONGSHOT_MAX_SPOT_STALENESS_SECONDS = 30.0
 # Stale-episode quote-down grace (R2-M1 fix round, Bit V.1). When the
 # Bit-S.1 event-time reading stays missing/stale past the gate above for
-# MORE than this many wall-clock seconds on a ticker, evaluate_market
+# at least this many wall-clock seconds on a ticker, evaluate_market
 # CANCELS that ticker's resting quotes (reason spot_stale; cancel_order is
 # intentionally ungated — cancels only reduce exposure) instead of leaving
 # them up un-refreshed through the episode (observed up to ~12 min). The
