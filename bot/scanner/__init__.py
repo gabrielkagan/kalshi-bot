@@ -1611,12 +1611,16 @@ class OpportunityScanner:
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
         _scan_loop_start = time.perf_counter()
-        # Bit V.1 (2026-06-12): per-TICK memo so the tape-RV seam below
-        # computes trailing_rv300 once per asset even when the same asset
-        # surfaces in multiple windows (15M + hourly share the Coinbase
-        # spot/vol branch). The durable per-asset stash lives in
-        # self._state._scan_tape_rv_cache (cross-tick, honest-NULL pop).
-        _tape_rv_assets_done: set = set()
+        # Bit V.1 + V.3-R1-M1 fix round (2026-06-12): per-TICK memo dict
+        # (asset → rv300-or-None) so the tape-RV block below computes
+        # trailing_rv300 once per asset even when the same asset surfaces
+        # in multiple windows (15M + hourly share the Coinbase spot/vol
+        # branch), AND so the 15M _strategy_vol seam consumes THIS tick's
+        # rv300 (never a cross-tick reading). The durable cross-tick
+        # stash is the ATOMIC pair self._state._scan_vol_pair_cache —
+        # (raw_blended_rv, tape_rv300) written/popped at the 15M seam
+        # only, both halves same-tick by construction.
+        _tape_rv_by_asset: dict = {}
         # Bit V.3: per-TICK memo so the vol-honesty monitor ingests exactly
         # ONE (raw, tape) ratio sample per asset per tick even when the
         # asset surfaces in multiple 15M windows — duplicate same-tick
@@ -1665,6 +1669,16 @@ class OpportunityScanner:
                             scan_stats[asset].get("loss_cooldown", 0) + 1)
                 except Exception:
                     pass
+                # V.3-R1-M1: this branch `continue`s BEFORE the vol seam
+                # for up to LOSS_COOLDOWN_SECONDS (2h), so the pair cache
+                # is neither refreshed nor seam-popped while the asset is
+                # locked out — pop it here so the frozen pre-cooldown
+                # pair cannot auto-fill the trace rows below (it would
+                # contaminate the /live-small soak medians). Regression:
+                # tests/integration/test_tape_rv_parity.py::
+                # TestStaleVolPairLeakRegression.
+                if asset is not None:
+                    self._state._scan_vol_pair_cache.pop(asset, None)
                 # Trace row so this silent-bail isn't a diagnostic black
                 # hole. ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
                 try:
@@ -1766,8 +1780,7 @@ class OpportunityScanner:
                 # (warmup/short buffer/stalled sampler); see the
                 # "Two-layer staleness reality" note in bot/helpers/
                 # tape_rv.py.
-                if asset is not None and asset not in _tape_rv_assets_done:
-                    _tape_rv_assets_done.add(asset)
+                if asset is not None and asset not in _tape_rv_by_asset:
                     _evt_staleness = (
                         self._state._scan_spot_staleness_cache.get(asset))
                     if (_evt_staleness is None
@@ -1782,10 +1795,15 @@ class OpportunityScanner:
                                 "TAPE_RV_COMPUTE_FAILED: %s", asset,
                                 exc_info=True)
                             _rv300_now = None
+                    _tape_rv_by_asset[asset] = _rv300_now
+                    # V.3-R1-M1: no honest tape this tick → drop any
+                    # prior tick's pair so it can't auto-fill rows
+                    # inserted before (or instead of) the 15M seam —
+                    # e.g. silent_spot_none on this very tick. The pair
+                    # WRITE happens only at the seam below; this is the
+                    # honest-NULL pop half of the lifecycle.
                     if _rv300_now is None:
-                        self._state._scan_tape_rv_cache.pop(asset, None)
-                    else:
-                        self._state._scan_tape_rv_cache[asset] = _rv300_now
+                        self._state._scan_vol_pair_cache.pop(asset, None)
                 if spot is None or spot <= 0:
                     # Trace row — Coinbase price feed gap or restart warmup.
                     # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
@@ -1896,16 +1914,25 @@ class OpportunityScanner:
             # beta×DVOL path itself.
             _strategy_vol = blended_rv
             if _pt in (None, "15m"):
-                # R1-M2: stash the RAW engine estimate per asset BEFORE
-                # the max() selection — the engines persist their vol
-                # kwarg (the max) into eval rows' volatility, so the V.3
-                # re-arm deflation ratio sources raw_b from THIS cache +
-                # rv300 from _scan_tape_rv_cache (never the rows'
-                # volatility column, where max(b, rv300)/rv300 >= 1
-                # always). See the cache comments in bot/state.py.
+                _tape_rv300 = _tape_rv_by_asset.get(asset)
+                # R1-M2 + V.3-R1-M1: stash the RAW engine estimate
+                # (pre-max) and THIS tick's tape rv300 as ONE atomic
+                # pair — the engines persist their vol kwarg (the max)
+                # into eval rows' volatility, so the V.3 re-arm
+                # deflation ratio sources BOTH halves from this pair
+                # cache (never the rows' volatility column, where
+                # max(b, rv300)/rv300 >= 1 always). Written AND popped
+                # at this 15M seam only (persist-both-or-neither: no
+                # honest tape ⇒ no pair), so both halves are same-tick
+                # by construction — the durable fix for the stale
+                # mixed-tick pair leak (cooldown/hourly paths). See the
+                # cache comment in bot/state.py.
                 if asset is not None:
-                    self._state._scan_raw_blended_rv_cache[asset] = blended_rv
-                _tape_rv300 = self._state._scan_tape_rv_cache.get(asset)
+                    if _tape_rv300 is None:
+                        self._state._scan_vol_pair_cache.pop(asset, None)
+                    else:
+                        self._state._scan_vol_pair_cache[asset] = (
+                            blended_rv, _tape_rv300)
                 # Bit V.3: feed the continuous vol-honesty monitor with the
                 # SAME pair the persistence layer records (raw engine
                 # estimate + tape rv300 — never the max()'d _strategy_vol,

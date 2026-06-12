@@ -300,10 +300,12 @@ def test_auto_fill_is_both_or_neither():
         r2 = sm.conn.execute(
             "SELECT tape_rv300, raw_blended_rv FROM evaluated_opportunities "
             "WHERE ticker='KXHYPE15MTEST-T-ONLYRAW'").fetchone()
-        assert r1 == (pytest.approx(1.0e-4), None), (
-            f"explicit tape + cached raw produced a mixed-tick pair: {r1}")
-        assert r2 == (None, pytest.approx(2.0e-4)), (
-            f"explicit raw + cached tape produced a mixed-tick pair: {r2}")
+        assert tuple(r1) == (pytest.approx(1.0e-4), None), (
+            f"explicit tape + cached raw produced a mixed-tick pair: "
+            f"{tuple(r1)}")
+        assert tuple(r2) == (None, pytest.approx(2.0e-4)), (
+            f"explicit raw + cached tape produced a mixed-tick pair: "
+            f"{tuple(r2)}")
     finally:
         sm.conn.close()
         os.unlink(path)

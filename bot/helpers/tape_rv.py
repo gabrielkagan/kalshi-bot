@@ -57,7 +57,9 @@ default kwargs ARE the research constants (``VOL_WIN_S=300.0`` /
 Consumer: ``bot/scanner/__init__.py`` computes this once per asset per
 scan tick from ``CoinbaseFeed.get_buffer(asset)`` (the lock-held
 snapshot of the 1-second-resolution ``PRICE_BUFFER_SIZE`` rolling
-buffer), stashes it in ``StateManager._scan_tape_rv_cache``, and the
+buffer), memoizes it per tick, stashes it at the 15M seam as the tape
+half of the ATOMIC ``StateManager._scan_vol_pair_cache[asset] =
+(raw_blended_rv, tape_rv300)`` pair (V.3-R1-M1), and the
 longshot/twaplock overlays price off ``max(blended_rv, rv300)``.
 
 **Two-layer staleness reality (R1-M1 fix round).** The per-grid-point
@@ -71,7 +73,7 @@ and this guard can never fire on it (rv300 instead reads LOW off the
 flat segment). The research timeline had no re-stamping sampler, so in
 the backtest this ONE guard covered both classes. Live, the second
 class is covered at the consumer seam: ``scan()`` gates the
-``_scan_tape_rv_cache`` write on the Bit-S.1 EVENT-time staleness
+``_scan_vol_pair_cache`` write on the Bit-S.1 EVENT-time staleness
 signal (``StateManager._scan_spot_staleness_cache``), treating rv300 as
 None when the spot is unmeasured or more than ``TAPE_RV_MAX_STALENESS_S``
 event-seconds stale — restoring the backtest's abstention. Pinned by
