@@ -38,6 +38,12 @@ Pins (structural anchors, not line numbers):
    pattern): reads ``_scan_spot_staleness_cache`` and compares against
    ``C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS`` (= 30.0, lockstep with the
    tape-rv horizon).
+8. R1-M2 (fix round) — the RAW engine blended_rv is stashed per asset
+   in ``StateManager._scan_raw_blended_rv_cache`` at the
+   ``_strategy_vol`` seam. Eval rows persist max(b, rv300) as
+   ``volatility`` (decision provenance), so the V.3 re-arm ratio MUST
+   source raw_b from this cache + rv300 from ``_scan_tape_rv_cache`` —
+   never the rows' volatility column (ratio would be >= 1 always).
 """
 from __future__ import annotations
 
@@ -144,7 +150,7 @@ def test_scanner_calls_trailing_rv300_inside_scan():
         "per-asset spot/vol seam")
 
 
-def test_state_manager_initializes_scan_tape_rv_cache():
+def _state_init_assigns_attr(attr: str) -> bool:
     tree = _tree(STATE_PATH)
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == "StateManager":
@@ -157,11 +163,45 @@ def test_state_manager_initializes_scan_tape_rv_cache():
                                        else [sub.target])
                             for t in targets:
                                 if (isinstance(t, ast.Attribute)
-                                        and t.attr == "_scan_tape_rv_cache"):
-                                    return
-    raise AssertionError(
+                                        and t.attr == attr):
+                                    return True
+    return False
+
+
+def test_state_manager_initializes_scan_tape_rv_cache():
+    assert _state_init_assigns_attr("_scan_tape_rv_cache"), (
         "StateManager.__init__ must initialize _scan_tape_rv_cache "
         "(mirrors _scan_spot_staleness_cache)")
+
+
+def test_state_manager_initializes_scan_raw_blended_rv_cache():
+    """R1-M2: the V.3 deflation-ratio NUMERATOR. Eval rows persist the
+    max()-selected decision input as volatility, so the raw engine
+    estimate needs its own per-asset stash."""
+    assert _state_init_assigns_attr("_scan_raw_blended_rv_cache"), (
+        "StateManager.__init__ must initialize _scan_raw_blended_rv_cache "
+        "(R1-M2 — V.3 sources the re-arm ratio from the VOL-ENGINE "
+        "caches, not the rows' volatility column)")
+
+
+def test_scan_writes_raw_blended_rv_cache():
+    """R1-M2 companion: scan() must stash the RAW blended_rv per asset
+    at the _strategy_vol seam (subscript write on
+    _scan_raw_blended_rv_cache)."""
+    fn = _scan_func(_tree(SCANNER_PATH))
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if (isinstance(t, ast.Subscript)
+                        and isinstance(t.value, ast.Attribute)
+                        and t.value.attr == "_scan_raw_blended_rv_cache"
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id == "blended_rv"):
+                    return
+    raise AssertionError(
+        "scan() must write self._state._scan_raw_blended_rv_cache[asset] "
+        "= blended_rv (the RAW engine estimate, pre-max) — V.3's "
+        "deflation ratio is uncomputable from eval rows alone (R1-M2)")
 
 
 # ── 4 + 5. Overlay routing through the max() selection ──────────────────────

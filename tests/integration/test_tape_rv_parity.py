@@ -448,3 +448,58 @@ class TestEventTimeStalenessGate:
         state._scan_tape_rv_cache["BTC"] = 3e-4  # prior tick's honest value
         scanner.scan([_window()])
         assert state._scan_tape_rv_cache.get("BTC") is None
+
+
+# ── 5. R1-M2: raw vol pair separately recoverable (V.3 ratio source) ─────────
+# The engines persist their vol kwarg into eval rows (volatility= keys), so
+# post-V.1 rows carry max(blended_rv, rv300) — the HONEST INPUT THE DECISION
+# USED, correct for decision provenance, but useless for the V.3 re-arm
+# ratio: max(b, rv300)/rv300 >= 1 ALWAYS, so the planned deflation gate
+# (per-asset median blended_rv/rv300 in [0.8, 1.25]) could never detect
+# deflation off the rows alone. Both RAW values must be separately
+# recoverable at eval-row write time: rv300 already lives in
+# _scan_tape_rv_cache; the RAW engine blended_rv gets its own per-asset
+# stash (_scan_raw_blended_rv_cache) written at the _strategy_vol seam.
+# V.3 sources the ratio from these VOL-ENGINE caches, NOT from the rows'
+# volatility column.
+
+
+class TestRawVolPairRecoverable:
+    def test_raw_blended_and_rv300_separately_recoverable(
+            self, state, client, overlays_enabled):
+        """Deflated blended (9e-5) + honest tape (3e-4): the engines see
+        max() = rv300, but BOTH raw sources must remain readable —
+        raw blended from _scan_raw_blended_rv_cache, rv300 from
+        _scan_tape_rv_cache — so the V.3 ratio raw_b/rv300 (~0.3 here,
+        deflation!) is computable instead of pinned at >= 1."""
+        now0 = time.time()
+        buf = _make_walk_buffer(now0, per5s_vol=3e-4, seed=42)
+        deflated = 9e-5
+        scanner, ls, tw = _build_scanner(
+            state, client, blended_rv=deflated, buffer=buf)
+        scanner.scan([_window()])
+        assert ls.calls and tw.calls
+        raw_b = state._scan_raw_blended_rv_cache.get("BTC")
+        rv300 = state._scan_tape_rv_cache.get("BTC")
+        assert raw_b == deflated, (
+            "raw engine blended_rv must be stashed per asset — the eval "
+            "rows' volatility column carries max(b, rv300) and cannot "
+            "source the V.3 deflation ratio (R1-M2)")
+        assert rv300 is not None
+        refs = _reference_candidates(buf, now0)
+        assert any(abs(rv300 - r) < 1e-12 for r in refs)
+        # The decision input was the max — and the ratio detects deflation.
+        assert ls.calls[0]["blended_rv"] == max(raw_b, rv300)
+        assert raw_b / rv300 < 0.8
+
+    def test_raw_blended_stashed_even_when_rv300_unavailable(
+            self, state, client, overlays_enabled):
+        """rv300 None (junk buffer) → tape cache popped, but the raw
+        blended stash still updates (V.3's honest-NULL semantics: ratio
+        is NULL because the DENOMINATOR is missing, not because the
+        numerator silently went stale)."""
+        scanner, _ls, _tw = _build_scanner(
+            state, client, blended_rv=1.5e-4, buffer=[100.0] * 120)
+        scanner.scan([_window()])
+        assert state._scan_raw_blended_rv_cache.get("BTC") == 1.5e-4
+        assert state._scan_tape_rv_cache.get("BTC") is None
