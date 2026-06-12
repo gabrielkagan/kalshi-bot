@@ -355,13 +355,15 @@ Returns above an adaptive threshold are flagged as jumps and excluded from RK es
 
 ### 3.3.7 DVOL integration
 
-When Deribit's DVOL implied volatility (BTC, ETH only — SOL/XRP/HYPE/DOGE/BNB have no public IV index) diverges materially from realized, the engine blends in the implied estimate using inverse-variance weighting. This respects forward-looking information during regime changes while anchoring to observed data.
+Deribit's DVOL implied volatility is consumed for BTC and ETH only — SOL/XRP/HYPE/DOGE/BNB have no public IV index, and since June 2026 receive no implied-vol input at all (see 3.3.8). Whenever IV is available, the engine blends it against the EGARCH-blended realized estimate using inverse-variance weighting. When IV exceeds realized by more than 50%, a separate stress override applies a fixed 0.3/0.7 realized/implied blend instead (currently against the raw realized-kernel blend; routing it through the EGARCH layer is a tracked follow-up). This respects forward-looking information during regime changes while anchoring to observed data.
 
-### 3.3.8 Cross-asset beta
+### 3.3.8 Cross-asset beta (removed 2026-06)
 
-For assets without direct DVOL data (SOL, XRP, HYPE, DOGE, BNB), the system estimates a cross-asset beta against BTC using a 60-return lookback window, clamped to [0.5, 3.0]. This allows derivative-implied signals to propagate across correlated assets via:
+Earlier versions propagated BTC's implied vol to assets without direct DVOL data (SOL, XRP, HYPE, DOGE, BNB) via a regression beta estimated over a 60-return lookback, clamped to [0.5, 3.0]:
 
 $$\sigma_\text{asset}^\text{implied} \approx \beta_\text{asset,BTC} \cdot \sigma_\text{BTC}^\text{implied}$$
+
+This path was removed in June 2026. A regression beta is the wrong estimator for a volatility ratio at 5-second horizons — the Epps effect drives short-horizon cross-asset correlation (and hence the estimated beta) toward zero, and the clamp floor then anchored every alt's implied vol to half of BTC's DVOL regardless of the asset's actual volatility, systematically deflating the blended estimate for higher-vol alts. Non-BTC/ETH assets now carry no implied-vol input and are priced from the realized-kernel/EGARCH layers alone.
 
 ### 3.3.9 EGARCH/RV divergence clamp
 
@@ -1599,4 +1601,4 @@ The following are the primary sources cited by inline footnote elsewhere in this
 
 ---
 
-*Document last updated: 2026-06-12T12:57:49Z*
+*Document last updated: 2026-06-12T14:54:09Z*
