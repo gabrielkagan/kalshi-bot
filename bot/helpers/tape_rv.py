@@ -41,12 +41,40 @@ scan tick from ``CoinbaseFeed.get_buffer(asset)`` (the lock-held
 snapshot of the 1-second-resolution ``PRICE_BUFFER_SIZE`` rolling
 buffer), stashes it in ``StateManager._scan_tape_rv_cache``, and the
 longshot/twaplock overlays price off ``max(blended_rv, rv300)``.
+
+**Two-layer staleness reality (R1-M1 fix round).** The per-grid-point
+guard in this helper operates on BUFFER time and therefore covers only
+buffer-SHAPE gaps: warmup (short buffer), a stalled/dead sampler thread,
+or a persisted-buffer reload hole. It does NOT cover a frozen WS feed at
+runtime — ``CoinbaseFeed._sampler_loop`` re-stamps the last-known price
+with a fresh ``time.time()`` every 1s unconditionally (step-hold), so a
+frozen feed presents a gapless buffer of flat, freshly-stamped samples
+and this guard can never fire on it (rv300 instead reads LOW off the
+flat segment). The research timeline had no re-stamping sampler, so in
+the backtest this ONE guard covered both classes. Live, the second
+class is covered at the consumer seam: ``scan()`` gates the
+``_scan_tape_rv_cache`` write on the Bit-S.1 EVENT-time staleness
+signal (``StateManager._scan_spot_staleness_cache``), treating rv300 as
+None when the spot is unmeasured or more than ``TAPE_RV_MAX_STALENESS_S``
+event-seconds stale — restoring the backtest's abstention. Pinned by
+``tests/contracts/test_tape_rv_estimator_parity.py``
+``::test_scan_gates_tape_rv_on_event_time_staleness`` +
+``tests/integration/test_tape_rv_parity.py::TestEventTimeStalenessGate``.
 """
 from __future__ import annotations
 
 import bisect
 import math
 from typing import Optional, Sequence, Tuple
+
+# The research scripts' staleness horizon (``STALE_S = 30.0`` in
+# scripts/research/genhunt/02_longshot_tick_floor.py) — single source of
+# truth shared by this helper's BUFFER-time guard (default kwarg below)
+# and the scanner seam's EVENT-time gate (R1-M1; see module docstring).
+# bot/constants.py::LONGSHOT_MAX_SPOT_STALENESS_SECONDS mirrors the same
+# 30.0 for the engine-level gate (lockstep-pinned; constants.py cannot
+# import this module without inverting the helpers-leaf layering).
+TAPE_RV_MAX_STALENESS_S = 30.0
 
 
 def trailing_rv300(
@@ -55,7 +83,7 @@ def trailing_rv300(
     *,
     window_s: float = 300.0,
     step_s: float = 5.0,
-    max_staleness_s: float = 30.0,
+    max_staleness_s: float = TAPE_RV_MAX_STALENESS_S,
 ) -> Optional[float]:
     """Stdev of trailing per-``step_s`` log returns over ``window_s``.
 
@@ -72,8 +100,11 @@ def trailing_rv300(
        ``bisect_right``). If no such sample exists, or it is more than
        ``max_staleness_s`` older than ``tt``, return ``None`` — the
        guard applies at EVERY grid point (so a too-short buffer, a
-       stale newest sample, or a mid-buffer feed gap all yield ``None``,
-       never a fabricated number).
+       stale newest sample, or a mid-buffer BUFFER-time gap all yield
+       ``None``, never a fabricated number). NOTE: this is a
+       buffer-SHAPE guard only — a frozen-but-resampled live feed is
+       invisible to it and is handled by the scanner seam's event-time
+       gate (see the module docstring "Two-layer staleness reality").
     2. Chronological per-step log returns (pairs whose denominator is
        non-positive are skipped, as in 02; a non-positive numerator
        returns ``None`` — defensive vs. 02's uncaught ``ValueError``,

@@ -324,7 +324,10 @@ from bot.helpers import (
     tm_shadow_kelly_contracts_with_bound,  # Sim C, ticket 86ba0v7fc, 2026-05-19
 )
 from bot.helpers.band_calibration import calibrated_prob_for_sizing  # P4.1 (86b9zjrp7) — band-calibrated probability for 15M Kelly sizing only
-from bot.helpers.tape_rv import trailing_rv300  # Bit V.1 (2026-06-12) — estimator-parity tape RV for the live-small overlays (kb/failures/vol-engine-beta-dvol-deflation-jun12.md L-VOL-1)
+from bot.helpers.tape_rv import (  # Bit V.1 (2026-06-12) — estimator-parity tape RV for the live-small overlays (kb/failures/vol-engine-beta-dvol-deflation-jun12.md L-VOL-1); TAPE_RV_MAX_STALENESS_S shared with the R1-M1 event-time seam gate
+    TAPE_RV_MAX_STALENESS_S,
+    trailing_rv300,
+)
 from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adverse-selection gate
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
@@ -1729,16 +1732,41 @@ class OpportunityScanner:
                 # for the live-small overlays. try/except: a feed-shape
                 # surprise must degrade to "no tape estimate", never kill
                 # the scan tick.
+                #
+                # R1-M1 EVENT-time gate: the helper's per-grid-point guard
+                # operates on BUFFER time, and CoinbaseFeed._sampler_loop
+                # re-stamps the last-known price with fresh time.time()
+                # every 1s unconditionally — so a frozen WS feed presents
+                # a gapless buffer of flat fresh-stamped samples on which
+                # rv300 reads LOW (~0), never None, and max() silently
+                # reverts to the broken blended_rv. The Bit-S.1 staleness
+                # reading (written into _scan_spot_staleness_cache a few
+                # lines above, THIS tick) is the event-time truth: when it
+                # is missing (warmup/unmeasured) or > TAPE_RV_MAX_
+                # STALENESS_S (= the validated backtest's 30s abstention
+                # horizon, 02_longshot_tick_floor STALE_S), there is no
+                # honest tape estimate — treat rv300 as None (pop +
+                # throttled TAPE_RV_NONE fallback below). The helper's
+                # buffer-time guard still covers buffer-SHAPE gaps
+                # (warmup/short buffer/stalled sampler); see the
+                # "Two-layer staleness reality" note in bot/helpers/
+                # tape_rv.py.
                 if asset is not None and asset not in _tape_rv_assets_done:
                     _tape_rv_assets_done.add(asset)
-                    try:
-                        _rv300_now = trailing_rv300(
-                            self._feed.get_buffer(asset), time.time())
-                    except Exception:
-                        logging.debug(
-                            "TAPE_RV_COMPUTE_FAILED: %s", asset,
-                            exc_info=True)
+                    _evt_staleness = (
+                        self._state._scan_spot_staleness_cache.get(asset))
+                    if (_evt_staleness is None
+                            or _evt_staleness > TAPE_RV_MAX_STALENESS_S):
                         _rv300_now = None
+                    else:
+                        try:
+                            _rv300_now = trailing_rv300(
+                                self._feed.get_buffer(asset), time.time())
+                        except Exception:
+                            logging.info(
+                                "TAPE_RV_COMPUTE_FAILED: %s", asset,
+                                exc_info=True)
+                            _rv300_now = None
                     if _rv300_now is None:
                         self._state._scan_tape_rv_cache.pop(asset, None)
                     else:
@@ -1861,9 +1889,14 @@ class OpportunityScanner:
                     if (_now_lt - self._tape_rv_none_log_ts.get(asset, 0.0)
                             >= 60.0):
                         self._tape_rv_none_log_ts[asset] = _now_lt
-                        logging.debug(
+                        # INFO not debug (R1-MN1): falling back to the
+                        # known-deflation-prone blended_rv is an
+                        # operator-visible event; throttle (60s/asset)
+                        # keeps it journal-safe.
+                        logging.info(
                             "TAPE_RV_NONE: %s rv300 unavailable this tick "
-                            "— live-small overlays fall back to "
+                            "(warmup, buffer gap, or event-stale spot) — "
+                            "live-small overlays fall back to "
                             "blended_rv=%.6g", asset, blended_rv)
 
             # Extract shadow diagnostics for per-evaluation logging

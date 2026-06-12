@@ -168,6 +168,20 @@ LONGSHOT_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~12:05Z (operator): live 
 # windows) — add when listed, with the directive standing.
 LONGSHOT_LIVE_ASSETS = frozenset(
     {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
+# Frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1 — mirror of
+# TWAPLOCK_MAX_SPOT_STALENESS_SECONDS below; longshot shipped WITHOUT one).
+# 30.0s = the validated backtest's abstention horizon: 02_longshot_tick_floor
+# sets STALE_S=30.0 and its decision-point reads (_at / _rv) return None —
+# i.e. the backtest ABSTAINED — whenever the spot was >30s event-stale.
+# Live, CoinbaseFeed's sampler re-stamps a frozen price with fresh
+# timestamps every 1s, so only the Bit-S.1 event-time staleness reading
+# (state._scan_spot_staleness_cache) can see the freeze; evaluate_market
+# emits NO SIGNAL + writes NO eval rows when the reading is missing or
+# > this (log: LONGSHOT_SPOT_STALE, info, 60s/asset throttle — BNB gaps
+# 34% of 1-min intervals, S.2 RCA). Lockstep with
+# bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (pinned by
+# tests/contracts/test_tape_rv_estimator_parity.py).
+LONGSHOT_MAX_SPOT_STALENESS_SECONDS = 30.0
 
 # ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
 # Validated via scripts/research/genhunt/01b_twap_lock_validation.py:

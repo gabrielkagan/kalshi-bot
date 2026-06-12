@@ -191,8 +191,16 @@ class StateManager:
         # by the scanner's Coinbase spot/vol seam from
         # CoinbaseFeed.get_buffer; consumed in the same tick by the
         # longshot/twaplock overlays as max(blended_rv, rv300). Honest-NULL:
-        # the scanner POPS the slot when rv300 is None (short buffer,
-        # stale feed, mid-buffer gap) — mirrors _scan_spot_staleness_cache.
+        # the scanner POPS the slot when rv300 is None — mirrors
+        # _scan_spot_staleness_cache. TWO-LAYER staleness (R1-M1 fix
+        # round): the helper's per-grid-point guard covers BUFFER-shape
+        # gaps only (warmup, short buffer, stalled sampler); a frozen WS
+        # feed is invisible to it because CoinbaseFeed's sampler re-stamps
+        # the last-known price with fresh timestamps every 1s, so the
+        # scanner seam ADDITIONALLY treats rv300 as None whenever the
+        # Bit-S.1 EVENT-time reading (_scan_spot_staleness_cache above) is
+        # missing or > bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (30.0
+        # = the validated backtest's abstention horizon).
         # Bit V.3 (filed) adds the evaluated_opportunities persistence +
         # honesty alert on top of this cache.
         self._scan_tape_rv_cache: Dict[str, float] = {}

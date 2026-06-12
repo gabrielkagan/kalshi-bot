@@ -248,6 +248,11 @@ class LongshotEngine:
         # the scanner's _eval_opp_seen dedup; candidates still emit every
         # tick — only the DB write is deduped). Pruned via _SEEN_TTL.
         self._eval_row_seen: Dict[Tuple[str, str], float] = {}
+        # R1-M1 fix round (Bit V.1): asset -> last LONGSHOT_SPOT_STALE log
+        # ts. 60s/asset throttle (the scanner's TAPE_RV_NONE idiom) — the
+        # gate fires per TICKER per tick on gapped feeds (BNB: 34% of
+        # 1-min intervals stale), unthrottled would spam the journal.
+        self._spot_stale_log_ts: Dict[str, float] = {}
         # Bit T-1: the COMBINED live-small cap sums marked open losses
         # across engines — register this engine's R1-M3 mark so the
         # sibling (twaplock) latch sees it too. Same-key re-registration
@@ -337,6 +342,38 @@ class LongshotEngine:
                                              time.time())
         self._refresh_disabled()
         if self._disabled_reason:
+            return []
+
+        # Frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1 — mirror
+        # of twaplock's TWAPLOCK_SPOT_STALE R2-MN1 pattern; longshot
+        # shipped with NO staleness gate). A frozen Coinbase WS price
+        # keeps flowing through get_price_with_ts/get_buffer with fresh
+        # sampler re-stamps, so p_normal would be priced off a stale spot
+        # and the seam's tape rv300 is simultaneously gated off (same
+        # event-time signal) — leaving only the deflation-prone
+        # blended_rv. The validated backtest (02_longshot_tick_floor
+        # STALE_S=30.0) ABSTAINED at every such decision point; abstain
+        # live too: no candidates, no eval rows. Resting quotes are left
+        # to the condition-refresh on a fresh tick + the T-3min sweep
+        # (the p_yes-None convention below). The scanner stamps the
+        # per-asset event-time staleness into
+        # state._scan_spot_staleness_cache each tick (Bit S.1) and pops
+        # the slot on warmup-NULL; missing or stale -> NO SIGNAL.
+        _staleness = self._state._scan_spot_staleness_cache.get(asset)
+        if (_staleness is None
+                or _staleness > C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS):
+            _now_stale = time.time()
+            if (_now_stale - self._spot_stale_log_ts.get(asset, 0.0)
+                    >= 60.0):
+                self._spot_stale_log_ts[asset] = _now_stale
+                # info, not warning — fires routinely on thin assets
+                # (S.2 RCA gap rates in the constant's comment,
+                # bot/constants.py); 60s/asset throttle.
+                logging.info(
+                    "LONGSHOT_SPOT_STALE: %s %s spot_staleness=%s vs max "
+                    "%.1fs (None = unmeasured this tick) — no signal",
+                    ticker, asset, _staleness,
+                    C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS)
             return []
 
         stc_ok = (seconds_to_close is not None
