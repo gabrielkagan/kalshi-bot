@@ -204,6 +204,19 @@ class StateManager:
         # Bit V.3 (filed) adds the evaluated_opportunities persistence +
         # honesty alert on top of this cache.
         self._scan_tape_rv_cache: Dict[str, float] = {}
+        # R1-M2 (Bit V.1 fix round): per-asset RAW engine blended_rv,
+        # stashed by the scanner at the _strategy_vol seam BEFORE the
+        # max(blended_rv, rv300) selection. The eval rows' volatility
+        # column carries the max — the honest input the DECISION used —
+        # so the V.3 re-arm deflation ratio (per-asset median
+        # raw_blended_rv/rv300, gate [0.8, 1.25]) MUST source its
+        # numerator here and its denominator from _scan_tape_rv_cache
+        # above; computed off the rows it would be max(b, rv300)/rv300
+        # >= 1 always and could never detect deflation. Always
+        # overwritten on the tick's vol pass (blended_rv is non-None by
+        # that point — the silent_vol_none branch continues first);
+        # rv300 missing => ratio NULL via the DENOMINATOR (honest-NULL).
+        self._scan_raw_blended_rv_cache: Dict[str, float] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute

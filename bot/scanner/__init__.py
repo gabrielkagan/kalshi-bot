@@ -1881,6 +1881,15 @@ class OpportunityScanner:
             # beta×DVOL path itself.
             _strategy_vol = blended_rv
             if _pt in (None, "15m"):
+                # R1-M2: stash the RAW engine estimate per asset BEFORE
+                # the max() selection — the engines persist their vol
+                # kwarg (the max) into eval rows' volatility, so the V.3
+                # re-arm deflation ratio sources raw_b from THIS cache +
+                # rv300 from _scan_tape_rv_cache (never the rows'
+                # volatility column, where max(b, rv300)/rv300 >= 1
+                # always). See the cache comments in bot/state.py.
+                if asset is not None:
+                    self._state._scan_raw_blended_rv_cache[asset] = blended_rv
                 _tape_rv300 = self._state._scan_tape_rv_cache.get(asset)
                 if _tape_rv300 is not None:
                     _strategy_vol = max(blended_rv, _tape_rv300)
