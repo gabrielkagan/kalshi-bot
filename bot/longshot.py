@@ -248,6 +248,18 @@ class LongshotEngine:
         # the scanner's _eval_opp_seen dedup; candidates still emit every
         # tick — only the DB write is deduped). Pruned via _SEEN_TTL.
         self._eval_row_seen: Dict[Tuple[str, str], float] = {}
+        # R1-M1 fix round (Bit V.1): asset -> last LONGSHOT_SPOT_STALE log
+        # ts. 60s/asset throttle (the scanner's TAPE_RV_NONE idiom) — the
+        # gate fires per TICKER per tick on gapped feeds (BNB: 34% of
+        # 1-min intervals stale), unthrottled would spam the journal.
+        self._spot_stale_log_ts: Dict[str, float] = {}
+        # R2-M1 fix round (Bit V.1): ticker -> wall-clock ts of the FIRST
+        # stale/unmeasured-spot eval of the CURRENT stale episode. A fresh
+        # eval pops the slot (episode over); an episode persisting past
+        # LONGSHOT_STALE_CANCEL_GRACE_SECONDS cancels the ticker's resting
+        # quotes (see the gate in evaluate_market). Pruned via _SEEN_TTL
+        # in tick() like the sibling per-ticker dicts.
+        self._stale_first_seen: Dict[str, float] = {}
         # Bit T-1: the COMBINED live-small cap sums marked open losses
         # across engines — register this engine's R1-M3 mark so the
         # sibling (twaplock) latch sees it too. Same-key re-registration
@@ -338,6 +350,59 @@ class LongshotEngine:
         self._refresh_disabled()
         if self._disabled_reason:
             return []
+
+        # Frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1 — mirror
+        # of twaplock's TWAPLOCK_SPOT_STALE R2-MN1 pattern; longshot
+        # shipped with NO staleness gate). A frozen Coinbase WS price
+        # keeps flowing through get_price_with_ts/get_buffer with fresh
+        # sampler re-stamps, so p_normal would be priced off a stale spot
+        # and the seam's tape rv300 is simultaneously gated off (same
+        # event-time signal) — leaving only the deflation-prone
+        # blended_rv. The validated backtest (02_longshot_tick_floor
+        # STALE_S=30.0; tracked in-repo equivalent 02b ::_at/_rv_pure)
+        # ABSTAINED at every such decision point; abstain live too: no
+        # candidates, no eval rows. Resting quotes are NOT left up
+        # through the episode (R2-M1 fix round): the backtest's fill
+        # model (02b zscore -> None on a >30s-stale spot at print time)
+        # EXCLUDED stale-episode fills from the +4.58c economics, and the
+        # only measured tolerance for a quote lingering past signal death
+        # is 02b's 10s cancel-latency arm — so once the episode persists
+        # past LONGSHOT_STALE_CANCEL_GRACE_SECONDS this ticker's resting
+        # quotes are cancelled (reason spot_stale; the engine's ungated
+        # cancel machinery — cancels only reduce exposure). The grace
+        # absorbs flickery staleness (no churn); a fresh eval pops the
+        # episode clock below. NOTE on _mark_inputs: marks are captured
+        # ABOVE this gate, so during the episode they stay frozen at the
+        # last evaluated spot — see _marked_open_loss_cents for why that
+        # is tolerated. The scanner stamps the per-asset event-time
+        # staleness into state._scan_spot_staleness_cache each tick
+        # (Bit S.1) and pops the slot on warmup-NULL; missing or stale
+        # -> NO SIGNAL.
+        _staleness = self._state._scan_spot_staleness_cache.get(asset)
+        if (_staleness is None
+                or _staleness > C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS):
+            _now_stale = time.time()
+            if (_now_stale - self._spot_stale_log_ts.get(asset, 0.0)
+                    >= 60.0):
+                self._spot_stale_log_ts[asset] = _now_stale
+                # info, not warning — fires routinely on thin assets
+                # (S.2 RCA gap rates in the constant's comment,
+                # bot/constants.py); 60s/asset throttle.
+                logging.info(
+                    "LONGSHOT_SPOT_STALE: %s %s spot_staleness=%s vs max "
+                    "%.1fs (None = unmeasured this tick) — no signal",
+                    ticker, asset, _staleness,
+                    C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS)
+            with self._lock:
+                _first_stale = self._stale_first_seen.setdefault(
+                    ticker, _now_stale)
+            if (_now_stale - _first_stale
+                    >= C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS):
+                for q in self._resting_for_ticker(ticker):
+                    self._cancel_quote(q["order_id"], "spot_stale")
+            return []
+        with self._lock:
+            self._stale_first_seen.pop(ticker, None)
 
         stc_ok = (seconds_to_close is not None
                   and C.LONGSHOT_MIN_STC_SECONDS <= seconds_to_close
@@ -506,6 +571,14 @@ class LongshotEngine:
             self._mark_inputs = {k: v for k, v
                                  in self._mark_inputs.items()
                                  if v[2] >= cutoff}
+            # R2-M1: same TTL for the stale-episode clocks (a ticker that
+            # stops being evaluated — window closed mid-episode — would
+            # otherwise pin its entry forever). A >TTL-long episode
+            # re-latches via setdefault and re-cancels idempotently
+            # (registry empty after the first SUCCESSFUL cancel; a still-failing cancel just waits one extra grace after re-latch).
+            self._stale_first_seen = {k: ts for k, ts
+                                      in self._stale_first_seen.items()
+                                      if ts >= cutoff}
 
         if not C.LONGSHOT_ENABLED:
             self._cancel_all("longshot_disabled")
@@ -1103,6 +1176,19 @@ class LongshotEngine:
         longer evaluated) contribute 0 — settlement realizes them within
         minutes anyway. Returns 0 on query failure (the realized term
         still applies; see the fail-open note in _refresh_disabled).
+
+        Mark freshness during stale episodes (R2-M1 fix round, Bit V.1):
+        evaluate_market captures _mark_inputs ABOVE the frozen-spot gate,
+        so while an asset's spot is event-stale the marks FREEZE at the
+        last evaluated (pre-stale) spot. A frozen mark UNDERSTATES the
+        marked loss if spot moved adversely during the episode (the
+        sold side may have gone ITM without the mark flipping). Tolerated
+        WITHOUT a mark-side fix because the same gate cancels the
+        ticker's resting quotes once the episode persists past
+        LONGSHOT_STALE_CANCEL_GRACE_SECONDS — residual stale-episode
+        exposure is therefore already-filled positions held to
+        settlement, which settlement realizes into the daily cap (the
+        authoritative realized term) within minutes of window close.
         """
         try:
             rows = self._state.conn.execute(

@@ -168,6 +168,39 @@ LONGSHOT_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~12:05Z (operator): live 
 # windows) — add when listed, with the directive standing.
 LONGSHOT_LIVE_ASSETS = frozenset(
     {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
+# Frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1 — mirror of
+# TWAPLOCK_MAX_SPOT_STALENESS_SECONDS below; longshot shipped WITHOUT one).
+# 30.0s = the validated backtest's abstention horizon: 02_longshot_tick_floor
+# sets STALE_S=30.0 and its decision-point reads (_at / _rv) return None —
+# i.e. the backtest ABSTAINED — whenever the spot was >30s event-stale
+# (tracked in-repo equivalent: scripts/research/genhunt/
+# 02b_longshot_fillable_validation.py::_at/_rv_pure, same STALE_S=30.0 —
+# the 02 script itself is not committed).
+# Live, CoinbaseFeed's sampler re-stamps a frozen price with fresh
+# timestamps every 1s, so only the Bit-S.1 event-time staleness reading
+# (state._scan_spot_staleness_cache) can see the freeze; evaluate_market
+# emits NO SIGNAL + writes NO eval rows when the reading is missing or
+# > this (log: LONGSHOT_SPOT_STALE, info, 60s/asset throttle — BNB gaps
+# 34% of 1-min intervals, S.2 RCA). Lockstep with
+# bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (pinned by
+# tests/contracts/test_tape_rv_estimator_parity.py).
+LONGSHOT_MAX_SPOT_STALENESS_SECONDS = 30.0
+# Stale-episode quote-down grace (R2-M1 fix round, Bit V.1). When the
+# Bit-S.1 event-time reading stays missing/stale past the gate above for
+# at least this many wall-clock seconds on a ticker, evaluate_market
+# CANCELS that ticker's resting quotes (reason spot_stale; cancel_order is
+# intentionally ungated — cancels only reduce exposure) instead of leaving
+# them up un-refreshed through the episode (observed up to ~12 min). The
+# validated +4.58c economics never priced stale-episode fills — the 02b
+# fill model (scripts/research/genhunt/02b_longshot_fillable_validation.py)
+# drops them via zscore -> None on a >30s-stale spot at print time — and
+# the ONLY measured tolerance for a quote lingering past signal death is
+# 02b's 10s cancel-latency arm (LATENCY_S=10.0 at that script's constants
+# block; fills_latency10 pickoff -0.16c/ct), so the grace must stay
+# <= 10.0. Grace > 0 absorbs flickery staleness (no cancel churn — BNB
+# gaps 34% of 1-min intervals, S.2 RCA); a fresh eval clears the per-ticker
+# episode clock (bot/longshot.py::_stale_first_seen).
+LONGSHOT_STALE_CANCEL_GRACE_SECONDS = 10.0
 
 # ── TWAP-lock endgame taker strategy (Bit T-1, 2026-06-11) ────────────────────
 # Validated via scripts/research/genhunt/01b_twap_lock_validation.py:
@@ -209,7 +242,7 @@ TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1
 # the same direction as the stricter-than-validated 0.99 p_lock threshold.
 TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
-TWAPLOCK_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~13:0xZ (operator): longshot autopsy found blended_rv running 1.4-4x BELOW tape vol on alts — p_lock consumes the SAME input, so "0.99 locked" may be ~0.9. Zero fills while live (3 IOC misses). Re-arm only after vol-engine RCA + honest-vol rewire + shadow soak.
+TWAPLOCK_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 12:57Z (operator; PR #164 merge 040fe826): longshot autopsy found blended_rv running 1.4-4x BELOW tape vol on alts — p_lock consumes the SAME input, so "0.99 locked" may be ~0.9. Zero fills while live (3 IOC misses). Re-arm only after vol-engine RCA + honest-vol rewire + shadow soak.
 # Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the

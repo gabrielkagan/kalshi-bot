@@ -61,6 +61,10 @@ def _ob(yes_ask_cents=8, yes_bid_cents=3):
 
 def _eval(eng, *, yes_ask_cents=8, yes_bid_cents=3, stc=600.0, spot=100.0,
           threshold=110.0, blended_rv=0.0001, ticker=TICKER, ob=None):
+    # Fresh Bit-S.1 staleness reading so the frozen/unmeasured-spot gate
+    # (R1-M1 fix round, Bit V.1) doesn't mask the surfaces under test —
+    # same idiom as test_twaplock_strategy.py::_eval.
+    eng._state._scan_spot_staleness_cache["BTC"] = 0.0
     if ob is None:
         ob = _ob(yes_ask_cents, yes_bid_cents)
     return eng.evaluate_market(

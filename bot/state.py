@@ -184,6 +184,39 @@ class StateManager:
         # _effective_decision_spot ONLY for assets in SYNTHETIC_RTI_LIVE_ASSETS
         # (default empty ⇒ feeds no decision).
         self._scan_rti_cache: Dict[str, Tuple[float, int, Optional[float]]] = {}
+        # Bit V.1 (2026-06-12): per-asset trailing-300s tape realized vol
+        # (bot.helpers.tape_rv.trailing_rv300 — exact parity with the
+        # research scripts' rv_5s; see kb/failures/vol-engine-beta-dvol-
+        # deflation-jun12.md L-VOL-1). Staged once per asset per scan tick
+        # by the scanner's Coinbase spot/vol seam from
+        # CoinbaseFeed.get_buffer; consumed in the same tick by the
+        # longshot/twaplock overlays as max(blended_rv, rv300). Honest-NULL:
+        # the scanner POPS the slot when rv300 is None — mirrors
+        # _scan_spot_staleness_cache. TWO-LAYER staleness (R1-M1 fix
+        # round): the helper's per-grid-point guard covers BUFFER-shape
+        # gaps only (warmup, short buffer, stalled sampler); a frozen WS
+        # feed is invisible to it because CoinbaseFeed's sampler re-stamps
+        # the last-known price with fresh timestamps every 1s, so the
+        # scanner seam ADDITIONALLY treats rv300 as None whenever the
+        # Bit-S.1 EVENT-time reading (_scan_spot_staleness_cache above) is
+        # missing or > bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (30.0
+        # = the validated backtest's abstention horizon).
+        # Bit V.3 (filed) adds the evaluated_opportunities persistence +
+        # honesty alert on top of this cache.
+        self._scan_tape_rv_cache: Dict[str, float] = {}
+        # R1-M2 (Bit V.1 fix round): per-asset RAW engine blended_rv,
+        # stashed by the scanner at the _strategy_vol seam BEFORE the
+        # max(blended_rv, rv300) selection. The eval rows' volatility
+        # column carries the max — the honest input the DECISION used —
+        # so the V.3 re-arm deflation ratio (per-asset median
+        # raw_blended_rv/rv300, gate [0.8, 1.25]) MUST source its
+        # numerator here and its denominator from _scan_tape_rv_cache
+        # above; computed off the rows it would be max(b, rv300)/rv300
+        # >= 1 always and could never detect deflation. Always
+        # overwritten on the tick's vol pass (blended_rv is non-None by
+        # that point — the silent_vol_none branch continues first);
+        # rv300 missing => ratio NULL via the DENOMINATOR (honest-NULL).
+        self._scan_raw_blended_rv_cache: Dict[str, float] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute

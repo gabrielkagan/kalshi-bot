@@ -104,11 +104,22 @@ def _ob(yes_ask_cents=8, yes_bid_cents=3):
 
 
 def _eval(eng, *, yes_ask_cents=8, yes_bid_cents=3, stc=600.0, spot=100.0,
-          threshold=110.0, blended_rv=0.0001, ticker=TICKER, ob=None):
+          threshold=110.0, blended_rv=0.0001, ticker=TICKER, ob=None,
+          asset="BTC", spot_staleness=0.0):
+    """``spot_staleness`` seeds the scanner-owned Bit-S.1 per-asset cache
+    (``state._scan_spot_staleness_cache``) that the frozen/unmeasured-spot
+    gate (R1-M1 fix round, Bit V.1 — mirror of twaplock R2-MN1) reads —
+    default 0.0 = fresh WS tick this tick, so every test that isn't ABOUT
+    the gate sails through it. ``None`` pops the slot (warmup / scanner
+    honest-NULL)."""
+    if spot_staleness is None:
+        eng._state._scan_spot_staleness_cache.pop(asset, None)
+    else:
+        eng._state._scan_spot_staleness_cache[asset] = spot_staleness
     if ob is None:
         ob = _ob(yes_ask_cents, yes_bid_cents)
     return eng.evaluate_market(
-        ticker=ticker, event_ticker=EVENT, asset="BTC", product_type="15m",
+        ticker=ticker, event_ticker=EVENT, asset=asset, product_type="15m",
         spot=spot, threshold=threshold, seconds_to_close=stc,
         blended_rv=blended_rv, orderbook_fetch=lambda: ob,
         config_snapshot_id=None, balance_at_scan=50000)
@@ -239,12 +250,191 @@ class TestConditionLogic:
         assert len(_eval(engine, yes_ask_cents=8)) == 0
 
     def test_no_orderbook_no_candidate(self, engine, enabled):
+        # fresh staleness — isolate the orderbook branch from the
+        # frozen-spot gate (same idiom as test_twaplock_strategy.py:359).
+        engine._state._scan_spot_staleness_cache["BTC"] = 0.0
         out = engine.evaluate_market(
             ticker=TICKER, event_ticker=EVENT, asset="BTC", product_type="15m",
             spot=100.0, threshold=110.0, seconds_to_close=600.0,
             blended_rv=0.0001, orderbook_fetch=lambda: None,
             config_snapshot_id=None, balance_at_scan=50000)
         assert out == []
+
+
+# ── frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1) ───────────────────
+
+class TestSpotStalenessGate:
+    """Mirror of twaplock's R2-MN1 frozen-spot gate (TWAPLOCK_SPOT_STALE).
+    The CoinbaseFeed sampler re-stamps the last-known price with fresh
+    timestamps every 1s, so a frozen WS feed is invisible to buffer-shape
+    guards — only the Bit-S.1 EVENT-time staleness cache
+    (state._scan_spot_staleness_cache) can see the freeze, and longshot's
+    p_normal would otherwise be priced off a stale spot AND a deflated
+    tape rv. The validated backtest (02_longshot_tick_floor STALE_S=30.0)
+    ABSTAINED at every decision point whose spot was >30s event-stale;
+    pre-fix the live engine had NO such gate (twaplock had its 5s gate,
+    longshot none — R1-M1)."""
+
+    def test_constant_exists(self):
+        assert C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS == 30.0
+
+    def test_stale_reading_blocks_and_writes_no_row(self, engine, state,
+                                                    enabled, caplog):
+        import logging as _logging
+        with caplog.at_level(_logging.INFO):
+            cands = _eval(
+                engine,
+                spot_staleness=C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS + 1.0)
+        assert cands == []
+        assert "LONGSHOT_SPOT_STALE" in caplog.text
+        n = state.conn.execute(
+            "SELECT COUNT(*) FROM evaluated_opportunities WHERE "
+            "filter_stage LIKE 'longshot%'").fetchone()[0]
+        assert n == 0
+
+    def test_missing_cache_entry_blocks(self, engine, enabled):
+        """Warmup / scanner honest-NULL pop: no reading = no signal."""
+        assert _eval(engine, spot_staleness=None) == []
+
+    def test_fresh_reading_passes(self, engine, enabled):
+        assert len(_eval(engine, spot_staleness=0.5)) == 1
+
+    def test_boundary_at_threshold_passes(self, engine, enabled):
+        """Gate is strict-greater-than: exactly the constant still trades
+        (same boundary semantics as twaplock's gate)."""
+        assert len(_eval(
+            engine,
+            spot_staleness=C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS)) == 1
+
+    def test_stale_log_throttled_per_asset(self, engine, enabled, caplog):
+        """Longshot evaluates every 15M ticker in the STC band every tick
+        — on gapped feeds (BNB: 34% of 1-min intervals stale) an
+        unthrottled log would spam per ticker. 60s/asset throttle (the
+        TAPE_RV_NONE idiom); candidates still blocked on every stale
+        call."""
+        import logging as _logging
+        with caplog.at_level(_logging.INFO):
+            assert _eval(engine, spot_staleness=31.0) == []
+            assert _eval(engine, spot_staleness=31.0,
+                         ticker=TICKER + "X") == []
+        assert caplog.text.count("LONGSHOT_SPOT_STALE") == 1
+
+
+# ── stale-episode quote-down (R2-M1 fix round, Bit V.1) ──────────────────────
+
+class TestSpotStaleQuoteDown:
+    """R2-M1 (Bit V.1 R2 fix round): the staleness gate returns [] BEFORE
+    the condition-refresh pass, so pre-fix a resting quote stayed up
+    UN-refreshed for the whole stale episode (observed up to ~12 min) —
+    but the validated economics excluded those fills: the 02b fill
+    model's ``zscore`` goes None on a >30s-stale spot at print time
+    (``02b_longshot_fillable_validation.py::_at``/``_rv_pure``,
+    ``STALE_S=30.0``), and the only measured tolerance for quotes
+    lingering past signal death is the 10s cancel-latency arm
+    (``LATENCY_S=10.0``, pickoff -0.16c/ct). Fix: staleness persisting
+    past ``LONGSHOT_STALE_CANCEL_GRACE_SECONDS`` cancels this ticker's
+    resting quotes (reason ``spot_stale``; cancel_order is intentionally
+    ungated — cancels only reduce exposure). Grace > 0 absorbs flickery
+    staleness (no cancel churn); a fresh eval clears the episode clock."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch):
+        """Deterministic wall clock for bot.longshot's module-level
+        ``time`` name (the module only calls ``time.time()``)."""
+        import types
+        c = {"t": 1_750_000_000.0}
+        monkeypatch.setattr(
+            longshot_mod, "time",
+            types.SimpleNamespace(time=lambda: c["t"]))
+        return c
+
+    @staticmethod
+    def _register_with_ledger(engine, state):
+        """Resting quote + its pending_orders ledger row (R2-C1 pattern
+        from test_longshot_r2_regressions.py::_seed_pending_resting)."""
+        state.insert_bot_order("ls-ss1", TICKER, EVENT, "BTC", "no", 3, 92,
+                               False)
+        state.confirm_order_submitted("ls-ss1", "oid-ss1")
+        engine.register_resting(
+            order_id="oid-ss1", client_order_id="ls-ss1", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=3, seconds_to_close=600.0)
+
+    def test_grace_constant_within_validated_latency_arm(self):
+        assert C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS == 10.0
+        # The 02b LATENCY_S=10.0 arm is the ONLY measured tolerance for a
+        # quote lingering after the signal dies — the grace must never
+        # exceed it.
+        assert C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS <= 10.0
+
+    def test_stale_past_grace_cancels_with_spot_stale_reason(
+            self, engine, state, enabled, clock, caplog):
+        import logging as _logging
+        self._register_with_ledger(engine, state)
+        with caplog.at_level(_logging.INFO):
+            # first stale eval latches the episode clock — within grace,
+            # the quote stays (churn protection)
+            assert _eval(engine, spot_staleness=31.0) == []
+            engine._client.cancel_order.assert_not_called()
+            clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
+            assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        assert engine.resting_count() == 0
+        assert "reason=spot_stale" in caplog.text
+        row = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-ss1'"
+        ).fetchone()
+        assert row["status"] == "canceled", (
+            "the spot_stale pop must flip the ledger row off 'resting' "
+            "(R2-C1 — otherwise the timeslot stays occupied forever)")
+
+    def test_unmeasured_reading_past_grace_also_cancels(
+            self, engine, state, enabled, clock):
+        """``None`` staleness (warmup / scanner honest-NULL pop) is the
+        same no-signal episode as a stale reading — quote-down applies."""
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=None) == []
+        clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
+        assert _eval(engine, spot_staleness=None) == []
+        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        assert engine.resting_count() == 0
+
+    def test_stale_within_grace_quote_stays(self, engine, state, enabled,
+                                            clock):
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=31.0) == []
+        clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS - 5.0
+        assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_not_called()
+        assert engine.resting_count() == 1
+
+    def test_recovery_within_grace_no_churn(self, engine, state, enabled,
+                                            clock):
+        """Flickery staleness: a fresh eval inside the grace clears the
+        episode clock, and a NEW stale episode restarts it — 13s of
+        cumulative wall time across two separate sub-grace episodes must
+        NOT cancel (no churn on gapped-but-recovering feeds)."""
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=31.0) == []
+        clock["t"] += 5.0
+        # fresh tick (condition still holds: in-band ask, deep-OTM p) —
+        # clears the episode; cap math returns [] (3 resting = cap)
+        assert _eval(engine, spot_staleness=0.5) == []
+        clock["t"] += 8.0
+        assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_not_called()
+        assert engine.resting_count() == 1
+
+    def test_twaplock_untouched(self):
+        """Twaplock is a TAKER (IOC) overlay — it rests no quotes, so its
+        abstain-only stale gate (TWAPLOCK_SPOT_STALE) is already the
+        complete fix on that side. The grace-cancel machinery must stay
+        longshot-only."""
+        import inspect
+        import bot.twaplock as tw
+        src = inspect.getsource(tw)
+        assert "LONGSHOT_STALE_CANCEL_GRACE_SECONDS" not in src
+        assert '"spot_stale"' not in src
 
 
 # ── evaluated_opportunities rows ─────────────────────────────────────────────
