@@ -13,7 +13,10 @@ Pins (structural anchors, not line numbers):
    construction).
 2. ``bot/scanner/__init__.py`` top-imports ``trailing_rv300`` from
    ``bot.helpers.tape_rv`` (not lazy) and calls it inside ``scan()``.
-3. ``StateManager.__init__`` initializes ``_scan_tape_rv_cache``.
+3. ``StateManager.__init__`` initializes ``_scan_vol_pair_cache`` (the
+   single ATOMIC (raw_blended_rv, tape_rv300) per-asset stash — V.3-R1-M1
+   fix round; the legacy split caches ``_scan_tape_rv_cache`` /
+   ``_scan_raw_blended_rv_cache`` are RETIRED and must not come back).
 4. BOTH strategy-engine overlays (``_ls_engine.evaluate_market`` +
    ``_tw_engine.evaluate_market``) receive ``blended_rv=_strategy_vol``
    — the max-selected honest vol — NOT the raw ``blended_rv`` name. A
@@ -21,9 +24,11 @@ Pins (structural anchors, not line numbers):
    here even if behavioral tests are green.
 5. ``_strategy_vol`` is assigned via ``max(blended_rv, _tape_rv300)``
    somewhere in ``scan()`` (never price risk off the smaller estimate),
-   where ``_tape_rv300`` is derived from the ``_scan_tape_rv_cache`` read
-   (R1-MN4 tighten: the second ``max()`` arg must be the cache-derived
-   name — a refactor that maxes against anything else goes RED).
+   where ``_tape_rv300`` is derived from the per-TICK ``_tape_rv_by_asset``
+   memo read (R1-MN4 tighten, retargeted at V.3-R1-M1: the second
+   ``max()`` arg must be the tick-memo-derived name — a refactor that
+   maxes against anything else goes RED; the memo guarantees the seam
+   consumes THIS tick's rv300, never a cross-tick cache).
 6. R1-M1 (fix round) — EVENT-time staleness gate at the seam: the live
    CoinbaseFeed sampler re-stamps the last-known price every 1s, so the
    helper's BUFFER-time guard can never fire on a frozen feed. ``scan()``
@@ -38,12 +43,15 @@ Pins (structural anchors, not line numbers):
    pattern): reads ``_scan_spot_staleness_cache`` and compares against
    ``C.LONGSHOT_MAX_SPOT_STALENESS_SECONDS`` (= 30.0, lockstep with the
    tape-rv horizon).
-8. R1-M2 (fix round) — the RAW engine blended_rv is stashed per asset
-   in ``StateManager._scan_raw_blended_rv_cache`` at the
-   ``_strategy_vol`` seam. Eval rows persist max(b, rv300) as
-   ``volatility`` (decision provenance), so the V.3 re-arm ratio MUST
-   source raw_b from this cache + rv300 from ``_scan_tape_rv_cache`` —
-   never the rows' volatility column (ratio would be >= 1 always).
+8. R1-M2 (fix round) + V.3-R1-M1 (fix round) — the RAW engine blended_rv
+   and the same-tick tape rv300 are stashed per asset as ONE atomic
+   tuple ``StateManager._scan_vol_pair_cache[asset] = (blended_rv,
+   _tape_rv300)`` at the ``_strategy_vol`` seam. Eval rows persist
+   max(b, rv300) as ``volatility`` (decision provenance), so the V.3
+   re-arm ratio MUST source both halves from this pair cache — never
+   the rows' volatility column (ratio would be >= 1 always), and never
+   from two independently-lifecycled caches (stale mixed-tick pairs —
+   the V.3-R1-M1 leak class).
 """
 from __future__ import annotations
 
@@ -168,40 +176,53 @@ def _state_init_assigns_attr(attr: str) -> bool:
     return False
 
 
-def test_state_manager_initializes_scan_tape_rv_cache():
-    assert _state_init_assigns_attr("_scan_tape_rv_cache"), (
-        "StateManager.__init__ must initialize _scan_tape_rv_cache "
-        "(mirrors _scan_spot_staleness_cache)")
+def test_state_manager_initializes_scan_vol_pair_cache():
+    """V.3-R1-M1: the single ATOMIC (raw, tape) per-asset stash (mirrors
+    _scan_spot_staleness_cache lifecycle discipline)."""
+    assert _state_init_assigns_attr("_scan_vol_pair_cache"), (
+        "StateManager.__init__ must initialize _scan_vol_pair_cache "
+        "(the atomic (raw_blended_rv, tape_rv300) pair — V.3-R1-M1)")
 
 
-def test_state_manager_initializes_scan_raw_blended_rv_cache():
-    """R1-M2: the V.3 deflation-ratio NUMERATOR. Eval rows persist the
-    max()-selected decision input as volatility, so the raw engine
-    estimate needs its own per-asset stash."""
-    assert _state_init_assigns_attr("_scan_raw_blended_rv_cache"), (
-        "StateManager.__init__ must initialize _scan_raw_blended_rv_cache "
-        "(R1-M2 — V.3 sources the re-arm ratio from the VOL-ENGINE "
-        "caches, not the rows' volatility column)")
+def test_legacy_split_vol_caches_retired():
+    """Negative pin (V.3-R1-M1): the two independently-lifecycled caches
+    are the ROOT CAUSE of the stale mixed-tick pair leak — they must not
+    be re-introduced (pairing-by-coincidence vs pairing-by-construction)."""
+    for legacy in ("_scan_tape_rv_cache", "_scan_raw_blended_rv_cache"):
+        assert not _state_init_assigns_attr(legacy), (
+            f"StateManager.__init__ re-introduced {legacy} — the split "
+            "caches were retired at V.3-R1-M1; use _scan_vol_pair_cache")
+    scanner_src = SCANNER_PATH.read_text()
+    for legacy in ("_scan_tape_rv_cache", "_scan_raw_blended_rv_cache"):
+        assert legacy not in scanner_src, (
+            f"bot/scanner/__init__.py references retired cache {legacy}")
 
 
-def test_scan_writes_raw_blended_rv_cache():
-    """R1-M2 companion: scan() must stash the RAW blended_rv per asset
-    at the _strategy_vol seam (subscript write on
-    _scan_raw_blended_rv_cache)."""
+def test_scan_writes_vol_pair_cache_atomically():
+    """R1-M2 + V.3-R1-M1 companion: scan() must stash the (raw, tape)
+    pair per asset at the _strategy_vol seam in ONE subscript write —
+    `self._state._scan_vol_pair_cache[asset] = (blended_rv, _tape_rv300)`
+    — so both halves are same-tick by construction."""
     fn = _scan_func(_tree(SCANNER_PATH))
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if (isinstance(t, ast.Subscript)
                         and isinstance(t.value, ast.Attribute)
-                        and t.value.attr == "_scan_raw_blended_rv_cache"
-                        and isinstance(node.value, ast.Name)
-                        and node.value.id == "blended_rv"):
+                        and t.value.attr == "_scan_vol_pair_cache"
+                        and isinstance(node.value, ast.Tuple)
+                        and len(node.value.elts) == 2
+                        and isinstance(node.value.elts[0], ast.Name)
+                        and node.value.elts[0].id == "blended_rv"
+                        and isinstance(node.value.elts[1], ast.Name)
+                        and node.value.elts[1].id == "_tape_rv300"):
                     return
     raise AssertionError(
-        "scan() must write self._state._scan_raw_blended_rv_cache[asset] "
-        "= blended_rv (the RAW engine estimate, pre-max) — V.3's "
-        "deflation ratio is uncomputable from eval rows alone (R1-M2)")
+        "scan() must write self._state._scan_vol_pair_cache[asset] = "
+        "(blended_rv, _tape_rv300) — the RAW engine estimate pre-max "
+        "paired with the SAME-TICK tape rv300 in one atomic write "
+        "(R1-M2 + V.3-R1-M1); V.3's deflation ratio is uncomputable "
+        "from eval rows alone")
 
 
 # ── 4 + 5. Overlay routing through the max() selection ──────────────────────
@@ -237,8 +258,8 @@ def test_both_overlays_pass_strategy_vol_not_raw_blended_rv():
 
 
 def test_strategy_vol_assigned_via_max_of_blended_and_tape():
-    """R1-MN4 tighten: the SECOND max() arg must be the cache-derived
-    ``_tape_rv300`` name (pinned cache-derived by the sister test below)
+    """R1-MN4 tighten: the SECOND max() arg must be the tick-memo-derived
+    ``_tape_rv300`` name (pinned memo-derived by the sister test below)
     — `max(blended_rv, <anything else>)` no longer satisfies this pin."""
     fn = _scan_func(_tree(SCANNER_PATH))
     for node in ast.walk(fn):
@@ -259,14 +280,16 @@ def test_strategy_vol_assigned_via_max_of_blended_and_tape():
     raise AssertionError(
         "scan() must assign _strategy_vol = max(blended_rv, _tape_rv300) "
         "on the rv300-available path — never price strategy risk off the "
-        "smaller estimate, and the second arg must be the cache-derived "
-        "_tape_rv300 name (R1-MN4)")
+        "smaller estimate, and the second arg must be the tick-memo-"
+        "derived _tape_rv300 name (R1-MN4, retargeted at V.3-R1-M1)")
 
 
-def test_tape_rv300_name_is_cache_derived():
+def test_tape_rv300_name_is_tick_memo_derived():
     """Companion to the max() pin: ``_tape_rv300`` must be assigned from
-    ``self._state._scan_tape_rv_cache.get(...)`` inside scan() — making
-    the second max() arg provably the per-asset cache reading."""
+    ``_tape_rv_by_asset.get(...)`` inside scan() — the per-TICK memo
+    written at the shared Coinbase vol pass — making the second max()
+    arg provably THIS tick's rv300 (V.3-R1-M1: never a cross-tick
+    durable-cache reading)."""
     fn = _scan_func(_tree(SCANNER_PATH))
     for node in ast.walk(fn):
         if isinstance(node, ast.Assign):
@@ -277,12 +300,12 @@ def test_tape_rv300_name_is_cache_derived():
             if (isinstance(v, ast.Call)
                     and isinstance(v.func, ast.Attribute)
                     and v.func.attr == "get"
-                    and isinstance(v.func.value, ast.Attribute)
-                    and v.func.value.attr == "_scan_tape_rv_cache"):
+                    and isinstance(v.func.value, ast.Name)
+                    and v.func.value.id == "_tape_rv_by_asset"):
                 return
     raise AssertionError(
-        "_tape_rv300 must be read from self._state._scan_tape_rv_cache"
-        ".get(asset) inside scan()")
+        "_tape_rv300 must be read from the per-tick _tape_rv_by_asset"
+        ".get(asset) memo inside scan() (V.3-R1-M1)")
 
 
 # ── 6. Event-time staleness gate at the seam (R1-M1 fix round) ───────────────

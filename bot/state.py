@@ -201,22 +201,36 @@ class StateManager:
         # Bit-S.1 EVENT-time reading (_scan_spot_staleness_cache above) is
         # missing or > bot.helpers.tape_rv.TAPE_RV_MAX_STALENESS_S (30.0
         # = the validated backtest's abstention horizon).
-        # Bit V.3 (filed) adds the evaluated_opportunities persistence +
-        # honesty alert on top of this cache.
-        self._scan_tape_rv_cache: Dict[str, float] = {}
-        # R1-M2 (Bit V.1 fix round): per-asset RAW engine blended_rv,
-        # stashed by the scanner at the _strategy_vol seam BEFORE the
-        # max(blended_rv, rv300) selection. The eval rows' volatility
-        # column carries the max — the honest input the DECISION used —
-        # so the V.3 re-arm deflation ratio (per-asset median
-        # raw_blended_rv/rv300, gate [0.8, 1.25]) MUST source its
-        # numerator here and its denominator from _scan_tape_rv_cache
-        # above; computed off the rows it would be max(b, rv300)/rv300
-        # >= 1 always and could never detect deflation. Always
-        # overwritten on the tick's vol pass (blended_rv is non-None by
-        # that point — the silent_vol_none branch continues first);
-        # rv300 missing => ratio NULL via the DENOMINATOR (honest-NULL).
-        self._scan_raw_blended_rv_cache: Dict[str, float] = {}
+        # Bit V.3 + V.3-R1-M1 fix round (2026-06-12): the single ATOMIC
+        # vol-honesty pair stash — `_scan_vol_pair_cache[asset] =
+        # (raw_blended_rv, tape_rv300)`, where raw_blended_rv is the RAW
+        # engine estimate BEFORE the V.1 max(blended_rv, rv300) selection
+        # and tape_rv300 is the SAME-TICK independent tape RV. Written
+        # AND popped by the scanner at the 15M _strategy_vol seam (write
+        # when rv300 is present; pop when it is None — plus pops on
+        # every rv300-None vol pass and in the 15M loss-cooldown branch,
+        # which skips the seam entirely), so both halves come from the
+        # same tick BY CONSTRUCTION. The cache only ever holds COMPLETE
+        # pairs (persist-both-or-neither: the soak ratio raw/tape needs
+        # both halves; a raw without its same-tick tape is most honestly
+        # represented as both-NULL). Replaces the two independently-
+        # lifecycled V.1 caches (`_scan_tape_rv_cache` honest-NULL-pop +
+        # `_scan_raw_blended_rv_cache` overwrite-only) whose
+        # "tape-present" proxy freshness gate broke on (1) the cooldown
+        # branch (both frozen ≤2h yet tape-present) and (2) hourly
+        # passes (fresh tape certified a frozen raw). Consumers: (a)
+        # insert_evaluated_opportunity auto-fills `tape_rv300` +
+        # `raw_blended_rv` from here, atomically, gated to product_type
+        # in (None, '15m') — hourly/SPX/weather rows are both-NULL by
+        # construction; (b) the eval rows' volatility column carries the
+        # max — the honest input the DECISION used — so the V.3 re-arm
+        # deflation ratio (per-asset median raw_blended_rv/tape_rv300,
+        # gate [0.8, 1.25]) MUST source both halves here; computed off
+        # the rows it would be max(b, rv300)/rv300 >= 1 always and could
+        # never detect deflation. The scanner's VolHonestyMonitor feed
+        # reads the seam LOCALS (same-tick by definition), not this
+        # cache.
+        self._scan_vol_pair_cache: Dict[str, Tuple[float, float]] = {}
         # Per-ticker top-N orderbook ladder JSON populated by scanner each
         # tick from current ob_data. Stored as (monotonic_ts, json) tuples
         # so reads can enforce a freshness gate — auto-filling a 15-minute
@@ -957,6 +971,26 @@ class StateManager:
             ("rti_synthetic", "REAL"),
             ("rti_constituent_count", "INTEGER"),
             ("rti_confidence", "REAL"),
+            # Bit V.3 (2026-06-12): vol-honesty pair — the soak's
+            # measurement layer for the L-VOL-2 lesson (kb/failures/
+            # vol-engine-beta-dvol-deflation-jun12.md). tape_rv300 =
+            # the independent trailing-300s tape realized vol
+            # (bot.helpers.tape_rv.trailing_rv300, exact backtest
+            # parity); raw_blended_rv = the RAW engine estimate BEFORE
+            # the V.1 max(blended_rv, rv300) selection (V.1-R1-M2: the
+            # rows' `volatility` column carries the max, so the
+            # deflation ratio computed off it would be >= 1 always and
+            # could never detect deflation). Auto-filled ATOMICALLY from
+            # the single per-asset pair cache `_scan_vol_pair_cache`
+            # (V.3-R1-M1: both halves same-tick by construction;
+            # persist-both-or-neither; gated to product_type in
+            # (None, '15m') so hourly/SPX/weather rows are both-NULL).
+            # Re-arm soak gate reads these: per-asset median
+            # raw_blended_rv/tape_rv300 ∈ [0.8, 1.25]
+            # (kb/decisions/longshot-twap-live-small-plan.md,
+            # pre-registered; /live-small soak section).
+            ("tape_rv300", "REAL"),
+            ("raw_blended_rv", "REAL"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE evaluated_opportunities ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -2720,7 +2754,20 @@ class StateManager:
                                      # empty ⇒ shadow for all).
                                      rti_synthetic: Optional[float] = None,
                                      rti_constituent_count: Optional[int] = None,
-                                     rti_confidence: Optional[float] = None):
+                                     rti_confidence: Optional[float] = None,
+                                     # Bit V.3 (2026-06-12): vol-honesty
+                                     # pair. tape_rv300 = independent
+                                     # trailing-300s tape RV at decision
+                                     # time; raw_blended_rv = the RAW
+                                     # engine estimate BEFORE the V.1
+                                     # max() selection. Auto-filled
+                                     # ATOMICALLY from the single
+                                     # `_scan_vol_pair_cache` (V.3-R1-M1
+                                     # — same-tick pair, both-or-
+                                     # neither, 15M-only). Explicit
+                                     # caller kwargs win.
+                                     tape_rv300: Optional[float] = None,
+                                     raw_blended_rv: Optional[float] = None):
         """Insert an evaluated opportunity for settlement tracking."""
         # Auto-fill balance from cache so ALL filter stages have a recent value
         if available_balance_cents is not None:
@@ -2777,6 +2824,35 @@ class StateManager:
             _rti = self._scan_rti_cache.get(asset)
             if _rti is not None:
                 rti_synthetic, rti_constituent_count, rti_confidence = _rti
+        # Bit V.3 + V.3-R1-M1 fix round (2026-06-12): auto-fill the
+        # vol-honesty pair ATOMICALLY from the single per-asset pair cache
+        # (mirrors _scan_spot_staleness_cache above for the no-threading
+        # contract; the pair shape is the durable fix for the stale-leak
+        # class). The cache only ever holds COMPLETE same-tick pairs —
+        # the scanner writes it solely at the 15M _strategy_vol seam and
+        # pops it on every rv300-None vol pass + in the loss-cooldown
+        # branch — so a bare .get is safe: missing → both NULL (honest).
+        # PERSIST-BOTH-OR-NEITHER: (a) the only consumer — the soak's
+        # honesty ratio raw/tape — is undefined unless BOTH halves exist
+        # from the SAME tick, so the fill triggers only when the caller
+        # supplied NEITHER kwarg (a caller passing exactly one side gets
+        # no cache fill for the other — that would fabricate a mixed-tick
+        # pair); (b) the fill is gated to product_type in (None, '15m'):
+        # hourly shares the Coinbase scan branch but never seams the
+        # pair, so pre-fix a frozen raw could ride a fresh tape onto
+        # hourly rows — post-fix hourly/SPX/weather rows are both-NULL
+        # by construction. Residual (documented, accepted): the rare
+        # post-warmup silent_vol_none branch can persist a ≤1-tick-old
+        # (but internally same-tick) pair; the /live-small soak query F
+        # excludes filter_stage LIKE 'silent_%' as defense-in-depth.
+        # Pairing invariant on auto-filled rows: raw_blended_rv non-NULL
+        # ⇔ tape_rv300 non-NULL. Explicit kwargs win.
+        if (tape_rv300 is None and raw_blended_rv is None
+                and asset is not None
+                and product_type in (None, "15m")):
+            _vol_pair = self._scan_vol_pair_cache.get(asset)
+            if _vol_pair is not None:
+                raw_blended_rv, tape_rv300 = _vol_pair
         # Per-level orderbook ladder (Apr 25): auto-fill from cache via
         # _get_fresh_ob_ladder (returns None on stale entries — honest).
         if orderbook_levels_json is None:
@@ -3133,8 +3209,9 @@ class StateManager:
                      tm_shadow_kelly_ct, tm_shadow_kelly_prob,
                      tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
                      spot_staleness_seconds,
-                     rti_synthetic, rti_constituent_count, rti_confidence)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     rti_synthetic, rti_constituent_count, rti_confidence,
+                     tape_rv300, raw_blended_rv)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(ticker, filter_stage, side) DO UPDATE SET
                     event_ticker=excluded.event_ticker, asset=excluded.asset,
                     rejection_reason=excluded.rejection_reason,
@@ -3328,7 +3405,15 @@ class StateManager:
                     -- not overwrite it (mirrors spot_staleness_seconds).
                     rti_synthetic=COALESCE(evaluated_opportunities.rti_synthetic, excluded.rti_synthetic),
                     rti_constituent_count=COALESCE(evaluated_opportunities.rti_constituent_count, excluded.rti_constituent_count),
-                    rti_confidence=COALESCE(evaluated_opportunities.rti_confidence, excluded.rti_confidence)
+                    rti_confidence=COALESCE(evaluated_opportunities.rti_confidence, excluded.rti_confidence),
+                    -- Bit V.3 (2026-06-12): COALESCE preserves the FIRST
+                    -- vol-honesty reading for a (ticker, filter_stage,
+                    -- side) tuple — the candidate-emitting tick captures
+                    -- the decision-time estimate pair; later rejection/
+                    -- shadow UPSERTs must not overwrite it (mirrors
+                    -- spot_staleness_seconds / rti_* immediately above).
+                    tape_rv300=COALESCE(evaluated_opportunities.tape_rv300, excluded.tape_rv300),
+                    raw_blended_rv=COALESCE(evaluated_opportunities.raw_blended_rv, excluded.raw_blended_rv)
             """, (ticker, event_ticker, asset, filter_stage, rejection_reason,
                   now, spot_price, threshold, volatility, market_price,
                   seconds_to_close, calibrated_prob, edge, ofa_adjustment,
@@ -3394,7 +3479,8 @@ class StateManager:
                   tm_shadow_kelly_ct, tm_shadow_kelly_prob,
                   tm_shadow_kelly_fraction, tm_shadow_kelly_bound_hit,
                   spot_staleness_seconds,
-                  rti_synthetic, rti_constituent_count, rti_confidence))
+                  rti_synthetic, rti_constituent_count, rti_confidence,
+                  tape_rv300, raw_blended_rv))
             # Phase H-2: explicit COMMIT only if we BEGAN IMMEDIATE explicitly.
             # Otherwise fall back to the implicit-tx commit() that paired
             # with the implicit BEGIN that fired on the INSERT above.

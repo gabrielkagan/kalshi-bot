@@ -265,6 +265,31 @@ LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS = 20.0  # combined realized+marked PnL today a
 LIVE_SMALL_CONSECUTIVE_LOSING_DAYS_DISABLE = 3  # N consecutive completed COMBINED losing days -> persistent disable of BOTH
 LIVE_SMALL_STREAK_RESET_UTC_DATE = ""  # operator re-enable: combined losing days on/before this UTC date are ignored ("" = never reset)
 
+# ── Vol-honesty monitor (Bit V.3, 2026-06-12) ────────────────────────────────
+# L-VOL-2 (kb/failures/vol-engine-beta-dvol-deflation-jun12.md): every model
+# input with a cheap independent estimate gets a CONTINUOUS honesty monitor —
+# blended_rv for non-BTC/ETH assets ran 1.4-4x BELOW the tape for ~4 months
+# and no in-scope artifact disagreed with it. The monitor
+# (bot/helpers/vol_honesty.py::VolHonestyMonitor, fed by the scanner at the
+# V.1 _strategy_vol seam) checks, every >=60s per asset, the MEDIAN of
+# raw_blended_rv / tape_rv300 over the trailing VOL_HONESTY_WINDOW_S of
+# in-memory cache pairs; outside [VOL_HONESTY_LOW, VOL_HONESTY_HIGH] ->
+# WARN `VOL_HONESTY_BREACH` (per 60s check) + Telegram (1/hour/asset).
+# Band provenance: BTC/ETH's honest stored/realized baseline ran ~0.7-1.0
+# weekly while the broken alts ran 0.15-0.59 (postmortem History table) —
+# 0.6 sits below the honest band's floor with margin, and 1.8 caps the
+# inflation direction roughly symmetrically in log-space (1/0.6 ≈ 1.67).
+# The alert band is deliberately WIDER than the pre-registered [0.8, 1.25]
+# RE-ARM SOAK gate (kb/decisions/longshot-twap-live-small-plan.md): the
+# monitor is the always-on tripwire for the deflation CLASS; the soak
+# pass-bar reads the persisted tape_rv300/raw_blended_rv columns via the
+# /live-small skill instead. Pinned by
+# tests/contracts/test_vol_honesty_instrumentation.py.
+VOL_HONESTY_LOW = 0.6              # median(raw_blended_rv / tape_rv300) breach floor
+VOL_HONESTY_HIGH = 1.8             # breach ceiling (inflation direction is dishonest too)
+VOL_HONESTY_WINDOW_S = 600.0       # trailing ratio window the median runs over (10 min)
+VOL_HONESTY_ALERT_THROTTLE_S = 3600.0  # Telegram throttle per asset (WARN log keeps the 60s check cadence)
+
 # Engine-owned client_order_id prefixes — the reconciler carve-outs in
 # bot/state.py (_reconcile_orders / cleanup_expired_resting_orders /
 # RECONCILE_IMPORT stamping) and trading_mode.strategy_from_client_order_id

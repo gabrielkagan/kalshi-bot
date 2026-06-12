@@ -328,6 +328,7 @@ from bot.helpers.tape_rv import (  # Bit V.1 (2026-06-12) — estimator-parity t
     TAPE_RV_MAX_STALENESS_S,
     trailing_rv300,
 )
+from bot.helpers.vol_honesty import VolHonestyMonitor  # Bit V.3 (2026-06-12) — continuous raw-blended-rv/tape-rv300 honesty monitor (L-VOL-2); fed at the _strategy_vol seam below
 from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adverse-selection gate
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
@@ -417,6 +418,15 @@ class OpportunityScanner:
         # debug log at the live-small vol seam — fires routinely during
         # the first ~5min post-restart while the spot buffer refills.
         self._tape_rv_none_log_ts: Dict[str, float] = {}
+        # Bit V.3 (2026-06-12): continuous vol-honesty monitor (L-VOL-2,
+        # kb/failures/vol-engine-beta-dvol-deflation-jun12.md). Fed once
+        # per asset per tick at the _strategy_vol seam with the RAW
+        # engine blended_rv + tape rv300; every >=60s per asset it
+        # medians the trailing 10min of ratios and WARNs
+        # VOL_HONESTY_BREACH (+ Telegram, 1/hour/asset) outside
+        # [VOL_HONESTY_LOW, VOL_HONESTY_HIGH]. Scanner-thread-only
+        # (the monitor is not thread-safe by design).
+        self._vol_honesty = VolHonestyMonitor()
         # Hourly per-window tracking (reset each scan tick)
         self._hourly_window_counts: Dict[str, int] = {}
         self._hourly_window_risk: Dict[str, float] = {}
@@ -1601,12 +1611,21 @@ class OpportunityScanner:
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
         _scan_loop_start = time.perf_counter()
-        # Bit V.1 (2026-06-12): per-TICK memo so the tape-RV seam below
-        # computes trailing_rv300 once per asset even when the same asset
-        # surfaces in multiple windows (15M + hourly share the Coinbase
-        # spot/vol branch). The durable per-asset stash lives in
-        # self._state._scan_tape_rv_cache (cross-tick, honest-NULL pop).
-        _tape_rv_assets_done: set = set()
+        # Bit V.1 + V.3-R1-M1 fix round (2026-06-12): per-TICK memo dict
+        # (asset → rv300-or-None) so the tape-RV block below computes
+        # trailing_rv300 once per asset even when the same asset surfaces
+        # in multiple windows (15M + hourly share the Coinbase spot/vol
+        # branch), AND so the 15M _strategy_vol seam consumes THIS tick's
+        # rv300 (never a cross-tick reading). The durable cross-tick
+        # stash is the ATOMIC pair self._state._scan_vol_pair_cache —
+        # (raw_blended_rv, tape_rv300) written/popped at the 15M seam
+        # only, both halves same-tick by construction.
+        _tape_rv_by_asset: dict = {}
+        # Bit V.3: per-TICK memo so the vol-honesty monitor ingests exactly
+        # ONE (raw, tape) ratio sample per asset per tick even when the
+        # asset surfaces in multiple 15M windows — duplicate same-tick
+        # pairs would weight the trailing median toward busy ticks.
+        _vol_honesty_assets_done: set = set()
         for window in eligible_windows:
             # Per-window timer (Phase 1 of scan-loop optimization).
             # SCAN_WINDOW_SLOW fires when one window's iteration body
@@ -1650,6 +1669,16 @@ class OpportunityScanner:
                             scan_stats[asset].get("loss_cooldown", 0) + 1)
                 except Exception:
                     pass
+                # V.3-R1-M1: this branch `continue`s BEFORE the vol seam
+                # for up to LOSS_COOLDOWN_SECONDS (2h), so the pair cache
+                # is neither refreshed nor seam-popped while the asset is
+                # locked out — pop it here so the frozen pre-cooldown
+                # pair cannot auto-fill the trace rows below (it would
+                # contaminate the /live-small soak medians). Regression:
+                # tests/integration/test_tape_rv_parity.py::
+                # TestStaleVolPairLeakRegression.
+                if asset is not None:
+                    self._state._scan_vol_pair_cache.pop(asset, None)
                 # Trace row so this silent-bail isn't a diagnostic black
                 # hole. ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
                 try:
@@ -1751,8 +1780,7 @@ class OpportunityScanner:
                 # (warmup/short buffer/stalled sampler); see the
                 # "Two-layer staleness reality" note in bot/helpers/
                 # tape_rv.py.
-                if asset is not None and asset not in _tape_rv_assets_done:
-                    _tape_rv_assets_done.add(asset)
+                if asset is not None and asset not in _tape_rv_by_asset:
                     _evt_staleness = (
                         self._state._scan_spot_staleness_cache.get(asset))
                     if (_evt_staleness is None
@@ -1767,10 +1795,15 @@ class OpportunityScanner:
                                 "TAPE_RV_COMPUTE_FAILED: %s", asset,
                                 exc_info=True)
                             _rv300_now = None
+                    _tape_rv_by_asset[asset] = _rv300_now
+                    # V.3-R1-M1: no honest tape this tick → drop any
+                    # prior tick's pair so it can't auto-fill rows
+                    # inserted before (or instead of) the 15M seam —
+                    # e.g. silent_spot_none on this very tick. The pair
+                    # WRITE happens only at the seam below; this is the
+                    # honest-NULL pop half of the lifecycle.
                     if _rv300_now is None:
-                        self._state._scan_tape_rv_cache.pop(asset, None)
-                    else:
-                        self._state._scan_tape_rv_cache[asset] = _rv300_now
+                        self._state._scan_vol_pair_cache.pop(asset, None)
                 if spot is None or spot <= 0:
                     # Trace row — Coinbase price feed gap or restart warmup.
                     # ws-cache-drift-silent-scan-2026-04-24 PM Prevention #3.
@@ -1881,16 +1914,46 @@ class OpportunityScanner:
             # beta×DVOL path itself.
             _strategy_vol = blended_rv
             if _pt in (None, "15m"):
-                # R1-M2: stash the RAW engine estimate per asset BEFORE
-                # the max() selection — the engines persist their vol
-                # kwarg (the max) into eval rows' volatility, so the V.3
-                # re-arm deflation ratio sources raw_b from THIS cache +
-                # rv300 from _scan_tape_rv_cache (never the rows'
-                # volatility column, where max(b, rv300)/rv300 >= 1
-                # always). See the cache comments in bot/state.py.
+                _tape_rv300 = _tape_rv_by_asset.get(asset)
+                # R1-M2 + V.3-R1-M1: stash the RAW engine estimate
+                # (pre-max) and THIS tick's tape rv300 as ONE atomic
+                # pair — the engines persist their vol kwarg (the max)
+                # into eval rows' volatility, so the V.3 re-arm
+                # deflation ratio sources BOTH halves from this pair
+                # cache (never the rows' volatility column, where
+                # max(b, rv300)/rv300 >= 1 always). Written AND popped
+                # at this 15M seam only (persist-both-or-neither: no
+                # honest tape ⇒ no pair), so both halves are same-tick
+                # by construction — the durable fix for the stale
+                # mixed-tick pair leak (cooldown/hourly paths). See the
+                # cache comment in bot/state.py.
                 if asset is not None:
-                    self._state._scan_raw_blended_rv_cache[asset] = blended_rv
-                _tape_rv300 = self._state._scan_tape_rv_cache.get(asset)
+                    if _tape_rv300 is None:
+                        self._state._scan_vol_pair_cache.pop(asset, None)
+                    else:
+                        self._state._scan_vol_pair_cache[asset] = (
+                            blended_rv, _tape_rv300)
+                # Bit V.3: feed the continuous vol-honesty monitor with the
+                # SAME pair the persistence layer records (raw engine
+                # estimate + tape rv300 — never the max()'d _strategy_vol,
+                # where ratio >= 1 always). Once per asset per tick; a
+                # breach returns a Telegram-ready message at most once per
+                # VOL_HONESTY_ALERT_THROTTLE_S per asset (the WARN log
+                # inside record() keeps the 60s check cadence). try/except:
+                # monitoring must degrade to silence, never kill the tick.
+                if asset is not None and asset not in _vol_honesty_assets_done:
+                    _vol_honesty_assets_done.add(asset)
+                    try:
+                        _vh_msg = self._vol_honesty.record(
+                            asset, blended_rv, _tape_rv300)
+                        if _vh_msg is not None and _telegram_state._TELEGRAM:
+                            _telegram_state._TELEGRAM.send(
+                                _vh_msg,
+                                dedup_key=f"vol_honesty_{asset}")
+                    except Exception:
+                        logging.debug(
+                            "vol_honesty record failed for %s", asset,
+                            exc_info=True)
                 if _tape_rv300 is not None:
                     _strategy_vol = max(blended_rv, _tape_rv300)
                 else:
