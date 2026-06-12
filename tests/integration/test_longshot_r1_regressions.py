@@ -622,6 +622,12 @@ class TestM4PerStrategyLiveOverride:
         monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
         assert tm.strategy_is_live("longshot", "BTC") is True
         assert tm.strategy_is_live("above", "BTC") is False  # main UNCHANGED
+        # M1 fix round (Bit T-1): override scoped to LONGSHOT_LIVE_ASSETS —
+        # ADA/BCH are T1 zero-live-orders shadow + zero 02b windows; BNB was
+        # excluded from the 02b UNIVERSE (no replayable spot source).
+        assert tm.strategy_is_live("longshot", "ADA") is False
+        assert tm.strategy_is_live("longshot", "BCH") is False
+        assert tm.strategy_is_live("longshot", "BNB") is False
         monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", True)
         monkeypatch.setattr(C, "ASSET_LIVE_TRADING", {"BTC": True})
         monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", False,

@@ -45,6 +45,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import bot.constants as C
+import bot.trading_mode as tm
 from bot.state import StateManager
 
 import bot.longshot as longshot_mod
@@ -544,3 +545,50 @@ class TestExecutorChokepoint:
             is_taker=False, fill_source="longshot_maker")
         assert executor.execute(cands[0]) is None
         client.place_order.assert_not_called()
+
+    def test_override_unvalidated_asset_places_nothing(self, wired, enabled,
+                                                       monkeypatch):
+        """M1 fix round: LONGSHOT_LIVE_OVERRIDE must not arm assets outside
+        LONGSHOT_LIVE_ASSETS at the executor chokepoint — ADA/BCH (T1
+        zero-live-orders shadow + zero 02b windows) AND BNB (excluded from
+        the 02b UNIVERSE — no replayable spot source, so no evidence).
+        feedback_shadow_flag_comprehensive_may10 class."""
+        executor, engine, client = wired
+        cands = _eval(engine)
+        assert len(cands) == 1
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        for shadow_asset, shadow_ticker in (
+                ("ADA", "KXADA15M-26JUN111200-T1"),
+                ("BCH", "KXBCH15M-26JUN111200-T500"),
+                ("BNB", "KXBNB15M-26JUN111200-T700")):
+            cand = dict(cands[0], ticker=shadow_ticker, asset=shadow_asset)
+            assert executor.execute(cand) is None
+        client.place_order.assert_not_called()
+        # the 6 validated assets DO pass strategy_is_live under the override
+        for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"):
+            assert tm.strategy_is_live("longshot", a) is True, a
+
+    def test_backstop_blocks_ls_order_on_unvalidated_asset(self,
+                                                           monkeypatch):
+        """M1 fix round: the place_order backstop refuses an ls- order on
+        any asset outside LONGSHOT_LIVE_ASSETS even with the override ON."""
+        from bot.kalshi_client import KalshiClient
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "LONGSHOT_LIVE_OVERRIDE", True, raising=False)
+        for shadow_ticker in ("KXADA15M-26JUN111200-T1",
+                              "KXBCH15M-26JUN111200-T500",
+                              "KXBNB15M-26JUN111200-T700"):
+            client = MagicMock()
+            result = KalshiClient.place_order(
+                client, shadow_ticker, "no", "buy", 1, no_price=92,
+                client_order_id="ls-x1")
+            assert result is None
+            client._request.assert_not_called()
+        # a validated asset passes through under the override
+        client = MagicMock()
+        client._request.return_value = {"order": {"order_id": "ok"}}
+        KalshiClient.place_order(
+            client, "KXBTC15M-26JUN111200-T110", "no", "buy", 1,
+            no_price=92, client_order_id="ls-x2")
+        client._request.assert_called_once()

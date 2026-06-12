@@ -621,6 +621,37 @@ class TestTradingModeTwaplock:
         assert tm.strategy_is_live("twaplock", "BTC") is True
         assert tm.strategy_is_live("above", "BTC") is False  # main UNCHANGED
         assert tm.strategy_is_live("longshot", "BTC") is False  # ls UNCHANGED
+        # M1 fix round: the override is scoped to the VALIDATED universe
+        # (TWAPLOCK_LIVE_ASSETS mirrors the 01b TRACKED tuple — 7 assets).
+        # ADA/BCH are T1 zero-live-orders shadow + outside the 01b corpus.
+        assert tm.strategy_is_live("twaplock", "ADA") is False
+        assert tm.strategy_is_live("twaplock", "BCH") is False
+        assert tm.strategy_is_live("twaplock", "BNB") is True  # in TRACKED
+        assert tm.strategy_is_live("longshot", "BNB") is False  # NOT in 02b
+
+    def test_backstop_blocks_tw_order_on_shadow_asset(self, monkeypatch):
+        """M1 fix round: the place_order backstop must refuse a tw- order on
+        an asset outside TWAPLOCK_LIVE_ASSETS even with the override ON —
+        ADA/BCH carry the T1 zero-live-orders shadow designation
+        (ADA_15M_SHADOW/BCH_15M_SHADOW) and have no 01b validation rows."""
+        from bot.kalshi_client import KalshiClient
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", True, raising=False)
+        for shadow_ticker in ("KXADA15M-26JUN111200-T1",
+                              "KXBCH15M-26JUN111200-T500"):
+            client = MagicMock()
+            result = KalshiClient.place_order(
+                client, shadow_ticker, "yes", "buy", 1, yes_price=95,
+                client_order_id="tw-x1")
+            assert result is None
+            client._request.assert_not_called()
+        # BNB IS in the twaplock validated set -> the override passes it
+        client = MagicMock()
+        client._request.return_value = {"order": {"order_id": "ok"}}
+        KalshiClient.place_order(
+            client, "KXBNB15M-26JUN111200-T700", "yes", "buy", 1,
+            yes_price=95, client_order_id="tw-x2")
+        client._request.assert_called_once()
 
     def test_strategy_from_client_order_id(self):
         assert tm.strategy_from_client_order_id("tw-abc") == "twaplock"
@@ -665,6 +696,23 @@ class TestExecutorChokepoint:
         assert kwargs["yes_price"] == 95
         assert "post_only" not in kwargs or not kwargs.get("post_only")
         assert kwargs["client_order_id"].startswith("tw-")
+
+    def test_override_shadow_asset_places_nothing(self, wired, enabled,
+                                                  monkeypatch):
+        """M1 fix round: TWAPLOCK_LIVE_OVERRIDE must not arm ADA/BCH at the
+        executor chokepoint (T1 zero-live-orders shadow + outside the 01b
+        validated universe) — feedback_shadow_flag_comprehensive_may10."""
+        executor, engine, client = wired
+        cands = _eval(engine)
+        assert len(cands) == 1
+        monkeypatch.setattr(C, "GLOBAL_LIVE_TRADING", False)
+        monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", True, raising=False)
+        for shadow_asset, shadow_ticker in (
+                ("ADA", "KXADA15M-26JUN111200-T1"),
+                ("BCH", "KXBCH15M-26JUN111200-T500")):
+            cand = dict(cands[0], ticker=shadow_ticker, asset=shadow_asset)
+            assert executor.execute(cand) is None
+        client.place_order.assert_not_called()
 
     def test_fill_recorded_fp_primary(self, wired, state, enabled):
         """FP-primary from day 1 (L-1 R7 lesson): a response carrying ONLY
