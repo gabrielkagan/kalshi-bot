@@ -37,7 +37,7 @@
   Indexes (1):
     sqlite_autoindex_egarch_params_1                              unique=1  origin=pk  partial=0  cols=['asset']
 
-## evaluated_opportunities (154 columns)
+## evaluated_opportunities (156 columns)
   cid=0   name=id                                                       type=INTEGER                notnull=0  pk=1  dflt=None
   cid=1   name=ticker                                                   type=TEXT                   notnull=1  pk=0  dflt=None
   cid=2   name=event_ticker                                             type=TEXT                   notnull=1  pk=0  dflt=None
@@ -185,13 +185,15 @@
   cid=144 name=rti_synthetic                                            type=REAL                   notnull=0  pk=0  dflt=None
   cid=145 name=rti_constituent_count                                    type=INTEGER                notnull=0  pk=0  dflt=None
   cid=146 name=rti_confidence                                           type=REAL                   notnull=0  pk=0  dflt=None
-  cid=147 name=cal_mlp_p_mean                                           type=REAL                   notnull=0  pk=0  dflt=None
-  cid=148 name=cal_mlp_p_std                                            type=REAL                   notnull=0  pk=0  dflt=None
-  cid=149 name=cal_mlp_final_lo                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid=150 name=cal_mlp_final_hi                                         type=REAL                   notnull=0  pk=0  dflt=None
-  cid=151 name=cal_mlp_train_id                                         type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=152 name=cal_mlp_skipped_reason                                   type=TEXT                   notnull=0  pk=0  dflt=None
-  cid=153 name=cal_mlp_request_id                                       type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=147 name=tape_rv300                                               type=REAL                   notnull=0  pk=0  dflt=None
+  cid=148 name=raw_blended_rv                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=149 name=cal_mlp_p_mean                                           type=REAL                   notnull=0  pk=0  dflt=None
+  cid=150 name=cal_mlp_p_std                                            type=REAL                   notnull=0  pk=0  dflt=None
+  cid=151 name=cal_mlp_final_lo                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=152 name=cal_mlp_final_hi                                         type=REAL                   notnull=0  pk=0  dflt=None
+  cid=153 name=cal_mlp_train_id                                         type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=154 name=cal_mlp_skipped_reason                                   type=TEXT                   notnull=0  pk=0  dflt=None
+  cid=155 name=cal_mlp_request_id                                       type=TEXT                   notnull=0  pk=0  dflt=None
   Indexes (5):
     idx_eval_opp_calmlp_pending                               unique=0  origin=c  partial=1  cols=['evaluation_time']
     idx_eval_opp_config_snapshot                              unique=0  origin=c  partial=0  cols=['config_snapshot_id']

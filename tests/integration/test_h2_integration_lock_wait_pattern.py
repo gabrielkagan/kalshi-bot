@@ -74,7 +74,13 @@ def test_insert_site_uses_begin_immediate_for_lock_wait():
     # Bumped from 20_000 → 40_000 chars to cover the full function body.
     # The function is ~700 lines (huge VALUES tuple + ON CONFLICT clause)
     # which exceeds 20_000 chars.
-    body_end = body_start + 40_000
+    # Bumped 40_000 → 60_000 at Bit V.3 (2026-06-12): each schema-chain
+    # add (kwargs + documented auto-fill + INSERT/COALESCE) grows the
+    # function; at 40_000 the window ended BETWEEN the H-2 comment block
+    # mentioning `BEGIN IMMEDIATE` and the actual adjacent
+    # BEGIN-IMMEDIATE/perf_counter pair, which is exactly the false-
+    # positive this assertion exists to reject.
+    body_end = body_start + 60_000
     body = src[body_start:body_end]
 
     # Find BEGIN IMMEDIATE occurrences in the body.
