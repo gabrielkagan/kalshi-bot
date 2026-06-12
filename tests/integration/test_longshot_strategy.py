@@ -320,6 +320,123 @@ class TestSpotStalenessGate:
         assert caplog.text.count("LONGSHOT_SPOT_STALE") == 1
 
 
+# ── stale-episode quote-down (R2-M1 fix round, Bit V.1) ──────────────────────
+
+class TestSpotStaleQuoteDown:
+    """R2-M1 (Bit V.1 R2 fix round): the staleness gate returns [] BEFORE
+    the condition-refresh pass, so pre-fix a resting quote stayed up
+    UN-refreshed for the whole stale episode (observed up to ~12 min) —
+    but the validated economics excluded those fills: the 02b fill
+    model's ``zscore`` goes None on a >30s-stale spot at print time
+    (``02b_longshot_fillable_validation.py::_at``/``_rv_pure``,
+    ``STALE_S=30.0``), and the only measured tolerance for quotes
+    lingering past signal death is the 10s cancel-latency arm
+    (``LATENCY_S=10.0``, pickoff -0.16c/ct). Fix: staleness persisting
+    past ``LONGSHOT_STALE_CANCEL_GRACE_SECONDS`` cancels this ticker's
+    resting quotes (reason ``spot_stale``; cancel_order is intentionally
+    ungated — cancels only reduce exposure). Grace > 0 absorbs flickery
+    staleness (no cancel churn); a fresh eval clears the episode clock."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch):
+        """Deterministic wall clock for bot.longshot's module-level
+        ``time`` name (the module only calls ``time.time()``)."""
+        import types
+        c = {"t": 1_750_000_000.0}
+        monkeypatch.setattr(
+            longshot_mod, "time",
+            types.SimpleNamespace(time=lambda: c["t"]))
+        return c
+
+    @staticmethod
+    def _register_with_ledger(engine, state):
+        """Resting quote + its pending_orders ledger row (R2-C1 pattern
+        from test_longshot_r2_regressions.py::_seed_pending_resting)."""
+        state.insert_bot_order("ls-ss1", TICKER, EVENT, "BTC", "no", 3, 92,
+                               False)
+        state.confirm_order_submitted("ls-ss1", "oid-ss1")
+        engine.register_resting(
+            order_id="oid-ss1", client_order_id="ls-ss1", ticker=TICKER,
+            event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
+            buy_price_cents=92, count=3, seconds_to_close=600.0)
+
+    def test_grace_constant_within_validated_latency_arm(self):
+        assert C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS == 10.0
+        # The 02b LATENCY_S=10.0 arm is the ONLY measured tolerance for a
+        # quote lingering after the signal dies — the grace must never
+        # exceed it.
+        assert C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS <= 10.0
+
+    def test_stale_past_grace_cancels_with_spot_stale_reason(
+            self, engine, state, enabled, clock, caplog):
+        import logging as _logging
+        self._register_with_ledger(engine, state)
+        with caplog.at_level(_logging.INFO):
+            # first stale eval latches the episode clock — within grace,
+            # the quote stays (churn protection)
+            assert _eval(engine, spot_staleness=31.0) == []
+            engine._client.cancel_order.assert_not_called()
+            clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
+            assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        assert engine.resting_count() == 0
+        assert "reason=spot_stale" in caplog.text
+        row = state.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-ss1'"
+        ).fetchone()
+        assert row["status"] == "canceled", (
+            "the spot_stale pop must flip the ledger row off 'resting' "
+            "(R2-C1 — otherwise the timeslot stays occupied forever)")
+
+    def test_unmeasured_reading_past_grace_also_cancels(
+            self, engine, state, enabled, clock):
+        """``None`` staleness (warmup / scanner honest-NULL pop) is the
+        same no-signal episode as a stale reading — quote-down applies."""
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=None) == []
+        clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
+        assert _eval(engine, spot_staleness=None) == []
+        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        assert engine.resting_count() == 0
+
+    def test_stale_within_grace_quote_stays(self, engine, state, enabled,
+                                            clock):
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=31.0) == []
+        clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS - 5.0
+        assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_not_called()
+        assert engine.resting_count() == 1
+
+    def test_recovery_within_grace_no_churn(self, engine, state, enabled,
+                                            clock):
+        """Flickery staleness: a fresh eval inside the grace clears the
+        episode clock, and a NEW stale episode restarts it — 13s of
+        cumulative wall time across two separate sub-grace episodes must
+        NOT cancel (no churn on gapped-but-recovering feeds)."""
+        self._register_with_ledger(engine, state)
+        assert _eval(engine, spot_staleness=31.0) == []
+        clock["t"] += 5.0
+        # fresh tick (condition still holds: in-band ask, deep-OTM p) —
+        # clears the episode; cap math returns [] (3 resting = cap)
+        assert _eval(engine, spot_staleness=0.5) == []
+        clock["t"] += 8.0
+        assert _eval(engine, spot_staleness=31.0) == []
+        engine._client.cancel_order.assert_not_called()
+        assert engine.resting_count() == 1
+
+    def test_twaplock_untouched(self):
+        """Twaplock is a TAKER (IOC) overlay — it rests no quotes, so its
+        abstain-only stale gate (TWAPLOCK_SPOT_STALE) is already the
+        complete fix on that side. The grace-cancel machinery must stay
+        longshot-only."""
+        import inspect
+        import bot.twaplock as tw
+        src = inspect.getsource(tw)
+        assert "LONGSHOT_STALE_CANCEL_GRACE_SECONDS" not in src
+        assert '"spot_stale"' not in src
+
+
 # ── evaluated_opportunities rows ─────────────────────────────────────────────
 
 class TestEvalRows:
