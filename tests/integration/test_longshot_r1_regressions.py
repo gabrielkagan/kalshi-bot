@@ -609,9 +609,11 @@ class TestM4PerStrategyLiveOverride:
     consulted at executor.execute() and at the place_order backstop via
     the ls- client_oid prefix. Main pipeline behavior UNCHANGED."""
 
-    def test_override_live_since_go_live(self):
-        # Flipped True at the 2026-06-12 operator go-live.
-        assert C.LONGSHOT_LIVE_OVERRIDE is True
+    def test_override_paused_after_go_live(self):
+        # True at the 2026-06-12 go-live; flipped back False same day at the
+        # operator pause (live loss rate 4/11 vs ~6% backtest — adverse
+        # selection autopsy). Engine stays ENABLED (shadow rows continue).
+        assert C.LONGSHOT_LIVE_OVERRIDE is False
 
     def test_strategy_is_live_truth_table(self, monkeypatch):
         from bot import trading_mode as tm
