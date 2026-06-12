@@ -1,5 +1,5 @@
 {
-  "total_evaluated": 316026,
+  "total_evaluated": 316058,
   "filter_breakdown": {
     "SOL_BLEED_V2_88_93C_2_5MIN": 14,
     "SOL_TAKER_85_89C_2_5MIN_BLEED": 40,
@@ -8,7 +8,7 @@
     "candidate": 11267,
     "dc_shadow_no_side": 1,
     "dc_shadow_t1b_93c": 762,
-    "dc_shadow_t2_90c": 602,
+    "dc_shadow_t2_90c": 603,
     "dc_shadow_t2_90c_xrp": 136,
     "dc_shadow_t2_z2": 2375,
     "dc_shadow_t2_z25": 975,
@@ -24,8 +24,8 @@
     "decided_window_cap_skip": 461,
     "dip_addon_shadow": 29,
     "doge_shadow": 126,
-    "eth_low_floor_shadow": 3507,
-    "floor_raise_shadow": 14882,
+    "eth_low_floor_shadow": 3508,
+    "floor_raise_shadow": 14883,
     "golden_hour_shadow": 789,
     "hourly_asset_excluded": 267,
     "hourly_config_a": 2189,
@@ -49,11 +49,11 @@
     "hourly_window_risk_cap": 92,
     "hype_high_price_buf_block": 189,
     "hype_shadow": 129,
-    "insufficient_edge": 88372,
-    "longshot_live": 14,
+    "insufficient_edge": 88376,
+    "longshot_live": 15,
     "low_price_near_expiry": 80,
-    "low_price_shadow": 15114,
-    "no_side_price_shadow_no_xrp": 11806,
+    "low_price_shadow": 15117,
+    "no_side_price_shadow_no_xrp": 11809,
     "no_side_price_shadow_xrp": 2145,
     "no_side_shadow": 555,
     "observation_trade": 83,
@@ -61,12 +61,12 @@
     "overnight_discount": 222,
     "overnight_discount_shadow": 878,
     "overnight_lp_shadow": 365,
-    "price_out_of_range": 49795,
+    "price_out_of_range": 49804,
     "price_shadow": 52,
-    "price_shadow_no_xrp": 11138,
+    "price_shadow_no_xrp": 11139,
     "price_shadow_xrp": 3485,
-    "relaxed_edge_shadow": 3495,
-    "silent_loss_cooldown": 1010,
+    "relaxed_edge_shadow": 3496,
+    "silent_loss_cooldown": 1014,
     "silent_vol_none": 488,
     "single_asset_selection": 5,
     "sol_high_edge_shadow": 200,
@@ -94,7 +94,7 @@
     "threshold_implausible": 581,
     "tm96_calmlp_gate_blocked": 939,
     "tm_nbbo_buffer_shadow": 708,
-    "twaplock_live": 9,
+    "twaplock_live": 12,
     "usaft_short_stc": 609,
     "weather_excluded_city": 210,
     "weather_excluded_mtype_bracket": 865,
@@ -199,7 +199,7 @@
       "candidate": 10650,
       "dc_shadow_no_side": 1,
       "dc_shadow_t1b_93c": 762,
-      "dc_shadow_t2_90c": 602,
+      "dc_shadow_t2_90c": 603,
       "dc_shadow_t2_90c_xrp": 136,
       "dc_shadow_t2_z2": 2375,
       "dc_shadow_t2_z25": 975,
@@ -214,16 +214,16 @@
       "decided_contract_t2_z25": 954,
       "decided_window_cap_skip": 461,
       "doge_shadow": 126,
-      "eth_low_floor_shadow": 3507,
-      "floor_raise_shadow": 14882,
+      "eth_low_floor_shadow": 3508,
+      "floor_raise_shadow": 14883,
       "golden_hour_shadow": 789,
       "hype_high_price_buf_block": 189,
       "hype_shadow": 129,
-      "insufficient_edge": 46264,
-      "longshot_live": 14,
+      "insufficient_edge": 46267,
+      "longshot_live": 15,
       "low_price_near_expiry": 80,
-      "low_price_shadow": 15114,
-      "no_side_price_shadow_no_xrp": 11806,
+      "low_price_shadow": 15117,
+      "no_side_price_shadow_no_xrp": 11809,
       "no_side_price_shadow_xrp": 2145,
       "no_side_shadow": 11,
       "observation_trade": 83,
@@ -231,12 +231,12 @@
       "overnight_discount": 222,
       "overnight_discount_shadow": 878,
       "overnight_lp_shadow": 365,
-      "price_out_of_range": 30031,
+      "price_out_of_range": 30034,
       "price_shadow": 52,
-      "price_shadow_no_xrp": 10826,
+      "price_shadow_no_xrp": 10827,
       "price_shadow_xrp": 3485,
-      "relaxed_edge_shadow": 3495,
-      "silent_loss_cooldown": 1010,
+      "relaxed_edge_shadow": 3496,
+      "silent_loss_cooldown": 1014,
       "silent_vol_none": 345,
       "single_asset_selection": 5,
       "sol_high_edge_shadow": 200,
@@ -249,7 +249,7 @@
       "terminal_momentum": 6087,
       "tm96_calmlp_gate_blocked": 939,
       "tm_nbbo_buffer_shadow": 708,
-      "twaplock_live": 9,
+      "twaplock_live": 12,
       "usaft_short_stc": 609,
       "weekend_discount": 1088,
       "weekend_discount_shadow": 1267,
@@ -283,7 +283,7 @@
       "hourly_window_risk_cap": 92,
       "insufficient_edge": 19992,
       "no_side_shadow": 36,
-      "price_out_of_range": 14726,
+      "price_out_of_range": 14731,
       "silent_vol_none": 143,
       "strategy_wait": 292,
       "threshold_implausible": 319,
@@ -314,8 +314,8 @@
     },
     "weather": {
       "candidate": 193,
-      "insufficient_edge": 11486,
-      "price_out_of_range": 4171,
+      "insufficient_edge": 11487,
+      "price_out_of_range": 4172,
       "strategy_wait": 21,
       "weather_excluded_city": 210,
       "weather_excluded_mtype_bracket": 865,
@@ -439,8 +439,8 @@
       "mean_pnl_cents": 2.04
     },
     "dc_shadow_t2_90c": {
-      "n": 602,
-      "pnl_cents": 3351,
+      "n": 603,
+      "pnl_cents": 3359,
       "mean_pnl_cents": 5.57
     },
     "dc_shadow_t2_90c_xrp": {
@@ -504,8 +504,8 @@
       "mean_pnl_cents": -1.49
     },
     "floor_raise_shadow": {
-      "n": 14881,
-      "pnl_cents": -31093,
+      "n": 14882,
+      "pnl_cents": -31079,
       "mean_pnl_cents": -2.09
     },
     "golden_hour_shadow": {
@@ -619,24 +619,24 @@
       "mean_pnl_cents": -490.6
     },
     "insufficient_edge": {
-      "n": 88273,
-      "pnl_cents": -971424,
+      "n": 88277,
+      "pnl_cents": -971326,
       "mean_pnl_cents": -11.0
     },
     "longshot_live": {
-      "n": 14,
-      "pnl_cents": 2436,
-      "mean_pnl_cents": 174.0
+      "n": 15,
+      "pnl_cents": 2388,
+      "mean_pnl_cents": 159.2
     },
     "low_price_shadow": {
-      "n": 15111,
-      "pnl_cents": 14115559,
-      "mean_pnl_cents": 934.12
+      "n": 15114,
+      "pnl_cents": 14105192,
+      "mean_pnl_cents": 933.25
     },
     "no_side_price_shadow_no_xrp": {
-      "n": 11804,
-      "pnl_cents": -10184140,
-      "mean_pnl_cents": -862.77
+      "n": 11806,
+      "pnl_cents": -10179174,
+      "mean_pnl_cents": -862.2
     },
     "no_side_price_shadow_xrp": {
       "n": 2145,
@@ -664,9 +664,9 @@
       "mean_pnl_cents": 272.57
     },
     "price_out_of_range": {
-      "n": 49761,
-      "pnl_cents": 81428,
-      "mean_pnl_cents": 1.64
+      "n": 49764,
+      "pnl_cents": 81321,
+      "mean_pnl_cents": 1.63
     },
     "price_shadow": {
       "n": 52,
@@ -674,9 +674,9 @@
       "mean_pnl_cents": -300.21
     },
     "price_shadow_no_xrp": {
-      "n": 11136,
-      "pnl_cents": 264622,
-      "mean_pnl_cents": 23.76
+      "n": 11138,
+      "pnl_cents": 262114,
+      "mean_pnl_cents": 23.53
     },
     "price_shadow_xrp": {
       "n": 3485,
@@ -684,9 +684,9 @@
       "mean_pnl_cents": 48.37
     },
     "relaxed_edge_shadow": {
-      "n": 3495,
-      "pnl_cents": 50613,
-      "mean_pnl_cents": 14.48
+      "n": 3496,
+      "pnl_cents": 50714,
+      "mean_pnl_cents": 14.51
     },
     "single_asset_selection": {
       "n": 5,
@@ -809,9 +809,9 @@
       "mean_pnl_cents": 0.11
     },
     "twaplock_live": {
-      "n": 9,
-      "pnl_cents": 317,
-      "mean_pnl_cents": 35.22
+      "n": 12,
+      "pnl_cents": 498,
+      "mean_pnl_cents": 41.5
     },
     "usaft_short_stc": {
       "n": 609,
@@ -925,6 +925,6 @@
     ],
     "brier_overall": 0.026166231946485513
   },
-  "generated_at": "2026-06-12T12:38:24Z",
+  "generated_at": "2026-06-12T12:57:49Z",
   "_classifier_version": "v3-2026-04-26"
 }
