@@ -143,11 +143,13 @@ from bot.boot import compute_for_15m_main_path
 
 
 # ── Known SQLite-contention signatures (db-contention log-noise, 2026-06-13) ──
-# The four guarded hot-path writers (insert_rejection /
-# insert_evaluated_opportunity / insert_bot_order / mark_rejection_settled)
-# swallow-or-reraise on the chronic single-writer + cursor-race contention
-# against state.db with a RICH structured WARNING (begin_immediate timing +
-# retry count + active/recent-writer envelope). For THIS known, handled,
+# Three hot-path writers (insert_rejection / insert_evaluated_opportunity /
+# insert_bot_order) log a RICH structured WARNING (begin_immediate timing +
+# retry count + active/recent-writer envelope) when the chronic single-writer
+# + cursor-race contention against state.db trips their BEGIN IMMEDIATE retry
+# loop. (The fourth guarded site, mark_rejection_settled, has only a
+# commit-race except with NO retry loop and NO log of its own — out of scope
+# here; see bot/CLAUDE.md.) For THIS known, handled,
 # already-accounted class the additional `exc_info` traceback is pure
 # journalctl noise — it points only at the conn.execute line the envelope
 # already names. At current universe scale this fires ~100/hr and the

@@ -1,12 +1,14 @@
 """db-contention log-noise regression (2026-06-13).
 
-The four guarded StateManager hot-path writers (insert_rejection /
-insert_evaluated_opportunity / insert_bot_order / mark_rejection_settled)
-swallow-or-reraise on SQLite contention with a RICH structured WARNING
-that already captures begin_immediate timing + retry count +
-active/recent-writer envelope. Pre-fix they ALSO passed
-``exc_info=True``, so every handled-and-accounted contention event
-printed a full ~12-line traceback to stderr. At current universe scale
+Three StateManager hot-path writers (insert_rejection /
+insert_evaluated_opportunity / insert_bot_order) log a RICH structured
+WARNING that already captures begin_immediate timing + retry count +
+active/recent-writer envelope when SQLite contention trips their BEGIN
+IMMEDIATE retry loop. (The fourth guarded site, mark_rejection_settled,
+swallows the commit-race silently with no envelope of its own — out of
+scope.) Pre-fix the three ALSO passed ``exc_info=True``, so every
+handled-and-accounted contention event printed a full ~12-line
+traceback to stderr. At current universe scale
 that runs ~100/hr (chronic single-writer contention on ``state.db`` —
 NOT a bug, the row loss is by-design telemetry-class swallow), and the
 traceback flood buries genuine ERROR-level lines in journalctl.
