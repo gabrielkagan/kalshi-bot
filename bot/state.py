@@ -142,6 +142,37 @@ from bot.models import calculate_fee, strategy_to_group
 from bot.boot import compute_for_15m_main_path
 
 
+# ── Known SQLite-contention signatures (db-contention log-noise, 2026-06-13) ──
+# Three hot-path writers (insert_rejection / insert_evaluated_opportunity /
+# insert_bot_order) log a RICH structured WARNING (begin_immediate timing +
+# retry count + active/recent-writer envelope) when the chronic single-writer
+# + cursor-race contention against state.db trips their BEGIN IMMEDIATE retry
+# loop. (The fourth guarded site, mark_rejection_settled, has only a
+# commit-race except with NO retry loop and NO log of its own — out of scope
+# here; see bot/CLAUDE.md.) For THIS known, handled,
+# already-accounted class the additional `exc_info` traceback is pure
+# journalctl noise — it points only at the conn.execute line the envelope
+# already names. At current universe scale this fires ~100/hr and the
+# traceback flood buries genuine ERROR lines. An UNEXPECTED exception (schema
+# bug, TypeError, …) keeps its traceback — there the stack is the signal.
+# Pinned by tests/integration/test_db_contention_lognoise_regression.py.
+_DB_CONTENTION_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database is busy",
+    "another row available",
+    "no more rows available",
+    "cannot commit - no transaction is active",
+)
+
+
+def _is_known_db_contention(exc: BaseException) -> bool:
+    """True for the chronic, by-design-swallowed SQLite contention class
+    whose structured WARNING envelope already carries full diagnostics."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _DB_CONTENTION_MARKERS)
+
+
 class StateManager:
     """SQLite-backed persistent state. WAL mode for crash resilience."""
 
@@ -2468,7 +2499,7 @@ class StateManager:
                 f"in_tx={_diag_in_tx!s} "
                 f"active_writers={_diag_active!r} "
                 f"recent_writes={_diag_recent!r}",
-                exc_info=True,
+                exc_info=not _is_known_db_contention(e),
             )
 
     def get_unsettled_rejections(self) -> List[Dict]:
@@ -3561,7 +3592,7 @@ class StateManager:
                 f"in_tx={_diag_in_tx!s} "
                 f"active_writers={_diag_active!r} "
                 f"recent_writes={_diag_recent!r}",
-                exc_info=True,
+                exc_info=not _is_known_db_contention(e),
             )
 
     def update_evaluated_opportunity_order(self, ticker: str,
@@ -4017,7 +4048,7 @@ class StateManager:
             f"thread={threading.current_thread().name!r} "
             f"active_writers={_diag_active!r} "
             f"recent_writes={_diag_recent!r}",
-            exc_info=True,
+            exc_info=not _is_known_db_contention(err),
         )
 
     def confirm_order_submitted(self, client_order_id: str, order_id: str):

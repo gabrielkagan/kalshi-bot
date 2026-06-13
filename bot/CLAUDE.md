@@ -178,6 +178,18 @@ insert_evaluated_opportunity → swallow / mark_rejection_settled
 → B3-fu1 swallow / insert_bot_order → raise (crash safety) /
 insert_rejection → swallow. Pinned by
 `tests/integration/test_insert_rejection_defensive_guard_regression.py`.**
+**db-contention-lognoise (2026-06-13): the three contention-swallow/raise
+WARNING sites (insert_rejection / insert_evaluated_opportunity /
+insert_bot_order) pass `exc_info=not _is_known_db_contention(e)` — the
+known single-writer + cursor-race class (`database is locked` /
+`another row available` / `cannot commit - no transaction is active`,
+etc.) logs the rich structured envelope WITHOUT a traceback (the stack
+only names the conn.execute the envelope already cites; ~100/hr at
+current universe scale was burying genuine ERROR lines). UNEXPECTED
+exceptions keep their traceback. `_is_known_db_contention` +
+`_DB_CONTENTION_MARKERS` live at module level in `bot/state.py`.
+Observability-only — retry/swallow control flow UNCHANGED. Pinned by
+`tests/integration/test_db_contention_lognoise_regression.py`.**
 **bit-state-py-database-error-catch (2026-05-22) broadened the BEGIN
 IMMEDIATE retry-loop except clause at the THREE retry-bearing
 StateManager hot-path sites — `insert_evaluated_opportunity`,
