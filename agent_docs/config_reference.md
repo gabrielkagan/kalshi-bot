@@ -367,7 +367,7 @@ To re-enable: set `HOURLY_LIVE_ENABLED=1` (YES) and/or `HOURLY_NO_SIDE_LIVE=1` (
 |--------|-------|-------|
 | DERIBIT_DVOL_CURRENCIES | `{"BTC": "BTC", "ETH": "ETH"}` | The ONLY assets with implied vol. **Bit V.2 (2026-06-12) killed the beta-scaled DVOL path**: `_get_implied_vol`/`_get_implied_vol_hourly` now return `None` for every asset outside this set (previously `btc_dvol × _estimate_beta(asset)` — Epps-effect vol-ratio understatement + index-vs-time alignment bug + 0.5 clamp floor deflated alt `blended_rv` up to ~6x; cross-asset-identical ~8.5e-5 cluster, 2026-06-12 incident). Alts take the rv/EGARCH fallback. |
 | BETA_LOOKBACK_RETURNS | 60 | DEAD CODE consumer post-Bit-V.2 — only `_estimate_beta` reads it, which has no production caller (deletion is a follow-up Bit). |
-| IV_RV_SPREAD_THRESHOLD | 0.50 | If IV > RV by 50%, stress-override shifts blend toward IV (BTC/ETH only post-V.2). The inverse-variance w_rv/w_iv construction carries a DIMENSIONAL-INCOHERENCE flag ((rk_1min−rk_15min)² vs (0.1·iv)²) — redesign ticketed separately (86badv7xj). |
+| ~~IV_RV_SPREAD_THRESHOLD~~ | DELETED | **Deleted in Bit V.4 (2026-06-12)** along with both IV blend branches (`inverse_variance` + `stress_override`): the stress trigger was a level-spread that VRP + the diurnal trough satisfy every quiet evening (fired 60-91% of BTC/ETH ticks on the 2026-06-12 soak night, honesty band breached 1.8-2.7x), and the inverse-variance weights measured QLIKE-negative on 9 days of journal counterfactuals. DVOL is diagnostic-only — never blended into sigma; BTC/ETH take the same rv/EGARCH path as alts. Regression lock `tests/integration/test_vol_engine_iv_diagnostic_only_regression.py`. |
 
 ## External market data poller
 
