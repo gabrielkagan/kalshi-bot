@@ -92,7 +92,7 @@ from bot.helpers.raw_api_journal import append_raw_api_journal  # Bit 9.2 path-A
 from bot.helpers.strings import dollars_str_to_cents, fp_str_to_int
 from bot.kalshi_client import KalshiClient  # type ann on __init__ + discover_active_windows param
 from bot.logger import Logger  # type ann on __init__
-from bot.state import StateManager  # type ann on __init__
+from bot.state import StateManager, _is_known_db_contention  # type ann on __init__; classifier shared from PR #169
 
 from bot.engines import calibration as _cal_state  # Bit 6.3 path-B alias — _cal_state._CALIBRATION_ENGINE / _cal_state._resolve_cal_engine
 import bot.notifier as _telegram_state  # Bit 8.1 path-A++ alias — _telegram_state._TELEGRAM (NOT `from bot import notifier as ...` per L84)
@@ -714,7 +714,8 @@ class SettlementTracker:
                     self._process_rejection_settlement(market, ticker)
             except Exception as e:
                 logging.warning(
-                    f"Rejection settlement check failed for {ticker}: {e}", exc_info=True)
+                    f"Rejection settlement check failed for {ticker}: {e}",
+                    exc_info=not _is_known_db_contention(e))
 
     def _process_rejection_settlement(self, market: Dict, ticker: str):
         """Compute counterfactual P&L for a rejected opportunity that settled."""
@@ -990,7 +991,9 @@ class SettlementTracker:
                         f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
                     )
                 except Exception as e:
-                    logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
+                    logging.warning(
+                        f"Evaluated opp settlement check failed for {ticker}: {e}",
+                        exc_info=not _is_known_db_contention(e))
 
         # ── Phase 2: Fast DB writes (short lock, no API calls) ──
         # Commit in chunks of 50 to keep write-lock duration short.

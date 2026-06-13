@@ -190,6 +190,18 @@ exceptions keep their traceback. `_is_known_db_contention` +
 `_DB_CONTENTION_MARKERS` live at module level in `bot/state.py`.
 Observability-only — retry/swallow control flow UNCHANGED. Pinned by
 `tests/integration/test_db_contention_lognoise_regression.py`.**
+**db-contention-lognoise-settlement (2026-06-13, follow-up): the same
+classifier gates the two settlement-poll per-ticker handlers in
+`bot/settlement.py` — `_poll_rejections` ("Rejection settlement check
+failed") + `_poll_evaluated_opportunities` ("Evaluated opp settlement
+check failed"). `mark_rejection_settled` RE-RAISES the contention class
+to these callers (it has no envelope of its own), which post-deploy
+measurement showed was the DOMINANT traceback source (~95/hr, 157 of 164
+over 1h40m — far above the 3 writers, which were silent). These handlers
+wrap both `client.get_market` (network errors → keep stack) and the
+StateManager settle (contention → suppress stack), so the classifier is
+the right gate. `_is_known_db_contention` imported from `bot.state`.
+Pinned by `tests/integration/test_settlement_contention_lognoise_regression.py`.**
 **bit-state-py-database-error-catch (2026-05-22) broadened the BEGIN
 IMMEDIATE retry-loop except clause at the THREE retry-bearing
 StateManager hot-path sites — `insert_evaluated_opportunity`,
