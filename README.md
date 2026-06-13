@@ -31,7 +31,7 @@ On top of that:
 
 - **Adaptive RK bandwidth (H\*)** --- bandwidth auto-tunes from the noise-to-signal ratio, producing tighter estimates in calm periods and wider smoothing during noisy periods
 - **Mincer-Zarnowitz R²-weighted EGARCH blending** --- an EGARCH(1,1) model with Student-t innovations runs live, blending with RK vol weighted by the MZ regression R². EGARCH/RV ratios outside `[1/3, 3]` are rejected
-- **Deribit DVOL integration (diagnostic-only)** --- the engine logs DVOL alongside its realized estimate (IV-RV spread, variance-risk-premium diagnostics) but never blends it into sigma; all assets price off the realized-kernel/EGARCH estimate. The former IV blend was removed in 2026-06: a 30-day implied index embeds variance risk premium and has no intraday seasonality, so it systematically overstated quiet-hours volatility on BTC/ETH (and the earlier beta-scaled BTC-DVOL proxy understated alt volatility)
+- **Deribit DVOL integration** --- when IV diverges from RV materially, the engine shifts toward implied vol via inverse-variance weighting (BTC and ETH only --- the only assets with a public IV index). Non-BTC/ETH assets carry no implied vol and rely on the realized-kernel/EGARCH estimate alone; the former beta-scaled BTC-DVOL proxy was removed in 2026-06 after it was found to systematically understate alt volatility
 - **Adaptive jump detection** --- per-asset percentile thresholds (replaced the fixed 3-sigma rule) with EWMA variance tracking and tiered response scaling
 
 ### Probability Model
@@ -128,14 +128,14 @@ SQLite (WAL mode) stores positions, pending orders, settled trades, GARCH parame
 
 | Metric | Value |
 |--------|-------|
-| Markets evaluated | 317,040 |
-| Observation period | 2026-02-22 to 2026-06-12 |
-| Filter pass rate | 3.6\% (11,267 of 317,040) |
-| Top rejection reason | Insufficient Edge (88,570) |
+| Markets evaluated | 318,178 |
+| Observation period | 2026-02-22 to 2026-06-13 |
+| Filter pass rate | 3.5\% (11,267 of 318,178) |
+| Top rejection reason | Insufficient Edge (88,821) |
 | Settled trades | 5,511 (5,126 W / 383 L / 2 BE) |
 | Win rate | 93.0\% |
 
-*Last updated: 2026-06-12T17:02:57Z*
+*Last updated: 2026-06-13T00:33:56Z*
 
 ## Live vs Observation
 
