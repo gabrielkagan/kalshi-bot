@@ -991,9 +991,7 @@ class SettlementTracker:
                         f"-> {counterfactual_outcome} (profit={would_have_profit}¢)"
                     )
                 except Exception as e:
-                    logging.warning(
-                        f"Evaluated opp settlement check failed for {ticker}: {e}",
-                        exc_info=not _is_known_db_contention(e))
+                    logging.warning(f"Evaluated opp settlement check failed for {ticker}: {e}", exc_info=True)
 
         # ── Phase 2: Fast DB writes (short lock, no API calls) ──
         # Commit in chunks of 50 to keep write-lock duration short.
@@ -1019,7 +1017,8 @@ class SettlementTracker:
                     except Exception:
                         pass
                     logging.warning("eval_opp_settlement batch commit failed (chunk %d-%d): %s",
-                                    _chunk_start, _chunk_start + len(_chunk), e, exc_info=True)
+                                    _chunk_start, _chunk_start + len(_chunk), e,
+                                    exc_info=not _is_known_db_contention(e))
             if _settled_count:
                 logging.info("eval_opp_settlement: committed %d rows in %d chunks",
                              _settled_count,

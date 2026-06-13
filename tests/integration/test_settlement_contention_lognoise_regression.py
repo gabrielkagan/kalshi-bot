@@ -4,20 +4,25 @@ Follow-up to PR #169 (commit b1f0b3a8), which suppressed the contention
 traceback at the three StateManager WARNING-envelope writers. Post-deploy
 verification over a full 1h40m window revealed the DOMINANT journalctl
 traceback source was NOT those writers (0 tracebacks, 28 clean one-liners)
-but the settlement poller: `mark_rejection_settled` RE-RAISES the chronic
-single-writer/cursor-race contention to its caller chain
-`_process_rejection_settlement` → `_poll_rejections`, whose per-ticker
-`except Exception` logged it with `exc_info=True` (~95/hr, 157 of 164
-tracebacks). The sibling `_poll_evaluated_opportunities` per-ticker handler
-has the same shape (5 of 164).
+but the settlement poller. TWO sinks were gated:
 
-These handlers wrap BOTH a network call (`client.get_market`, whose errors
-are genuine and want a stack) AND the StateManager settle (which re-raises
-the by-design-swallowed contention class). Fix: classify with the shipped
-`bot.state._is_known_db_contention(e)` and pass
-`exc_info=not _is_known_db_contention(e)` — known contention logs the
-one-liner without a stack, everything else (network/genuine bug) keeps its
-traceback. Observability-only; control flow unchanged.
+1. `_poll_rejections` (dominant, 157 of 164): `mark_rejection_settled`
+   RE-RAISES the chronic single-writer/cursor-race contention up through
+   `_process_rejection_settlement`, and the per-ticker `except Exception`
+   logged it with `exc_info=True`. That handler wraps BOTH a network call
+   (`client.get_market`, genuine → keep stack) AND the settle re-raise
+   (contention → suppress), so the classifier is the right gate.
+2. `_poll_evaluated_opportunities` Phase-2 chunk-commit handler
+   (`eval_opp_settlement batch commit failed`, 1 of 164): wraps
+   `mark_evaluated_opportunity_settled` + `conn.commit()`. Its Phase-1
+   per-ticker handler (`Evaluated opp settlement check failed`) does NO DB
+   writes, so it is intentionally left with full stacks for genuine bugs.
+
+Fix: classify with the shipped `bot.state._is_known_db_contention(e)` and
+pass `exc_info=not _is_known_db_contention(e)` at the two contention sinks —
+known contention logs the one-liner without a stack, everything else
+(network/genuine bug) keeps its traceback. Observability-only; control
+flow unchanged.
 
 Pre-fix RED: the contention case logs with a truthy exc_info → the
 `not record.exc_info` assertion fails.
@@ -93,10 +98,11 @@ def test_rejection_poll_unexpected_keeps_traceback(caplog):
 
 
 def test_both_settlement_poll_handlers_use_contention_classifier():
-    """Both per-ticker settlement-poll handlers (_poll_rejections at the
-    'Rejection settlement check failed' log + _poll_evaluated_opportunities
-    at the 'Evaluated opp settlement check failed' log) must gate exc_info
-    on _is_known_db_contention — not a hardcoded exc_info=True."""
+    """The two settlement contention sinks must gate exc_info on
+    _is_known_db_contention — not a hardcoded exc_info=True: the
+    _poll_rejections per-ticker handler ('Rejection settlement check
+    failed') and the _poll_evaluated_opportunities Phase-2 chunk-commit
+    handler ('eval_opp_settlement batch commit failed')."""
     import inspect
     from bot import settlement
 
@@ -106,7 +112,7 @@ def test_both_settlement_poll_handlers_use_contention_classifier():
     )
     # The two known contention-re-raise sinks must not hardcode exc_info=True.
     for marker in ("Rejection settlement check failed",
-                   "Evaluated opp settlement check failed"):
+                   "eval_opp_settlement batch commit failed"):
         idx = src.index(marker)
         window = src[idx:idx + 400]
         assert "exc_info=not _is_known_db_contention" in window, (
