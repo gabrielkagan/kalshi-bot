@@ -62,10 +62,15 @@ Engine `bot/twaplock.py`; plan `kb/decisions/longshot-twap-live-small-plan.md`.
 Validated via `scripts/research/genhunt/01b_twap_lock_validation.py`
 (+14.4¢/ct, day-bootstrap CI [+11.1, +17.7], n=359 over 12 days, 29.9
 locks/day on the honest 4-venue index, print cross-check 99.2%, all 7 assets
-positive). In the final 90s of a 15M window (the validated decision grid), compute `p_lock` from the
+positive, on the validated [10,90]s grid). In the [60, 90]s-to-close window (live floor raised to 60s
+2026-06-14 — the <60s window is a TWAP variance-collapse/basis-error bug, NOT vol;
+see the `TWAPLOCK_ENTRY_WINDOW_SECONDS` row + `kb/decisions/twaplock-stc60-floor-plan.md`),
+compute `p_lock` from the
 accrued Coinbase-anchored settlement-TWAP (per-asset spot ring buffer fed
 from the scanner's per-tick read) + a remaining-variance term from
-`blended_rv`; when the locked side clears the threshold, BUY it as a TAKER
+`blended_rv` (with the 60s floor the live path prices off current spot + the
+Brownian term; the accrued-mean branch is dormant, retained for a future
+<60s reopening); when the locked side clears the threshold, BUY it as a TAKER
 (IOC) if the executable ask leaves ≥ fee + margin vs ~100¢ settlement; hold
 to settlement. No resting lifecycle (an IOC never rests — no registry, no
 cancel sweeps). Live/shadow control stays with the trading-mode gate at
@@ -77,7 +82,7 @@ cancel sweeps). Live/shadow control stays with the trading-mode gate at
 | TWAPLOCK_ENABLED | False | Master enable; default OFF — flipped only at explicit operator go-live |
 | TWAPLOCK_P_LOCK_THRESHOLD | 0.99 | STRICTER than the validated 0.95: the Coinbase-anchored MVP index adds proxy error vs the honest 4-venue validation index; undercounting costs frequency, not correctness (degraded-index lesson) |
 | TWAPLOCK_TWAP_WINDOW_SECONDS | 60.0 | Kalshi settles on a 60s TWAP of its reference index |
-| TWAPLOCK_ENTRY_WINDOW_SECONDS | 90.0 | Only act in the final 90s of the window — the validated decision grid's DEC_FROM (`01b_twap_lock_validation.py`); the engine-side `_MIN_SUBMIT_STC_SECONDS`=10.0 lower bound is the grid's DEC_TO and also guards the settlement race. No backtest evidence for (90, 120] or [5, 10), so neither is traded (R1-MN1) |
+| TWAPLOCK_ENTRY_WINDOW_SECONDS | 90.0 | Upper edge of the entry window — the validated decision grid's DEC_FROM (`01b_twap_lock_validation.py`); no backtest evidence for (90, 120]. The engine-side `_MIN_SUBMIT_STC_SECONDS` lower bound was RAISED 10.0→60.0 on 2026-06-14 (`kb/decisions/twaplock-stc60-floor-plan.md`): the shadow soak measured the <60s window locking only 0.754 vs a predicted 0.99, because the model's Brownian remaining-variance term vanishes in the final seconds while the omitted Coinbase-vs-RTI basis error stays constant — p_lock is driven spuriously to ~1 on near-strike calls. NOT vol deflation (honest vol would need to be 4× larger; measured 1.19×). The retained [60, 90]s window locks 0.990 and is vol-calibrated; the original DEC_TO=10 settlement-race rationale still holds a fortiori below 60s. Reopening <60s needs a basis-error variance model (separate ticket) |
 | TWAPLOCK_MAX_CONTRACTS_PER_ENTRY | 2 | Live-small sizing (plan doc: 1-2 ct/entry) |
 | TWAPLOCK_MIN_EDGE_CENTS | 3 | Executable ask must be ≤ 100 − taker_fee(1ct) − this margin |
 | TWAPLOCK_MAX_SPOT_STALENESS_SECONDS | 5.0 | Frozen-spot false-lock gate (R2-MN1): a frozen Coinbase WS price keeps feeding the engine's ring buffer with fresh receive timestamps, freezing the accrued TWAP at a stale price — p_lock can clear 0.99 spuriously and `_accrued_mean`'s absent-sample → None layer never fires. The scanner's per-asset Bit-S.1 staleness reading (`state._scan_spot_staleness_cache`) must exist and be ≤ this or `evaluate_market` emits NO SIGNAL (`TWAPLOCK_SPOT_STALE`, info — fires routinely on thin assets: the S.2 RCA pre-flight (ticket `86ba1wrh7`, 2026-05-21) measured Coinbase 1-min candle coverage May 9-21 at BNB 65.9% / HYPE 89.5% / DOGE 99.2%; BTC/ETH/SOL/XRP ~100%). Trades frequency on thin assets for signal integrity — same direction as the stricter 0.99 threshold |
