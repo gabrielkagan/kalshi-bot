@@ -19,7 +19,10 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit T-1 spec
   before window start.
 - Entry window edges: only when the module-private
   bot/twaplock.py::_MIN_SUBMIT_STC_SECONDS <= stc <=
-  C.TWAPLOCK_ENTRY_WINDOW_SECONDS (the validated decision grid).
+  C.TWAPLOCK_ENTRY_WINDOW_SECONDS = [60, 90]s — a SUBSET of the validated
+  [10, 90] grid; the floor was raised 10->60 on 2026-06-14 (the <60s window
+  is a TWAP variance-collapse + basis-error bug, NOT vol; see
+  kb/decisions/twaplock-stc60-floor-plan.md).
 - Fee + margin gate: locked-side executable ask must satisfy
   ask <= 100 - taker_fee(1ct, ask) - TWAPLOCK_MIN_EDGE_CENTS.
 - One entry per window per asset (STRUCTURAL — no knob; the retired
@@ -183,10 +186,14 @@ class TestTwaplockConstants:
         assert not hasattr(C, "TWAPLOCK_MAX_ENTRIES_PER_WINDOW")
 
     def test_entry_window(self):
-        # Validated decision grid (01b_twap_lock_validation.py
-        # DEC_FROM/DEC_TO = 90..10): no backtest evidence outside [10, 90].
+        # Validated grid upper edge DEC_FROM=90 unchanged. The floor was
+        # raised 10->60 (2026-06-14, twaplock-stc60-floor-plan.md): the
+        # final-seconds window (10-30s lock 0.754 vs predicted 0.99) is a
+        # TWAP variance-collapse + adverse-selection bug, NOT vol deflation
+        # (honest vol still predicts ~0.99 there). Retained 60-90s window
+        # locks 0.990 and is vol-calibrated.
         assert C.TWAPLOCK_ENTRY_WINDOW_SECONDS == 90.0
-        assert twaplock_mod._MIN_SUBMIT_STC_SECONDS == 10.0
+        assert twaplock_mod._MIN_SUBMIT_STC_SECONDS == 60.0
         assert C.TWAPLOCK_TWAP_WINDOW_SECONDS == 60.0
 
     def test_live_override_paused_after_go_live(self):
@@ -335,10 +342,12 @@ class TestConditionLogic:
         assert _eval(engine) == []
 
     @pytest.mark.parametrize("stc,expected", [
-        # Validated grid edges (DEC_FROM=90 / DEC_TO=10): no evidence for
-        # (90, 120] or [5, 10) — both former edges are now OUTSIDE.
-        (120.0, 0), (90.1, 0), (90.0, 1), (45.0, 1), (10.0, 1), (9.9, 0),
-        (5.0, 0), (0.0, 0)])
+        # Floor raised 10->60 (twaplock-stc60-floor-plan.md): the final
+        # <60s window (10-30s lock 0.754 vs predicted 0.99 — TWAP variance
+        # collapse + adverse selection, NOT vol) is cut; retained 60-90s
+        # window locks 0.990. Upper edge DEC_FROM=90 unchanged; no (90,120].
+        (120.0, 0), (90.1, 0), (90.0, 1), (75.0, 1), (60.0, 1), (59.9, 0),
+        (45.0, 0), (10.0, 0), (0.0, 0)])
     def test_entry_window_edges(self, engine, enabled, stc, expected,
                                 monkeypatch):
         # pin the lock signal so only the STC gate varies

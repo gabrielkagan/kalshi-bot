@@ -6,16 +6,23 @@ locks/day on the honest 4-venue index, print cross-check 99.2%, all 7
 assets positive). Plan: kb/decisions/longshot-twap-live-small-plan.md.
 
 Mechanics: Kalshi settles each 15M crypto window on a 60s TWAP of its
-reference index (final ``TWAPLOCK_TWAP_WINDOW_SECONDS`` before close). In
-the final ``TWAPLOCK_ENTRY_WINDOW_SECONDS`` (90s — the validated decision
-grid's DEC_FROM; entries stop below ``_MIN_SUBMIT_STC_SECONDS`` = 10s, the
-grid's DEC_TO) this engine computes the LIVE Coinbase-anchored estimate of
-the settlement TWAP:
+reference index (final ``TWAPLOCK_TWAP_WINDOW_SECONDS`` before close). This
+engine acts only in ``[_MIN_SUBMIT_STC_SECONDS, TWAPLOCK_ENTRY_WINDOW_SECONDS]``
+= [60s, 90s]: the upper edge is the validated grid's DEC_FROM; the floor was
+raised 10->60 on 2026-06-14 (kb/decisions/twaplock-stc60-floor-plan.md) after a
+shadow soak showed the <60s window locking far below its prediction (the
+omitted Coinbase-vs-RTI basis-error variance is exposed once the Brownian term
+vanishes — NOT a vol-engine fault). In this window it computes the LIVE
+Coinbase-anchored estimate of the settlement TWAP:
 
 * ``accrued`` — time-weighted mean of per-tick Coinbase spot over the
   ELAPSED portion of the final-60s window (per-asset ring buffer fed from
   the scanner's per-tick spot read; the CoinbaseFeed internals are never
-  touched).
+  touched). NOTE: with the 60s entry floor, live entries clear the gate only
+  at stc≥60 = at/above the TWAP window boundary, so the elapsed fraction is
+  zero and ``accrued`` stays ``None`` in the live path (compute_p_lock takes
+  the pre-window branch). The in-window accrued/variance machinery is retained
+  (and unit-tested directly) for the future <60s-reopening ticket.
 * remaining-variance term — Brownian time-average variance from
   ``blended_rv`` (same per-5s vol surface as bot/engines/probability.py:
   per-second sigma = spot * blended_rv / sqrt(5)).
@@ -93,11 +100,17 @@ TWAPLOCK_STRATEGY = "twaplock"
 TWAPLOCK_FILTER_STAGE_LIVE = "twaplock_live"
 TWAPLOCK_FILTER_STAGE_SHADOW = "twaplock_shadow"
 
-# Below this STC an IOC races settlement (API round trip + matching) —
-# the MIN_ORDER_SUBMIT_STC_S settlement-race class — AND the validated
-# decision grid ends here (01b_twap_lock_validation.py DEC_TO=10): no
-# backtest evidence for [5, 10), so we don't trade it (R1-MN1).
-_MIN_SUBMIT_STC_SECONDS = 10.0
+# Floor raised 10->60 (2026-06-14, kb/decisions/twaplock-stc60-floor-plan.md).
+# Below 60s the model's Brownian remaining-variance term (1-f)^2*sigma^2*(r/3)
+# vanishes while the Coinbase-vs-RTI basis error stays constant, so p_lock is
+# driven spuriously to ~1 on near-strike entries: the shadow soak measured the
+# 10-30s window locking only 0.754 vs a predicted 0.99 (the 60-90s window locks
+# 0.990 and is vol-calibrated). This is a TWAP-variance-model + adverse-selection
+# bug, NOT vol deflation — honest vol would need to be 4x larger to explain the
+# gap (measured 1.19x). The original DEC_TO=10 settlement-race / MIN_ORDER_
+# SUBMIT_STC_S rationale still holds a fortiori below 60s. Properly modelling the
+# basis-error variance to reopen <60s is a separate follow-up ticket.
+_MIN_SUBMIT_STC_SECONDS = 60.0
 
 # Per-asset spot ring buffer: covers the 90s entry window + slack at the
 # scanner's per-tick cadence; samples older than this are pruned.
