@@ -8,7 +8,9 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit L-1 spec:
 - Condition logic: p_normal <= ask/2 boundary, price band edges (3c/4c/15c/16c),
   STC window edges (179s/180s/720s/721s).
 - Sizing caps: LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE per (window, side),
-  reduced by open longshot positions + resting longshot quotes.
+  reduced by max(open longshot positions, ls- FILLED contracts per
+  pending_orders.recorded_fill_count) + unfilled resting longshot quotes
+  (86baf07y3 fill-ledger term).
 - Collateral cap: LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS across resting
   quotes + open longshot positions.
 - Daily loss cap: realized live-small PnL today <= -LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS
