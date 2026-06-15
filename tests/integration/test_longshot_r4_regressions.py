@@ -623,3 +623,65 @@ class TestMN3BootAdoptionUnitMix:
             assert int(m.group(1)) <= int(m.group(2)), (
                 f"LONGSHOT_FILL log drift (filled > count): {msg!r} "
                 "(R4-MN3)")
+
+
+# ── SAME-side re-quote-after-fill stacking (live bug 86baf07y3) ──────────────
+
+
+def _seed_filled_ls(state, *, client_oid, order_id, side, count, price,
+                    recorded_fills):
+    """A FILLED ls- pending_orders row whose fills are recorded in the
+    per-order ledger (recorded_fill_count) but NOT (yet / any longer) in a
+    positions row — the live race: on fill the registry entry is popped and
+    the positions write lags / is clobbered by a later same-ticker order
+    (ticker-PK). Reproduces KXDOGE15M-26JUN151515-15, 2026-06-15."""
+    _seed_pending_resting(state, client_oid=client_oid, order_id=order_id,
+                          side=side, count=count, price=price)
+    state.conn.execute(
+        "UPDATE pending_orders SET status='filled', recorded_fill_count=? "
+        "WHERE order_id=?", (recorded_fills, order_id))
+    state.conn.commit()
+
+
+class TestSameSideRequoteStacking:
+    """86baf07y3: the per-(window, side) cap in _allowed_size counted open
+    positions + unfilled resting registry contracts, but NOT contracts that
+    are FILLED yet not in a positions row — popped from the registry on
+    fill, with the positions write lagging or clobbered by a later
+    same-ticker order (single-ticker PK, 86badbf9t). A re-quote then sized a
+    fresh full cap on a window-side already at the cap. Fix: the cap also
+    subtracts SUM(recorded_fill_count) over ls- pending_orders on
+    (ticker, buy_side) — the per-order ledger is current on fill detection
+    and immune to the ticker-PK overwrite."""
+
+    def test_filled_order_with_no_position_row_zeroes_cap(
+            self, engine, state, client, enabled):
+        # 3ct already filled on (ticker, yes) but NO positions row (race /
+        # clobber). A same-side re-quote (sell-NO -> buy YES) must size 0.
+        _seed_filled_ls(state, client_oid="ls-fill1", order_id="oid-f1",
+                        side="yes", count=3, price=86, recorded_fills=3)
+        assert _positions_row(state) is None  # the race state: no open row
+        assert engine._allowed_size(TICKER, "no", "yes", 86) == 0, (
+            "a window-side already filled to the cap must zero the allowed "
+            "size even when the positions row is missing — the cap must "
+            "consult the per-order fill ledger (86baf07y3)")
+
+    def test_partial_filled_order_leaves_remainder(
+            self, engine, state, client, enabled):
+        # 1 of 3 filled on (ticker, yes), no positions row -> 2 remain.
+        _seed_filled_ls(state, client_oid="ls-fill2", order_id="oid-f2",
+                        side="yes", count=3, price=86, recorded_fills=1)
+        assert engine._allowed_size(TICKER, "no", "yes", 86) == (
+            C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE - 1), (
+            "only the FILLED contracts consume cap; the remainder stays "
+            "available (86baf07y3)")
+
+    def test_filled_other_ticker_does_not_block(
+            self, engine, state, client, enabled):
+        # Filled cap on a DIFFERENT window must not block this one.
+        _seed_filled_ls(state, client_oid="ls-fill3", order_id="oid-f3",
+                        side="yes", count=3, price=86, recorded_fills=3)
+        assert engine._allowed_size(TICKER2, "no", "yes", 86) == (
+            C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE), (
+            "the cap is per (window, side) — a filled row on another ticker "
+            "must not reduce it (86baf07y3)")

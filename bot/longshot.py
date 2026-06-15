@@ -36,7 +36,10 @@ so a constants flip is a runtime kill-switch):
 
 * ``LONGSHOT_ENABLED`` master flag (default OFF).
 * ``LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE`` per (ticker, side), counting
-  open longshot positions AND resting longshot quotes.
+  max(open longshot positions, ls- FILLED contracts per
+  ``pending_orders.recorded_fill_count``) AND unfilled resting longshot
+  quotes (86baf07y3 — the fill-ledger term closes the same-side
+  re-quote-after-fill race that positions alone miss).
 * ``LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS`` across all resting quotes
   + open longshot positions.
 * ``LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS`` — COMBINED realized+marked PnL
@@ -523,8 +526,10 @@ class LongshotEngine:
         """Execute-time cap re-check (scan->execute race defense).
 
         Returns the contract count the executor may post (0 = blocked).
-        Re-reads positions + resting state so a sister fill between scan
-        and execute shrinks/blocks this order.
+        Re-reads positions + resting state + the ls- fill ledger
+        (pending_orders.recorded_fill_count, 86baf07y3) so a sister fill
+        between scan and execute shrinks/blocks this order even when its
+        positions row has not landed yet.
         """
         if not C.LONGSHOT_ENABLED:
             return 0
@@ -1089,7 +1094,15 @@ class LongshotEngine:
         see has_opposite_side_longshot_position: one open longshot row
         per ticker until 86badbf9t's composite-PK rebuild) OR a
         REGISTERED quote on the OPPOSITE side (R5-M2 — registry quotes
-        are future rows; see has_opposite_side_resting_quote)."""
+        are future rows; see has_opposite_side_resting_quote).
+
+        The per-window-side cap subtracts max(open positions, ls- FILLED
+        contracts per pending_orders.recorded_fill_count) + unfilled resting
+        contracts on (ticker, buy_side). The recorded_fill_count term
+        (86baf07y3) closes the same-side re-quote-after-fill race: on fill the
+        registry entry is popped and the positions row lags / is clobbered by
+        a later same-ticker order, so positions alone can under-read a
+        window-side already at the cap."""
         conflict = self.has_open_main_pipeline_position(ticker)
         if conflict is None or conflict:
             if conflict:
@@ -1120,6 +1133,27 @@ class LongshotEngine:
             logging.warning("longshot position-count query failed",
                             exc_info=True)
             return 0
+        # 86baf07y3: contracts already FILLED on this (ticker, buy_side) per
+        # the authoritative per-order ledger. On fill the registry entry is
+        # popped (so resting_same drops it) and the positions row can lag the
+        # fill-recording OR be clobbered by a later same-ticker order
+        # (single-ticker PK, 86badbf9t) — so open_count alone can read 0 for a
+        # window-side already at the cap, and a re-quote would size a fresh
+        # full cap (the DOGE 151515 double-fill, 2026-06-15).
+        # recorded_fill_count is bumped synchronously on fill detection and is
+        # keyed per-order, immune to the ticker-PK overwrite. max() with
+        # open_count dedups (recorded fills also land in positions once
+        # written); resting_same (unfilled) is disjoint and added separately.
+        try:
+            filled_same = self._state.conn.execute(
+                "SELECT COALESCE(SUM(recorded_fill_count), 0) "
+                "FROM pending_orders WHERE ticker=? AND side=? "
+                "AND client_order_id LIKE 'ls-%'",
+                (ticker, buy_side)).fetchone()[0] or 0
+        except Exception:
+            logging.warning("longshot filled-count query failed",
+                            exc_info=True)
+            return 0
         with self._lock:
             # R5-M2: opposite-side REGISTERED quote — same invariant as
             # the open-row guard above (registry quotes are future rows;
@@ -1142,7 +1176,8 @@ class LongshotEngine:
                 max(0, q["count"] - q["filled"]) * q["buy_price_cents"]
                 for q in self._resting.values())
         cap_remaining = (C.LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE
-                         - int(open_count) - resting_same)
+                         - max(int(open_count), int(filled_same))
+                         - resting_same)
 
         # Concurrent-collateral cap: resting quotes (any ticker) + open
         # longshot positions (any ticker).
