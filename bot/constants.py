@@ -142,7 +142,7 @@ LONGSHOT_EDGE_RATIO = 0.5          # condition: p_normal <= ask * ratio (ask in 
 LONGSHOT_MAX_CONTRACTS_PER_WINDOW_SIDE = 3   # live-small sizing (plan doc, $400-500 bankroll)
 LONGSHOT_MAX_CONCURRENT_COLLATERAL_DOLLARS = 150.0  # resting quotes + open longshot positions
 LONGSHOT_CLIENT_OID_PREFIX = "ls-"  # client_order_id prefix on every longshot maker: boot orphan reconciliation + per-strategy live-gate recognition (R1-M1/M4)
-LONGSHOT_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 ~12:05Z (operator): live loss rate 4/11 windows (36%) vs ~6% backtest, p~0.3-3% — adverse-selection signature; autopsy in flight. Engine stays ENABLED in shadow (free would-be-fill measurement). Was LIVE 10:51-12:05Z.
+LONGSHOT_LIVE_OVERRIDE = True      # RE-ARMED 2026-06-15 (operator go-live). Paused 2026-06-12 over the vol-engine deflation (blended_rv 1.4-4x below tape); fixed by V.1-V.4 (honest tape_rv wired + IV blend removed). Post-V.4 shadow soak: longshot calibrated on ALL 7 assets (deep-OTM sold side 3.1% actual vs 4.0% predicted; entry-row vol ratio median 0.97), +7.4c/ct vs +4.58c backtest. Full throttle all 7.
 # Longshot live universe (R4-M1 mechanism): the ONLY assets longshot may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Evidence = the 02b
@@ -242,7 +242,7 @@ TWAPLOCK_MIN_EDGE_CENTS = 3        # executable ask must be <= 100 - taker_fee(1
 # the same direction as the stricter-than-validated 0.99 p_lock threshold.
 TWAPLOCK_MAX_SPOT_STALENESS_SECONDS = 5.0
 TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock taker: reconciler carve-outs + per-strategy live-gate recognition (mirrors ls-)
-TWAPLOCK_LIVE_OVERRIDE = False     # PAUSED 2026-06-12 12:57Z (operator; PR #164 merge 040fe826): longshot autopsy found blended_rv running 1.4-4x BELOW tape vol on alts — p_lock consumes the SAME input, so "0.99 locked" may be ~0.9. Zero fills while live (3 IOC misses). Re-arm only after vol-engine RCA + honest-vol rewire + shadow soak.
+TWAPLOCK_LIVE_OVERRIDE = True      # RE-ARMED 2026-06-15 (operator go-live). Paused 2026-06-12 (same vol-engine deflation; p_lock consumes blended_rv). Fixed by V.1-V.4; post-V.4 soak: 60-90s window locks 0.990 (calibrated to <1pp). The miscalibrated <60s window (0.754 lock — a TWAP variance-collapse/basis-error bug, NOT vol) is cut by the stc>=60 floor (PR #171, _MIN_SUBMIT_STC_SECONDS=60). Full throttle all 7 (BNB thinnest, 60-90s lock 0.895 n=19 — watch). Reopening <60s = ticket 86baefz7m.
 # Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever
 # trade live — gates the WHOLE strategy branch in trading_mode.strategy_is_live
 # (override leg AND any future GLOBAL+asset dual-live flip). Mirrors the
