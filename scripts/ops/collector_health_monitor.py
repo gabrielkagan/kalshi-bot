@@ -81,7 +81,7 @@ from typing import Optional
 
 # Bit 86ba0jvka (2026-05-19): bootstrap repo root onto sys.path BEFORE
 # any `from bot.*` / `import bot.*` reference fires below. Cron's
-# invocation flow (`cd ~/kalshi-bot-repo && source venv/bin/activate
+# invocation flow (`cd ~/kalshi-bot-repo && . venv/bin/activate
 # && python3 scripts/ops/collector_health_monitor.py`) does NOT
 # auto-add the repo root to sys.path — only the script's parent dir
 # (scripts/ops/) is added by Python's script-invocation rule. Without

@@ -77,7 +77,7 @@ from pathlib import Path
 from typing import Optional
 
 # Bootstrap repo root onto sys.path BEFORE any `from bot.*` reference fires.
-# Cron's invocation flow (`cd ~/kalshi-bot-repo && source venv/bin/activate
+# Cron's invocation flow (`cd ~/kalshi-bot-repo && . venv/bin/activate
 # && python3 scripts/ops/monitor_watchdog.py`) does NOT auto-add the repo
 # root to sys.path — only the script's parent dir (scripts/ops/) is added by
 # Python's script-invocation rule. Without this bootstrap the script crashes

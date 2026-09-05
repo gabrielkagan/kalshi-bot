@@ -48,7 +48,7 @@ Each one-liner fires here; rationale + history live in `kb/failures/` postmortem
 - Don't carve new `bot/<subpackage>/` layers or relocate code across the existing modularization tree outside the planned modularization track (Sprint 4-9 CLOSED at Bit 9.3-iii.c milestone — bot/_impl.py DELETED 2026-05-11; Sprint 10 sibling-reorg also done). Engines (spx/weather/sports/analyst) run as separate threads/processes — that's the only acceptable runtime split.
 - Don't add async. Synchronous + threading for WS feeds is the design.
 - Don't switch from SQLite. Single-writer + local-to-VPS latency is the right choice.
-- Don't switch from JSONL journals. Append-only, zero-overhead, daily cron rotation.
+- Don't switch from JSONL journals. Append-only, zero-overhead, every-4h hour-stamped cron rotation (`ops/rotate_journals.sh`).
 - Don't refactor for readability during a bug fix. Fix the bug.
 - Don't change Kelly fraction, blend weights, or edge thresholds without data.
 - Don't write tests unsolicited. Regression tests after bug fixes only.

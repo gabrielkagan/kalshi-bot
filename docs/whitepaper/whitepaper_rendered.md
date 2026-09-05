@@ -1007,7 +1007,7 @@ D2.1 (silver schema design) and D2.2 (ETL implementation) are upcoming tickets.
 
 ## 7.1 Motivation
 
-This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,506 tests, multi-vertical engines, a corpus collector, automated deploys, daily JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
+This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,506 tests, multi-vertical engines, a corpus collector, automated deploys, every-4h JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
 
 The published benchmark data is the empirical anchor for this thesis: as of May 2026, SWE-bench Verified shows that *the same LLM in different scaffolds* varies by 15+ percentage points.[^swebench-tech] The model is roughly fixed; the discipline around it varies; the discipline is the moat.
 
