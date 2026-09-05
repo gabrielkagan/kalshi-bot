@@ -3,7 +3,7 @@
 
 journal_archives/ holds the per-tick forensic JSONL streams
 (opportunity_journal, scan_journal, rejection_journal, ...). The
-rotate_journals.sh cron deletes locally at the 90-day retention boundary;
+ops/rotate_journals.sh cron deletes locally at the 14-day retention boundary;
 without S3 archival the per-tick record is gone forever. This sync runs
 30 min AFTER rotate_journals.sh (04:30 UTC) so yesterday's journal is
 fully compressed before upload.
@@ -13,7 +13,7 @@ Primitive: `rclone copy --checksum --immutable` (NOT `sync` and NOT
 
 WHY `copy` AND NOT `sync` (R1 C1, ticket 86b9xgp7k): `rclone sync` makes
 the destination MIRROR the source — when `rotate_journals.sh` prunes a
-journal locally at the 90-day boundary, the next `sync` would DELETE
+journal locally at the 14-day boundary, the next `sync` would DELETE
 the corresponding S3 object. That defeats the entire reason this script
 exists ("the per-tick record is gone forever once rotation deletes them").
 `rclone copy` is the one-way primitive: it uploads new files + skips
@@ -133,7 +133,7 @@ def build_rclone_argv(
         "--low-level-retries", "10",
         "--exclude", "*.jsonl",        # exclude live current-day journals
         "--exclude", "rotation.log",   # R1 C2: rotate_journals.sh APPENDS
-                                       # to this daily; --immutable would
+                                       # to this every run (4h); --immutable would
                                        # abort the sync on day 2
         str(src_dir),
         f"{remote}:{bucket}/{prefix}",

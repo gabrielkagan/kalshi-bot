@@ -1393,7 +1393,7 @@ The discipline is "API wins" — the bot's state.db never overrides Kalshi's rec
 |---|---|---|
 | `scripts/audit/calibrator_feature_health.py` | Every 6h | Checks every cal_mlp feature for >99% population (95% for known-flaky 5min momentum). Telegram alert on `SCHEMA_DRIFT`. |
 | `bot/ai/researcher.py` | 3× daily | Refreshes shadow-system Wilson CIs, SPRT updates; sends summaries via Telegram. |
-| `rotate_journals.sh` (lives on VPS, not in git) | Daily 04:00 UTC | Rotates JSONL journals and compresses with zstd. |
+| `ops/rotate_journals.sh` (tracked in git since 2026-09-05) | Every 4 h on the hour (00/04/08/12/16/20 UTC) | Rotates JSONL journals to hour-stamped archives and compresses with zstd; 14-day local retention, S3 holds the long-term copy. |
 | `journal_archives_s3_sync.py` | Daily 04:30 UTC | Uploads zstd-compressed rotated journals to S3. |
 | `state_db_s3_backup.py` | Daily 06:00 UTC | Backs up `state.db` to S3 (`daily/` prefix). |
 | `export_market_obs_to_s3.py` | Daily 05:30 UTC | Archives `market_observations` table to S3 (`market_obs/` prefix). |
