@@ -64,7 +64,7 @@ Operator install (cron):
     # cron jobs source ~/.env for Telegram/Anthropic/Supabase). Source
     # ALL files that export the 4 required keys; later-sourced wins on
     # duplicate keys.
-    7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
+    7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && . ~/.env && . .env && set +a && . venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
 
 Exit code: always 0 (cron health-script convention; alerts go via
 Telegram, not exit code).

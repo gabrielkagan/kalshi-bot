@@ -38,7 +38,7 @@ Operator runbook (RCA-G plan doc
      restart, or (b) extending the collector with a file-watcher (out
      of scope for this Bit; see plan doc Risk #4).
      Recommended cadence if cron-refreshing for next-restart staleness:
-     ``0 */6 * * * cd ~/kalshi-bot-repo && source venv/bin/activate
+     ``0 */6 * * * cd ~/kalshi-bot-repo && . venv/bin/activate
        && set -a && source ~/.env.collector && set +a
        && python3 scripts/ops/generate_curated_tickers.py
        >> ~/curated_tickers_refresh.log 2>&1``

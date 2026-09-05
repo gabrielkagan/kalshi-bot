@@ -679,7 +679,9 @@ def run(
         ``{"<tier>": ["TICKER", ...]}`` map. When set, the file is
         authoritative and the REST refresher is NOT started (useful
         for tests / offline dev). When unset, D1.4 REST snapshot is
-        used: synchronous fetch at boot + hourly background refresh.
+        used: synchronous fetch at boot ONLY when no persisted cache
+        exists (see ``COLLECTOR_TICKER_CACHE_PATH``) + hourly background
+        refresh.
       - ``COLLECTOR_BATCH_SIZE`` — subscribe-frame batch size (default
         1000; tunable for Kalshi WS message-size constraints)
       - ``COLLECTOR_REST_REFRESH_SECONDS`` — REST poll cadence (default

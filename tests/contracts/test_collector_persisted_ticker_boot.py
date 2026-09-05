@@ -288,7 +288,11 @@ def test_run_writes_booting_sidecar_with_drain_alive_before_fetch_returns(tmp_pa
     def hook():
         # Called INSIDE the synchronous boot fetch (no cache). The sidecar
         # must already say "booting" and the drain thread must be alive so
-        # REST bronze uploads while the page-through runs.
+        # REST bronze uploads while the page-through runs. The refresher's
+        # background first tick calls the stub again on its own thread —
+        # ignore that call so it cannot overwrite `seen` after the asserts.
+        if seen or threading.current_thread().name != "MainThread":
+            return
         deadline = time.time() + 5.0
         while time.time() < deadline:
             try:

@@ -152,7 +152,7 @@ kalshi-bot/
 │   │   ├── auditor.py            ← scheduled audit-summary LLM dispatcher
 │   │   └── researcher.py         ← auto-research scheduled jobs (3x daily)
 │   ├── notifier.py               ← TelegramNotifier
-│   └── logger.py                 ← JSONL journals (append-only, daily rotation)
+│   └── logger.py                 ← JSONL journals (append-only; every-4h hour-stamped rotation via ops/rotate_journals.sh)
 │
 ├── collector/                    ← data corpus collector (separate process)
 │   ├── __main__.py

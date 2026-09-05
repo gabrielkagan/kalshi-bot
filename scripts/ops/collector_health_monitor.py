@@ -58,7 +58,7 @@ crontab at incident time used `/tmp/collector_health.log` which
 explains why the canary's `ModuleNotFoundError: No module named 'bot'`
 crashes went undetected for 2 days):
     # In `crontab -e` (botuser):
-    */5 * * * * cd /home/botuser/kalshi-bot-repo && source venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> ~/collector_health.log 2>&1
+    */5 * * * * cd /home/botuser/kalshi-bot-repo && . venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> ~/collector_health.log 2>&1
 
 Env reads:
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — from /home/botuser/.env (loaded

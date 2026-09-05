@@ -4,7 +4,7 @@ Lightweight bot watchdog — runs via cron every 2 minutes.
 Catches issues the bot itself can't report (crashes, stalls, OOM).
 Sends alerts via Telegram.
 
-Usage: */2 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 ops/watchdog.py
+Usage: */2 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 ops/watchdog.py
 """
 
 import os
