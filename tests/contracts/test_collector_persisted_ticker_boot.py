@@ -30,6 +30,8 @@ Pins:
      the page-through), and flips to `running` once archivers started.
   6. `write_bronze_health_sidecar(archivers, path, extra=...)` merges
      the additive status keys; `schema_version` stays 1.
+  7. A boot-time exception raised after the drain thread started (bad
+     PEM) still sets shutdown_event + joins the thread (R1-M1).
 """
 from __future__ import annotations
 
@@ -281,6 +283,33 @@ def test_run_writes_booting_sidecar_with_drain_alive_before_fetch_returns(tmp_pa
     assert seen.get("state") == "booting", "sidecar must report booting during the page-through"
     assert seen.get("drain_alive") is True, "drain thread must run during the page-through"
     assert json.loads(sidecar.read_text())["state"] == "running"
+
+
+def test_boot_exception_after_drain_start_does_not_leak_drain_thread(tmp_path, monkeypatch):
+    """R1-M1: the drain thread now starts BEFORE load_private_key / planning;
+    a boot-time raise (bad PEM here) must still reach the finally block that
+    sets shutdown_event + joins the thread — no `bronze-drain` daemon may
+    outlive run()."""
+    from collector.main_loop import run as main_loop_run
+    bronze_root = tmp_path / "bronze"
+    bronze_root.mkdir()
+    monkeypatch.delenv("COLLECTOR_TICKERS_FILE", raising=False)
+    monkeypatch.setenv("COLLECTOR_HEALTH_SIDECAR_PATH", str(tmp_path / "bronze_health.json"))
+    monkeypatch.setattr("collector.uploader.subprocess.run", _fake_rclone)
+    shutdown = threading.Event()
+    with pytest.raises(Exception):
+        main_loop_run(
+            bronze_root=bronze_root, api_key="fake-key-id",
+            private_key_path=str(tmp_path / "nonexistent.pem"),
+            shutdown_event=shutdown,
+        )
+    assert shutdown.is_set(), "finally must set shutdown_event on a boot-time raise"
+    deadline = time.time() + 5.0
+    while time.time() < deadline and any(t.name == "bronze-drain" for t in threading.enumerate()):
+        time.sleep(0.05)
+    assert not any(t.name == "bronze-drain" for t in threading.enumerate()), (
+        "bronze-drain thread leaked past a boot-time exception"
+    )
 
 
 # ─── 6. sidecar extra keys ───────────────────────────────────────────────────

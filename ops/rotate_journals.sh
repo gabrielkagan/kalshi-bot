@@ -19,19 +19,33 @@
 # Invariants (pinned by tests/contracts/test_rotate_journals_sh.py):
 #   - the archive stem carries the UTC HOUR: <journal>_YYYY-MM-DDTHH.jsonl.zst
 #   - FAIL CLOSED before touching the live file: an existing archive name
-#     → ERROR + skip (no cp, no truncate); a failed cp (ENOSPC) → partial
-#     removed, live untouched; a failed compress → raw kept. Any error →
-#     exit 1 so cron / the operator sees it instead of silent data loss.
-#   - copy-then-truncate: the bot appends with open/close per write (no
-#     held handle), so nothing is lost; a few lines may duplicate.
+#     → ERROR + skip (no mv); a failed mv → live untouched; a failed
+#     compress → raw kept and retried next run. Any error → exit 1 AND
+#     `errors=N` on the Done line (the watchdog reads it — see below).
+#   - atomic `mv`: the bot appends with open/close per write (bot/logger.py
+#     opens the journal with mode "a" on every line; no held handle), so
+#     renaming the live file loses nothing — the next append creates a
+#     fresh live file. (The previous copy-then-truncate DROPPED every line
+#     written between `cp` finishing and the truncate — seconds on a
+#     multi-GB journal — and transiently doubled the largest journal on a
+#     disk being defended at 85%.) ROTATE_ARCHIVE_DIR must be on the same
+#     filesystem as the live journals for the rename to be atomic (the
+#     default is).
+#   - leftover raws: any `<journal>_<stamp>.jsonl` still uncompressed in
+#     the archive dir from an earlier failed compress is retried FIRST on
+#     every run, so a transient ENOSPC cannot strand a chunk. The final
+#     "Done." line carries `errors=N`; monitor_watchdog.py alerts on N>0
+#     and on a stale rotation.log (R1-M3 — cron ignores exit codes under
+#     the `>> rotation.log 2>&1` redirect).
 #
 # Env seams (defaults = production):
 #   ROTATE_REPO_DIR              live journals dir
 #   ROTATE_ARCHIVE_DIR           archive dir (synced to S3 by
 #                                kalshi-journal-archives-sync.timer)
 #   ROTATE_MIN_SIZE_BYTES        rotate only files >= this (10 MiB)
-#   ROTATE_LOCAL_RETENTION_DAYS  prune local archives older than this (14 —
-#                                the live VPS value; S3 keeps the long-term copy)
+#   ROTATE_LOCAL_RETENTION_DAYS  `find -mtime +N`: prune local archives at
+#                                least N+1 full days old (14 → ≥15 d; the live
+#                                VPS value; S3 keeps the long-term copy)
 #   ROTATE_JOURNALS              space-separated journal file names
 #   ROTATE_STAMP                 archive stamp override (test seam)
 set -u
@@ -65,6 +79,24 @@ file_size() {
 }
 
 errors=0
+
+# Retry-compress leftovers from an earlier failed compress (raw archives
+# never sync to S3 — the S3 sync excludes *.jsonl).
+for leftover in "$ARCHIVE_DIR"/*_????-??-??T??.jsonl; do
+    [ -e "$leftover" ] || continue
+    if [ -e "$leftover.$COMPRESS_EXT" ]; then
+        echo "ERROR leftover raw $leftover has a compressed twin — leaving both for manual triage"
+        errors=$((errors + 1))
+        continue
+    fi
+    if "${COMPRESS_CMD[@]}" "$leftover"; then
+        echo "RECOVERED leftover raw archive: $leftover -> $leftover.$COMPRESS_EXT"
+    else
+        echo "ERROR compress of leftover $leftover failed again — raw kept"
+        errors=$((errors + 1))
+    fi
+done
+
 for journal in $JOURNALS; do
     filepath="$REPO_DIR/$journal"
     if [ ! -f "$filepath" ]; then
@@ -91,14 +123,13 @@ for journal in $JOURNALS; do
         fi
     done
 
-    if ! cp "$filepath" "$archive"; then
-        echo "ERROR $journal: cp to $archive failed (disk full?) — partial removed, live file NOT truncated"
-        rm -f "$archive"
+    # Atomic rename (same filesystem). A failed mv leaves the live file
+    # exactly as it was — nothing to clean up.
+    if ! mv "$filepath" "$archive"; then
+        echo "ERROR $journal: mv to $archive failed (permissions / cross-filesystem?) — live file untouched"
         errors=$((errors + 1))
         continue
     fi
-    # Truncate the live journal only after the copy succeeded (copytruncate).
-    : > "$filepath"
 
     if ! "${COMPRESS_CMD[@]}" "$archive"; then
         echo "ERROR $journal: compress of $archive failed — raw archive kept on disk (not synced to S3 until compressed)"

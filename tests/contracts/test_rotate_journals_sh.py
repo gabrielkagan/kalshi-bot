@@ -21,11 +21,15 @@ What this file pins:
         archives, live file truncated after each, no raw left behind;
      b. a second run with the SAME stamp REFUSES before touching the live
         file (no cp, no truncate, non-zero exit, loud message);
-     c. a failed `cp` (read-only archive dir ≈ ENOSPC) keeps the live
-        file intact and exits non-zero;
+     c. a failed `mv` (read-only archive dir) keeps the live file intact
+        and exits non-zero (R1-M2: rotation is an atomic same-filesystem
+        rename, not copy-then-truncate — the copy window dropped lines);
      d. below-threshold journals are skipped untouched;
      e. local retention prunes archives older than
-        ROTATE_LOCAL_RETENTION_DAYS.
+        ROTATE_LOCAL_RETENTION_DAYS;
+     f. a leftover uncompressed raw from an earlier failed compress is
+        retried and compressed on the next run (R1-M3);
+     g. the "Done." line carries `errors=N` for monitor_watchdog.py.
 """
 from __future__ import annotations
 
@@ -119,7 +123,10 @@ def test_two_hours_same_day_produce_two_archives(tmp_path: Path):
     live = _make_live(repo, "opportunity_journal.jsonl", 11 * 1024 * 1024)
     r1 = _run(tmp_path, "2026-09-05T00")
     assert r1.returncode == 0, r1.stdout + r1.stderr
-    assert live.stat().st_size == 0, "live journal must be truncated after rotation"
+    assert not live.exists() or live.stat().st_size == 0, (
+        "live journal must be renamed away (the bot re-creates it on next append)"
+    )
+    assert "errors=0" in r1.stdout
     _make_live(repo, "opportunity_journal.jsonl", 11 * 1024 * 1024)
     r2 = _run(tmp_path, "2026-09-05T04")
     assert r2.returncode == 0, r2.stdout + r2.stderr
@@ -128,7 +135,7 @@ def test_two_hours_same_day_produce_two_archives(tmp_path: Path):
         "opportunity_journal_2026-09-05T00.jsonl.zst",
         "opportunity_journal_2026-09-05T04.jsonl.zst",
     ], archives
-    assert live.stat().st_size == 0
+    assert not live.exists() or live.stat().st_size == 0
 
 
 @pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
@@ -143,6 +150,7 @@ def test_same_stamp_rerun_refuses_before_touching_live(tmp_path: Path):
     r2 = _run(tmp_path, "2026-09-05T08")
     assert r2.returncode != 0, "same-stamp rerun must exit non-zero (fail-closed)"
     assert "ERROR" in (r2.stdout + r2.stderr)
+    assert "errors=1" in r2.stdout, "Done line must carry the error count for the watchdog"
     assert live.stat().st_size == size_before, (
         "live journal must NOT be truncated when the archive name collides"
     )
@@ -155,21 +163,37 @@ def test_same_stamp_rerun_refuses_before_touching_live(tmp_path: Path):
 
 @pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_cp_failure_keeps_live_intact(tmp_path: Path):
+def test_move_failure_keeps_live_intact(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
     live = _make_live(repo, "scan_journal.jsonl", 11 * 1024 * 1024)
     archive_dir = tmp_path / "archives"
     archive_dir.mkdir()
-    archive_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # cp → EACCES (≈ ENOSPC)
+    archive_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # mv → EACCES
     try:
         r = _run(tmp_path, "2026-09-05T12", journals=("scan_journal.jsonl",))
     finally:
         archive_dir.chmod(stat.S_IRWXU)
     assert r.returncode != 0
     assert "ERROR" in (r.stdout + r.stderr)
-    assert live.stat().st_size > 0, "a failed copy must never truncate the live journal"
+    assert live.stat().st_size > 0, "a failed rename must leave the live journal untouched"
     assert list(archive_dir.iterdir()) == []
+
+
+@pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
+def test_leftover_raw_from_failed_compress_is_retried(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
+    leftover = archive_dir / "opportunity_journal_2026-09-04T20.jsonl"
+    leftover.write_bytes(b'{"x": 1}\n' * 1000)
+    _make_live(repo, "opportunity_journal.jsonl", 1024)  # below threshold → SKIP
+    r = _run(tmp_path, "2026-09-05T00")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "RECOVERED" in r.stdout
+    assert not leftover.exists()
+    assert (archive_dir / "opportunity_journal_2026-09-04T20.jsonl.zst").is_file()
 
 
 @pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")

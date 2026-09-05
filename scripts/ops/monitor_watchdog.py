@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import shutil
 import sys
 import time
@@ -132,7 +133,20 @@ WATCHED_MONITORS: tuple[WatchedMonitor, ...] = (
     WatchedMonitor("quiet_market",      "/tmp/quiet_market.log",      45),  # cron */15 — 3× margin
     WatchedMonitor("collector_health",  "~/collector_health.log",     15),  # cron */5  — 3× margin
     WatchedMonitor("phantom_reconcile", "~/phantom_reconcile.log",   120),  # cron 7 * — 2× margin
+    # Ticket 86bbvd50a (2026-09-05): ops/rotate_journals.sh, cron 0 */4 with
+    # `>> journal_archives/rotation.log 2>&1` (verified on the live crontab).
+    # 500 min ≈ 2× the 240-min cadence. 1,106 `zstd: already exists` lines
+    # sat unread in this file for 109 days — freshness + the errors= marker
+    # below are what make rotation failures non-silent.
+    WatchedMonitor("journal_rotation",  "~/kalshi-bot-repo/journal_archives/rotation.log", 500),
 )
+
+# Ticket 86bbvd50a: the rotation script ends every run with
+# `Done. Disk free: <x> errors=<N>`. N>0 means a chunk was refused, could
+# not be moved, or could not be compressed — cron ignores the exit code
+# under the log redirect, so the watchdog reads the marker instead.
+ROTATION_LOG_PATH = "~/kalshi-bot-repo/journal_archives/rotation.log"
+_ROTATION_DONE_RE = re.compile(r"^Done\..*\berrors=(\d+)")
 
 
 def check_log_freshness(monitor: WatchedMonitor,
@@ -225,10 +239,15 @@ def check_disk_usage(disk: WatchedDisk,
         )
     total = float(getattr(usage, "total", 0) or 0)
     used = float(getattr(usage, "used", 0) or 0)
-    used_pct = round((used / total * 100.0), 1) if total else 0.0
+    free = float(getattr(usage, "free", 0) or 0)
+    # df's Use% = used / (used + avail) — excludes the ext4 reserved blocks
+    # (5% on the droplet), so 85% here == the 85% the operator sees in
+    # `df -h`. used/total would be ~4 points laxer (R1-M4).
+    denom = used + free
+    used_pct = round((used / denom * 100.0), 1) if denom else 0.0
     if used_pct < disk.max_used_pct:
         return None
-    free_gb = float(getattr(usage, "free", 0) or 0) / (1024 ** 3)
+    free_gb = free / (1024 ** 3)
     total_gb = total / (1024 ** 3)
     return (
         f"[MONITOR WATCHDOG] DISK `{disk.path}` at {used_pct:.0f}% used "
@@ -240,9 +259,44 @@ def check_disk_usage(disk: WatchedDisk,
     )
 
 
+def check_rotation_errors(log_path: str = ROTATION_LOG_PATH,
+                          tail_bytes: int = 8192) -> Optional[str]:
+    """Alert when the LAST completed rotation run reported ``errors=N>0``.
+
+    Reads the tail of ``rotation.log`` and finds the most recent
+    ``Done. ... errors=N`` line (the script's per-run footer). None when
+    the log is missing (freshness is a separate WatchedMonitor), has no
+    footer yet (legacy date-only script still installed — the crontab
+    edit is an operator action), or N == 0.
+    """
+    expanded = os.path.expanduser(os.path.expandvars(log_path))
+    try:
+        with open(expanded, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - tail_bytes))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    last = None
+    for line in tail.splitlines():
+        m = _ROTATION_DONE_RE.match(line.strip())
+        if m:
+            last = int(m.group(1))
+    if not last:
+        return None
+    return (
+        f"[MONITOR WATCHDOG] JOURNAL ROTATION reported errors={last} on its "
+        f"last run — a journal chunk was refused (name collision), could not "
+        f"be moved, or could not be compressed. Raw archives never reach S3. "
+        f"Check `grep -n ERROR {expanded} | tail`."
+    )
+
+
 def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
          notifier: Optional[object] = None,
-         disks: tuple[WatchedDisk, ...] = WATCHED_DISKS) -> int:
+         disks: tuple[WatchedDisk, ...] = WATCHED_DISKS,
+         rotation_log: Optional[str] = ROTATION_LOG_PATH) -> int:
     """Check all monitors, send alerts for stale ones, exit 0.
 
     ``notifier`` is a test seam; production reads
@@ -299,6 +353,17 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
             dedup_key=f"monitor_watchdog_disk_{disk.name}",
         )
         alerts_sent += 1
+
+    if rotation_log:
+        alert = check_rotation_errors(rotation_log)
+        if alert is not None:
+            print(alert, flush=True)
+            notifier.send(
+                alert,
+                silent=False,
+                dedup_key="monitor_watchdog_journal_rotation_errors",
+            )
+            alerts_sent += 1
 
     print(
         f"[monitor_watchdog] checked={len(monitors)} ok={monitors_ok} "

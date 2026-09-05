@@ -196,7 +196,7 @@ DEFAULT_BOOT_GRACE_SECONDS = 1200
 # from the moment the drain thread starts (BEFORE any REST page-through).
 # ``check_boot_state`` alerts when the process has been ``booting`` for
 # longer than this. Same figure as the STALE boot grace above: with the
-# persisted ticker set a boot reaches WS in ~3-5 min; a boot still paging
+# persisted ticker set a boot reaches WS in ~3 min; a boot still paging
 # after 20 min is the first-boot-after-deploy (no last_tickers.json yet)
 # or a regression — either way the operator should know, because the
 # 2026-09-05 restart spent 59.8 min with all six units "active" and zero
@@ -278,7 +278,10 @@ def check_disk(
     """
     target = Path(path) if Path(path).exists() else Path("/")
     usage = shutil.disk_usage(target)
-    used_pct = int((usage.used / usage.total) * 100)
+    # df's Use% = used / (used + avail); used/total hid the ext4 reserved
+    # blocks (~4 points laxer on the 48 GB root). Ticket 86bbvd50a R1-M4.
+    denom = usage.used + usage.free
+    used_pct = int((usage.used / denom) * 100) if denom else 0
     if used_pct < threshold_pct:
         return None
     used_gb = usage.used / (1024 ** 3)

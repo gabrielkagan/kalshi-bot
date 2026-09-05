@@ -805,6 +805,11 @@ def load_tier_map(path: Path) -> Optional[Tuple[Dict[str, List[str]], float]]:
             logger.warning("load_tier_map: %s tier %r malformed; ignoring cache.", path, tier)
             return None
         out[tier] = [t for t in tickers if isinstance(t, str)]
+    if not any(out.values()):
+        # R1-m1: a zero-ticker cache is the "empty" boot wearing a healthier
+        # label; treat as no cache so the boot fetches synchronously.
+        logger.warning("load_tier_map: %s holds 0 tickers; ignoring cache.", path)
+        return None
     saved_epoch = _parse_utc_iso(data.get("saved_at"))
     if saved_epoch is None:
         try:
@@ -924,7 +929,9 @@ class RestSnapshotRefresher:
                 "last_duration_seconds": self._last_duration_seconds,
                 "last_ticker_count": self._last_ticker_count,
                 "last_outcome": self._last_outcome,
-                "seeded_ticker_count": sum(len(v) for v in self._last_tier_map.values()),
+                # Total of the CURRENT change-detector set (the boot seed
+                # until the first "changed" fetch replaces it).
+                "current_ticker_count": sum(len(v) for v in self._last_tier_map.values()),
             }
 
     def _run(self) -> None:

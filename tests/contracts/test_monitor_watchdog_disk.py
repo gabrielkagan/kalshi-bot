@@ -13,13 +13,20 @@ disk-usage alert.
 Pins:
   1. `WatchedDisk(name, path, max_used_pct)` frozen dataclass.
   2. `WATCHED_DISKS` covers `/` at 85% (the VPS is one filesystem; 85%
-     leaves ~7 GB of the 48 GB root — about one day of the 30 GB raw
-     leak's growth rate is NOT enough, but the collector's 16 GB local
-     bronze buffer makes ~71% the healthy steady state, so 85% is the
-     first level that is both above steady state and actionable).
+     leaves ~7 GB of the 48 GB root ≈ 25 days of the raw-leak growth
+     rate (30.2 GB / 109 d ≈ 0.28 GB/d) — and the collector's ~16 GB
+     local bronze buffer makes ~71% the healthy steady state, so 85% is
+     the first level that is both above steady state and actionable).
   3. `check_disk_usage(disk, disk_usage_fn=...)` returns None below the
      threshold and an alert string (mentioning DISK, the path, and the
      percentage) at/above it; a stat failure alerts rather than hides.
+     Percentage = used / (used + free), i.e. df's Use% (R1-M4) — NOT
+     used / total, which hides the ext4 reserved blocks.
+  5. `check_rotation_errors(log_path)` reads the `Done. ... errors=N`
+     footer ops/rotate_journals.sh writes per run and alerts on N>0
+     (cron ignores exit codes under the `>> rotation.log` redirect);
+     main() dispatches it with dedup key
+     `monitor_watchdog_journal_rotation_errors`.
   4. `main()` dispatches disk checks with dedup key
      `monitor_watchdog_disk_<name>` and prints the alert text to stdout
      so the cron log keeps a history (the log-freshness alerts only ever
@@ -48,10 +55,14 @@ def _import_watchdog():
 _Usage = collections.namedtuple("usage", "total used free")
 
 
-def _usage_fn(pct: float):
-    total = 48 * 1024 ** 3
-    used = int(total * pct / 100.0)
-    return lambda _path: _Usage(total=total, used=used, free=total - used)
+def _usage_fn(pct: float, reserved_frac: float = 0.05):
+    """df-style fixture: Use% = used / (used + free); ``total`` also carries
+    the reserved blocks that neither used nor free include."""
+    usable = 48 * 1024 ** 3
+    used = int(usable * pct / 100.0)
+    free = usable - used
+    total = int(usable * (1 + reserved_frac))
+    return lambda _path: _Usage(total=total, used=used, free=free)
 
 
 def test_watched_disk_dataclass_shape():
@@ -97,11 +108,18 @@ def test_check_disk_usage_alerts_when_stat_fails():
     assert alert and "DISK" in alert
 
 
+def test_check_disk_usage_matches_df_not_used_over_total():
+    """used/total would read 81% here (5% reserved); df reads 85%."""
+    mod = _import_watchdog()
+    disk = mod.WatchedDisk("root", "/", 85)
+    assert mod.check_disk_usage(disk, disk_usage_fn=_usage_fn(85.0, reserved_frac=0.05))
+
+
 def test_main_dispatches_disk_alert_with_dedup_key_and_logs_text(capsys):
     mod = _import_watchdog()
     fake_notifier = MagicMock()
     disks = (mod.WatchedDisk("root", "/", 0),)  # 0% → any usage trips
-    rc = mod.main(monitors=(), notifier=fake_notifier, disks=disks)
+    rc = mod.main(monitors=(), notifier=fake_notifier, disks=disks, rotation_log=None)
     assert rc == 0
     fake_notifier.send.assert_called_once()
     _, kwargs = fake_notifier.send.call_args
@@ -114,6 +132,46 @@ def test_main_no_disk_alert_when_below_threshold():
     mod = _import_watchdog()
     fake_notifier = MagicMock()
     disks = (mod.WatchedDisk("root", "/", 101),)  # never trips
-    rc = mod.main(monitors=(), notifier=fake_notifier, disks=disks)
+    rc = mod.main(monitors=(), notifier=fake_notifier, disks=disks, rotation_log=None)
     assert rc == 0
     fake_notifier.send.assert_not_called()
+
+
+# ─── rotation errors marker ──────────────────────────────────────────────────
+
+
+def test_check_rotation_errors_none_when_missing_or_clean(tmp_path):
+    mod = _import_watchdog()
+    assert mod.check_rotation_errors(str(tmp_path / "nope.log")) is None
+    log = tmp_path / "rotation.log"
+    log.write_text("SKIP x\nROTATED y\nDone. Disk free: 30G errors=0\n")
+    assert mod.check_rotation_errors(str(log)) is None
+    legacy = tmp_path / "legacy.log"
+    legacy.write_text("Done. Disk free: 30G\n")  # pre-Bit script, no marker
+    assert mod.check_rotation_errors(str(legacy)) is None
+
+
+def test_check_rotation_errors_alerts_on_last_run_errors(tmp_path):
+    mod = _import_watchdog()
+    log = tmp_path / "rotation.log"
+    log.write_text(
+        "Done. Disk free: 30G errors=0\n"
+        "ERROR opportunity_journal.jsonl: compress failed\n"
+        "Done. Disk free: 30G errors=1\n"
+    )
+    alert = mod.check_rotation_errors(str(log))
+    assert alert and "ROTATION" in alert and "errors=1" in alert
+    # A later clean run clears it.
+    log.write_text(log.read_text() + "Done. Disk free: 30G errors=0\n")
+    assert mod.check_rotation_errors(str(log)) is None
+
+
+def test_main_dispatches_rotation_errors_alert(tmp_path):
+    mod = _import_watchdog()
+    log = tmp_path / "rotation.log"
+    log.write_text("Done. Disk free: 1G errors=2\n")
+    fake_notifier = MagicMock()
+    rc = mod.main(monitors=(), notifier=fake_notifier, disks=(), rotation_log=str(log))
+    assert rc == 0
+    fake_notifier.send.assert_called_once()
+    assert fake_notifier.send.call_args.kwargs["dedup_key"] == "monitor_watchdog_journal_rotation_errors"
