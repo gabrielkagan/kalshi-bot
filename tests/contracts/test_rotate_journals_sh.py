@@ -31,7 +31,9 @@ What this file pins:
         retried and compressed on the next run (R1-M3); legacy date-only
         raws from the old script are also seen — compressed when alone,
         flagged (errors=N) when a compressed twin exists (R2-M3);
-     g. the "Done." line carries `errors=N` for monitor_watchdog.py.
+     g. the "Done." line carries `errors=N` for monitor_watchdog.py — on
+        every path, including the early refusals (missing journals dir /
+        cross-filesystem archive dir; R3-M1).
 """
 from __future__ import annotations
 
@@ -232,6 +234,27 @@ def test_legacy_date_only_raw_without_twin_is_compressed(tmp_path: Path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert not legacy_raw.exists()
     assert (archive_dir / "opportunity_journal_2026-09-05.jsonl.zst").is_file()
+
+
+@pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
+def test_refusal_paths_still_emit_watchdog_footer(tmp_path: Path):
+    """R3-M1: every early refusal must end with a `Done. … errors=N` line
+    that monitor_watchdog._ROTATION_DONE_RE matches, or the refusal is
+    silent under the cron redirect. Drive the guard with a missing
+    journals dir (the same code path as a cross-filesystem archive dir)."""
+    import re
+    env = dict(os.environ)
+    env.update({
+        "ROTATE_REPO_DIR": str(tmp_path / "does-not-exist"),
+        "ROTATE_ARCHIVE_DIR": str(tmp_path / "archives"),
+        "ROTATE_STAMP": "2026-09-05T00",
+    })
+    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert r.returncode != 0
+    footer = re.compile(r"^Done\..*\berrors=(\d+)")
+    matches = [footer.match(line.strip()) for line in r.stdout.splitlines()]
+    hits = [m for m in matches if m]
+    assert hits and int(hits[-1].group(1)) >= 1, r.stdout + r.stderr
 
 
 @pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")

@@ -82,7 +82,7 @@ from collector.rest_snapshot import (
     IncrementalDiscoveryRefresher,
     RestSnapshotRefresher,
     fetch_tickers_by_tier,
-    _utc_now_iso,
+    utc_now_iso,
     load_tier_map,
     resolve_excluded_series,
     save_tier_map,
@@ -798,7 +798,7 @@ def run(
     all_writers: List[BronzeWriter] = []
     boot_status: Dict[str, object] = {
         "state": "booting",
-        "state_since": _utc_now_iso(),
+        "state_since": utc_now_iso(),
         "ticker_set_source": None,
         "ticker_cache_age_seconds": None,
     }
@@ -1139,7 +1139,7 @@ def run(
         # Ticket 86bbvdcat: archivers dispatched → the process is serving
         # (or about to serve) WS data; flip the sidecar state.
         boot_status["state"] = "running"
-        boot_status["state_since"] = _utc_now_iso()
+        boot_status["state_since"] = utc_now_iso()
         if refresher is not None:
             refresher.start()
         if incremental_refresher is not None:

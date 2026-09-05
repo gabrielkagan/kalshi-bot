@@ -30,7 +30,10 @@ duplicates.
 Operator install (manual, post-merge):
 
     # In `crontab -e` (botuser):
-    */10 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+    */10 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+    # (`.` not `source`, and SHELL=/bin/bash on the crontab's FIRST line —
+    #  see ops/CLAUDE.md "Crontab SHELL ordering"; the live line still says
+    #  `source` and works only because it sits below the SHELL= directive.)
 
 Env reads (in main()):
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — from /home/botuser/.env (loaded
@@ -58,7 +61,7 @@ so the cron log keeps a history instead of Telegram-only.
 
 Self-referential blind spot: this script's OWN log freshness is the residual
 gap. Mitigations:
-  1. Higher cadence (10 min) than any watched monitor (15-120 min) — operator
+  1. Higher cadence (10 min) than any watched monitor (15-500 min) — operator
      notices absence of expected alerts faster.
   2. Future E-followup: external probe or self-referential check.
 """

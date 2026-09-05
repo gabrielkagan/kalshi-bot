@@ -229,6 +229,11 @@ def test_run_boots_from_persisted_cache_before_any_rest_fetch(tmp_path, monkeypa
     cached = {"1": ["KXA-1", "KXB-2", "KXC-3"]}
     events, ctor, sidecar, _ = _boot(tmp_path, monkeypatch, cache_map=cached,
                                      fetch_returns=cached)
+    # The background fetch runs on the (never-joined) refresher daemon
+    # thread; give it a moment on a loaded runner before asserting.
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not any(k == "fetch" for k, _ in events):
+        time.sleep(0.02)
     kinds = [k for k, _ in events]
     assert "archiver_ctor" in kinds and "fetch" in kinds, events
     assert kinds.index("archiver_ctor") < kinds.index("fetch"), (

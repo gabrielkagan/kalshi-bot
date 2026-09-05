@@ -26,14 +26,16 @@ surface pre-D1.6:
 
 D1.6 adds 3 checks:
   - check_disk: alert if /var/lib/kalshi-collector/ partition >= threshold_pct
-  - check_boot_state: alert if bronze_health.json reports state=booting for
-    > DEFAULT_MAX_BOOT_SECONDS (ticket 86bbvdcat, 2026-09-05; Kalshi tier only)
   - check_ws_reconnects: alert if kalshi_ws_disconnected count over
     last N minutes >= threshold_count (with 1006/1009/1011 class breakdown)
   - check_collector_active: alert if `systemctl is-active kalshi-collector`
     returns non-zero
 
-D1.6 fu adds the 4th check:
+Ticket 86bbvdcat (2026-09-05) adds, Kalshi tier only:
+  - check_boot_state: alert if bronze_health.json reports state=booting for
+    > DEFAULT_MAX_BOOT_SECONDS
+
+D1.6 fu adds the 4th D1.6-era check:
   - check_dropped_frames: positive observability for D1.3-fu4 worker
     queue saturation. Reads ``bronze_health.json`` sidecar written by
     the collector drain thread; alerts on:

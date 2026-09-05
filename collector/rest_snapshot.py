@@ -730,7 +730,7 @@ DEFAULT_TICKER_CACHE_FILENAME: str = "last_tickers.json"
 TICKER_CACHE_STALE_WARN_SECONDS: float = 24 * 3600.0
 
 
-def _utc_now_iso() -> str:
+def utc_now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
@@ -760,7 +760,7 @@ def save_tier_map(
     """
     payload = {
         "schema_version": TICKER_CACHE_SCHEMA_VERSION,
-        "saved_at": _utc_now_iso(),
+        "saved_at": utc_now_iso(),
         "tickers_by_tier": {str(k): list(v) for k, v in tier_map.items()},
     }
     try:
@@ -967,7 +967,7 @@ class RestSnapshotRefresher:
         started = time.monotonic()
         with self._status_lock:
             self._in_progress = True
-            self._last_started_at = _utc_now_iso()
+            self._last_started_at = utc_now_iso()
             self._last_outcome = None
         try:
             self._do_refresh_inner()
@@ -976,7 +976,7 @@ class RestSnapshotRefresher:
             with self._status_lock:
                 self._in_progress = False
                 self._refresh_count += 1
-                self._last_completed_at = _utc_now_iso()
+                self._last_completed_at = utc_now_iso()
                 self._last_duration_seconds = round(duration, 3)
                 outcome = self._last_outcome
                 count = self._last_ticker_count

@@ -22,15 +22,15 @@ Pins:
      percentage) at/above it; a stat failure alerts rather than hides.
      Percentage = used / (used + free), i.e. df's Use% (R1-M4) — NOT
      used / total, which hides the ext4 reserved blocks.
-  4b. `check_rotation_errors(log_path)` reads the `Done. ... errors=N`
+  4. `main()` dispatches disk checks with dedup key
+     `monitor_watchdog_disk_<name>` and prints the alert text to stdout
+     so the cron log keeps a history (the log-freshness alerts only ever
+     reached Telegram — ~47K of them went unactioned).
+  5. `check_rotation_errors(log_path)` reads the `Done. ... errors=N`
      footer ops/rotate_journals.sh writes per run and alerts on N>0
      (cron ignores exit codes under the `>> rotation.log` redirect);
      main() dispatches it with dedup key
      `monitor_watchdog_journal_rotation_errors`.
-  4a. `main()` dispatches disk checks with dedup key
-     `monitor_watchdog_disk_<name>` and prints the alert text to stdout
-     so the cron log keeps a history (the log-freshness alerts only ever
-     reached Telegram — ~47K of them went unactioned).
 """
 from __future__ import annotations
 

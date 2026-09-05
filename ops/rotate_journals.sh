@@ -81,14 +81,22 @@ file_size() {
 }
 
 device_id() {
-    stat -c%d "$1" 2>/dev/null || stat -f%d "$1" 2>/dev/null
+    # -L: follow symlinks so a symlinked archive dir on another fs is caught.
+    stat -L -c%d "$1" 2>/dev/null || stat -L -f%d "$1" 2>/dev/null
 }
 
 # The rename below is only atomic (and only loss-free) on ONE filesystem;
 # a cross-filesystem `mv` degrades to copy+unlink and reopens the drop
-# window. Refuse loudly rather than silently regress.
+# window. Refuse loudly rather than silently regress. The refusal still
+# ends with the `Done. … errors=N` footer the watchdog regex reads.
+if [ ! -d "$REPO_DIR" ]; then
+    echo "ERROR journals dir $REPO_DIR does not exist — refusing to rotate"
+    echo "Done. Disk free: n/a errors=1"
+    exit 1
+fi
 if [ "$(device_id "$REPO_DIR")" != "$(device_id "$ARCHIVE_DIR")" ]; then
-    echo "ERROR $ARCHIVE_DIR is not on the same filesystem as $REPO_DIR — mv would not be atomic; refusing to rotate. Done. errors=1"
+    echo "ERROR $ARCHIVE_DIR is not on the same filesystem as $REPO_DIR — mv would not be atomic; refusing to rotate"
+    echo "Done. Disk free: n/a errors=1"
     exit 1
 fi
 
