@@ -293,8 +293,8 @@ done
 # VPS-local copy (which drifted into the every-4h name-collision data-loss
 # bug — kb/failures/vps-disk-full-journal-rotation-collision-sep05.md) into
 # ops/. install.sh does NOT edit the crontab (operator-owned); it validates
-# the script here so a broken edit fails the install instead of the 04:00
-# cron tick, and prints the expected crontab line at the end.
+# the script here so a broken edit fails the install instead of the next
+# `0 */4` cron tick, and prints the expected crontab line at the end.
 ROTATE_SCRIPT="$SCRIPT_DIR/rotate_journals.sh"
 echo "==> Validating $ROTATE_SCRIPT"
 if [ ! -x "$ROTATE_SCRIPT" ]; then

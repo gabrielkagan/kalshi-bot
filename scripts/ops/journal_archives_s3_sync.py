@@ -5,8 +5,9 @@ journal_archives/ holds the per-tick forensic JSONL streams
 (opportunity_journal, scan_journal, rejection_journal, ...). The
 ops/rotate_journals.sh cron deletes locally at the 14-day retention boundary;
 without S3 archival the per-tick record is gone forever. This sync runs
-30 min AFTER rotate_journals.sh (04:30 UTC) so yesterday's journal is
-fully compressed before upload.
+30 min AFTER each every-4h ops/rotate_journals.sh tick (00/04/08/12/16/20:30
+UTC) so the most recently rotated hour-stamped chunk is fully compressed
+before upload.
 
 Primitive: `rclone copy --checksum --immutable` (NOT `sync` and NOT
 `copyto` in a loop).

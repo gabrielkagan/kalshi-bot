@@ -1366,7 +1366,7 @@ Auto-deploy means a push to `main` is a production deploy. The discipline is to 
 
 JSONL journals (`logs/journals/`) record every event (scans, opportunities, rejections, trades, settlements, maker fill model training data). Append-only. Every-4h, hour-stamped rotation + zstd compression via `ops/rotate_journals.sh` cron (tracked in git since 2026-09-05). The compressed archives upload to S3 30 min after each rotation tick via `journal_archives_s3_sync.py` (same `--checksum --immutable` rclone discipline as the data corpus).
 
-Retention: 90 days local on VPS; S3 lifecycle transitions to DEEP_ARCHIVE at 30 days, never expires.
+Retention: 14 days local on VPS (`ROTATE_LOCAL_RETENTION_DAYS`, `find -mtime +14`); S3 lifecycle transitions to DEEP_ARCHIVE at 30 days, never expires.
 
 ## 9.5 Watchdogs and alerts
 

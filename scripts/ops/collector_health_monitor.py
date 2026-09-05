@@ -433,6 +433,7 @@ def check_boot_state(
     sidecar_path: Optional[Path] = None,
     max_boot_seconds: int = DEFAULT_MAX_BOOT_SECONDS,
     now: Optional[float] = None,
+    unit: str = DEFAULT_COLLECTOR_UNIT,
 ) -> Optional[str]:
     """Alert when bronze_health.json reports ``state == "booting"`` for
     longer than ``max_boot_seconds`` (ticket 86bbvdcat).
@@ -440,7 +441,13 @@ def check_boot_state(
     Fail-quiet on: missing sidecar, malformed JSON, no ``state`` key
     (pre-Bit collectors and the Coinbase / weather / ESPN sidecars, which
     never carry the key), unparseable ``state_since``, or any state other
-    than ``booting``. ``now`` is a test seam (defaults to ``time.time()``).
+    than ``booting``. A sidecar left behind by a PREVIOUS process (its
+    ``state_since`` predates the unit's ActiveEnterTimestamp — e.g. a
+    stop mid-stagger, or a restart still inside the salvage sweep) is
+    also ignored: ``collector_active`` / STALE cover that case and the
+    "no WS until boot completes" text would mislead. ``now`` is a test
+    seam (defaults to ``time.time()``); when ``systemctl`` is unavailable
+    (tests, dev hosts) the process-age gate is skipped.
     """
     if sidecar_path is None:
         sidecar_path = Path(os.environ.get(
@@ -459,6 +466,9 @@ def check_boot_state(
         return None
     if now is None:
         now = time.time()
+    uptime = _collector_uptime_seconds(unit)
+    if uptime is not None and since < now - uptime:
+        return None  # sidecar predates the current process
     age = now - since
     if age <= max_boot_seconds:
         return None

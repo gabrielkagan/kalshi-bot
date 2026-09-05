@@ -18,6 +18,8 @@ Pins:
   3. None while `booting` is younger than the threshold; alert string
      mentioning BOOTING once older.
   4. `main()` wires the check into the kalshi-collector tier.
+  5. A `booting` sidecar older than the current process (state_since <
+     now - uptime) is ignored (R5-m3).
 """
 from __future__ import annotations
 
@@ -99,6 +101,21 @@ def test_check_boot_state_alerts_when_booting_too_long(tmp_path: Path):
     # literal (first full-tier run flaked on exactly this).
     m = re.search(r"for (\d+)s", alert)
     assert m and 1998 <= int(m.group(1)) <= 2001, f"alert should state the boot age: {alert!r}"
+
+
+def test_check_boot_state_ignores_sidecar_from_previous_process(tmp_path: Path, monkeypatch):
+    """R5-m3: a `booting` sidecar whose state_since predates the unit's
+    current ActiveEnterTimestamp belongs to a dead/previous process —
+    collector_active / STALE own that case; no misleading BOOTING alert."""
+    mod = _import_monitor()
+    now = time.time()
+    stale = tmp_path / "prev.json"
+    _write(stale, state="booting", state_since=_iso(now - 5000))
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda _unit: 600.0)
+    assert mod.check_boot_state(sidecar_path=stale, max_boot_seconds=1200, now=now) is None
+    # Same sidecar, but the process is older than the stamp → alert stands.
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda _unit: 9000.0)
+    assert mod.check_boot_state(sidecar_path=stale, max_boot_seconds=1200, now=now)
 
 
 def test_main_wires_boot_state_into_kalshi_tier():
