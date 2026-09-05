@@ -945,9 +945,11 @@ class RestSnapshotRefresher:
             }
 
     def _run(self) -> None:
-        # First refresh fires immediately so WS conns boot with a
-        # populated subscription set instead of waiting an hour for
-        # the first interval to expire.
+        # First refresh fires immediately. Pre-86bbvdcat this was how the
+        # WS conns got a populated set; post-86bbvdcat the boot already
+        # planned from the persisted / synchronous set, so the immediate
+        # tick's job is to re-page the universe in the background, replan
+        # only on change, and recover an ``empty`` boot.
         self._do_refresh()
         while not self._shutdown_event.is_set():
             # wait() returns True if the event was set (shutdown), False

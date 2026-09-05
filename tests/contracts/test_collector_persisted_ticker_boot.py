@@ -214,9 +214,24 @@ def _boot(tmp_path: Path, monkeypatch, *, cache_map=None, fetch_returns,
     monkeypatch.setattr("collector.uploader.subprocess.run", _fake_rclone)
 
     pem_path = _generate_pem_file(tmp_path)  # 2048-bit keygen BEFORE the timer
+
     shutdown = threading.Event()
-    threading.Thread(target=lambda: (time.sleep(run_for), shutdown.set()),
-                     daemon=True).start()
+
+    def _stop_once_running():
+        # Wait for the sidecar to report `running` (archivers dispatched),
+        # then hold `run_for` so the background refresher tick can land;
+        # cap at 5 s so a wedged boot still terminates the test.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                if json.loads(sidecar_path.read_text()).get("state") == "running":
+                    break
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.02)
+        time.sleep(run_for)
+        shutdown.set()
+    threading.Thread(target=_stop_once_running, daemon=True).start()
     main_loop_run(
         bronze_root=bronze_root, api_key="fake-key-id",
         private_key_path=str(pem_path),

@@ -299,7 +299,7 @@ def _drain_rotated(
     Ticket 86bbvdcat (2026-09-05): ``writers`` / ``archivers`` are LIVE
     lists that ``run()`` keeps appending to after this thread has started
     — the thread now starts BEFORE the boot REST page-through so the
-    REST bronze it produces (~1 MB raw + ~40 KB zst per page; 17 GB was
+    REST bronze it produces (~1 MB raw + ~42 KB zst per page; 17 GB was
     parked on local disk during the 2026-09-05 boot) uploads as it
     rotates. Iterating a list while the main thread appends is safe under
     the GIL (a new element is simply picked up on the next tick).
