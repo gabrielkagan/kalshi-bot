@@ -17,7 +17,7 @@ Operator runbook (RCA-G plan doc
 ``kb/decisions/collector-curated-mitigation-plan.md``):
 
   1. On the VPS:
-     ``cd ~/kalshi-bot-repo && source venv/bin/activate``
+     ``cd ~/kalshi-bot-repo && . venv/bin/activate``
      ``set -a && . ~/.env.collector && set +a``
      ``python3 scripts/ops/generate_curated_tickers.py``
      # writes ``/home/botuser/curated_tickers.json``

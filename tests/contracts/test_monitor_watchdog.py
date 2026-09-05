@@ -285,8 +285,9 @@ def test_main_production_path_does_not_crash_without_notifier_seam(
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("smoke", str(fresh), 60),)
     # Call main() WITHOUT notifier= kwarg — exercises the production
-    # path that R1-C1 said would TypeError-crash.
-    rc = mod.main(monitors=monitors)
+    # path that R1-C1 said would TypeError-crash. disks=()/rotation_log=None
+    # keep the host filesystem out of the pin (ticket 86bbvd50a).
+    rc = mod.main(monitors=monitors, disks=(), rotation_log=None)
     assert rc == 0, (
         "main() production path must exit 0 (R1-C1 regression: was "
         "TypeError-crashing on every cron tick because TelegramNotifier() "
@@ -324,7 +325,7 @@ def test_main_production_path_reads_telegram_env_vars(
     fresh = tmp_path / "fresh.log"
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("env_test", str(fresh), 60),)
-    rc = mod.main(monitors=monitors)
+    rc = mod.main(monitors=monitors, disks=(), rotation_log=None)
 
     assert rc == 0
     assert captured.get("bot_token") == "fake-token-XYZ", (

@@ -356,7 +356,7 @@ crontab -e
 Pre-install operator checks:
 - `~/.env` exports `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (production VPS layout; same file the existing cron jobs source).
 - `~/kalshi-bot-repo/.env` exports `KALSHI_API_KEY` (or `KALSHI_API_KEY_ID`) + `KALSHI_PRIVATE_KEY_PATH` (same file the kalshi-bot systemd unit sources via `EnvironmentFile=`).
-- The exact split may differ on a fresh setup — what matters is that ALL four keys reach the cron process after the `set -a && source ... && set +a` block. Verify with `crontab -l` + a manual dry-run (`cd ~/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && python3 -c 'import os; [print(k, "=<set>" if os.environ.get(k) else "=MISSING") for k in ("KALSHI_API_KEY","KALSHI_API_KEY_ID","KALSHI_PRIVATE_KEY_PATH","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID")]'`).
+- The exact split may differ on a fresh setup — what matters is that ALL four keys reach the cron process after the `set -a && . ... && set +a` block. Verify with `crontab -l` + a manual dry-run (`cd ~/kalshi-bot-repo && set -a && . ~/.env && . .env && set +a && python3 -c 'import os; [print(k, "=<set>" if os.environ.get(k) else "=MISSING") for k in ("KALSHI_API_KEY","KALSHI_API_KEY_ID","KALSHI_PRIVATE_KEY_PATH","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID")]'`).
 - `~/kalshi-bot-repo/phantom_reconcile_dedup.json` + `.lock` siblings writable (auto-created on first run; gitignored).
 
 Three alert classes with day-stable cross-process dedup via JSON sidecar at `./phantom_reconcile_dedup.json` (configurable via `PHANTOM_RECONCILE_DEDUP_PATH` env or `--dedup-sidecar`):
