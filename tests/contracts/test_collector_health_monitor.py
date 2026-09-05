@@ -320,7 +320,11 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         with patch.object(mod, "check_disk", _alert), \
              patch.object(mod, "check_ws_reconnects", _alert), \
              patch.object(mod, "check_collector_active", _alert), \
-             patch.object(mod, "check_dropped_frames", _alert):
+             patch.object(mod, "check_dropped_frames", _alert), \
+             patch.object(mod, "check_boot_state", lambda **kw: None):
+        # check_boot_state (5th Kalshi check, ticket 86bbvdcat) is pinned
+        # to None so the 18-dispatch count is hermetic — on a VPS mid-boot
+        # the real check would add a 19th alert.
             mod.main()
 
     # Post-B2a-1 (2026-05-28, ticket 86ba1zf5j): 4 checks × 3 WS-collector

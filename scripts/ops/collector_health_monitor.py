@@ -11,9 +11,10 @@ same HTTP-poll subset as weather) + 86ba1zf5j (B2a-1, 2026-05-28 —
 extends to also poll kalshi-venue-l2-collector with the FULL WS
 subset: disk + ws_reconnects + collector_active + dropped_frames,
 since the venue-L2 recorder runs 3 persistent WS conns). Standalone
-CLI run via cron on the VPS. Polls 4 health surfaces × 3 WS-collectors
+CLI run via cron on the VPS. Polls 5 health surfaces on kalshi-collector
+(incl. boot_state, ticket 86bbvdcat 2026-09-05) + 4 × 2 other WS-collectors
 + 3 health surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3,
-2026-05-18) = 19 total alert classes; sends Telegram alerts via the
+2026-05-18) = 20 total alert classes; sends Telegram alerts via the
 existing ``bot.notifier.TelegramNotifier`` (no Telegram client
 re-implementation).
 
@@ -732,9 +733,10 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs collector checks (4) × 3 WS-collector tiers +
+    """Entry point. Runs collector checks (5 on kalshi-collector incl.
+    boot_state, 4 on each other WS-collector tier) +
     collector checks (3) × 2 HTTP-poll-collector tiers + bot checks
-    (1) × 1 bot tier = 19 total check dispatches per tick; sends
+    (1) × 1 bot tier = 20 total check dispatches per tick; sends
     Telegram alerts as needed.
 
     D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
