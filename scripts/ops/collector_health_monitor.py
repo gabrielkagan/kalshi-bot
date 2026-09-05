@@ -235,7 +235,9 @@ def _collector_uptime_seconds(unit: str) -> Optional[float]:
     """Return seconds since the unit's ActiveEnterTimestamp, or None.
 
     Used by ``check_dropped_frames`` to skip the STALE-sidecar alert
-    during the collector's ~17-min boot window. Returns None on any
+    during the collector's boot window (see the grace rationale there;
+    post-86bbvdcat the sidecar is written from the first drain tick, so
+    the grace covers the restart gap, not a page-through). Returns None on any
     systemctl-show failure — caller treats as "no grace, run normal
     check" (fail-open posture matches the cron framework's bias).
 
@@ -558,9 +560,10 @@ def check_dropped_frames(
             Kalshi's uptime (R1-M1 fix, 2026-05-20).
         boot_grace_seconds: skip the STALE alert if the unit's
             ActiveEnterTimestamp is younger than this (default 1200s
-            ≈ 20 min, covers the observed ~17-min boot window with
-            safety margin). SCHEMA + DROPS checks remain active
-            during the grace.
+            ≈ 20 min; originally sized for the May-2026 ~17-min
+            synchronous boot, kept post-86bbvdcat as the restart-gap
+            margin and equal to DEFAULT_MAX_BOOT_SECONDS). SCHEMA +
+            DROPS checks remain active during the grace.
 
     Returns:
         Alert string (Markdown for Telegram) or None.
@@ -577,11 +580,15 @@ def check_dropped_frames(
 
     # STALE check (before reading content — a stale file's content may
     # also be uninformative). RCA-F `86ba12xr6` (2026-05-20): skip the
-    # STALE alert during the collector's ~17-min boot window. The drain
-    # thread + sidecar writer don't run until AFTER all archivers are
-    # wired (boot sequence: salvage → REST snapshot 10 min → 60s/conn ×
-    # 7 conns wire-up = ~17 min total). Alerting STALE during boot fires
-    # a false-positive on every deploy + every restart cycle.
+    # STALE alert during the collector's boot window. Pre-86bbvdcat the
+    # sidecar was first written only AFTER the synchronous REST
+    # page-through + per-conn wire-up (~17 min in May 2026, 55+ min by
+    # September), so STALE fired on every deploy + restart. Post-86bbvdcat
+    # (2026-09-05) the drain thread writes the sidecar from its first
+    # 1 s tick, BEFORE any REST fetch; the grace now only has to cover the
+    # previous process's last sidecar going stale across the restart gap
+    # (salvage sweep + rclone re-uploads). Kept at 1200 s =
+    # DEFAULT_MAX_BOOT_SECONDS.
     #
     # CRITICAL: the grace SKIPS ONLY the STALE alert (R1-C1 fix). SCHEMA
     # + DROPS checks below MUST still run during boot grace — they read

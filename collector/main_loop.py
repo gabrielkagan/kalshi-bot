@@ -1137,9 +1137,11 @@ def run(
                 n_started, len(archivers), reason,
             )
         # Ticket 86bbvdcat: archivers dispatched → the process is serving
-        # (or about to serve) WS data; flip the sidecar state.
-        boot_status["state"] = "running"
-        boot_status["state_since"] = utc_now_iso()
+        # (or about to serve) WS data; flip the sidecar state. A boot
+        # cancelled mid-stagger by shutdown stays "booting" (it is exiting).
+        if not shutdown_event.is_set():
+            boot_status["state"] = "running"
+            boot_status["state_since"] = utc_now_iso()
         if refresher is not None:
             refresher.start()
         if incremental_refresher is not None:

@@ -1364,7 +1364,7 @@ Auto-deploy means a push to `main` is a production deploy. The discipline is to 
 - **≤50-row commit batches** — bounds the size of any single write and reduces lock contention.
 - **`recent_writes` ring buffer** + **slow-batch breakdown logging** — when a commit takes >100ms, the breakdown is logged for forensic analysis.
 
-JSONL journals (`logs/journals/`) record every event (scans, opportunities, rejections, trades, settlements, maker fill model training data). Append-only. Daily rotation + zstd compression via `rotate_journals.sh` cron at 04:00 UTC (script lives on the VPS, not in git). The compressed files upload to S3 at 04:30 UTC via `journal_archives_s3_sync.py` (same `--checksum --immutable` rclone discipline as the data corpus).
+JSONL journals (`logs/journals/`) record every event (scans, opportunities, rejections, trades, settlements, maker fill model training data). Append-only. Every-4h, hour-stamped rotation + zstd compression via `ops/rotate_journals.sh` cron (tracked in git since 2026-09-05). The compressed archives upload to S3 30 min after each rotation tick via `journal_archives_s3_sync.py` (same `--checksum --immutable` rclone discipline as the data corpus).
 
 Retention: 90 days local on VPS; S3 lifecycle transitions to DEEP_ARCHIVE at 30 days, never expires.
 
@@ -1394,7 +1394,7 @@ The discipline is "API wins" — the bot's state.db never overrides Kalshi's rec
 | `scripts/audit/calibrator_feature_health.py` | Every 6h | Checks every cal_mlp feature for >99% population (95% for known-flaky 5min momentum). Telegram alert on `SCHEMA_DRIFT`. |
 | `bot/ai/researcher.py` | 3× daily | Refreshes shadow-system Wilson CIs, SPRT updates; sends summaries via Telegram. |
 | `ops/rotate_journals.sh` (tracked in git since 2026-09-05) | Every 4 h on the hour (00/04/08/12/16/20 UTC) | Rotates JSONL journals to hour-stamped archives and compresses with zstd; 14-day local retention, S3 holds the long-term copy. |
-| `journal_archives_s3_sync.py` | Daily 04:30 UTC | Uploads zstd-compressed rotated journals to S3. |
+| `journal_archives_s3_sync.py` | Every 4 h at :30 (00/04/08/12/16/20:30 UTC, ticket 86b9zkp89) | Uploads zstd-compressed rotated journals to S3. |
 | `state_db_s3_backup.py` | Daily 06:00 UTC | Backs up `state.db` to S3 (`daily/` prefix). |
 | `export_market_obs_to_s3.py` | Daily 05:30 UTC | Archives `market_observations` table to S3 (`market_obs/` prefix). |
 | `collector_health_monitor.py` | Cron (configured per VPS — installed by operator) | §6.9. |

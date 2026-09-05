@@ -59,11 +59,6 @@ LOCAL_RETENTION_DAYS="${ROTATE_LOCAL_RETENTION_DAYS:-14}"
 STAMP="${ROTATE_STAMP:-$(date -u +%Y-%m-%dT%H)}"
 JOURNALS="${ROTATE_JOURNALS:-opportunity_journal.jsonl rejection_journal.jsonl scan_journal.jsonl fifteenm_shadow_journal.jsonl}"
 
-if ! mkdir -p "$ARCHIVE_DIR"; then
-    echo "ERROR cannot create archive dir $ARCHIVE_DIR"
-    exit 1
-fi
-
 # zstd default level: ~4x better than gzip on this repetitive JSONL and a
 # ~1.5 MB memory window (measured 2026-05-10: 4.5G -> 89M). Falls back to
 # gzip if zstd is missing.
@@ -94,6 +89,11 @@ if [ ! -d "$REPO_DIR" ]; then
     echo "Done. Disk free: n/a errors=1"
     exit 1
 fi
+if ! mkdir -p "$ARCHIVE_DIR"; then
+    echo "ERROR cannot create archive dir $ARCHIVE_DIR"
+    echo "Done. Disk free: n/a errors=1"
+    exit 1
+fi
 if [ "$(device_id "$REPO_DIR")" != "$(device_id "$ARCHIVE_DIR")" ]; then
     echo "ERROR $ARCHIVE_DIR is not on the same filesystem as $REPO_DIR — mv would not be atomic; refusing to rotate"
     echo "Done. Disk free: n/a errors=1"
@@ -109,7 +109,7 @@ errors=0
 # every collision — those must surface as errors, not sit unsynced forever.
 for leftover in "$ARCHIVE_DIR"/*_????-??-??*.jsonl; do
     [ -e "$leftover" ] || continue
-    if [ -e "$leftover.$COMPRESS_EXT" ]; then
+    if [ -e "$leftover.zst" ] || [ -e "$leftover.gz" ]; then
         echo "ERROR leftover raw $leftover has a compressed twin — leaving both for manual triage"
         errors=$((errors + 1))
         continue
@@ -174,7 +174,7 @@ find "$ARCHIVE_DIR" \( -name "*.gz" -o -name "*.zst" \) -mtime +"$LOCAL_RETENTIO
     echo "DELETED old archive: $f"
 done
 
-echo "Done. Disk free: $(df -h "$ARCHIVE_DIR" | tail -1 | awk '{print $4}') errors=$errors"
+echo "Done. Disk free: $(df -hP "$ARCHIVE_DIR" | tail -1 | awk '{print $4}') errors=$errors"
 if [ "$errors" -ne 0 ]; then
     exit 1
 fi
