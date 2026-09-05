@@ -32,8 +32,10 @@
 #     filesystem as the live journals for the rename to be atomic (the
 #     default is).
 #   - leftover raws: any `<journal>_<stamp>.jsonl` still uncompressed in
-#     the archive dir from an earlier failed compress is retried FIRST on
-#     every run, so a transient ENOSPC cannot strand a chunk. The final
+#     the archive dir (an earlier failed compress, OR a legacy date-only
+#     raw from the pre-2026-09-05 script) is retried FIRST on every run;
+#     a raw whose compressed twin exists is left for manual triage and
+#     counted as an error. The final
 #     "Done." line carries `errors=N`; monitor_watchdog.py alerts on N>0
 #     and on a stale rotation.log (R1-M3 — cron ignores exit codes under
 #     the `>> rotation.log 2>&1` redirect).
@@ -78,11 +80,26 @@ file_size() {
     stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null
 }
 
+device_id() {
+    stat -c%d "$1" 2>/dev/null || stat -f%d "$1" 2>/dev/null
+}
+
+# The rename below is only atomic (and only loss-free) on ONE filesystem;
+# a cross-filesystem `mv` degrades to copy+unlink and reopens the drop
+# window. Refuse loudly rather than silently regress.
+if [ "$(device_id "$REPO_DIR")" != "$(device_id "$ARCHIVE_DIR")" ]; then
+    echo "ERROR $ARCHIVE_DIR is not on the same filesystem as $REPO_DIR — mv would not be atomic; refusing to rotate. Done. errors=1"
+    exit 1
+fi
+
 errors=0
 
 # Retry-compress leftovers from an earlier failed compress (raw archives
 # never sync to S3 — the S3 sync excludes *.jsonl).
-for leftover in "$ARCHIVE_DIR"/*_????-??-??T??.jsonl; do
+# Matches BOTH the hour-stamped shape and the legacy date-only shape
+# (`<journal>_YYYY-MM-DD.jsonl`) the pre-2026-09-05 script left behind on
+# every collision — those must surface as errors, not sit unsynced forever.
+for leftover in "$ARCHIVE_DIR"/*_????-??-??*.jsonl; do
     [ -e "$leftover" ] || continue
     if [ -e "$leftover.$COMPRESS_EXT" ]; then
         echo "ERROR leftover raw $leftover has a compressed twin — leaving both for manual triage"

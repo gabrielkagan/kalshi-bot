@@ -19,8 +19,9 @@ with the inherited 60-second in-process dedup. Because the script runs
 under cron (one fresh process per tick), the in-process dedup window is
 RESET on every tick — so a chronically-dead monitor produces one alert
 per cron tick (6/hour at the 10-min cadence). With the verified watchlist
-of 4 monitors, max alert burst is 4 alerts/tick × 6 ticks/hour = 24/hr in
-the all-dead scenario. Acceptable per cron health-script convention;
+of 5 monitors + 1 disk check + 1 rotation-errors check (ticket 86bbvd50a),
+max alert burst is 7 alerts/tick × 6 ticks/hour = 42/hr in the all-dead
+scenario. Acceptable per cron health-script convention;
 operator can throttle by raising the cron interval if false-positives
 become noisy. A future Bit may switch to file-sidecar dedup like
 `scripts/ops/phantom_reconcile_monitor.py` to suppress cross-tick
@@ -260,7 +261,7 @@ def check_disk_usage(disk: WatchedDisk,
 
 
 def check_rotation_errors(log_path: str = ROTATION_LOG_PATH,
-                          tail_bytes: int = 8192) -> Optional[str]:
+                          tail_bytes: int = 65536) -> Optional[str]:
     """Alert when the LAST completed rotation run reported ``errors=N>0``.
 
     Reads the tail of ``rotation.log`` and finds the most recent
@@ -314,8 +315,9 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
     because each cron tick spawns a fresh interpreter, the in-process
     dedup resets on every tick. A chronically-dead monitor produces one
     alert per cron tick (6/hour at the 10-min cadence; bounded by
-    ``len(monitors) × 6 = 24/hour`` in the all-dead scenario for the
-    current 4-monitor watchlist). Acceptable per cron-tier convention;
+    ``(len(monitors) + len(disks) + 1) × 6 = 42/hour`` in the all-dead
+    scenario for the current 5-monitor watchlist + 1 disk + the
+    rotation-errors check). Acceptable per cron-tier convention;
     future Bit may switch to file-sidecar dedup like
     ``phantom_reconcile_monitor.py``.
     """

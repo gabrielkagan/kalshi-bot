@@ -724,6 +724,10 @@ def _sleep_backoff(attempts: int, base: float) -> None:
 
 TICKER_CACHE_SCHEMA_VERSION: int = 1
 DEFAULT_TICKER_CACHE_FILENAME: str = "last_tickers.json"
+# Warn (still use) when the persisted set is older than this — the
+# refresher's first tick corrects it, but the operator should know the
+# seed was stale (e.g. the collector was stopped for days).
+TICKER_CACHE_STALE_WARN_SECONDS: float = 24 * 3600.0
 
 
 def _utc_now_iso() -> str:
@@ -817,6 +821,12 @@ def load_tier_map(path: Path) -> Optional[Tuple[Dict[str, List[str]], float]]:
         except OSError:
             saved_epoch = time.time()
     age = max(0.0, time.time() - saved_epoch)
+    if age > TICKER_CACHE_STALE_WARN_SECONDS:
+        logger.warning(
+            "load_tier_map: %s is %.1f h old — booting from a stale seed; the "
+            "refresher's first tick will re-page and replan on change.",
+            path, age / 3600.0,
+        )
     return out, age
 
 

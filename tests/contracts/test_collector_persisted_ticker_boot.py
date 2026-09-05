@@ -11,7 +11,10 @@ local disk (77% → 85% used in 40 min, on the day the disk had just been
 recovered from 100%). And `RestSnapshotRefresher._run` fires its first
 tick immediately with `_last_tier_map = {}`, so the boot paid a SECOND
 page-through and a guaranteed 7-conn reconnect ~1 h later even when the
-set was identical.
+set was identical. (A first boot with no cache — ``ticker_set_source ==
+"rest"`` — still pays the synchronous fetch AND the refresher's immediate
+background re-page; only the spurious reconnect is gone. Every later boot
+pays neither.)
 
 Pins:
   1. `save_tier_map` / `load_tier_map` round-trip (atomic JSON; age
@@ -210,12 +213,13 @@ def _boot(tmp_path: Path, monkeypatch, *, cache_map=None, fetch_returns,
     monkeypatch.setattr(rs, "fetch_open_tickers_for_series", lambda **kw: set())
     monkeypatch.setattr("collector.uploader.subprocess.run", _fake_rclone)
 
+    pem_path = _generate_pem_file(tmp_path)  # 2048-bit keygen BEFORE the timer
     shutdown = threading.Event()
     threading.Thread(target=lambda: (time.sleep(run_for), shutdown.set()),
                      daemon=True).start()
     main_loop_run(
         bronze_root=bronze_root, api_key="fake-key-id",
-        private_key_path=str(_generate_pem_file(tmp_path)),
+        private_key_path=str(pem_path),
         shutdown_event=shutdown,
     )
     return events, archiver_ctor, sidecar_path, cache_path

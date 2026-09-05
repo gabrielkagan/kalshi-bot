@@ -28,7 +28,9 @@ What this file pins:
      e. local retention prunes archives older than
         ROTATE_LOCAL_RETENTION_DAYS;
      f. a leftover uncompressed raw from an earlier failed compress is
-        retried and compressed on the next run (R1-M3);
+        retried and compressed on the next run (R1-M3); legacy date-only
+        raws from the old script are also seen — compressed when alone,
+        flagged (errors=N) when a compressed twin exists (R2-M3);
      g. the "Done." line carries `errors=N` for monitor_watchdog.py.
 """
 from __future__ import annotations
@@ -194,6 +196,42 @@ def test_leftover_raw_from_failed_compress_is_retried(tmp_path: Path):
     assert "RECOVERED" in r.stdout
     assert not leftover.exists()
     assert (archive_dir / "opportunity_journal_2026-09-04T20.jsonl.zst").is_file()
+
+
+@pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
+def test_legacy_date_only_raw_with_compressed_twin_is_flagged(tmp_path: Path):
+    """R2-M3: the pre-2026-09-05 script left `<journal>_YYYY-MM-DD.jsonl`
+    raws next to their day `.zst` on every collision. They must be seen
+    (glob covers the date-only shape), NOT clobbered, and counted as an
+    error so the watchdog surfaces them for manual triage."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
+    legacy_raw = archive_dir / "scan_journal_2026-09-05.jsonl"
+    legacy_raw.write_bytes(b'{"x": 1}\n' * 100)
+    twin = archive_dir / "scan_journal_2026-09-05.jsonl.zst"
+    twin.write_bytes(b"not-really-zstd")
+    _make_live(repo, "scan_journal.jsonl", 1024)
+    r = _run(tmp_path, "2026-09-05T20", journals=("scan_journal.jsonl",))
+    assert r.returncode != 0
+    assert "compressed twin" in r.stdout and "errors=1" in r.stdout
+    assert legacy_raw.exists() and twin.read_bytes() == b"not-really-zstd"
+
+
+@pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
+def test_legacy_date_only_raw_without_twin_is_compressed(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    archive_dir = tmp_path / "archives"
+    archive_dir.mkdir()
+    legacy_raw = archive_dir / "opportunity_journal_2026-09-05.jsonl"
+    legacy_raw.write_bytes(b'{"x": 1}\n' * 100)
+    _make_live(repo, "opportunity_journal.jsonl", 1024)
+    r = _run(tmp_path, "2026-09-05T20")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not legacy_raw.exists()
+    assert (archive_dir / "opportunity_journal_2026-09-05.jsonl.zst").is_file()
 
 
 @pytest.mark.skipif(_TOOLS_MISSING, reason="bash + zstd required")
