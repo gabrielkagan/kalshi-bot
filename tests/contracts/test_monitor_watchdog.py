@@ -156,7 +156,10 @@ def test_main_sends_alert_with_correct_dedup_key(tmp_path: Path) -> None:
     monitors = (mod.WatchedMonitor("test_dedup", str(stale), 60),)
 
     fake_notifier = MagicMock()
-    rc = mod.main(monitors=monitors, notifier=fake_notifier)
+    # disks=() — ticket 86bbvd50a added a real-filesystem usage check to
+    # main(); pin the log-freshness dispatch in isolation from the host's
+    # disk (tests/contracts/test_monitor_watchdog_disk.py pins the disk path).
+    rc = mod.main(monitors=monitors, notifier=fake_notifier, disks=())
     assert rc == 0, "main() must return 0 even on alert fire (cron convention)"
     fake_notifier.send.assert_called_once()
     _, kwargs = fake_notifier.send.call_args
@@ -173,7 +176,8 @@ def test_main_returns_zero_when_all_fresh(tmp_path: Path) -> None:
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("test_ok", str(fresh), 60),)
     fake_notifier = MagicMock()
-    rc = mod.main(monitors=monitors, notifier=fake_notifier)
+    # disks=() — see test_main_sends_alert_with_correct_dedup_key.
+    rc = mod.main(monitors=monitors, notifier=fake_notifier, disks=())
     assert rc == 0
     fake_notifier.send.assert_not_called()
 

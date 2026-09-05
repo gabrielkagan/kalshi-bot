@@ -288,6 +288,25 @@ for i in "${!UNIT_NAMES[@]}"; do
     fi
 done
 
+# ── Cron-driven ops scripts (tracked in git, validated on every install) ──
+# Ticket 86bbvd50a (2026-09-05): rotate_journals.sh moved from an untracked
+# VPS-local copy (which drifted into the every-4h name-collision data-loss
+# bug — kb/failures/vps-disk-full-journal-rotation-collision-sep05.md) into
+# ops/. install.sh does NOT edit the crontab (operator-owned); it validates
+# the script here so a broken edit fails the install instead of the 04:00
+# cron tick, and prints the expected crontab line at the end.
+ROTATE_SCRIPT="$SCRIPT_DIR/rotate_journals.sh"
+echo "==> Validating $ROTATE_SCRIPT"
+if [ ! -x "$ROTATE_SCRIPT" ]; then
+    echo "FAIL: $ROTATE_SCRIPT is not executable (or missing)."
+    echo "      Fix with: chmod +x ops/rotate_journals.sh"
+    exit 1
+fi
+if ! bash -n "$ROTATE_SCRIPT"; then
+    echo "FAIL: bash -n rejected $ROTATE_SCRIPT. Fix the syntax error before re-running install.sh."
+    exit 1
+fi
+
 # All validation passed for every unit. Install in a separate pass so
 # a partial run can't half-install one unit and leave the other stale.
 for i in "${!UNIT_NAMES[@]}"; do
@@ -305,6 +324,10 @@ for name in "${UNIT_NAMES[@]}"; do
 done
 
 echo "Done."
+echo "Journal rotation (ticket 86bbvd50a): crontab must invoke the TRACKED script, with SHELL=/bin/bash on the FIRST line of the crontab:"
+echo "  SHELL=/bin/bash"
+echo "  0 */4 * * * /bin/bash $ROTATE_SCRIPT >> $REPO_ROOT/journal_archives/rotation.log 2>&1"
+echo "  (remove the legacy untracked $REPO_ROOT/rotate_journals.sh after switching the cron line)"
 for name in "${UNIT_NAMES[@]}"; do
     echo "  Verify ${name}: systemctl cat ${name} | head -20"
 done

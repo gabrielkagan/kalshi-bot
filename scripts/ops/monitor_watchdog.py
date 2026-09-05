@@ -42,6 +42,19 @@ Exit code: ALWAYS 0 (cron health-script convention; alerts go via Telegram,
 not exit code, so a transient health-check failure doesn't flood the
 operator's mail spool).
 
+Disk-usage threshold (ticket 86bbvd50a, 2026-09-05): the VPS root
+filesystem sat at ~95% used from before 2026-08-10 and hit 100% on
+2026-09-04 (kb/failures/vps-disk-full-journal-rotation-collision-sep05.md).
+The 80% canary in `collector_health_monitor.py` never fired because its
+cron line sits ABOVE `SHELL=/bin/bash` in the crontab and therefore runs
+under /bin/sh (dash), where `source` is not a builtin — that job (and
+data_health + quiet_market) has been dead since 2026-05-19 21:2x UTC, and
+this watchdog has been reporting `alerts_sent=3` every 10 minutes since
+(~47K Telegram alerts, unactioned). This script's own cron line is BELOW
+the SHELL= directive and alive, so it carries an independent
+`WATCHED_DISKS` check (`/` at 85%). Alert text is printed to stdout too,
+so the cron log keeps a history instead of Telegram-only.
+
 Self-referential blind spot: this script's OWN log freshness is the residual
 gap. Mitigations:
   1. Higher cadence (10 min) than any watched monitor (15-120 min) — operator
@@ -52,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -169,8 +183,66 @@ def check_log_freshness(monitor: WatchedMonitor,
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class WatchedDisk:
+    """One filesystem to watch for usage pressure (ticket 86bbvd50a).
+
+    Attributes:
+        name: short identifier, used in the dedup key + alert text.
+        path: any path on the filesystem (``shutil.disk_usage`` resolves
+            the mount). The VPS is a single 48 GB root filesystem.
+        max_used_pct: alert when used% >= this. 85% for ``/``: the
+            collector's ~16 GB local bronze buffer makes ~71% the healthy
+            steady state, so 85% (~7 GB free) is the first level that is
+            both above steady state and still actionable before writers
+            start failing.
+    """
+
+    name: str
+    path: str
+    max_used_pct: int
+
+
+WATCHED_DISKS: tuple[WatchedDisk, ...] = (
+    WatchedDisk("root", "/", 85),
+)
+
+
+def check_disk_usage(disk: WatchedDisk,
+                     disk_usage_fn=shutil.disk_usage) -> Optional[str]:
+    """Check one filesystem's usage.
+
+    Returns None below ``max_used_pct``; otherwise a non-empty alert
+    string. A failed stat ALSO alerts (fail-loud) — a mount we cannot
+    measure is not evidence of health. ``disk_usage_fn`` is a test seam.
+    """
+    try:
+        usage = disk_usage_fn(disk.path)
+    except OSError as exc:
+        return (
+            f"[MONITOR WATCHDOG] DISK check for `{disk.path}` failed: "
+            f"{exc!r}. Investigate the mount."
+        )
+    total = float(getattr(usage, "total", 0) or 0)
+    used = float(getattr(usage, "used", 0) or 0)
+    used_pct = round((used / total * 100.0), 1) if total else 0.0
+    if used_pct < disk.max_used_pct:
+        return None
+    free_gb = float(getattr(usage, "free", 0) or 0) / (1024 ** 3)
+    total_gb = total / (1024 ** 3)
+    return (
+        f"[MONITOR WATCHDOG] DISK `{disk.path}` at {used_pct:.0f}% used "
+        f"({free_gb:.1f} GB free of {total_gb:.1f} GB; threshold "
+        f"{disk.max_used_pct}%). Every writer on the VPS fails silently at "
+        f"100% (2026-09-04 incident). Check: `du -sh "
+        f"~/kalshi-bot-repo/journal_archives /var/lib/kalshi-*collector*/bronze` "
+        f"+ `ls -la ~/kalshi-bot-repo/journal_archives/*.jsonl`."
+    )
+
+
 def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
-         notifier: Optional[object] = None) -> int:
+         notifier: Optional[object] = None,
+         disks: tuple[WatchedDisk, ...] = WATCHED_DISKS) -> int:
     """Check all monitors, send alerts for stale ones, exit 0.
 
     ``notifier`` is a test seam; production reads
@@ -206,6 +278,7 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
         if alert is None:
             monitors_ok += 1
             continue
+        print(alert, flush=True)  # keep a history in the cron log, not just Telegram
         notifier.send(
             alert,
             silent=False,
@@ -213,8 +286,23 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
         )
         alerts_sent += 1
 
+    disks_ok = 0
+    for disk in disks:
+        alert = check_disk_usage(disk)
+        if alert is None:
+            disks_ok += 1
+            continue
+        print(alert, flush=True)
+        notifier.send(
+            alert,
+            silent=False,
+            dedup_key=f"monitor_watchdog_disk_{disk.name}",
+        )
+        alerts_sent += 1
+
     print(
         f"[monitor_watchdog] checked={len(monitors)} ok={monitors_ok} "
+        f"disks_checked={len(disks)} disks_ok={disks_ok} "
         f"alerts_sent={alerts_sent}",
         flush=True,
     )

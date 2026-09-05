@@ -51,9 +51,11 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import os
 import threading
 import time
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import requests
 
@@ -710,6 +712,109 @@ def _sleep_backoff(attempts: int, base: float) -> None:
 # ─── RestSnapshotRefresher — periodic refresh thread ──────────────────────
 
 
+# ─── Persisted ticker set (ticket 86bbvdcat, 2026-09-05) ────────────────────
+#
+# RCA: the synchronous boot page-through in ``collector.main_loop.run`` took
+# 54.9 min on the 2026-09-05 restart (~18,500 pages, ~3.7M rows → 358,625
+# tickers after exclusions), so the first WS connect landed 59.8 min after
+# ActiveEnter — every restart cost an hour of orderbook bronze. The fix
+# persists the last successful ticker set to disk so the NEXT boot can plan +
+# start the WS conns immediately and let the refresher's first tick re-page
+# in the background, replanning only if the set actually changed.
+
+TICKER_CACHE_SCHEMA_VERSION: int = 1
+DEFAULT_TICKER_CACHE_FILENAME: str = "last_tickers.json"
+
+
+def _utc_now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _parse_utc_iso(value: Any) -> Optional[float]:
+    """Parse the sidecar/cache ``%Y-%m-%dT%H:%M:%S.%fZ`` shape → epoch seconds."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return _dt.datetime.strptime(
+            value, "%Y-%m-%dT%H:%M:%S.%fZ",
+        ).replace(tzinfo=_dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def save_tier_map(
+    path: Path,
+    tier_map: Mapping[str, Sequence[str]],
+) -> bool:
+    """Atomically persist ``tier_map`` as JSON at ``path``.
+
+    Shape: ``{"schema_version": 1, "saved_at": <UTC iso>, "tickers_by_tier":
+    {"<tier>": ["TICKER", ...]}}``. tmp-file + ``os.replace`` so a reader
+    (the next boot) never sees a torn write. Returns False (logged) on any
+    OSError — persisting the cache is best-effort; the live refresh must
+    not fail because the cache dir is unwritable.
+    """
+    payload = {
+        "schema_version": TICKER_CACHE_SCHEMA_VERSION,
+        "saved_at": _utc_now_iso(),
+        "tickers_by_tier": {str(k): list(v) for k, v in tier_map.items()},
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(payload))
+        os.replace(tmp_path, path)
+        return True
+    except OSError:
+        logger.warning(
+            "save_tier_map: could not persist ticker cache at %s; the next "
+            "boot will page the REST universe synchronously.", path,
+            exc_info=True,
+        )
+        return False
+
+
+def load_tier_map(path: Path) -> Optional[Tuple[Dict[str, List[str]], float]]:
+    """Load a persisted ticker set → ``(tickers_by_tier, age_seconds)``.
+
+    ``None`` when the file is absent, unreadable, malformed, has a
+    different ``schema_version``, or does not hold a ``{str: [str, ...]}``
+    map — the caller then falls back to the synchronous REST fetch. Age is
+    derived from ``saved_at`` (file mtime as fallback) so the boot log +
+    sidecar can state how stale the seed set is.
+    """
+    try:
+        raw = path.read_text()
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("load_tier_map: %s is not valid JSON; ignoring cache.", path)
+        return None
+    if not isinstance(data, dict) or data.get("schema_version") != TICKER_CACHE_SCHEMA_VERSION:
+        logger.warning("load_tier_map: %s has unexpected shape/schema; ignoring cache.", path)
+        return None
+    tiers = data.get("tickers_by_tier")
+    if not isinstance(tiers, dict):
+        logger.warning("load_tier_map: %s tickers_by_tier is not an object; ignoring cache.", path)
+        return None
+    out: Dict[str, List[str]] = {}
+    for tier, tickers in tiers.items():
+        if not isinstance(tier, str) or not isinstance(tickers, list):
+            logger.warning("load_tier_map: %s tier %r malformed; ignoring cache.", path, tier)
+            return None
+        out[tier] = [t for t in tickers if isinstance(t, str)]
+    saved_epoch = _parse_utc_iso(data.get("saved_at"))
+    if saved_epoch is None:
+        try:
+            saved_epoch = path.stat().st_mtime
+        except OSError:
+            saved_epoch = time.time()
+    age = max(0.0, time.time() - saved_epoch)
+    return out, age
+
+
 class RestSnapshotRefresher:
     """Background thread that periodically refreshes the ticker map and
     invokes ``on_refresh`` whenever the ticker set changes.
@@ -746,6 +851,8 @@ class RestSnapshotRefresher:
         session: Optional[requests.Session] = None,
         bronze_writer: Optional[Any] = None,
         excluded_series: Sequence[str] = (),
+        initial_tier_map: Optional[Mapping[str, Sequence[str]]] = None,
+        cache_path: Optional[Path] = None,
     ):
         if interval_seconds <= 0:
             raise ValueError(
@@ -760,7 +867,27 @@ class RestSnapshotRefresher:
         self._base_url = base_url
         self._session = session if session is not None else requests.Session()
         self._thread: Optional[threading.Thread] = None
-        self._last_tier_map: Dict[str, List[str]] = {}
+        # Ticket 86bbvdcat: seed the change detector with the set the boot
+        # planned from (persisted cache or the synchronous first fetch) so
+        # the immediate first tick does NOT fire a spurious "changed"
+        # verdict (prev=0 → 7-conn reconnect storm ~1h after boot) when
+        # the fresh page-through returns the same set.
+        self._last_tier_map: Dict[str, List[str]] = (
+            {str(k): list(v) for k, v in initial_tier_map.items()}
+            if initial_tier_map else {}
+        )
+        # Ticket 86bbvdcat: every successful fetch is persisted here so the
+        # NEXT boot can start the WS conns immediately. None = no cache.
+        self._cache_path = cache_path
+        # Observability for the bronze_health.json sidecar (``status()``).
+        self._status_lock = threading.Lock()
+        self._in_progress = False
+        self._refresh_count = 0
+        self._last_started_at: Optional[str] = None
+        self._last_completed_at: Optional[str] = None
+        self._last_duration_seconds: Optional[float] = None
+        self._last_ticker_count: Optional[int] = None
+        self._last_outcome: Optional[str] = None
         # D1.9 — forwarded to fetch_tickers_by_tier on every _do_refresh
         # tick. None = no bronze write (offline / test mode).
         self._bronze_writer = bronze_writer
@@ -782,6 +909,24 @@ class RestSnapshotRefresher:
         on the next ``wait`` tick."""
         self._shutdown_event.set()
 
+    def status(self) -> Dict[str, object]:
+        """JSON-serializable refresh status for the bronze_health.json
+        sidecar (ticket 86bbvdcat): whether a page-through is in flight,
+        when the last one completed, how long it took, how many tickers
+        it returned, and its outcome (``changed`` / ``unchanged`` /
+        ``failed`` / ``empty_anomaly``)."""
+        with self._status_lock:
+            return {
+                "in_progress": self._in_progress,
+                "refresh_count": self._refresh_count,
+                "last_started_at": self._last_started_at,
+                "last_completed_at": self._last_completed_at,
+                "last_duration_seconds": self._last_duration_seconds,
+                "last_ticker_count": self._last_ticker_count,
+                "last_outcome": self._last_outcome,
+                "seeded_ticker_count": sum(len(v) for v in self._last_tier_map.values()),
+            }
+
     def _run(self) -> None:
         # First refresh fires immediately so WS conns boot with a
         # populated subscription set instead of waiting an hour for
@@ -797,6 +942,40 @@ class RestSnapshotRefresher:
             self._do_refresh()
 
     def _do_refresh(self) -> None:
+        """One refresh tick: fetch → (persist) → diff → callback.
+
+        Wraps ``_do_refresh_inner`` with the status bookkeeping the sidecar
+        reads; the outcome string is set by the inner body.
+        """
+        started = time.monotonic()
+        with self._status_lock:
+            self._in_progress = True
+            self._last_started_at = _utc_now_iso()
+            self._last_outcome = None
+        try:
+            self._do_refresh_inner()
+        finally:
+            duration = time.monotonic() - started
+            with self._status_lock:
+                self._in_progress = False
+                self._refresh_count += 1
+                self._last_completed_at = _utc_now_iso()
+                self._last_duration_seconds = round(duration, 3)
+                outcome = self._last_outcome
+                count = self._last_ticker_count
+            logger.info(
+                "RestSnapshotRefresher: fetch completed in %.0fs "
+                "(tickers=%s outcome=%s).",
+                duration, count, outcome,
+            )
+
+    def _set_outcome(self, outcome: str, ticker_count: Optional[int] = None) -> None:
+        with self._status_lock:
+            self._last_outcome = outcome
+            if ticker_count is not None:
+                self._last_ticker_count = ticker_count
+
+    def _do_refresh_inner(self) -> None:
         try:
             # Bare-name call: Python resolves ``fetch_tickers_by_tier``
             # via this function's ``__globals__`` dict (= the module's
@@ -817,11 +996,13 @@ class RestSnapshotRefresher:
                 "RestSnapshotRefresher.fetch raised; keeping prior ticker "
                 "set and trying again next interval."
             )
+            self._set_outcome("failed")
             return
         if new_map is None:
             # R1-M2: fetch FAILED or was PARTIAL — keep prior ticker set.
             # The warning already fired from inside fetch_tickers_by_tier;
             # nothing more to do until the next interval.
+            self._set_outcome("failed")
             return
         # R1-M1: defensive guard — refuse to wipe a non-empty subscription
         # set with a successful-but-empty REST response. Kalshi is never
@@ -838,7 +1019,12 @@ class RestSnapshotRefresher:
                 "Investigate Kalshi /markets status before next refresh.",
                 prev_total,
             )
+            self._set_outcome("empty_anomaly", new_total)
             return
+        # Ticket 86bbvdcat: persist every successful, non-anomalous fetch
+        # (changed OR unchanged — the saved_at freshness matters at boot).
+        if self._cache_path is not None:
+            save_tier_map(self._cache_path, new_map)
         if new_map == self._last_tier_map:
             # No-op refresh — ticker set unchanged. Skip the callback so
             # we don't force a WS reconnect storm when Kalshi's universe
@@ -848,7 +1034,9 @@ class RestSnapshotRefresher:
                 "skipping reconnect.",
                 new_total,
             )
+            self._set_outcome("unchanged", new_total)
             return
+        self._set_outcome("changed", new_total)
         logger.info(
             "RestSnapshotRefresher: ticker set changed "
             "(prev=%d new=%d); invoking on_refresh.",

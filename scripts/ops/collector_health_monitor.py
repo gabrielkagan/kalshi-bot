@@ -26,6 +26,8 @@ surface pre-D1.6:
 
 D1.6 adds 3 checks:
   - check_disk: alert if /var/lib/kalshi-collector/ partition >= threshold_pct
+  - check_boot_state: alert if bronze_health.json reports state=booting for
+    > DEFAULT_MAX_BOOT_SECONDS (ticket 86bbvdcat, 2026-09-05; Kalshi tier only)
   - check_ws_reconnects: alert if kalshi_ws_disconnected count over
     last N minutes >= threshold_count (with 1006/1009/1011 class breakdown)
   - check_collector_active: alert if `systemctl is-active kalshi-collector`
@@ -188,6 +190,18 @@ DEFAULT_SIDECAR_STALE_SECONDS = 120
 # file's CONTENT, not its mtime, and bug classes there (version-skew,
 # wedged-but-fresh-sidecar drain) deserve to alert even during boot.
 DEFAULT_BOOT_GRACE_SECONDS = 1200
+
+# Ticket 86bbvdcat (2026-09-05): the collector now writes
+# ``state: booting|running`` + ``state_since`` into bronze_health.json
+# from the moment the drain thread starts (BEFORE any REST page-through).
+# ``check_boot_state`` alerts when the process has been ``booting`` for
+# longer than this. Same figure as the STALE boot grace above: with the
+# persisted ticker set a boot reaches WS in ~3-5 min; a boot still paging
+# after 20 min is the first-boot-after-deploy (no last_tickers.json yet)
+# or a regression — either way the operator should know, because the
+# 2026-09-05 restart spent 59.8 min with all six units "active" and zero
+# orderbook bronze flowing.
+DEFAULT_MAX_BOOT_SECONDS = 1200
 
 
 def _systemctl_show_property(unit: str, prop: str) -> Optional[str]:
@@ -392,6 +406,64 @@ def check_insert_evaluated_opportunity_failures(
         f"grep -i 'insert_evaluated_opportunity failed' | tail`. "
         f"Then trace to `bot/state.py::insert_evaluated_opportunity` + "
         f"the emitting `bot/scanner/__init__.py` strategy block."
+    )
+
+
+def _parse_sidecar_utc(value) -> Optional[float]:
+    """Parse the sidecar's ``%Y-%m-%dT%H:%M:%S.%fZ`` timestamps → epoch."""
+    if not isinstance(value, str):
+        return None
+    try:
+        import datetime as _dt
+        return _dt.datetime.strptime(
+            value, "%Y-%m-%dT%H:%M:%S.%fZ",
+        ).replace(tzinfo=_dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def check_boot_state(
+    sidecar_path: Optional[Path] = None,
+    max_boot_seconds: int = DEFAULT_MAX_BOOT_SECONDS,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """Alert when bronze_health.json reports ``state == "booting"`` for
+    longer than ``max_boot_seconds`` (ticket 86bbvdcat).
+
+    Fail-quiet on: missing sidecar, malformed JSON, no ``state`` key
+    (pre-Bit collectors and the Coinbase / weather / ESPN sidecars, which
+    never carry the key), unparseable ``state_since``, or any state other
+    than ``booting``. ``now`` is a test seam (defaults to ``time.time()``).
+    """
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "COLLECTOR_HEALTH_SIDECAR_PATH", DEFAULT_SIDECAR_PATH,
+        ))
+    if not sidecar_path.is_file():
+        return None
+    try:
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("state") != "booting":
+        return None
+    since = _parse_sidecar_utc(data.get("state_since"))
+    if since is None:
+        return None
+    if now is None:
+        now = time.time()
+    age = now - since
+    if age <= max_boot_seconds:
+        return None
+    return (
+        f"*COLLECTOR STILL BOOTING* — {sidecar_path} reports state=booting "
+        f"for {int(age)}s (threshold {max_boot_seconds}s; "
+        f"ticker_set_source={data.get('ticker_set_source')!r}). No WS "
+        f"conn / no orderbook bronze until boot completes. If "
+        f"`last_tickers.json` is missing this is the first boot after "
+        f"deploy (synchronous REST page-through, ~55 min on 2026-09-05); "
+        f"otherwise check `journalctl -u kalshi-collector --since '30 min "
+        f"ago' | grep -E 'Boot|REST|wired|booted'`."
     )
 
 
@@ -707,6 +779,11 @@ def main() -> int:
             sidecar_path=Path(DEFAULT_SIDECAR_PATH),
             state_path=Path(DEFAULT_MONITOR_STATE_PATH),
             unit=DEFAULT_COLLECTOR_UNIT,
+        )),
+        # Ticket 86bbvdcat: "booting for 30 min" vs "healthy" — only the
+        # Kalshi collector writes the boot state (REST page-through boot).
+        ("boot_state", lambda: check_boot_state(
+            sidecar_path=Path(DEFAULT_SIDECAR_PATH),
         )),
     ]
     # R4-M2 + R5-M1: resolve the Coinbase sidecar path at call time
