@@ -1042,7 +1042,7 @@ class RestSnapshotRefresher:
             return
         # Ticket 86bbvdcat: persist every successful, non-anomalous fetch
         # (changed OR unchanged — the saved_at freshness matters at boot).
-        if self._cache_path is not None:
+        if self._cache_path is not None and new_total > 0:
             save_tier_map(self._cache_path, new_map)
         if new_map == self._last_tier_map:
             # No-op refresh — ticker set unchanged. Skip the callback so

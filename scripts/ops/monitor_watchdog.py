@@ -211,8 +211,9 @@ class WatchedDisk:
             the mount). The VPS is a single 48 GB root filesystem.
         max_used_pct: alert when used% >= this. 85% for ``/``: healthy
             steady state is ~30% used (~14 GB: repo + venv + state.db +
-            in-flight bronze; measured 29% on 2026-09-05 post-recovery,
-            34% at 22:28Z), and the 2026-09-04 incident grew at ~0.28
+            in-flight bronze; measured 34% at 2026-09-05 22:28Z, then
+            29% a few hours later once the 14-day local prune settled),
+            and the 2026-09-04 incident grew at ~0.28
             GB/day, so 85% (~7 GB free ≈ 25 days of that leak rate) is
             far above steady state yet still actionable before writers
             start failing.

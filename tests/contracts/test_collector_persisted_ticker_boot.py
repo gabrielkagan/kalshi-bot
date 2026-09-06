@@ -146,6 +146,15 @@ def test_refresher_does_not_persist_failed_fetch(monkeypatch, tmp_path):
     assert not cache.exists()
 
 
+def test_refresher_does_not_persist_empty_map(monkeypatch, tmp_path):
+    """R12-m4: a 200/empty response on a fresh refresher (prev_total == 0)
+    passes the anomaly guard but must never become next boot's cache."""
+    cache = tmp_path / "last_tickers.json"
+    ref, _, _ = _refresher(monkeypatch, tmp_path, returns=[{"1": []}], cache_path=cache)
+    ref._do_refresh()
+    assert not cache.exists()
+
+
 def test_refresher_status_reports_duration_and_count(monkeypatch, tmp_path):
     m = {"1": ["KXA", "KXB"]}
     ref, _, _ = _refresher(monkeypatch, tmp_path, returns=[m])
