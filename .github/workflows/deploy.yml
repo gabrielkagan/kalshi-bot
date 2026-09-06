@@ -357,7 +357,7 @@ jobs:
               # deploy.yml does NOT cp units / daemon-reload (that is
               # ops/install.sh's job), so a bare restart after a UNIT-FILE
               # change runs against the STALE on-disk unit. For the
-              # 256M→384M MemoryMax bump that means restarting the now-9-
+              # 256M→384M MemoryMax bump that means restarting the then-9-
               # product collector against the OLD 256M cap → OOM-kill window.
               # So when ops/kalshi-coinbase-collector.service is in the
               # changed set, verify the installed unit matches the deploy

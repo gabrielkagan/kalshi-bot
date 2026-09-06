@@ -75,7 +75,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from collector.rest_snapshot import (
-    CRYPTO_15M_SERIES,
+    DEFAULT_INCREMENTAL_HORIZON_SECONDS,
     DEFAULT_INCREMENTAL_REFRESH_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DEFAULT_TICKER_CACHE_FILENAME,
@@ -582,7 +582,7 @@ def _plan_incremental_adds(
     dispatches the returned plan via ``BronzeArchiver.add_subscriptions``).
 
     Args:
-        open_set: currently-open sub-hourly tickers (crypto-15M) from the
+        open_set: currently-open sub-hourly tickers (close-horizon sweep) from the
             discovery poll.
         tracked: the authoritative already-subscribed set (full universe at
             boot / after each hourly reconnect, plus everything added
@@ -749,11 +749,18 @@ def run(
         str(DEFAULT_REFRESH_INTERVAL_SECONDS),
     ))
     # Ticket 86ba74hzy (2026-05-30): fast sub-hourly incremental-discovery
-    # cadence. Catches 15M crypto windows (~15-min lifespan) that open AND
+    # cadence. Catches 15M windows (~15-min lifespan, ANY series) that open AND
     # close inside the hourly REST gap and were never subscribed pre-Bit.
     incremental_refresh_seconds = float(os.environ.get(
         "COLLECTOR_INCREMENTAL_REFRESH_SECONDS",
         str(DEFAULT_INCREMENTAL_REFRESH_SECONDS),
+    ))
+    # Ticket 86bbvdc8y (2026-09-05): the discovery sweep is series-agnostic —
+    # every open market closing within this horizon is subscribed, whatever
+    # its series (closes the NEAR/ZEC/commodity/FX 15M bronze gap).
+    incremental_horizon_seconds = float(os.environ.get(
+        "COLLECTOR_INCREMENTAL_HORIZON_SECONDS",
+        str(DEFAULT_INCREMENTAL_HORIZON_SECONDS),
     ))
     # Ticket 86ba76adw (2026-05-30): firehose series excluded from the WS
     # subscription so the session_start subscribe burst stays small enough to
@@ -999,7 +1006,7 @@ def run(
             # main_loop owns the authoritative subscribed set + a fast cmd_id
             # counter, both guarded by ``_incr_lock`` since the hourly refresher
             # thread (``_on_refresh``) and the incremental thread
-            # (``_on_new_crypto_windows``) both mutate them. The fast cmd_id region
+            # (``_on_new_sub_hourly_windows``) both mutate them. The fast cmd_id region
             # starts ABOVE every hourly per-conn range
             # ([idx*STRIDE+1, (idx+1)*STRIDE]) so incremental adds never collide
             # with the hourly plan's ids.
@@ -1021,7 +1028,7 @@ def run(
                 )
                 # The hourly reconnect REPLACED each archiver's subscribe set +
                 # cmd_id map from the authoritative REST snapshot, re-subscribing
-                # the full universe (incl. whatever crypto-15M is open now). Reset
+                # the full universe (incl. whatever sub-hourly windows are open now). Reset
                 # incremental tracking to that set + reclaim the fast cmd_id region
                 # (the REPLACE dropped the old fast ids).
                 with _incr_lock:
@@ -1034,7 +1041,7 @@ def run(
                     # so carrying it across hourly resets is harmless (and keeps
                     # round-robin continuity across the reconnect boundary).
 
-            def _on_new_crypto_windows(open_set: set) -> None:
+            def _on_new_sub_hourly_windows(open_set: set) -> None:
                 # Diff against the authoritative subscribed set; subscribe only the
                 # truly-new windows MID-SESSION (no reconnect — that's the OOM
                 # class we're avoiding). Planning is delegated to the pure,
@@ -1093,10 +1100,11 @@ def run(
             incremental_refresher = IncrementalDiscoveryRefresher(
                 api_key=api_key,
                 private_key=rest_private_key,
-                series_tickers=CRYPTO_15M_SERIES,
-                on_new=_on_new_crypto_windows,
+                excluded_series=excluded_series,  # same firehose list as hourly
+                on_new=_on_new_sub_hourly_windows,
                 shutdown_event=shutdown_event,
                 interval_seconds=incremental_refresh_seconds,
+                horizon_seconds=incremental_horizon_seconds,
             )
 
         logger.info(
@@ -1105,8 +1113,8 @@ def run(
             bronze_root, conn_count, len(archivers),
             boot_status["ticker_set_source"],
             "on" if refresher is not None else "off (file-mode)",
-            ("on (%.0fs, %d series)" % (
-                incremental_refresh_seconds, len(CRYPTO_15M_SERIES))
+            ("on (%.0fs, close-horizon %.0fs, series-agnostic)" % (
+                incremental_refresh_seconds, incremental_horizon_seconds)
              ) if incremental_refresher is not None else "off (file-mode)",
         )
 
@@ -1148,7 +1156,7 @@ def run(
             refresher.start()
         if incremental_refresher is not None:
             # Ticket 86ba74hzy: fast sub-hourly discovery (first poll immediate)
-            # — subscribes newly-opened 15M crypto windows mid-session.
+            # — subscribes newly-opened 15M windows (any series) mid-session.
             incremental_refresher.start()
         shutdown_event.wait()
     finally:

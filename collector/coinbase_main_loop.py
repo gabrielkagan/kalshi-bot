@@ -53,7 +53,7 @@ JSON sidecar for the cron-driven
 
 D0.3 §10 bot-isolation invariant: collector failure ⇒ bot keeps
 trading; bot failure ⇒ collector keeps capturing. The systemd unit's
-``MemoryMax=256M`` + ``MemorySwapMax=0`` + ``Nice=10`` enforce the
+``MemoryMax=384M`` + ``MemorySwapMax=0`` + ``Nice=10`` enforce the
 structural bound from the OS side.
 """
 from __future__ import annotations
@@ -78,12 +78,15 @@ from coinbase_wire.ws_client import (
 
 logger = logging.getLogger(__name__)
 
-# Drain-thread polling cadence. Coinbase steady-state load is ~200-300
-# frames/sec aggregate across all 5 channels × 9 products (7 bot products
-# + ADA + BCH for the corpus, added 2026-05-30; rate scales ~28% but the
-# 1s drain cadence is unaffected) (per the R0
-# reachability spike at D2.5 kickoff — level2_batch ~120/sec dominates,
-# matches + ticker ~50-80/sec, heartbeat + status <5/sec; see
+# Drain-thread polling cadence. Coinbase steady-state load is ~255-295
+# frames/sec typical (up to ~460 in volatile windows) aggregate across all
+# 5 channels × 11 products (7 bot products
+# + ADA + BCH added 2026-05-30 + NEAR + ZEC added 2026-09-05 for the corpus;
+# rate scales ~57% vs 7 products but the 1s drain cadence is unaffected)
+# (per the R0
+# reachability spike at D2.5 kickoff scaled to 11 products — level2_batch
+# ~190/sec dominates, matches + ticker ~60-100/sec, heartbeat + status
+# <5/sec; see
 # collector/coinbase_archiver.py queue-capacity comment for the
 # arithmetic). 1s polling gives bounded uploader latency without
 # burning CPU. Same cadence as the Kalshi side for cross-collector
@@ -95,21 +98,28 @@ _DRAIN_POLL_SECONDS: float = 1.0
 # subscribe-fanout ever justifies it.
 _COINBASE_CONN_ID: str = "A"
 
-# Collector product universe (2026-05-30). The COLLECTOR collects 9 assets;
-# the bot trades 7. ADA + BCH are new Kalshi 15M series the bot does NOT
-# trade — collected here for the data corpus (collect-first, decoupled from
-# live trading). The SHARED ``coinbase_wire.ws_client.DEFAULT_PRODUCT_IDS``
-# is consumed by BOTH bot/feeds/coinbase.py AND this collector, so it stays
-# bot-aligned at 7; this collector-local superset adds ADA-USD + BCH-USD and
-# is passed EXPLICITLY to CoinbaseArchiver below (no bot.* import — the
-# collector-no-bot import contract is preserved). Listings verified live
-# 2026-05-30: ADA-USD + BCH-USD both status=online, trading_disabled=false
-# on Coinbase Exchange. Keep in superset-of-DEFAULT_PRODUCT_IDS form so a
-# bot-side product add never silently drops from the corpus.
+# Collector product universe. The COLLECTOR collects 11 assets (2026-09-05);
+# the bot trades 7. ADA + BCH (2026-05-30) and NEAR + ZEC (2026-09-05, ticket
+# 86bbvdc8y) are Kalshi 15M series the bot does NOT trade — collected here
+# for the data corpus (collect-first, decoupled from live trading). The
+# SHARED ``coinbase_wire.ws_client.DEFAULT_PRODUCT_IDS`` is consumed by BOTH
+# bot/feeds/coinbase.py AND this collector, so it stays bot-aligned at 7;
+# this collector-local superset adds the corpus-only products and is passed
+# EXPLICITLY to CoinbaseArchiver below (no bot.* import — the
+# collector-no-bot import contract is preserved). Listings verified live:
+# ADA-USD + BCH-USD 2026-05-30; NEAR-USD + ZEC-USD 2026-09-05 — all
+# status=online, trading_disabled=false on Coinbase Exchange (ZEC-USDC is
+# delisted; USD pair is the live one). Keep in superset-of-
+# DEFAULT_PRODUCT_IDS form so a bot-side product add never silently drops
+# from the corpus. Memory: measured MemoryPeak 229 MiB (240,500,736 B) /
+# 384 MiB cap at 9 products on 2026-09-05 — flat vs the 7-product peak
+# (229 MiB), so +2 products leaves ≥150 MiB headroom; cap unchanged.
 COLLECTOR_PRODUCT_IDS: Sequence[str] = (
     *DEFAULT_PRODUCT_IDS,
     "ADA-USD",
     "BCH-USD",
+    "NEAR-USD",  # KXNEAR15M live since 2026-06-30 (86bbvdc8y)
+    "ZEC-USD",   # KXZEC15M live since 2026-06-30 (86bbvdc8y)
 )
 
 # Bronze source string — fed into BronzeWriter + envelope ``_source``

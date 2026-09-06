@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily Kalshi 15M-series discovery (ticket 86bbvdc8y). Install:
+       mkdir -p ~/kalshi-15m-discovery   # launchd does NOT create the StandardOutPath dir
+       cp scripts/ops/launchd/io.kalshi.15m-discovery.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.kalshi.15m-discovery.plist
+     Runs 13:30 local daily (before the 14:00 io.kalshi.edge-daily job).
+     First run bootstraps the known-set silently. Telegram alerts need
+     TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in the REPO .env on this Mac (the
+     wrapper exports only those two); absent, alerts fall back to a macOS
+     notification + the sentinel file. Missed 13:30 while asleep → launchd
+     runs once on wake; missed while powered off → skipped silently; there is
+     no staleness alarm yet (follow-up ticket: >48h latest_report.json mtime
+     check, e.g. hosted by the 14:00 edge-daily job). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.kalshi.15m-discovery</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/gabrielkagan/Documents/kalshi-bot/scripts/ops/discover_15m_series.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/gabrielkagan/kalshi-15m-discovery/launchd.out</string>
+  <key>StandardErrorPath</key><string>/Users/gabrielkagan/kalshi-15m-discovery/launchd.err</string>
+</dict>
+</plist>

@@ -529,7 +529,8 @@ class BronzeArchiver:
         Ticket 86ba74hzy (2026-05-30). Used by the fast incremental-discovery
         path (``collector.rest_snapshot.IncrementalDiscoveryRefresher`` via
         main_loop's ``on_new`` callback) to subscribe newly-opened sub-hourly
-        (crypto-15M) markets as they open, WITHOUT force-reconnecting. This is
+        markets (any 15M series — series-agnostic since 86bbvdc8y 2026-09-05)
+        as they open, WITHOUT force-reconnecting. This is
         the safe alternative to ``update_subscriptions`` + ``request_reconnect``
         for the high-churn sub-hourly case: a fast force-reconnect cadence would
         reopen the D1.3-fu4 ack-flood / OOM class
@@ -562,7 +563,7 @@ class BronzeArchiver:
 
         Bounded growth: the hourly ``update_subscriptions`` REPLACES both
         attributes from the authoritative REST snapshot, rebuilding them fresh
-        on each hourly ticker-set CHANGE (the common case under 15M crypto
+        on each hourly ticker-set CHANGE (the common case under 15M window
         churn, which guarantees the hourly set changes every cycle). A window
         still open at that reconnect is in the snapshot → re-subscribed; closed
         ones are dropped (sid GC). Even if a reset were skipped (hourly set

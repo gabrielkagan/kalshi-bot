@@ -20,7 +20,7 @@ Decided 2026-05-28 (plan-doc "B2a-1 architecture"):
     ``gemini_ws``) + per-venue native L2 CHANNEL (``book`` / ``order_book``
     / ``l2``). All of a venue's subscribed assets share one channel; the
     asset is disambiguated by the symbol inside the raw frame — exactly
-    mirrors ``coinbase_ws/level2_batch`` (all 7 products in one channel).
+    mirrors ``coinbase_ws/level2_batch`` (all collector products in one channel).
   - Subscription-ack / heartbeat / control frames are NOT archived
     (bronze noise; mirrors the CoinbaseArchiver D1.3-fu5 skip-ack rule).
 
@@ -117,24 +117,26 @@ def test_venue_symbols_match_b2_coverage():
     index — over-inclusion would bias the synthetic AWAY from settlement
     (e.g. Gemini excluded for XRP, Bitstamp excluded for DOGE).
 
-    CORPUS-COLLECT (ADA, BCH — added 2026-05-30): the new Kalshi 15M assets
-    the bot does NOT trade. Their CFB-RTI constituents are NOT yet resolved,
+    CORPUS-COLLECT (ADA, BCH — added 2026-05-30; NEAR, ZEC — added 2026-09-05,
+    ticket 86bbvdc8y): Kalshi 15M assets the bot does NOT trade. Their CFB-RTI constituents are NOT yet resolved,
     so they are collected on EVERY venue that LISTS the pair (corpus-max).
     This is safe for the synthetic because both reconstruction gates skip
     any asset absent from their per-asset params map and neither has an
-    ADA/BCH entry — the offline RMSE harness's local ``CFB_PARAMS``
+    ADA/BCH/NEAR/ZEC entry — the offline RMSE harness's local ``CFB_PARAMS``
     (``scripts/research/synthetic_rti_rmse.py``) and the B2b live feed's
     ``_CFB_PARAMS`` (``bot.feeds.synthetic_rti_feed``). Raw bronze
     accumulates but is not reconstructed until their RTI constituents are
     resolved (follow-up). Live-probed listings 2026-05-30:
-    ADA on kraken+bitstamp (NOT Gemini); BCH on all four.
+    ADA on kraken+bitstamp (NOT Gemini); BCH on all four. 2026-09-05: NEAR on
+    kraken+bitstamp (NOT Gemini); ZEC on kraken+bitstamp+gemini.
 
-      - Kraken:   7 RTI-aligned + ADA + BCH = 9 (DOGE = XDG/USD).
-      - Bitstamp: 5 RTI-aligned + ADA + BCH = 7.
-      - Gemini:   4 RTI-aligned + BCH       = 5 (ADA not listed on Gemini).
+      - Kraken:   7 RTI-aligned + ADA + BCH + NEAR + ZEC = 11 (DOGE = XDG/USD).
+      - Bitstamp: 5 RTI-aligned + ADA + BCH + NEAR + ZEC = 9.
+      - Gemini:   4 RTI-aligned + BCH + ZEC             = 6 (ADA/NEAR not listed).
     """
     assert set(VENUE_SYMBOLS["kraken"]) == {
         "BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE", "ADA", "BCH",
+        "NEAR", "ZEC",
     }
     assert VENUE_SYMBOLS["kraken"]["DOGE"] == "XDG/USD", (
         "Kraken DOGE symbol must be XDG/USD (mirror CROSS_EXCHANGE_SYMBOLS), "
@@ -142,13 +144,20 @@ def test_venue_symbols_match_b2_coverage():
     )
     assert VENUE_SYMBOLS["kraken"]["ADA"] == "ADA/USD"
     assert VENUE_SYMBOLS["kraken"]["BCH"] == "BCH/USD"
+    assert VENUE_SYMBOLS["kraken"]["NEAR"] == "NEAR/USD"
+    assert VENUE_SYMBOLS["kraken"]["ZEC"] == "ZEC/USD"
     assert set(VENUE_SYMBOLS["bitstamp"]) == {
-        "BTC", "ETH", "SOL", "XRP", "HYPE", "ADA", "BCH",
+        "BTC", "ETH", "SOL", "XRP", "HYPE", "ADA", "BCH", "NEAR", "ZEC",
     }
     assert VENUE_SYMBOLS["bitstamp"]["ADA"] == "adausd"
     assert VENUE_SYMBOLS["bitstamp"]["BCH"] == "bchusd"
-    assert set(VENUE_SYMBOLS["gemini"]) == {"BTC", "ETH", "SOL", "DOGE", "BCH"}
+    assert VENUE_SYMBOLS["bitstamp"]["NEAR"] == "nearusd"
+    assert VENUE_SYMBOLS["bitstamp"]["ZEC"] == "zecusd"
+    assert set(VENUE_SYMBOLS["gemini"]) == {
+        "BTC", "ETH", "SOL", "DOGE", "BCH", "ZEC",
+    }
     assert VENUE_SYMBOLS["gemini"]["BCH"] == "BCHUSD"
+    assert VENUE_SYMBOLS["gemini"]["ZEC"] == "ZECUSD"
 
 
 def test_ws_urls_are_the_verified_endpoints():

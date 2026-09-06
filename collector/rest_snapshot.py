@@ -113,6 +113,17 @@ DEFAULT_EXCLUDED_SERIES: tuple = (
 )
 
 
+def is_excluded_series(ticker: str, excluded_series: Sequence[str]) -> bool:
+    """True when ``ticker`` belongs to one of the ``excluded_series`` (exact
+    series match on the segment before the first ``-``). Single chokepoint
+    shared by the hourly snapshot (``fetch_tickers_by_tier``) and the fast
+    close-horizon sweep (``fetch_open_tickers_closing_within``) so the two
+    paths can never disagree on what a firehose series is."""
+    if not excluded_series:
+        return False
+    return ticker.split("-", 1)[0] in excluded_series
+
+
 def resolve_excluded_series(env_value: Optional[str]) -> tuple:
     """Resolve the ``COLLECTOR_EXCLUDED_SERIES`` env value into the exclude
     tuple (ticket 86ba76adw). Three documented semantics, kept as a pure
@@ -141,35 +152,55 @@ DEFAULT_REFRESH_INTERVAL_SECONDS: float = 3600.0
 #
 # RCA: the hourly full-snapshot + force-reconnect mechanism above is correct
 # for markets whose lifespan >> the poll interval, but STRUCTURALLY undersamples
-# markets that open AND close inside a single poll gap. 15M crypto windows live
+# markets that open AND close inside a single poll gap. 15M windows live
 # ~15 min, so an hourly poll catches only ~25% (15/60); the other ~75% are never
 # subscribed → permanent bronze loss. See
 # kb/decisions/collector-sub-hourly-incremental-subscribe-plan.md.
 #
-# Fix: a fast (default 10s — tightened from the 60s ship default in the
-# 86ba74hzy follow-up; see DEFAULT_INCREMENTAL_REFRESH_SECONDS below) discovery
-# poll SCOPED to the crypto-15M series that dispatches subscribe frames
+# Fix: a fast (default 10s) discovery poll that dispatches subscribe frames
 # MID-SESSION via BronzeArchiver.add_subscriptions (no reconnect — so the
 # D1.3-fu4 ack-flood / OOM class cannot reopen).
 #
-# CRYPTO_15M_SERIES mirrors bot.constants.SERIES_TICKERS.values(). The collector
-# cannot import bot.* (collector-no-bot contract), so this is a hand-mirror with
-# a drift-pin contract test
-# (tests/contracts/test_collector_incremental_subscribe.py
-# ::test_crypto_15m_series_mirrors_bot_series_tickers) — same pattern as the
-# LEAGUES_ESPN mirror. A new Kalshi 15M crypto series means a 1-line edit here +
-# a kalshi-collector restart.
-CRYPTO_15M_SERIES: tuple = (
-    "KXBTC15M",
-    "KXETH15M",
-    "KXSOL15M",
-    "KXXRP15M",
-    "KXHYPE15M",
-    "KXDOGE15M",
-    "KXBNB15M",
-    "KXADA15M",  # ADA 15M shadow onboarding (T1 2026-05-30)
-    "KXBCH15M",  # BCH 15M shadow onboarding (T1 2026-05-30)
-)
+# GENERALIZED 2026-09-05 (ticket 86bbvdc8y): the 86ba74hzy ship SCOPED the poll
+# to a hand-mirrored crypto-15M series tuple (one ``series_ticker`` request per
+# series, drift-pinned to bot.constants.SERIES_TICKERS). That made bronze
+# coverage of every 15M family the bot did NOT trade depend on a human noticing
+# the series and editing the tuple — and nobody did: KXNEAR15M / KXZEC15M
+# (first window 2026-06-30), KXGOLD/WTI/SILVER15M (2026-07-31), KXCOPPER/
+# NATGAS15M (2026-08-27), KXCRYPTOLEAD15M, plus FX + equity-index 15M series
+# among others (27 fifteen_min series on the venue 2026-09-05, 18 not traded
+# by the bot) — were never discovered. Measured Sep-3 14Z orderbook hour: BTC 7 windows,
+# BNB 9, NEAR 1 (stale), GOLD / ZEC / WTI / SILVER 0. The poll is now ONE
+# series-agnostic query — ``/markets?status=open&min_close_ts=now&
+# max_close_ts=now+DEFAULT_INCREMENTAL_HORIZON_SECONDS`` — so ANY market that
+# closes within the horizon is subscribed from its first window, whatever its
+# series. No series list to maintain; the bot's asset registry and the
+# collector's coverage are fully decoupled (a bot-side onboarding no longer
+# needs a collector edit + restart).
+#
+# The close-window sweep sees every short-lived market on the venue, including
+# the esports / MVE firehose the hourly snapshot deliberately excludes
+# (measured 2026-09-05: 374 of 388 markets closing within 16 min were
+# KXMVECROSSCATEGORY). The SAME ``excluded_series`` prefixes are applied here
+# (``resolve_excluded_series`` → main_loop threads them into the refresher),
+# otherwise the incremental path would re-open the socket.send() reconnect-
+# storm class that 86ba76adw closed.
+
+# Close-horizon for the discovery sweep. A 15M window is listed ~15 min (900s)
+# before its close; to subscribe it AT its open the horizon must be ≥ 900s +
+# one poll interval. 1200s adds slack for series that list a few minutes
+# early, while staying far below the hourly cadence so hourly/daily markets
+# (already covered by the hourly snapshot) are not swept in bulk. Pinned by
+# tests/contracts/test_collector_incremental_subscribe.py
+# ::test_horizon_covers_a_full_window_plus_poll_lag. Tunable via
+# ``COLLECTOR_INCREMENTAL_HORIZON_SECONDS`` in main_loop.
+DEFAULT_INCREMENTAL_HORIZON_SECONDS: float = 1200.0
+
+# Rows per page for the close-horizon sweep. Kalshi accepts up to 1000; the
+# sweep normally fits in ONE page (measured 2026-09-05: 388 rows within 16 min
+# incl. the MVE firehose), so the poll is 1 request per tick. Pinned by
+# ::test_incremental_poll_stays_well_under_read_rate_limit.
+_HORIZON_PAGE_LIMIT: int = 1000
 
 # Fast incremental-discovery cadence. 10s → a 15-min (900s) window is discovered
 # within ≤10s of opening, so ≥~98.9% of its orderbook is captured (avg discovery
@@ -178,15 +209,16 @@ CRYPTO_15M_SERIES: tuple = (
 # 86ba74hzy follow-up to recover most of the opening-minute sliver.
 #
 # Rate safety (data-backed; CLAUDE.md "no config tuning without data"): the poll
-# fires one request per crypto-15M series per tick = 7 req/tick (1 page/series —
-# a crypto-15M series has only a handful of open windows at any instant, far
-# under the _PAGE_LIMIT=200 cursor-page size; a series would only paginate to a
-# 2nd request if >200 windows were simultaneously open, which the 15M schedule
-# never produces). At 10s that is 0.7 req/s average + 7 req/s peak burst, vs
-# Kalshi's READ_RATE_LIMIT=30 req/s
-# (Advanced tier; the collector runs on its own KALSHI_COLLECTOR_KEY_ID, so this
-# budget is independent of the bot). ~43× headroom average, ~4× on the burst.
-# Pinned by tests/contracts/test_collector_incremental_subscribe.py
+# fires ONE close-window request per tick (+1 per extra 1000-row page, which the
+# measured sweep never needs). At 10s that is 0.1 req/s average, vs Kalshi's
+# READ_RATE_LIMIT=30 req/s (Advanced tier; the collector runs on its own
+# KALSHI_COLLECTOR_KEY_ID, so this budget is independent of the bot) — ~300×
+# headroom, ~10× cheaper than the retired 9-series poll (0.9 req/s). Payload
+# is dominated by the client-side-filtered MVE firehose rows (measured
+# 2026-09-06: ~0.9 MB / 335 rows per tick, 96% discarded after parse, ~10 ms
+# json.loads, ~5 MB transient; ~8 GB/day inbound, unmetered on DO) — tune the
+# horizon/interval against BYTES per tick as well as the request budget. Pinned by
+# tests/contracts/test_collector_incremental_subscribe.py
 # ::test_incremental_poll_stays_well_under_read_rate_limit (+ the ≤10s coverage
 # pin). Tunable via ``COLLECTOR_INCREMENTAL_REFRESH_SECONDS`` in main_loop.
 DEFAULT_INCREMENTAL_REFRESH_SECONDS: float = 10.0
@@ -397,7 +429,7 @@ def fetch_tickers_by_tier(
                 continue
             ticker = row.get("ticker")
             if isinstance(ticker, str) and ticker:
-                if excluded and ticker.split("-", 1)[0] in excluded:
+                if is_excluded_series(ticker, excluded):
                     continue  # firehose series (e.g. esports) — ticket 86ba76adw
                 tickers.add(ticker)
 
@@ -1075,9 +1107,10 @@ class RestSnapshotRefresher:
 # ─── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ────────
 
 
-def fetch_open_tickers_for_series(
+def fetch_open_tickers_closing_within(
     *,
-    series_tickers: Sequence[str],
+    horizon_seconds: float,
+    excluded_series: Sequence[str],
     api_key: str,
     private_key,
     base_url: str = DEFAULT_REST_BASE_URL,
@@ -1085,34 +1118,44 @@ def fetch_open_tickers_for_series(
     max_retries: int = _DEFAULT_MAX_RETRIES,
     _test_skip_auth: bool = False,
     _test_backoff_seconds: float = _DEFAULT_BACKOFF_SECONDS,
+    _now: Optional[float] = None,
 ) -> set:
-    """Return the UNION of open tickers across the given Kalshi series.
+    """Return every open ticker whose ``close_time`` falls within
+    ``[now, now + horizon_seconds]``, minus the ``excluded_series`` prefixes.
 
-    Issues one paginated ``/markets?series_ticker=<S>&status=open`` fetch per
-    series (tiny payloads — a handful of open windows per crypto-15M series at
-    any instant) and unions the results.
+    ONE paginated ``/markets?status=open&min_close_ts=&max_close_ts=`` query
+    (series-agnostic — ticket 86bbvdc8y; see the module-level GENERALIZED
+    note). ``excluded_series`` is applied through the SAME ``is_excluded_series``
+    helper the hourly snapshot uses (exact series match on the pre-``-`` segment).
 
     Differs from ``fetch_tickers_by_tier`` in its failure posture: this feeds
     the INCREMENTAL ADD path (which only ever adds newly-seen tickers, never
-    drops), so a per-series failure is BEST-EFFORT — the bad series is skipped
-    this tick and retried next tick. There is no partial-set reconnect-storm
-    risk (R1-M2) because nothing here triggers a reconnect; a missed series
-    just delays discovery of its newest window by one ``interval_seconds``.
+    drops), so a failure is BEST-EFFORT — the partial set is returned and the
+    rest is retried next tick. There is no partial-set reconnect-storm risk
+    (R1-M2) because nothing here triggers a reconnect; a missed page just
+    delays discovery of its windows by one ``interval_seconds``.
 
-    NEVER raises — per-series failures are logged + skipped.
+    NEVER raises — failures are logged + return whatever was collected.
     """
     if session is None:
         session = requests.Session()
     url = base_url.rstrip("/") + _REST_PATH_MARKETS
+    now = time.time() if _now is None else _now
+    min_close_ts = int(now)
+    max_close_ts = int(now + horizon_seconds)
+    excluded = tuple(s for s in excluded_series if s)
     tickers: set = set()
-    for series in series_tickers:
-        cursor: Optional[str] = None
-        while True:
-            params: Dict[str, Any] = {
-                "limit": _PAGE_LIMIT, "status": "open", "series_ticker": series,
-            }
-            if cursor:
-                params["cursor"] = cursor
+    cursor: Optional[str] = None
+    while True:
+        params: Dict[str, Any] = {
+            "limit": _HORIZON_PAGE_LIMIT,
+            "status": "open",
+            "min_close_ts": min_close_ts,
+            "max_close_ts": max_close_ts,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
             body, _status, _err, _attempts, _elapsed, _ts = (
                 _do_request_with_retry_inner(
                     session=session,
@@ -1125,33 +1168,44 @@ def fetch_open_tickers_for_series(
                     backoff_seconds=_test_backoff_seconds,
                 )
             )
-            if body is None or not isinstance(body, dict):
-                logger.warning(
-                    "IncrementalDiscovery: series=%s page fetch failed; "
-                    "skipping this series this tick (retries next interval).",
-                    series,
-                )
-                break
-            markets = body.get("markets")
-            if isinstance(markets, list):
-                for row in markets:
-                    if not isinstance(row, dict):
-                        continue
-                    if row.get("status") not in ("open", "active"):
-                        continue
-                    ticker = row.get("ticker")
-                    if isinstance(ticker, str) and ticker:
-                        tickers.add(ticker)
-            next_cursor = body.get("cursor")
-            if not next_cursor or not isinstance(next_cursor, str):
-                break
-            cursor = next_cursor
+        except Exception:
+            logger.exception(
+                "IncrementalDiscovery: close-window page fetch raised; "
+                "returning %d ticker(s) collected so far (retries next tick).",
+                len(tickers),
+            )
+            break
+        if body is None or not isinstance(body, dict):
+            logger.warning(
+                "IncrementalDiscovery: close-window page fetch failed "
+                "(cursor=%r); returning %d ticker(s) collected so far "
+                "(retries next interval).", cursor, len(tickers),
+            )
+            break
+        markets = body.get("markets")
+        if isinstance(markets, list):
+            for row in markets:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("status") not in ("open", "active"):
+                    continue
+                ticker = row.get("ticker")
+                if not (isinstance(ticker, str) and ticker):
+                    continue
+                if is_excluded_series(ticker, excluded):
+                    continue
+                tickers.add(ticker)
+        next_cursor = body.get("cursor")
+        if not next_cursor or not isinstance(next_cursor, str):
+            break
+        cursor = next_cursor
     return tickers
 
 
 class IncrementalDiscoveryRefresher:
-    """Background thread that polls the sub-hourly (crypto-15M) series at a fast
-    cadence and reports the current open ticker set to ``on_new``.
+    """Background thread that polls the close-horizon sweep (every open market
+    closing within ``horizon_seconds`` — series-agnostic, ticket 86bbvdc8y) at
+    a fast cadence and reports the current open ticker set to ``on_new``.
 
     Owned by ``collector/main_loop.py``. Like ``RestSnapshotRefresher`` the
     wiring is one-directional (refresher → callback): the refresher does NOT
@@ -1170,10 +1224,11 @@ class IncrementalDiscoveryRefresher:
         *,
         api_key: str,
         private_key,
-        series_tickers: Sequence[str],
+        excluded_series: Sequence[str],
         on_new: Callable[[set], None],
         shutdown_event: threading.Event,
         interval_seconds: float = DEFAULT_INCREMENTAL_REFRESH_SECONDS,
+        horizon_seconds: float = DEFAULT_INCREMENTAL_HORIZON_SECONDS,
         base_url: str = DEFAULT_REST_BASE_URL,
         session: Optional[requests.Session] = None,
     ):
@@ -1182,9 +1237,15 @@ class IncrementalDiscoveryRefresher:
                 f"interval_seconds must be > 0 (got {interval_seconds}); the "
                 "discovery loop sleeps for this duration between polls."
             )
+        if horizon_seconds <= 0:
+            raise ValueError(
+                f"horizon_seconds must be > 0 (got {horizon_seconds}); the "
+                "close-window sweep needs a forward horizon."
+            )
         self._api_key = api_key
         self._private_key = private_key
-        self._series_tickers = tuple(series_tickers)
+        self._excluded_series = tuple(excluded_series)
+        self._horizon_seconds = horizon_seconds
         self._on_new = on_new
         self._shutdown_event = shutdown_event
         self._interval_seconds = interval_seconds
@@ -1214,8 +1275,9 @@ class IncrementalDiscoveryRefresher:
 
     def _do_poll(self) -> None:
         try:
-            open_set = fetch_open_tickers_for_series(
-                series_tickers=self._series_tickers,
+            open_set = fetch_open_tickers_closing_within(
+                horizon_seconds=self._horizon_seconds,
+                excluded_series=self._excluded_series,
                 api_key=self._api_key,
                 private_key=self._private_key,
                 base_url=self._base_url,

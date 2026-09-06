@@ -353,7 +353,7 @@ def test_deploy_yml_coinbase_unit_drift_guard_precedes_restart():
     deploy.yml does NOT cp units / daemon-reload (that is install.sh's job),
     so a bare `systemctl restart` after a MemoryMax/cap change would run the
     unit against its STALE on-disk cap. For the 9-asset corpus bump
-    (256M→384M, 2026-05-30) that means restarting the now-9-product collector
+    (256M→384M, 2026-05-30) that means restarting the then-9-product collector
     against the old 256M cap → OOM-kill window. This guard mirrors the
     kalshi-bot unit-drift check (`systemctl cat` + `diff` + fail-with-recovery)
     and refuses to restart against a stale unit. No new sudoers needed (read +
