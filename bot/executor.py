@@ -1842,7 +1842,23 @@ class OrderExecutor:
         # sat BELOW the poll-interval early-return, so tick() pop_fills()
         # then dropped the batch. REST _check_for_fill recovered the
         # position ~2s later. See kb/failures/ws-fill-poll-interval-drop-sep06.md.
+        #
+        # Dedup mirrors _check_for_fill: resolve trade_id first, skip if
+        # missing or already seen, stamp, then _on_fill. Applying first
+        # double-counted REST-then-WS partials. A syn_ key cannot match
+        # REST's real trade_id (feed _handle_fill never sets id/price).
         for ws_fill in ws_fills:
+            ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
+            if not ws_trade_id:
+                logging.warning(
+                    "WS fill missing trade_id for %s — skipping; REST poll "
+                    "will recover",
+                    order["ticker"])
+                continue
+            seen = order.setdefault("_seen_fill_ids", set())
+            if ws_trade_id in seen:
+                continue
+            seen.add(ws_trade_id)
             order["fill_source"] = "websocket"
             self._session_ws_fills += 1
             latency_ms = round((now - order["submit_time"]) * 1000, 1)
@@ -1850,18 +1866,6 @@ class OrderExecutor:
                 f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
                 f"latency={latency_ms}ms")
             self._on_fill(ws_fill, order)
-            ws_trade_id = ws_fill.get("trade_id") or ws_fill.get("id")
-            if not ws_trade_id:
-                self._ws_fill_seq = getattr(self, '_ws_fill_seq', 0) + 1
-                ws_trade_id = (
-                    f"syn_{ws_fill.get('order_id','')}_"
-                    f"{ws_fill.get('count','')}_{ws_fill.get('price','')}_"
-                    f"{self._ws_fill_seq}"
-                )
-                logging.warning(
-                    f"WS fill missing trade_id for {order['ticker']}, "
-                    f"using synthetic key: {ws_trade_id}")
-            order.setdefault("_seen_fill_ids", set()).add(ws_trade_id)
             if order.get("filled_so_far", 0) >= order["count"]:
                 self._active_orders.pop(asset, None)
                 self._state.update_evaluated_opportunity_order(

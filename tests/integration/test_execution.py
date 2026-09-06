@@ -1714,6 +1714,158 @@ class TestTickMechanics(unittest.TestCase):
         self.assertNotIn("BTC", ex._active_orders)
         ex._client.get_fills.assert_not_called()
 
+    def test_tick_ws_fill_skips_already_seen_trade_id(self):
+        """WS must not _on_fill a trade_id REST (or a prior WS frame) already applied.
+
+        The WS loop used to call _on_fill THEN stamp _seen_fill_ids. REST
+        stamps before returning. After moving WS above the 2s gate, a
+        REST partial plus a later WS frame with the same trade_id double-
+        counted. See kb/failures/ws-fill-poll-interval-drop-sep06.md.
+        """
+        ex = _make_executor()
+        now = time.time()
+        order = {
+            "order_id": "ord-ws-seen",
+            "ticker": "KXBTC15M-TEST",
+            "event_ticker": "KXBTC15M-26MAR091200",
+            "asset": "BTC",
+            "count": 5,
+            "price_cents": 91,
+            "submit_time": now - 5,
+            "seconds_to_close_at_submit": 400,
+            "_last_poll": now - 0.2,
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0,
+            "candidate": _make_candidate(),
+            "balance_at_entry": 50000,
+            "is_taker": False,
+            "filled_so_far": 2,
+            "_seen_fill_ids": {"T-rest"},
+        }
+        ex._active_orders["BTC"] = order
+        ex._kalshi_feed.pop_fills.return_value = [{
+            "order_id": "ord-ws-seen",
+            "trade_id": "T-rest",
+            "count": 2,
+            "yes_price": 91,
+        }]
+
+        def on_fill_side_effect(fill, ord_dict):
+            ord_dict["filled_so_far"] = ord_dict.get("filled_so_far", 0) + int(
+                fill.get("count") or 0)
+            return fill.get("count")
+        ex._on_fill = MagicMock(side_effect=on_fill_side_effect)
+
+        ex.tick()
+
+        ex._on_fill.assert_not_called()
+        self.assertEqual(order["filled_so_far"], 2)
+        self.assertIn("BTC", ex._active_orders)
+        self.assertEqual(ex._session_ws_fills, 0)
+
+    def test_tick_ws_duplicate_trade_id_in_one_batch_on_fills_once(self):
+        """Same trade_id twice in one pop_fills batch must apply once."""
+        ex = _make_executor()
+        now = time.time()
+        order = {
+            "order_id": "ord-ws-dup",
+            "ticker": "KXBTC15M-TEST",
+            "event_ticker": "KXBTC15M-26MAR091200",
+            "asset": "BTC",
+            "count": 5,
+            "price_cents": 91,
+            "submit_time": now - 5,
+            "seconds_to_close_at_submit": 400,
+            "_last_poll": now - 0.2,
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0,
+            "candidate": _make_candidate(),
+            "balance_at_entry": 50000,
+            "is_taker": False,
+            "filled_so_far": 0,
+        }
+        ex._active_orders["BTC"] = order
+        frame = {
+            "order_id": "ord-ws-dup",
+            "trade_id": "T-dup",
+            "count": 2,
+            "yes_price": 91,
+        }
+        ex._kalshi_feed.pop_fills.return_value = [frame, dict(frame)]
+
+        def on_fill_side_effect(fill, ord_dict):
+            ord_dict["filled_so_far"] = ord_dict.get("filled_so_far", 0) + int(
+                fill.get("count") or 0)
+            return fill.get("count")
+        ex._on_fill = MagicMock(side_effect=on_fill_side_effect)
+
+        ex.tick()
+
+        ex._on_fill.assert_called_once()
+        self.assertEqual(order["filled_so_far"], 2)
+        self.assertEqual(ex._session_ws_fills, 1)
+
+    def test_tick_ws_fill_without_trade_id_left_to_rest(self):
+        """WS frames with no trade_id/id must not _on_fill; REST recovers.
+
+        Feed _handle_fill never sets `id` or `price`. A syn_ key cannot
+        match REST's real trade_id, so applying the WS frame then REST
+        double-counts. Skip and let _check_for_fill apply once.
+        """
+        ex = _make_executor()
+        now = time.time()
+        order = {
+            "order_id": "ord-ws-noid",
+            "ticker": "KXBTC15M-TEST",
+            "event_ticker": "KXBTC15M-26MAR091200",
+            "asset": "BTC",
+            "count": 5,
+            "price_cents": 91,
+            "submit_time": now - 5,
+            "seconds_to_close_at_submit": 400,
+            "_last_poll": now - 0.2,
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0,
+            "candidate": _make_candidate(),
+            "balance_at_entry": 50000,
+            "is_taker": False,
+            "filled_so_far": 0,
+        }
+        ex._active_orders["BTC"] = order
+        ex._kalshi_feed.pop_fills.return_value = [{
+            "order_id": "ord-ws-noid",
+            "count": 2,
+            "yes_price": 91,
+        }]
+
+        def on_fill_side_effect(fill, ord_dict):
+            ord_dict["filled_so_far"] = ord_dict.get("filled_so_far", 0) + int(
+                fill.get("count") or 0)
+            return fill.get("count")
+        ex._on_fill = MagicMock(side_effect=on_fill_side_effect)
+
+        ex.tick()
+        ex._on_fill.assert_not_called()
+        self.assertEqual(order["filled_so_far"], 0)
+        self.assertIn("BTC", ex._active_orders)
+        ex._client.get_fills.assert_not_called()
+
+        order["_last_poll"] = now - 5
+        order["_last_queue_poll"] = now
+        order["escalated"] = True
+        ex._kalshi_feed.pop_fills.return_value = []
+        ex._client.get_fills.return_value = {
+            "fills": [{
+                "order_id": "ord-ws-noid",
+                "trade_id": "real-rest",
+                "count": 5,
+            }]
+        }
+        ex.tick()
+        ex._on_fill.assert_called_once()
+        self.assertEqual(order["filled_so_far"], 5)
+        self.assertNotIn("BTC", ex._active_orders)
+
     def test_hard_timeout_cancels_order(self):
         """Orders exceeding MAKER_TIMEOUT_SECONDS get canceled."""
         ex = _make_executor()
