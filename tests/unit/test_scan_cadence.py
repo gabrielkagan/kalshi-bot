@@ -105,3 +105,5 @@ def test_scan_wires_include_window_this_tick():
     # Slow-due ticks use a separate REST budget, not an uncapped tick.
     assert "MAX_OB_FETCHES_PER_SLOW_TICK" in src
     assert "slow_ob_fetches_this_tick" in src
+    # 15M cap must still be consulted on slow-due ticks (not `if _slow_due`).
+    assert "elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK" in src

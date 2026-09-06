@@ -1660,6 +1660,15 @@ class OpportunityScanner:
             _pt = window.get("product_type")
             if not include_window_this_tick(_pt, _slow_due):
                 continue
+            # Per-type REST budgets. Do not `break` the whole loop — that
+            # either starves slow windows (15M cap) or uncaps 15M on
+            # slow-due ticks. Skip only this window's type when its
+            # budget is exhausted.
+            if _pt in SLOW_PRODUCT_TYPES:
+                if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
+                    continue
+            elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
+                continue
 
             # Bit 9.2 ride-along (ticket 86b9vppn3): initialize best_ask
             # at iteration start so the low_probability_15m insert_rejection
@@ -7208,12 +7217,6 @@ class OpportunityScanner:
                 logging.warning(
                     "SCAN_WINDOW_SLOW: asset=%s ticker=%s took %.2fs",
                     asset, window.get("event_ticker", "?"), _window_dt)
-            if _slow_due:
-                if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
-                    break
-            elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
-                break
-
         _scan_loop_dt = time.perf_counter() - _scan_loop_start
         if _scan_loop_dt > 1.5:
             logging.warning(
