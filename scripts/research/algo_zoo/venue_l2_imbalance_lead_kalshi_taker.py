@@ -66,6 +66,7 @@ from scripts.research.venue_book_reconstruct import (  # noqa: E402
     _extract_frame,
     parse_envelope as venue_parse_envelope,
 )
+from scripts.research.zstd_stream import assert_zstd_ok  # noqa: E402  (repo root on sys.path above)
 
 # ----- config ---------------------------------------------------------------
 FRAMES_BTC_ETH = "/tmp/edge_daily/frames_btc_eth.jsonl"
@@ -122,9 +123,18 @@ def _hour_lines(hdir: str):
         return
     p = subprocess.Popen(["zstd", "-dcq", *files], stdout=subprocess.PIPE, text=True)
     assert p.stdout is not None
-    for line in p.stdout:
-        yield line
-    p.wait()
+    _exhausted = False
+    try:
+        for line in p.stdout:
+            yield line
+        _exhausted = True
+    finally:
+        # ticket 86bbvrx1t: a decompressor that dies mid-file just ENDS the
+        # loop; without this the caller silently receives a PREFIX of the hour
+        # and reports success. Multi-file `zstd -dcq *files`, so the shared
+        # checked_stream_lines (single path) does not fit — assert directly.
+        p.wait()
+        assert_zstd_ok(p, str(hdir), exhausted=_exhausted, require_nonempty=False)
 
 
 def _line_substr(venue: str, symbol: str) -> str:

@@ -293,6 +293,10 @@ def load_venue_all_assets(venue: str, assets):
                         out[asset_for_sym[s]].append((ep, inner))
         proc.stdout.close()
         proc.wait()
+        # ticket 86bbvrx1t: this loop has NO `break`, so reaching here is a
+        # true EOF — a non-zero zstd exit means the venue chunk was TRUNCATED
+        # and this asset's frame list is silently short.
+        assert_zstd_ok(proc, fp, exhausted=True, require_nonempty=False)
     for a in out:
         out[a].sort(key=lambda x: x[0])
     return out
@@ -303,6 +307,7 @@ def load_venue_all_assets(venue: str, assets):
 # ---------------------------------------------------------------------------
 
 import bisect
+from scripts.research.zstd_stream import assert_zstd_ok  # noqa: E402  (repo root on sys.path above)
 
 
 def precompute_venue_grid(frames, book_cls, grid_dt=1.0):
