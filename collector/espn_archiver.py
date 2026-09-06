@@ -248,8 +248,7 @@ class ESPNArchiver:
         out: Dict[str, Dict[str, object]] = {}
         with self._http_status_lock:
             for league, samples in self._http_status_samples.items():
-                while samples and samples[0][0] < cutoff:
-                    samples.popleft()
+                self._evict_locked(samples, cutoff)
                 polls = len(samples)
                 non_200 = sum(1 for _, st in samples if st != 200)
                 out[league] = {
@@ -263,13 +262,27 @@ class ESPNArchiver:
 
     # ── Internals ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _evict_locked(
+        samples: Deque[Tuple[float, Optional[int]]], cutoff: float,
+    ) -> None:
+        """Drop samples older than ``cutoff``. Caller holds the lock."""
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
     def _record_http_status(self, league: str, status: Optional[int]) -> None:
-        """Append one sample + WARN (throttled) when it is not a 200."""
+        """Append one sample + WARN (throttled) when it is not a 200.
+
+        Evicts on write too (R1-m2) so the deque is bounded to one
+        window even when nothing ever reads the stats (e.g. the main
+        loop running with ``health_sidecar_path=None``).
+        """
         now = self._monotonic_fn()
         with self._http_status_lock:
             samples = self._http_status_samples.setdefault(
                 league, collections.deque(),
             )
+            self._evict_locked(samples, now - HTTP_STATUS_WINDOW_SECONDS)
             samples.append((now, status))
         if status == 200:
             return

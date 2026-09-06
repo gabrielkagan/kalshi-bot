@@ -349,6 +349,65 @@ def test_sports_silence_alerts_when_live_games_but_zero_sports_rows(tmp_path):
     assert "30" in out  # live-game tick count surfaced
 
 
+def test_archiver_deque_bounded_without_reader():
+    """R1-m2: eviction happens on write, so a never-read stats deque
+    stays bounded to one window."""
+    clock = _Clock()
+    arch, _ = _make_archiver([_Resp(200)] * 200, monotonic=clock)
+    for _ in range(200):
+        arch.poll_once()
+        clock.t += 60  # 200 min of polls, window is 60 min
+    assert len(arch._http_status_samples["nba"]) <= 61
+
+
+def test_sports_silence_journal_filtered_server_side_with_long_timeout(tmp_path):
+    """R1-C1: the unfiltered 3h journal pull took ~14s on the VPS vs a
+    10s timeout — the check could never evaluate. Pin -g/-o cat + ≥60s."""
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    seen = {}
+
+    def _co(args, **kw):
+        seen["args"] = args
+        seen["kw"] = kw
+        return ""
+
+    with patch.object(mod.subprocess, "check_output", side_effect=_co):
+        mod.check_sports_eval_silence(db_path=db)
+    args = seen["args"]
+    assert "-g" in args and args[args.index("-g") + 1] == mod.SPORTS_LIVE_TICK_PATTERN
+    assert "-o" in args and args[args.index("-o") + 1] == "cat"
+    assert seen["kw"]["timeout"] >= 60
+    assert "1440 minutes ago" in args, "default window is 24h (R1-M2)"
+
+
+def test_sports_silence_timeout_prints_skipped_not_silent(tmp_path, capsys):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    with patch.object(
+        mod.subprocess, "check_output",
+        side_effect=mod.subprocess.TimeoutExpired(cmd="journalctl", timeout=60),
+    ):
+        assert mod.check_sports_eval_silence(db_path=db) is None
+    assert "SKIPPED" in capsys.readouterr().err
+
+
+def test_sports_silence_grep_no_match_exit_1_is_quiet(tmp_path, capsys):
+    """journalctl -g exits 1 when nothing matches — that is 'no live
+    games', not a skip."""
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    with patch.object(
+        mod.subprocess, "check_output",
+        side_effect=mod.subprocess.CalledProcessError(1, "journalctl"),
+    ):
+        assert mod.check_sports_eval_silence(db_path=db) is None
+    assert "SKIPPED" not in capsys.readouterr().err
+
+
 def test_sports_silence_opens_db_read_only(tmp_path):
     import scripts.ops.collector_health_monitor as mod
     src = Path(mod.__file__).read_text()
@@ -450,12 +509,11 @@ def _first_espn_league_cfg():
 
 def test_bot_feed_warns_on_non_200_throttled(caplog):
     import bot.engines.sports_engine as se
-    feed = se.ESPNLiveFeed()
+    clock = _Clock()
+    feed = se.ESPNLiveFeed(monotonic_fn=clock)
     feed._session = _FakeSession([_Resp(403), _Resp(403), _Resp(403)])
     cfg = _first_espn_league_cfg()
-    clock = _Clock()
-    with patch.object(se.time, "monotonic", clock), \
-            caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING):
         with pytest.raises(requests.HTTPError):
             feed._poll_league(cfg)
         clock.t += 60

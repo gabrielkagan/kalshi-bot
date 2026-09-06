@@ -30,7 +30,8 @@ landing" — L-espn-1, same class as L-rot-7):
   - check_sports_eval_silence: bot journal reports live games
     (``SportsEngine tick: N live games``) ≥ min_live_ticks times in the
     window but ``evaluated_opportunities`` has 0 ``product_type='sports'``
-    rows in that window (dedup ``b3_fu3_sports_eval_silence``).
+    rows in that window (dedup ``b3_fu3_sports_eval_silence``; 24h window,
+    journal filtered server-side with ``journalctl -g``).
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -198,11 +199,21 @@ DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
 # Ticket 86bbvqhyr: bot-side sports silence check. The journal line is
 # emitted by bot/engines/sports_engine.py::SportsEngine._tick only when
 # live_count > 0 (30s tick) — "ESPN reported live games" by construction.
-# 180-min window + ≥20 live ticks (≈10 min of live play) bounds the
-# false-alarm case where live games exist but none has a Kalshi market.
-DEFAULT_SPORTS_SILENCE_WINDOW_MIN = 180
+# 24h window (R1-M2): sports evaluated_opportunities rows are sparse on
+# a HEALTHY system (1-43/day, 17:00-05:00 UTC, only for live games that
+# matched a Kalshi market) — a 180-min window produced ~3-5 false
+# alarms/day on the last 16 healthy days; 24h produced 0 and still
+# catches a 5-week-class outage within a day. ≥20 live ticks (≈10 min
+# of live play) is the "ESPN reported live games" precondition.
+DEFAULT_SPORTS_SILENCE_WINDOW_MIN = 1440
 DEFAULT_SPORTS_SILENCE_MIN_LIVE_TICKS = 20
+SPORTS_LIVE_TICK_PATTERN = r"SportsEngine tick: [0-9]+ live games"
 SPORTS_LIVE_TICK_RE = re.compile(r"SportsEngine tick: (\d+) live games")
+# R1-C1: an unfiltered 180-min `journalctl -u kalshi-bot` pull is 33 MB /
+# 153K lines and takes ~14 s on the VPS — past the 10 s timeout the
+# sibling 5-min check uses, so the check would silently never evaluate.
+# Filter server-side (`-g` PCRE + `-o cat`) and allow 60 s.
+SPORTS_SILENCE_JOURNAL_TIMEOUT_SECONDS = 60
 # Read-only sqlite path; mirrors scripts/vps_mcp_server.py's default.
 DEFAULT_STATE_DB_PATH = os.path.expanduser("~/kalshi-bot-repo/state.db")
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
@@ -606,20 +617,27 @@ def check_sports_eval_silence(
     """Bot-tier alert: ESPN reported live games but the sports engine
     evaluated nothing (ticket 86bbvqhyr, 2026-09-06).
 
-    Two inputs over the same ``window_min`` window:
+    Two inputs over the same ``window_min`` window (default 24h — R1-M2:
+    sports rows are sparse and game-hour-clustered even when healthy,
+    so shorter windows false-alarm several times a day):
       1. journalctl -u kalshi-bot lines matching ``SportsEngine tick: N
          live games`` with N > 0 — emitted by ``SportsEngine._tick`` only
          when at least one live, non-excluded-group game came back from
-         ESPN. Need ≥ ``min_live_ticks`` of them.
-      2. ``SELECT COUNT(*) FROM evaluated_opportunities WHERE
-         product_type='sports' AND evaluation_time >= cutoff`` on a
-         READ-ONLY sqlite connection.
-    Alert iff (1) ≥ min_live_ticks AND (2) == 0.
+         ESPN. Need ≥ ``min_live_ticks`` of them. Filtered SERVER-SIDE
+         via ``journalctl -g`` + ``-o cat`` (R1-C1: the unfiltered pull
+         is ~14 s on the VPS, longer than the sibling checks' 10 s
+         timeout — the check would have silently never evaluated).
+      2. ``SELECT 1 … WHERE product_type='sports' AND evaluation_time
+         >= cutoff ORDER BY id DESC LIMIT 1`` on a READ-ONLY sqlite
+         connection (rowid-desc scan stops at the first recent hit on
+         the healthy path; the table has no index on these columns).
+    Alert iff (1) ≥ min_live_ticks AND (2) finds no row.
 
-    Fail-quiet (return None) on: journalctl absent/timeout, DB file
-    absent, any sqlite error. A window in which every live game lacked
-    a Kalshi market can trip this legitimately — the message says so;
-    treat it as "look", not "page".
+    Fail-quiet (return None) on: journalctl absent/timeout (a SKIPPED
+    line goes to stderr so the cron log shows the check did NOT
+    evaluate), DB file absent, any sqlite error. A window in which every
+    live game lacked a Kalshi market can trip this legitimately — the
+    message says so; treat it as "look", not "page".
 
     ``db_path`` resolves via ``STATE_DB_PATH`` env at call time when
     None, else ``DEFAULT_STATE_DB_PATH``.
@@ -631,12 +649,22 @@ def check_sports_eval_silence(
                 "-u", unit,
                 "--since", f"{window_min} minutes ago",
                 "-q", "--no-pager",
+                "-o", "cat",
+                "-g", SPORTS_LIVE_TICK_PATTERN,
             ],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=10,
+            timeout=SPORTS_SILENCE_JOURNAL_TIMEOUT_SECONDS,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        # journalctl -g exits 1 when nothing matches (CalledProcessError)
+        # — that is a legitimate "no live games" outcome, not a skip.
+        if not (isinstance(exc, subprocess.CalledProcessError) and exc.returncode == 1):
+            print(
+                f"[{unit}/sports_eval_silence] SKIPPED: journalctl "
+                f"{type(exc).__name__} — check did not evaluate",
+                file=sys.stderr,
+            )
         return None
     live_ticks = 0
     for line in out.splitlines():
@@ -658,22 +686,22 @@ def check_sports_eval_silence(
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         try:
             row = conn.execute(
-                "SELECT COUNT(*) FROM evaluated_opportunities "
-                "WHERE product_type = 'sports' AND evaluation_time >= ?",
+                "SELECT 1 FROM evaluated_opportunities "
+                "WHERE product_type = 'sports' AND evaluation_time >= ? "
+                "ORDER BY id DESC LIMIT 1",
                 (cutoff,),
             ).fetchone()
         finally:
             conn.close()
     except sqlite3.Error:
         return None
-    n_rows = int(row[0]) if row else 0
-    if n_rows > 0:
+    if row is not None:
         return None
     return (
         f"*BOT SPORTS EVAL SILENCE* — journal shows {live_ticks} "
         f"`SportsEngine tick: N live games` lines in the last {window_min}min "
         f"but evaluated_opportunities has 0 product_type='sports' rows in "
-        f"that window. Either ESPN data is not reaching the engine (ticket "
+        f"that window (should be ≥1/day whenever games run). Either ESPN data is not reaching the engine (ticket "
         f"86bbvqhyr class — check `journalctl -u {unit} --since "
         f"'{window_min} min ago' | grep 'ESPN HTTP' | tail` and "
         f"`python3 scripts/ops/espn_live_probe.py`), or no live game had a "

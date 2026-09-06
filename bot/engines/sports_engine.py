@@ -160,12 +160,15 @@ ESPN_HTTP_WARN_INTERVAL_SECONDS = 3600.0
 class ESPNLiveFeed:
     """Polls ESPN scoreboard API for live game data across all leagues."""
 
-    def __init__(self):
+    def __init__(self, monotonic_fn=time.monotonic):
         self._session = requests.Session()
         self._session.headers["User-Agent"] = ESPN_USER_AGENT
         self._lock = threading.Lock()
         self._games: Dict[str, GameState] = {}  # game_id → GameState
-        # league_slug → time.monotonic() of the last non-200 WARN.
+        # Injectable clock for the WARN throttle (tests; never patch the
+        # process-global time.monotonic under xdist).
+        self._monotonic_fn = monotonic_fn
+        # league_slug → monotonic ts of the last non-200 WARN.
         self._last_http_warn: Dict[str, float] = {}
 
     def poll_all_leagues(self) -> Dict[str, GameState]:
@@ -194,7 +197,7 @@ class ESPNLiveFeed:
             # Ticket 86bbvqhyr: the pre-fix DEBUG-only swallow in
             # poll_all_leagues hid 5 weeks of 403s. WARN once per league
             # per ESPN_HTTP_WARN_INTERVAL_SECONDS, then raise as before.
-            _now_mono = time.monotonic()
+            _now_mono = self._monotonic_fn()
             _last = self._last_http_warn.get(cfg.espn_league)
             if _last is None or _now_mono - _last >= ESPN_HTTP_WARN_INTERVAL_SECONDS:
                 self._last_http_warn[cfg.espn_league] = _now_mono
