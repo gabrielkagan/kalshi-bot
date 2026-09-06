@@ -731,7 +731,13 @@ class TestExecutorChokepoint:
         monkeypatch.setattr(C, "TWAPLOCK_LIVE_OVERRIDE", True, raising=False)
         for shadow_asset, shadow_ticker in (
                 ("ADA", "KXADA15M-26JUN111200-T1"),
-                ("BCH", "KXBCH15M-26JUN111200-T500")):
+                ("BCH", "KXBCH15M-26JUN111200-T500"),
+                # NEAR/ZEC T1 (2026-09-05, 86bbvdc8y). Unlike ADA/BCH — which had
+                # ZERO minted markets at their T1, making their pin hypothetical —
+                # these series carry 6,326 settled windows each, so this is the
+                # executor path that actually runs on first boot.
+                ("NEAR", "KXNEAR15M-26SEP051600-00"),
+                ("ZEC", "KXZEC15M-26SEP051600-00")):
             cand = dict(cands[0], ticker=shadow_ticker, asset=shadow_asset)
             assert executor.execute(cand) is None
         client.place_order.assert_not_called()

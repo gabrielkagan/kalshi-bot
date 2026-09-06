@@ -19,7 +19,7 @@ from typing import Dict, Any, Optional
 
 import requests
 
-ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"]
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"]
 
 # Sprint 10 Bit 10.4 (2026-05-12): anchor sentinel files to REPO ROOT regardless
 # of this module's filesystem location. Pre-move this file lived at repo root
@@ -337,7 +337,9 @@ class SupabaseSyncer:
                                    ("DOGE", "Dogecoin", "KXDOGE15M"),
                                    ("BNB", "BNB", "KXBNB15M"),
                                    ("ADA", "Cardano", "KXADA15M"),
-                                   ("BCH", "Bitcoin Cash", "KXBCH15M")):
+                                   ("BCH", "Bitcoin Cash", "KXBCH15M"),
+                                   ("NEAR", "NEAR Protocol", "KXNEAR15M"),
+                                   ("ZEC", "Zcash", "KXZEC15M")):
             rows.append({"symbol": sym, "name": name, "series_ticker": ticker})
         if self._post("assets", rows):
             logging.info("Supabase assets: registered %d symbols", len(rows))

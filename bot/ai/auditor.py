@@ -269,7 +269,7 @@ def check_missing_assets(db: sqlite3.Connection, verbose: bool) -> list[tuple[st
     if not table_exists(db, "evaluated_opportunities"):
         return alerts
 
-    active_assets = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"]
+    active_assets = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"]
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
     rows = db.execute(
         "SELECT asset, count(*) as cnt FROM evaluated_opportunities "

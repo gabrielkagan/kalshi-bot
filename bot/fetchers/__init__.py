@@ -12,7 +12,7 @@ pipeline:
   symbol in ``bot.config.ASSETS`` (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1
   2026-05-10; BNB post-T1 2026-05-17 ticket 86b9zmj0c;
   ``COINGLASS_SYMBOLS["BNB"]="BNB"`` entry added in T1.5 ticket
-  86b9zmj15; ADA + BCH post-T1 2026-05-30 15M shadow — their
+  86b9zmj15; ADA + BCH post-T1 2026-05-30 + NEAR + ZEC post-T1 2026-09-05 15M shadow — their
   CoinGlass/external-feed entries deferred to T1.5) via authenticated REST every
   ``COINGLASS_FETCH_INTERVAL`` seconds.
 

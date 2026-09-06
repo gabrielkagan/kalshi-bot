@@ -33,6 +33,8 @@ SERIES_TICKERS = {
     "BNB": "KXBNB15M",        # T4 LIVE 2026-05-19 (P2.4, 86b9zmj37)
     "ADA": "KXADA15M",        # T1 15M shadow 2026-05-30 (ada-bch-15m-shadow-t1)
     "BCH": "KXBCH15M",        # T1 15M shadow 2026-05-30 (ada-bch-15m-shadow-t1)
+    "NEAR": "KXNEAR15M",      # T1 15M shadow 2026-09-05 (86bbvdc8y); series live on Kalshi since 2026-06-30
+    "ZEC": "KXZEC15M",        # T1 15M shadow 2026-09-05 (86bbvdc8y); series live on Kalshi since 2026-06-30
 }
 
 MIN_ENTRY_PRICE = 75              # cents (global floor — lowered from 80 for ETH 75-79c; SOL uses this, BTC/XRP overridden below)
@@ -117,9 +119,10 @@ BNB_15M_SHADOW = False            # BNB 15M LIVE (P2.4 promotion 2026-05-19); fl
 # strategy clears the adversarial gate. Pinned by tests/unit/test_trading_mode.py.
 GLOBAL_LIVE_TRADING = False        # master kill — False = entire bot shadow (no real orders)
 ASSET_LIVE_TRADING_DEFAULT = False  # unknown/unlisted asset -> shadow (fail-safe)
-ASSET_LIVE_TRADING = {              # per-asset live enable (ALL 9 crypto 15M series, explicit)
+ASSET_LIVE_TRADING = {              # per-asset live enable (ALL 11 crypto 15M series, explicit)
     "BTC": False, "ETH": False, "SOL": False, "XRP": False,
     "HYPE": False, "DOGE": False, "BNB": False, "ADA": False, "BCH": False,
+    "NEAR": False, "ZEC": False,    # T1 15M shadow 2026-09-05 (86bbvdc8y)
 }
 
 # ── Longshot premium-harvest maker strategy (Bit L-1, 2026-06-11) ─────────────
@@ -165,7 +168,9 @@ LONGSHOT_LIVE_OVERRIDE = True      # RE-ARMED 2026-06-15 (operator go-live). Pau
 # bounded by the live-small rails (3ct/window, $150 collateral, combined
 # $20/day cap); per-asset evidence accrues from the live evaluation. ADA/BCH
 # remain excluded: their Kalshi 15M series do not exist yet (zero corpus
-# windows) — add when listed, with the directive standing.
+# windows) — add when listed, with the directive standing. NEAR/ZEC (T1 shadow
+# 2026-09-05, 86bbvdc8y) likewise excluded — listed since 2026-06-30 but outside
+# the 02b corpus and under NEAR_15M_SHADOW/ZEC_15M_SHADOW.
 LONGSHOT_LIVE_ASSETS = frozenset(
     {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 # Frozen/unmeasured-spot gate (R1-M1 fix round, Bit V.1 — mirror of
@@ -253,7 +258,8 @@ TWAPLOCK_LIVE_OVERRIDE = True      # RE-ARMED 2026-06-15 (operator go-live). Pau
 # KXADA15M/KXBCH15M markets existed in the 2026-05-30..06-10 corpus — GENHUNT
 # report "ADA/BCH listing day-zero") AND carry the T1 zero-live-orders shadow
 # designation (ADA_15M_SHADOW/BCH_15M_SHADOW=True, 2026-05-30): excluded on
-# BOTH grounds.
+# BOTH grounds. NEAR/ZEC (T1 shadow 2026-09-05, 86bbvdc8y) likewise: unlisted
+# during the 01b corpus window + NEAR_15M_SHADOW/ZEC_15M_SHADOW=True.
 TWAPLOCK_LIVE_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 
 # ── Live-small shared risk rails (longshot + twaplock COMBINED; Bit T-1) ──────
@@ -316,6 +322,19 @@ ENGINE_OWNED_CLIENT_OID_PREFIXES = tuple(ENGINE_OWNED_OID_PREFIX_TO_STRATEGY)
 # tests/integration/test_ada_bch_onboarding_t1.py.
 ADA_15M_SHADOW = True             # ADA 15M shadow observation (T1 2026-05-30); flip to False at T4 live promotion
 BCH_15M_SHADOW = True             # BCH 15M shadow observation (T1 2026-05-30); flip to False at T4 live promotion
+
+# T1 onboarding (2026-09-05, ticket 86bbvdc8y): NEAR + ZEC 15M SHADOW observation —
+# same shape as the ADA/BCH block above (shadow half of BNB T1, zero live orders,
+# kill-switch clauses at the TM/WKND/OVN/DC sites, hourly in HOURLY_EXCLUDED_ASSETS).
+# KXNEAR15M / KXZEC15M have been live on Kalshi since 2026-06-30 (6,326 settled
+# windows each by 2026-09-05; CF Benchmarks NEARUSDRTI / ZECUSDRTI, same settlement
+# family as the 7 live assets). Coinbase NEAR-USD / ZEC-USD verified status=online,
+# trading_disabled=false on Coinbase Exchange 2026-09-05. Hourly KXNEARD / KXZECD
+# exist on Kalshi but are NOT subscribed (15M-only design). Discovery + collector side:
+# kb/findings/new-15m-series-discovery-sep05.md. Regression lock:
+# tests/integration/test_near_zec_onboarding_t1.py.
+NEAR_15M_SHADOW = True            # NEAR 15M shadow observation (T1 2026-09-05); flip to False at T4 live promotion
+ZEC_15M_SHADOW = True             # ZEC 15M shadow observation (T1 2026-09-05); flip to False at T4 live promotion
 
 # T4 live-promotion per-asset floors (2026-05-14). Data: B.1b post-blend
 # edge-gated subset since 2026-05-10. HYPE conservative pick (borderline EV
@@ -528,6 +547,10 @@ HOURLY_SERIES_TICKERS = {
     # in HOURLY_EXCLUDED_ASSETS so it stays shadow-only even then.
     "ADA": "KXADAD",          # T1 (2026-05-30): inert until Kalshi launches; shadow via HOURLY_EXCLUDED_ASSETS
     "BCH": "KXBCHD",          # T1 (2026-05-30): KXBCHD live; not subscribed (15M-only), shadow via HOURLY_EXCLUDED_ASSETS
+    # NEAR/ZEC hourly (KXNEARD/KXZECD) ARE live on Kalshi (unlike ADA at its T1)
+    # but are NOT subscribed (15M-only design); shadow via HOURLY_EXCLUDED_ASSETS.
+    "NEAR": "KXNEARD",        # T1 (2026-09-05, 86bbvdc8y): live, not subscribed
+    "ZEC": "KXZECD",          # T1 (2026-09-05, 86bbvdc8y): live, not subscribed
 }
 
 HOURLY_MAX_SECONDS_BEFORE_CLOSE = 1800  # 30 min before close
@@ -613,7 +636,7 @@ HOURLY_MIN_STC_ENTRY = 600             # 10 min minimum (5-10m zone is 56.5% WR 
 
 HOURLY_MAX_STC_ENTRY = 1800            # 30 min maximum (25-30m is the sweet spot at 69.4% WR)
 
-HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"}  # YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19); ADA/BCH hourly excluded per 15M-shadow-only design (T1 2026-05-30 — safety belt: ADA has no hourly series, BCH's KXBCHD is not subscribed)
+HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"}  # NEAR/ZEC hourly excluded per 15M-shadow-only T1 2026-09-05 (86bbvdc8y); YES-side: BTC+ETH only — XRP/SOL data-driven; HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19); ADA/BCH hourly excluded per 15M-shadow-only design (T1 2026-05-30 — safety belt: ADA has no hourly series, BCH's KXBCHD is not subscribed)
 
 # NO-side asymmetry (Apr 15 data, model-flagged hourly candidates in 40-54c range):
 #   BTC NO: 51.5% WR @ 47.1c avg (+3.9pp vs BE, model adds +7.3pp, n=1041)
@@ -624,7 +647,7 @@ HOURLY_EXCLUDED_ASSETS = {"SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"}  # 
 # (XRP 42.2% YES WR) is precisely the asymmetry that creates NO-side edge. Structural
 # thesis: crypto long bias overprices YES → NO underpriced. -$20 kill switch bounds
 # downside. Revisit per-asset if fills produce divergent live PnL.
-HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB", "ADA", "BCH"}  # NO-side safety belt: HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted); ADA/BCH per 15M-shadow-only T1 2026-05-30. Existing BTC/ETH/SOL/XRP unblocked per data above.
+HOURLY_NO_EXCLUDED_ASSETS = {"HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"}  # NEAR/ZEC per 15M-shadow-only T1 2026-09-05 (86bbvdc8y); NO-side safety belt: HYPE/DOGE/BNB hourly excluded per 15M-only promotion design (HYPE/DOGE T4 P2.3 2026-05-14, BNB T4 P2.4 2026-05-19; hourly path not yet promoted); ADA/BCH per 15M-shadow-only T1 2026-05-30. Existing BTC/ETH/SOL/XRP unblocked per data above.
 
 HOURLY_MAX_POSITIONS_PER_WINDOW = 2   # Max concurrent hourly positions per time window (ENB ~1.3)
 
@@ -991,6 +1014,11 @@ COINBASE_PRODUCTS = {
     "BNB": "BNB-USD",         # T1 (2026-05-17, 86b9zmj0c): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
     "ADA": "ADA-USD",         # T1 (2026-05-30): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
     "BCH": "BCH-USD",         # T1 (2026-05-30): shadow observation (verified status=online, trading_disabled=false on Coinbase Exchange)
+    # NEAR/ZEC T1 (2026-09-05, 86bbvdc8y): shadow observation; both verified
+    # status=online, trading_disabled=false on Coinbase Exchange (ZEC-USDC is
+    # delisted — the USD pair is the live one).
+    "NEAR": "NEAR-USD",       # T1 (2026-09-05, 86bbvdc8y): shadow observation
+    "ZEC": "ZEC-USD",         # T1 (2026-09-05, 86bbvdc8y): shadow observation
 }
 
 PRICE_BUFFER_SIZE = 1800          # 30 minutes of 1-second snapshots (extended Apr 19 for Phase 2 features)

@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 CLEAN_DATA_START = "2026-05-30T21:06:54Z"
 S3_BRONZE = "kalshi-restore:kalshi-bot-archive/bronze/kalshi_ws"
 VPS_HOST = os.environ.get("VPS_HOST", "botuser@45.55.181.30")
-CRYPTO_RE = r"KX(BTC|ETH|SOL|XRP|HYPE|DOGE|BNB|ADA|BCH)15M-"
+CRYPTO_RE = r"KX(BTC|ETH|SOL|XRP|HYPE|DOGE|BNB|ADA|BCH|NEAR|ZEC)15M-"  # NEAR/ZEC added 2026-09-05 (86bbvdc8y)
 
 
 # ----- alert decision (pure; TDD-pinned) -----------------------------------

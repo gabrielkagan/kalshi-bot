@@ -383,6 +383,8 @@ COINBASE_PRODUCTS = {
     "BNB": "BNB-USD",       # T1 onboarding 2026-05-17 (86b9zmj0c) — mirror of bot.constants.COINBASE_PRODUCTS
     "ADA": "ADA-USD",       # T1 onboarding 2026-05-30 — mirror of bot.constants.COINBASE_PRODUCTS
     "BCH": "BCH-USD",       # T1 onboarding 2026-05-30 — mirror of bot.constants.COINBASE_PRODUCTS
+    "NEAR": "NEAR-USD",     # T1 onboarding 2026-09-05 (86bbvdc8y) — mirror of bot.constants.COINBASE_PRODUCTS
+    "ZEC": "ZEC-USD",       # T1 onboarding 2026-09-05 (86bbvdc8y) — mirror of bot.constants.COINBASE_PRODUCTS
 }
 
 COINBASE_CANDLES_URL = "https://api.exchange.coinbase.com/products/{product_id}/candles"
@@ -488,8 +490,8 @@ def lookup_xasset_spots_for_row(
     """Resolve cross-asset spots for a given evaluation_time.
 
     Returns dict with one `<asset_lower>_spot_at_decision` key per
-    `COINBASE_PRODUCTS` entry — 9 keys post ADA/BCH T1
-    (btc/eth/sol/xrp/hype/doge/bnb/ada/bch).
+    `COINBASE_PRODUCTS` entry — 11 keys post NEAR/ZEC T1 2026-09-05
+    (btc/eth/sol/xrp/hype/doge/bnb/ada/bch/near/zec).
     If exact minute is missing for an asset, falls back to the nearest
     minute within ±`fallback_minutes`. Beyond that, returns None for that
     asset (staler is dishonest for a minute-grade feature)."""
@@ -581,7 +583,9 @@ def backfill_xasset_spots(
         "       OR doge_spot_at_decision IS NULL "
         "       OR bnb_spot_at_decision IS NULL "
         "       OR ada_spot_at_decision IS NULL "
-        "       OR bch_spot_at_decision IS NULL) "
+        "       OR bch_spot_at_decision IS NULL "
+        "       OR near_spot_at_decision IS NULL "
+        "       OR zec_spot_at_decision IS NULL) "
         "AND evaluation_time IS NOT NULL"
     ).fetchone()
     if not rng or rng[0] is None:
@@ -652,7 +656,9 @@ def backfill_xasset_spots(
             "                  OR doge_spot_at_decision IS NULL "
             "                  OR bnb_spot_at_decision IS NULL "
             "                  OR ada_spot_at_decision IS NULL "
-            "                  OR bch_spot_at_decision IS NULL) "
+            "                  OR bch_spot_at_decision IS NULL "
+            "                  OR near_spot_at_decision IS NULL "
+            "                  OR zec_spot_at_decision IS NULL) "
             "AND evaluation_time IS NOT NULL "
             "ORDER BY id LIMIT ?",
             (last_id, batch_size),
@@ -678,15 +684,19 @@ def backfill_xasset_spots(
                 # COINBASE_PRODUCTS includes ADA/BCH, so `spots` already
                 # carries the ada/bch keys. Producer/consumer kept in
                 # lockstep (R2 adv-review caught the prior half-measure).
+                # NEAR/ZEC T1 (2026-09-05, 86bbvdc8y): UPDATE extended to 11
+                # columns — same mirror rule.
                 "hype_spot_at_decision = ?, doge_spot_at_decision = ?, "
                 "bnb_spot_at_decision = ?, ada_spot_at_decision = ?, "
-                "bch_spot_at_decision = ? "
+                "bch_spot_at_decision = ?, near_spot_at_decision = ?, "
+                "zec_spot_at_decision = ? "
                 "WHERE id = ?",
                 (spots["btc_spot_at_decision"], spots["eth_spot_at_decision"],
                  spots["sol_spot_at_decision"], spots["xrp_spot_at_decision"],
                  spots["hype_spot_at_decision"], spots["doge_spot_at_decision"],
                  spots["bnb_spot_at_decision"], spots["ada_spot_at_decision"],
-                 spots["bch_spot_at_decision"],
+                 spots["bch_spot_at_decision"], spots["near_spot_at_decision"],
+                 spots["zec_spot_at_decision"],
                  r["id"]),
             )
             total += 1

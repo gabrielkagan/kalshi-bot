@@ -1004,14 +1004,16 @@ def test_scanner_filter_stage_count_preserved():
     no_side_doge_shadow analogues to the existing no_side_xrp_shadow).
     ADA/BCH 15M shadow (T1 2026-05-30) added +4 mentions (2 NO-side elifs:
     no_side_ada_shadow + no_side_bch_shadow; 2 YES-gate doc-comments):
-    origin/main 43 → current 47."""
+    origin/main 43 → 47. NEAR/ZEC 15M shadow (T1 2026-09-05, 86bbvdc8y) added
+    the same +4 (no_side_near_shadow + no_side_zec_shadow elifs; 2 YES-gate
+    doc-comments): src.count 49 → 53 (the pre-Bit source already sat at 49)."""
     src = _read_scanner_source()
     count = src.count("filter_stage")
-    # Baseline ~47 post ADA/BCH T1; allow ±2 drift for test-formatting changes.
+    # Baseline 53 post NEAR/ZEC T1 (measured); band is 53±2.
     # The exact contract is that cell-block routing is preserved, locked by the
     # parametrize above.
-    assert 45 <= count <= 49, (
-        f"filter_stage count drift: expected 45-49, got {count}"
+    assert 51 <= count <= 55, (
+        f"filter_stage count drift: expected 51-55, got {count}"
     )
 
 

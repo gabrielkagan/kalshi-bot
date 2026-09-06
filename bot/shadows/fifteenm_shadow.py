@@ -46,11 +46,11 @@ FIFTEENM_SHADOW_ENABLED = True
 # ── Approach 1 Defaults ─────────────────────────────────────────────────────
 # Per-asset temperature (T > 1 = soften overconfident probs)
 # HYPE/DOGE/BNB: neutral 1.00 default — T3 will retune from observed data.
-DEFAULT_TEMPERATURES = {"BTC": 1.15, "ETH": 1.25, "SOL": 1.05, "XRP": 1.30, "HYPE": 1.00, "DOGE": 1.00, "BNB": 1.00, "ADA": 1.00, "BCH": 1.00}
+DEFAULT_TEMPERATURES = {"BTC": 1.15, "ETH": 1.25, "SOL": 1.05, "XRP": 1.30, "HYPE": 1.00, "DOGE": 1.00, "BNB": 1.00, "ADA": 1.00, "BCH": 1.00, "NEAR": 1.00, "ZEC": 1.00}
 # Per-asset market blend weight (higher = more market, less model)
-DEFAULT_BLEND_W = {"BTC": 0.50, "ETH": 0.50, "SOL": 0.45, "XRP": 0.60, "HYPE": 0.50, "DOGE": 0.50, "BNB": 0.50, "ADA": 0.50, "BCH": 0.50}
+DEFAULT_BLEND_W = {"BTC": 0.50, "ETH": 0.50, "SOL": 0.45, "XRP": 0.60, "HYPE": 0.50, "DOGE": 0.50, "BNB": 0.50, "ADA": 0.50, "BCH": 0.50, "NEAR": 0.50, "ZEC": 0.50}
 # Per-asset overconfidence bias (pp to subtract before Kelly)
-DEFAULT_DEBIAS = {"BTC": 0.02, "ETH": 0.04, "SOL": 0.01, "XRP": 0.05, "HYPE": 0.00, "DOGE": 0.00, "BNB": 0.00, "ADA": 0.00, "BCH": 0.00}
+DEFAULT_DEBIAS = {"BTC": 0.02, "ETH": 0.04, "SOL": 0.01, "XRP": 0.05, "HYPE": 0.00, "DOGE": 0.00, "BNB": 0.00, "ADA": 0.00, "BCH": 0.00, "NEAR": 0.00, "ZEC": 0.00}
 # Edge band blacklist: (min_edge, max_edge) ranges to block per asset
 DEFAULT_EDGE_BLACKLIST: Dict[str, List[Tuple[float, float]]] = {
     "XRP": [(0.028, 0.038)],  # XRP 3.0-3.5% edge zone is anti-predictive
@@ -164,7 +164,7 @@ class RecalibratedEGARCHApproach:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
-            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
                 # R-bleed-1 R9-H2: bleed-cell blocks (HPSB + TM98 + SOL_TAKER)
                 # write shadow rows under their cell tag instead of 'candidate'.
                 # Include those tags here so per-asset temperature recalibration
@@ -617,7 +617,7 @@ class EGARCHGatingApproach:
 
     @staticmethod
     def _asset_to_idx(asset: str) -> int:
-        return {"BTC": 0, "ETH": 1, "SOL": 2, "XRP": 3, "HYPE": 4, "DOGE": 5, "BNB": 6, "ADA": 7, "BCH": 8}.get(asset, -1)
+        return {"BTC": 0, "ETH": 1, "SOL": 2, "XRP": 3, "HYPE": 4, "DOGE": 5, "BNB": 6, "ADA": 7, "BCH": 8, "NEAR": 9, "ZEC": 10}.get(asset, -1)
 
     @staticmethod
     def _price_to_tier(price: int) -> int:
@@ -761,7 +761,7 @@ class EGARCHGatingApproach:
             y = np.array(y)
 
             # Log NO-side data volume
-            for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+            for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
                 a_no = sum(1 for r in rows if r["asset"] == a and (r["side"] or "yes") != "yes")
                 self._no_side_training_counts[a] = a_no
 
@@ -1482,7 +1482,7 @@ class FifteenMShadowEngine:
         }
         try:
             # Per-asset settled stats for Approach 1 & 2
-            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
                 for approach_key, contracts_col, pnl_col, gates_col in [
                     ("approach1", "a1_contracts", "a1_pnl_cents", "a1_gates_passed"),
                     ("approach2", "a2_contracts", "a2_pnl_cents", "a2_gates_passed"),
@@ -1550,7 +1550,7 @@ class FifteenMShadowEngine:
                     }
 
             # Approach 4 (late-window) per-asset stats
-            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
                 a4_rows = self._db_conn.execute(
                     "SELECT market_result, a4_pnl_cents, a4_gates_passed, a4_edge, a4_entry "
                     "FROM fifteenm_shadow_signals "
@@ -1581,7 +1581,7 @@ class FifteenMShadowEngine:
 
             # NO-side shadow stats
             no_side = {}
-            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+            for asset in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
                 for approach_key, contracts_col, pnl_col, gates_col in [
                     ("no_approach1", "no_a1_contracts", "no_a1_pnl_cents", "no_a1_gates_passed"),
                     ("no_approach2", "no_a2_contracts", "no_a2_pnl_cents", "no_a2_gates_passed"),

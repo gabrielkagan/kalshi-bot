@@ -40,9 +40,14 @@ from scripts.research.settlement_convergence_p1a import (
     realized_pnl_cents,
 )
 
-# All 9 Kalshi 15M crypto series (vs the bot's traded 7). ADA + BCH are UNTRADED
-# and thinner -> less MM/quant competition -> the edge-hunt targets. Coinbase has
-# ADA-USD + BCH-USD spot, so the full reconstruction/harness stack handles all 9.
+# The 9 Kalshi 15M crypto series that existed when this harness was frozen
+# (2026-05-31), vs the bot's traded 7. ADA + BCH are UNTRADED and thinner ->
+# less MM/quant competition -> the edge-hunt targets. Coinbase has ADA-USD +
+# BCH-USD spot, so the full reconstruction/harness stack handles all 9.
+# DELIBERATELY NOT EXTENDED: NEAR/ZEC (Kalshi-listed 2026-06-30, bot T1 shadow
+# 2026-09-05, ticket 86bbvdc8y) fit the same untraded-and-thin profile but are
+# outside this harness's frozen corpus — adding them changes the corpus, not
+# just the tuple. See kb/findings/new-15m-series-discovery-sep05.md.
 ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH")
 DECISION_OFFSETS_S = (15, 30)  # T-Xs before close
 
