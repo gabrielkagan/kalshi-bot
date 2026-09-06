@@ -7186,8 +7186,14 @@ class OpportunityScanner:
                         except sqlite3.OperationalError:
                             logging.debug("usaft_short_stc insert failed", exc_info=True)
 
-                # Respect per-tick orderbook fetch cap
-                if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
+                # Respect per-tick orderbook fetch cap. On slow-due ticks
+                # 15M cache is warm (TTL 5s) so the budget would otherwise
+                # be spent on the first 6 stale hourly/SPX/weather books
+                # and the rest of that 30s pass would starve. Do not
+                # break the window loop on the cap when slow products
+                # are in this tick.
+                if (ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK
+                        and not _slow_due):
                     break
             # Per-window timing — captures iterations that reach the
             # natural end (slow iterations doing orderbook fetch +
@@ -7198,7 +7204,8 @@ class OpportunityScanner:
                 logging.warning(
                     "SCAN_WINDOW_SLOW: asset=%s ticker=%s took %.2fs",
                     asset, window.get("event_ticker", "?"), _window_dt)
-            if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
+            if (ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK
+                    and not _slow_due):
                 break
 
         _scan_loop_dt = time.perf_counter() - _scan_loop_start

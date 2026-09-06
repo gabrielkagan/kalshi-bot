@@ -102,3 +102,6 @@ def test_scan_wires_include_window_this_tick():
     src = Path("bot/scanner/__init__.py").read_text(encoding="utf-8")
     assert "include_window_this_tick(_pt, _slow_due)" in src
     assert "from bot.helpers.scan_cadence import" in src
+    # Slow-due ticks must not break the window loop on the 15M fetch cap
+    # (hourly/SPX/weather would starve — cache TTL 5s << 30s cadence).
+    assert "and not _slow_due" in src
