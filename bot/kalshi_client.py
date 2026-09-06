@@ -69,9 +69,6 @@ class KalshiClient:
         self._read_timestamps: List[float] = []
         self._write_timestamps: List[float] = []
         self._rate_lock = threading.Lock()
-        self._429_lock = threading.Lock()
-        self._429_retries = 0
-        self._429_t0: Optional[float] = None
 
     # ── Auth (D1.1.5: delegates to kalshi_wire.auth) ──────────────────────
 
@@ -119,10 +116,17 @@ class KalshiClient:
 
     def _request(self, method: str, path: str,
                  params: Optional[Dict] = None,
-                 json_body: Optional[Dict] = None) -> Optional[Dict]:
+                 json_body: Optional[Dict] = None,
+                 *,
+                 _429_retries: int = 0,
+                 _429_t0: Optional[float] = None) -> Optional[Dict]:
         """
         Execute an authenticated request. Path must start with /trade-api/v2.
         Returns parsed JSON or None on failure. Never raises.
+
+        429 retry budget is per-call (kwargs), not instance state. Settlement
+        and the scan thread share this client; a shared counter + finally:0
+        let concurrent GETs reopen each other's budget.
         """
         is_write = method in ("POST", "PUT", "DELETE")
         self._rate_limit_wait(is_write)
@@ -170,24 +174,10 @@ class KalshiClient:
                     retry_after = 1.0
                 sleep_s = min(retry_after, REST_429_MAX_SLEEP_S)
                 now_m = time.monotonic()
-                if not hasattr(self, "_429_lock"):
-                    self._429_lock = threading.Lock()
-                    self._429_retries = 0
-                    self._429_t0 = None
-                with self._429_lock:
-                    if self._429_t0 is None:
-                        self._429_t0 = now_m
-                    self._429_retries = getattr(self, "_429_retries", 0) + 1
-                    retries = self._429_retries
-                    elapsed = now_m - self._429_t0
-                    give_up = (
-                        retries > REST_429_MAX_RETRIES
-                        or elapsed >= REST_429_WALL_CLOCK_CAP_S
-                    )
-                    if give_up:
-                        self._429_retries = 0
-                        self._429_t0 = None
-                if give_up:
+                retries = _429_retries + 1
+                t0 = _429_t0 if _429_t0 is not None else now_m
+                elapsed = now_m - t0
+                if retries > REST_429_MAX_RETRIES or elapsed >= REST_429_WALL_CLOCK_CAP_S:
                     logging.error(
                         "Rate limited %s times (elapsed=%.1fs), giving up: %s %s",
                         retries, elapsed, method, path)
@@ -196,12 +186,10 @@ class KalshiClient:
                     "Rate limited, sleeping %.1fs (attempt %d/%d, Retry-After=%s)",
                     sleep_s, retries, REST_429_MAX_RETRIES, retry_after)
                 time.sleep(sleep_s)
-                try:
-                    return self._request(method, path, params, json_body)
-                finally:
-                    with self._429_lock:
-                        self._429_retries = 0
-                        self._429_t0 = None
+                return self._request(
+                    method, path, params, json_body,
+                    _429_retries=retries, _429_t0=t0,
+                )
             # Idempotent-DELETE 404: Kalshi has already expired/canceled
             # the resource. Return a sentinel so callers can distinguish
             # "gone" (success-equivalent) from None (transient → retry).
