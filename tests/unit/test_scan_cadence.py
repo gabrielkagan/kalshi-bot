@@ -139,6 +139,7 @@ def test_scan_wires_include_window_this_tick():
     # 15M cap must still be consulted on slow-due ticks (not `if _slow_due`).
     assert "elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK" in src
     assert "rotate_slow_product_windows(" in src
-    # Pre-loop OFT must not take KalshiFeed._lock per hourly/weather ticker.
-    assert "get_all_orderbooks_snapshot()" in src
+    # Pre-loop OFT copies only 15M tickers under one lock — not the
+    # full weather/SPX cache (Grok R1 MAJOR on 0f17d312).
+    assert "get_orderbooks_snapshot_for(" in src
     assert "get_subscribed_tickers()" in src

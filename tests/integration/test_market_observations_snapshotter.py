@@ -1049,3 +1049,28 @@ def test_get_all_orderbooks_snapshot_method_exists_in_bot_py():
         "bot/feeds/kalshi.py KalshiFeed is missing get_all_orderbooks_snapshot "
         "— H-3a snapshotter requires this deep-copy method"
     )
+
+
+def test_get_orderbooks_snapshot_for_copies_only_requested_tickers():
+    """1 Hz scan OFT must not deepcopy weather/SPX under KalshiFeed._lock.
+
+    Grok R1 MAJOR on 0f17d312: get_all_orderbooks_snapshot copies the
+    full cache (discovery still subscribes weather/SPX) then the scanner
+    discards those keys. Filtered snapshot copies only the requested
+    tickers, still under one lock.
+    """
+    from unittest.mock import MagicMock
+
+    from bot.feeds.kalshi import KalshiFeed
+
+    feed = KalshiFeed(api_key="test", private_key=MagicMock())
+    feed._orderbooks = {
+        "KXBTC15M-A": {"yes": [[90, 1]], "no": [[10, 1]], "ts": 1.0},
+        "KXHIGHNY-B": {"yes": [[50, 1]], "no": [[50, 1]], "ts": 1.0},
+        "KXBTCD-C": {"yes": [[40, 1]], "no": [[60, 1]], "ts": 1.0},
+    }
+    out = feed.get_orderbooks_snapshot_for(["KXBTC15M-A", "MISSING"])
+    assert set(out) == {"KXBTC15M-A"}
+    assert out["KXBTC15M-A"]["yes"] == [[90, 1]]
+    out["KXBTC15M-A"]["yes"].append([91, 1])
+    assert feed._orderbooks["KXBTC15M-A"]["yes"] == [[90, 1]]

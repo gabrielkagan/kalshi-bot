@@ -723,11 +723,12 @@ class OrderExecutor:
             time_in_force="immediate_or_cancel", **_price_kwarg,
         )
         if resp is None:
-            self._state.mark_order_status(client_oid, "api_error")
             try:
                 engine.record_api_error()
             except Exception:
-                logging.debug("twaplock record_api_error failed", exc_info=True)
+                logging.warning(
+                    "twaplock record_api_error failed", exc_info=True)
+            self._state.mark_order_status(client_oid, "api_error")
             logging.warning(
                 "TWAPLOCK_IOC_REJECTED: %s %s %dct @ %dc (api error)",
                 ticker, side, count, price)
@@ -743,11 +744,12 @@ class OrderExecutor:
                 "TWAPLOCK_PLACE_MALFORMED: %s resp carried no order_id "
                 "(order=%r) — ledger row marked api_error",
                 ticker, resp.get("order"))
-            self._state.mark_order_status(client_oid, "api_error")
             try:
                 engine.record_api_error()
             except Exception:
-                logging.debug("twaplock record_api_error failed", exc_info=True)
+                logging.warning(
+                    "twaplock record_api_error failed", exc_info=True)
+            self._state.mark_order_status(client_oid, "api_error")
             return None
         self._state.confirm_order_submitted(client_oid, order_id)
         try:

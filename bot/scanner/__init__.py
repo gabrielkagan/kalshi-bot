@@ -1543,17 +1543,20 @@ class OpportunityScanner:
                     self._kalshi_feed.subscribe_ticker(t)
                 except Exception:
                     pass
-            # Feed OFT with any available WS orderbook data (zero API cost).
-            # One deepcopy under KalshiFeed._lock — not N get_orderbook
-            # lock acquisitions (hourly/weather are not subscribed).
+            # Feed OFT from WS (zero API cost). One lock, deepcopy only
+            # 15M tickers — weather/SPX stay subscribed for the 10s
+            # dashboard snapshotter and must not be copied every 1 Hz tick.
             if self._kalshi_oft is not None:
+                _oft_tickers = [
+                    t for t in active_tickers
+                    if t and t not in _hourly_tickers
+                ]
                 try:
-                    _ws_books = self._kalshi_feed.get_all_orderbooks_snapshot()
+                    _ws_books = self._kalshi_feed.get_orderbooks_snapshot_for(
+                        _oft_tickers)
                 except Exception:
                     _ws_books = {}
                 for t, ws_ob in _ws_books.items():
-                    if t not in active_tickers or t in _hourly_tickers:
-                        continue
                     try:
                         if ws_ob and now - ws_ob.get("ts", 0) < 30:
                             best_ask = self._best_yes_ask_cents(ws_ob)

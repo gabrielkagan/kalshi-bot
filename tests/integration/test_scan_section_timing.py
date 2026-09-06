@@ -81,6 +81,25 @@ class TestScanSectionTiming(unittest.TestCase):
                 "SCAN_PRELOOP_SLOW must include section timing %s "
                 "(2026-09-06 live: preloop 2.1–6.6s, loop rarely fires)"
                 % key)
+        # Format-string keys stay green if _pre_mark is deleted and
+        # .get(..., 0.0) logs zeros. Pin the mark calls in order.
+        marks = [
+            '_pre_mark("watchdogs")',
+            '_pre_mark("kill_sql")',
+            '_pre_mark("cooldown")',
+            '_pre_mark("cleanup")',
+            '_pre_mark("subscribe")',
+            '_pre_mark("filter")',
+            '_pre_mark("occupied")',
+        ]
+        last = -1
+        for mark in marks:
+            idx = src.find(mark)
+            self.assertGreaterEqual(
+                idx, 0, "scan() must call %s (not just log the key)" % mark)
+            self.assertGreater(
+                idx, last, "%s must run after the previous section mark" % mark)
+            last = idx
 
 
 if __name__ == "__main__":

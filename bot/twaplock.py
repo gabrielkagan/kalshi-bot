@@ -219,6 +219,7 @@ class TwaplockEngine:
         # Cross-ticker api_error circuit (A2 2026-09-06). Separate from
         # _disabled_reason so _refresh_disabled cannot clobber it.
         self._consecutive_api_errors: int = 0
+        self._consecutive_utc_date: Optional[str] = None
         self._circuit_tripped_utc_date: Optional[str] = None
         # One-shot boot sweep latch (first tick): stranded tw- ledger rows.
         self._boot_swept = False
@@ -540,6 +541,10 @@ class TwaplockEngine:
             now, timezone.utc).date().isoformat()
         thresh = int(C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD)
         with self._lock:
+            last = self._consecutive_utc_date
+            if last is not None and last != today:
+                self._consecutive_api_errors = 0
+            self._consecutive_utc_date = today
             if self._circuit_tripped_utc_date == today:
                 return
             self._consecutive_api_errors += 1

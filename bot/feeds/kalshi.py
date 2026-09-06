@@ -910,13 +910,33 @@ class KalshiFeed:
         Holding `_lock` across deepcopy is the right trade-off: the deep
         copy of ~30 active 15M tickers × ~5 levels per side is ~300 ints,
         which is sub-millisecond. The WS thread waits at most that long
-        on the next delta. Callers: DashboardSnapshotBuilder (10s poll)
-        and OpportunityScanner.scan pre-loop OFT feed (1 Hz — must not
-        take `_lock` per ticker; that convoy was the 2–6s SCAN_PRELOOP).
+        on the next delta — much shorter than the 10s polling cadence of
+        the dashboard snapshotter. Scan pre-loop OFT uses
+        ``get_orderbooks_snapshot_for`` so weather/SPX discovery books
+        are not copied every 1 Hz tick.
         """
         import copy as _copy
         with self._lock:
             return _copy.deepcopy(self._orderbooks)
+
+    def get_orderbooks_snapshot_for(self, tickers) -> Dict[str, Dict]:
+        """Deep-copy a subset of cached orderbooks under one lock.
+
+        1 Hz scan OFT must not copy weather/SPX books that
+        ``_subscribe_discovery_orderbooks`` keeps subscribed for the
+        dashboard. Missing tickers are omitted (same as get_orderbook
+        returning None).
+        """
+        import copy as _copy
+        want = {t for t in tickers if t}
+        if not want:
+            return {}
+        with self._lock:
+            return {
+                t: _copy.deepcopy(ob)
+                for t, ob in self._orderbooks.items()
+                if t in want
+            }
 
     # ── Auth (shim) ───────────────────────────────────────────────────────
 

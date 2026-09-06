@@ -921,6 +921,18 @@ class TestExecutorChokepoint:
         assert engine._consecutive_api_errors == 0
         assert engine._circuit_tripped_utc_date is None
 
+    def test_consecutive_count_resets_across_utc_midnight_without_trip(
+            self, engine, enabled):
+        """Two errors at 23:59 plus one at 00:01 must not trip the new day."""
+        t_d1 = 1_788_652_800.0 - 60.0  # 2026-09-05 23:59Z
+        t_d2 = 1_788_652_800.0 + 60.0  # 2026-09-06 00:01Z
+        engine.record_api_error(now=t_d1)
+        engine.record_api_error(now=t_d1)
+        assert engine._consecutive_api_errors == 2
+        engine.record_api_error(now=t_d2)
+        assert engine._consecutive_api_errors == 1
+        assert engine._circuit_blocked(now=t_d2) is False
+
     def test_kill_switch_midflight_places_nothing(self, wired, enabled,
                                                   monkeypatch):
         executor, engine, client = wired
