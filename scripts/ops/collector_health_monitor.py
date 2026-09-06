@@ -605,10 +605,6 @@ def check_espn_http_errors(
     stats = data.get("espn_http_status_1h")
     if not isinstance(stats, dict) or not stats:
         return None
-    try:
-        sidecar_age = time.time() - sidecar_path.stat().st_mtime
-    except OSError:
-        return None
     failing = []
     n_polled = 0
     n_eligible = 0
@@ -636,10 +632,18 @@ def check_espn_http_errors(
         # NO league has polled inside the window — the poll loop is
         # wedged. Silent under the rate check, which needs polls > 0.
         uptime = _collector_uptime_seconds(ESPN_COLLECTOR_UNIT)
+        # R8-MINOR-1: stat INSIDE this branch and tolerate failure. Read
+        # at the top it was a new "no alert for a non-healthy reason"
+        # path — a stat() race could suppress a genuine rate alert, which
+        # is the very class this ticket closes.
+        try:
+            age_s = f"{int(time.time() - sidecar_path.stat().st_mtime)}s"
+        except OSError:
+            age_s = "unknown"
         if uptime is not None and uptime >= DEFAULT_BOOT_GRACE_SECONDS:
             return (
                 f"*COLLECTOR ESPN POLL LOOP WEDGED* — {sidecar_path} was "
-                f"written {int(sidecar_age)}s ago but no league reports a "
+                f"written {age_s} ago but no league reports a "
                 f"single poll in the rolling window "
                 f"({len(stats) - n_unparseable} readable entries, "
                 f"{n_unparseable} unparseable), and {ESPN_COLLECTOR_UNIT} "
@@ -892,8 +896,12 @@ def check_bot_espn_poll_errors(
         f"scripts/ops/espn_live_probe.py`; the UA is "
         f"`bot.engines.sports_engine.ESPN_USER_AGENT` and the accepted "
         f"family is pinned in tests/contracts/test_espn_user_agent.py. "
-        f"Expect a matching *COLLECTOR ESPN HTTP ERRORS* alert on the "
-        f"{ESPN_COLLECTOR_UNIT} tier in the same tick — same root cause."
+        f"If the cause is upstream (UA rejected / ESPN outage) expect a "
+        f"matching *COLLECTOR ESPN HTTP ERRORS* alert on the "
+        f"{ESPN_COLLECTOR_UNIT} tier in the same tick. Its ABSENCE points "
+        f"at something bot-only: a UA or feed change deployed to the bot "
+        f"but not the collector (the deploy.yml ESPN block is path-aware), "
+        f"or an operator-stopped collector."
     )
 
 

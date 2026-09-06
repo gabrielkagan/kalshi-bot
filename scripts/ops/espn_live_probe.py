@@ -9,8 +9,10 @@ the SAME User-Agent the bot + collector send
   1  any other HTTP status (ESPN is rejecting us — 403 = UA filter class)
   2  transport error (DNS / TLS / timeout)
 
-Run after any collector or bot deploy, and whenever the
-``d1_11_http_errors`` / ``b3_fu3_sports_eval_silence`` alerts fire:
+Run after any collector or bot deploy, and whenever any of the three
+86bbvqhyr alerts fire — ``d1_11_http_errors`` (collector tier),
+``b3_fu3_espn_poll_errors`` (bot tier, the 403 detector), or
+``b3_fu3_sports_eval_silence`` (bot tier):
 
     python3 scripts/ops/espn_live_probe.py
     python3 scripts/ops/espn_live_probe.py --sport basketball --league nba
