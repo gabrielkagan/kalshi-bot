@@ -965,7 +965,7 @@ Structurally:
 
 The off-switch is `sudo systemctl stop kalshi-collector` — bot trading unaffected. Inverse off-switch: bot crash, collector keeps capturing.
 
-The single shared failure surface is **disk full** (both processes write to the same root filesystem). Mitigations: rotate-then-delete-local discipline; D1.6 health-monitor alerts when disk is ≥80% used (free space < 20%); future option to put `bronze_buffer/` on a dedicated mount.
+The single shared failure surface is **disk full** (both processes write to the same root filesystem). Mitigations: rotate-then-delete-local discipline; D1.6 health-monitor alerts when disk is ≥80% used (free space < 20%) plus an independent `monitor_watchdog.py` root-filesystem check at 85% (2026-09-05, after the 80% canary was found dead for 3.5 months); future option to put `bronze_buffer/` on a dedicated mount.
 
 ## 6.8 `kalshi_wire/` — the shared transport layer
 

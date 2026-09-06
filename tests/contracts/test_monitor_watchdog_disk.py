@@ -14,9 +14,9 @@ Pins:
   1. `WatchedDisk(name, path, max_used_pct)` frozen dataclass.
   2. `WATCHED_DISKS` covers `/` at 85% (the VPS is one filesystem; 85%
      leaves ~7 GB of the 48 GB root ≈ 25 days of the raw-leak growth
-     rate (30.2 GB / 109 d ≈ 0.28 GB/d) — and the collector's ~16 GB
-     local bronze buffer makes ~71% the healthy steady state, so 85% is
-     the first level that is both above steady state and actionable).
+     rate (30.2 GB / 109 d ≈ 0.28 GB/d); healthy steady state is ~30%
+     used (~14 GB, measured 29% on 2026-09-05 post-recovery), so 85% is
+     far above steady state and still actionable).
   3. `check_disk_usage(disk, disk_usage_fn=...)` returns None below the
      threshold and an alert string (mentioning DISK, the path, and the
      percentage) at/above it; a stat failure alerts rather than hides.

@@ -236,7 +236,9 @@ def _collector_uptime_seconds(unit: str) -> Optional[float]:
     """Return seconds since the unit's ActiveEnterTimestamp, or None.
 
     Used by ``check_dropped_frames`` to skip the STALE-sidecar alert
-    during the collector's boot window (see the grace rationale there;
+    during the collector's boot window, and by ``check_boot_state`` as the
+    process-age gate (a ``booting`` sidecar older than the current process
+    is ignored) (see the grace rationale there;
     post-86bbvdcat the sidecar is written from the first drain tick, so
     the grace covers the restart gap, not a page-through). Returns None on any
     systemctl-show failure — caller treats as "no grace, run normal

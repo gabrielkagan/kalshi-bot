@@ -209,10 +209,12 @@ class WatchedDisk:
         name: short identifier, used in the dedup key + alert text.
         path: any path on the filesystem (``shutil.disk_usage`` resolves
             the mount). The VPS is a single 48 GB root filesystem.
-        max_used_pct: alert when used% >= this. 85% for ``/``: the
-            collector's ~16 GB local bronze buffer makes ~71% the healthy
-            steady state, so 85% (~7 GB free) is the first level that is
-            both above steady state and still actionable before writers
+        max_used_pct: alert when used% >= this. 85% for ``/``: healthy
+            steady state is ~30% used (~14 GB: repo + venv + state.db +
+            in-flight bronze; measured 29% on 2026-09-05 post-recovery,
+            34% at 22:28Z), and the 2026-09-04 incident grew at ~0.28
+            GB/day, so 85% (~7 GB free ≈ 25 days of that leak rate) is
+            far above steady state yet still actionable before writers
             start failing.
     """
 

@@ -23,7 +23,8 @@
 #     compress → raw kept and retried next run. Any error → exit 1 AND
 #     `errors=N` on the Done line (the watchdog reads it — see below).
 #   - atomic `mv`: the bot appends with open/close per write (bot/logger.py
-#     opens the journal with mode "a" on every line; no held handle), so
+#     for opportunity/scan/rejection, bot/shadows/fifteenm_shadow.py for the
+#     shadow journal — both open with mode "a" per line; no held handle), so
 #     renaming the live file loses nothing — the next append creates a
 #     fresh live file. (The previous copy-then-truncate DROPPED every line
 #     written between `cp` finishing and the truncate — seconds on a
