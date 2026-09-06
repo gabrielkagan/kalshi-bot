@@ -22,6 +22,7 @@ Pins (mirror of the D2.5 set):
   5-11. Same diff-base / null-SHA / exit-code / set +e / opt-out log /
      sudo -n / --name-only pins as D2.5, on the independent ESPN_* vars.
   12. Unit-drift guard precedes the restart (stale on-disk unit → FAIL).
+     (11 test functions total — items 5-11 above are pinned by six of them.)
 VPS sudoers NOPASSWD for `/bin/systemctl restart kalshi-espn-collector`
 was verified present on 2026-09-06 (read-only `sudo -n -l`).
 """
@@ -90,10 +91,13 @@ def test_deploy_yml_ssh_script_contains_espn_collector_restart():
         "deploy.yml SSH script missing `systemctl restart "
         "kalshi-espn-collector`. Without this, every ESPN code "
         "change requires operator manual restart. Add a path-aware "
-        "block that fires when any of {espn_wire/**, "
-        "collector/espn_archiver.py, collector/espn_main_loop.py, "
+        "block that fires when any of {collector/espn_archiver.py, "
+        "collector/espn_main_loop.py, collector/writer.py, "
+        "collector/uploader.py, kalshi_wire/ws_client.py, "
         "ops/kalshi-espn-collector.service, espn-collector-start.sh, "
-        "requirements.txt} changed."
+        "requirements.txt} changed. (There is no `espn_wire/` package — "
+        "the ESPN collector reuses kalshi_wire/ws_client.py for "
+        "build_envelope.)"
     )
 
 
@@ -124,7 +128,19 @@ def test_deploy_yml_espn_collector_restart_path_set_covers_all_8_prefixes():
     restart-tax bug D1.5.2 closed for Kalshi side and 86bbvqhyr closes for
     ESPN side.
     """
-    script_text = "\n".join(_ssh_script_lines())
+    # R5-MN2: assert against the LIVE `grep -E "^(...)"` line only. The
+    # block's header comment enumerates all 8 paths, so a whole-script
+    # substring search stays green after a prefix is deleted from the
+    # regex — the pin would describe the comment, not the behavior.
+    regex_lines = [
+        ln for ln in _ssh_script_lines()
+        if "ESPN_PATHS_CHANGED=$(echo" in ln and "grep -E" in ln
+    ]
+    assert len(regex_lines) == 1, (
+        f"Expected exactly one `ESPN_PATHS_CHANGED=$(echo ... | grep -E ...)` "
+        f"line in deploy.yml; found {len(regex_lines)}."
+    )
+    script_text = regex_lines[0]
     required_prefixes = [
         "collector/espn_archiver.py",
         "collector/espn_main_loop.py",
@@ -138,8 +154,11 @@ def test_deploy_yml_espn_collector_restart_path_set_covers_all_8_prefixes():
     missing = [p for p in required_prefixes if p not in script_text]
     assert not missing, (
         f"deploy.yml ESPN collector restart path set MISSING prefixes "
-        f"{missing}. All 8 of {required_prefixes} must appear in the "
-        f"regex/grep pattern. Missing any one creates a silent-skip class."
+        f"{missing} from the live grep -E pattern:\n  {script_text.strip()}\n"
+        f"All 8 of {required_prefixes} must appear IN THE REGEX (not just "
+        f"in the block comment). Missing any one creates a silent-skip "
+        f"class: that path changes, the collector is never restarted, and "
+        f"the deploy log still reads green."
     )
 
 
@@ -195,17 +214,19 @@ def test_deploy_yml_espn_collector_restart_handles_null_sha_initial_push():
     """
     script_text = "\n".join(_ssh_script_lines())
     null_sha = "0" * 40
-    # The null-SHA literal MUST appear at least twice now (D1.5.2 + 86bbvqhyr
-    # blocks). Pre-86bbvqhyr it appeared once; post-86bbvqhyr it MUST appear in
-    # the ESPN block too. Count occurrences to defend the post-
-    # promotion invariant.
+    # R5-M1: the threshold must be ONE PER BLOCK or this pin cannot fail
+    # for the block it is named after. Pre-86bbvqhyr the sentinel appeared
+    # TWICE (D1.5.2 Kalshi + D2.5 Coinbase); the substitution that
+    # generated this file copied the Coinbase-era `>= 2` unchanged, so a
+    # surgical deletion of the ESPN null-SHA branch would have left this
+    # test green at 2. Three blocks → 3.
     occurrences = script_text.count(null_sha)
-    assert occurrences >= 2, (
+    assert occurrences >= 3, (
         f"deploy.yml contains null-SHA sentinel only {occurrences} times; "
-        f"expected ≥ 2 (D1.5.2 Kalshi block + 86bbvqhyr ESPN block, each "
-        f"with their own independent null-SHA fallback). Bumping to 1 "
-        f"means the ESPN block dropped the null-SHA check; bumping "
-        f"to 0 means both did."
+        f"expected ≥ 3 (D1.5.2 Kalshi + D2.5 Coinbase + 86bbvqhyr ESPN "
+        f"blocks, each with their own independent null-SHA fallback). "
+        f"At 2, one block dropped its null-SHA check — on a force-push "
+        f"or initial push that block's unit is not restarted."
     )
 
 
@@ -340,18 +361,20 @@ def test_deploy_yml_espn_collector_uses_git_diff_name_only():
 
 
 def test_deploy_yml_espn_unit_drift_guard_precedes_restart():
-    """2026-05-30: when the ESPN UNIT FILE itself changed, deploy.yml
-    MUST verify the on-VPS installed unit matches the deploy-commit unit
-    BEFORE restarting — and FAIL LOUD (pointing at ops/install.sh) on drift.
+    """The unit-drift guard MUST precede the restart.
 
-    deploy.yml does NOT cp units / daemon-reload (that is install.sh's job),
-    so a bare `systemctl restart` after a MemoryMax/cap change would run the
-    unit against its STALE on-disk cap. For the 9-asset corpus bump
-    (256M→384M, 2026-05-30) that means restarting the now-9-product collector
-    against the old 256M cap → OOM-kill window. This guard mirrors the
-    kalshi-bot unit-drift check (`systemctl cat` + `diff` + fail-with-recovery)
-    and refuses to restart against a stale unit. No new sudoers needed (read +
-    compare + exit 1).
+    deploy.yml does NOT cp units / daemon-reload (that is ops/install.sh's
+    job), so a bare restart after a UNIT-FILE change runs against the
+    STALE on-disk unit. The guard reads the installed unit, diffs it
+    against the unit at the deploy commit, and FAILS LOUD rather than
+    restarting against stale resource caps. Mirrors the kalshi-bot and
+    kalshi-coinbase-collector guards.
+
+    (R5-MN4: this docstring previously carried the Coinbase unit's
+    256M→384M 9-asset-corpus history verbatim from the substitution
+    source. ESPN's unit is MemoryMax=256M and has not been bumped —
+    see ops/CLAUDE.md. The guard is unit-agnostic; only the rationale
+    was imported from the wrong unit.)
     """
     script = _ssh_script_lines()
     cat_idx = _line_index_containing(script, "systemctl cat kalshi-espn-collector")
