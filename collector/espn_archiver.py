@@ -118,7 +118,12 @@ LEAGUES_ESPN: Mapping[str, str] = {
     "eng.1": "soccer",
     "esp.1": "soccer",
     "fifa.friendly": "soccer",
-    "fifa.worldcup": "soccer",
+    # "fifa.worldcup": "soccer",  -- REMOVED 2026-09-06 (ticket 86bbvt12r).
+    # ESPN returns HTTP 400 upstream for this league (NOT a UA issue); at
+    # 100% non-200 it fired d1_11_http_errors every 5 min indefinitely.
+    # Lock-stepped with enabled=False on KXWCGAME in
+    # bot/engines/sports_data.py — restore BOTH together, then restart
+    # kalshi-espn-collector so the channel is re-registered as a BronzeWriter.
     "fra.1": "soccer",
     "ger.1": "soccer",
     "ita.1": "soccer",

@@ -188,9 +188,32 @@ LEAGUES: Dict[str, LeagueConfig] = {
         espn_league="mex.1", outcome_type="three_way", display_name="Liga MX",
         sport_group="soccer",
     ),
+    # ESPN endpoint DETACHED 2026-09-06 (ticket 86bbvt12r). ESPN returns
+    # HTTP 400 for fifa.worldcup — broken UPSTREAM, not a User-Agent problem:
+    # reproduced with the shipped UA while usa.1 and college-football returned
+    # 200 in the same loop. The five-week blanket 403 (86bbvqhyr) masked it;
+    # fixing the UA revealed it. Left attached, the league is 100% non-200
+    # forever and fires d1_11_http_errors every 5 minutes indefinitely — the
+    # alert-fatigue mode that let the original outage run unnoticed (see
+    # feedback_crontab_shell_ordering_sep05: 47K unactioned alerts are
+    # functionally identical to silence). The 2026 World Cup has finished, so
+    # there is nothing to poll meanwhile.
+    #
+    # espn_sport/espn_league=None is the EXISTING documented mechanism for a
+    # series with no usable ESPN endpoint (see the esports entries above and
+    # KXAFCONGAME below): the engine skips ESPN polling and keeps Kalshi price
+    # monitoring. Deliberately NOT enabled=False — that invariant is reserved
+    # for the circuit breaker (test_step3_soccer_reenabled), and the Kalshi
+    # series itself is healthy; only ESPN is broken.
+    #
+    # RE-ATTACH: restore espn_sport="soccer" + espn_league="fifa.worldcup"
+    # here AND "fifa.worldcup": "soccer" in collector/espn_archiver.py
+    # LEAGUES_ESPN — the lock-step contract test fails RED until both agree —
+    # then restart kalshi-espn-collector. Verify upstream first with
+    # scripts/ops/espn_live_probe.py.
     "KXWCGAME": LeagueConfig(
-        series_ticker="KXWCGAME", espn_sport="soccer",
-        espn_league="fifa.worldcup", outcome_type="three_way",
+        series_ticker="KXWCGAME", espn_sport=None,
+        espn_league=None, outcome_type="three_way",
         display_name="World Cup", sport_group="soccer",
     ),
     "KXFIFAGAME": LeagueConfig(
