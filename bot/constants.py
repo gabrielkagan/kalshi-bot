@@ -874,6 +874,14 @@ FILL_MODEL_JOURNAL = "fill_model_journal.jsonl"
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
 
+# Weather / hourly / SPX markets share OpportunityScanner.scan() with 15M.
+# They skip WS and REST-fallback; putting them on the 1 Hz clock produced
+# 5–8s SCAN_BODY_SLOW (2026-09-06). 15M stays 1 Hz; these product types
+# evaluate at this slower cadence. Daily weather and hourly windows do
+# not need 1 Hz. See kb/failures/scan-body-5-8s-collecting-mode-sep06.md.
+SLOW_PRODUCT_SCAN_INTERVAL_S = 30.0
+SLOW_PRODUCT_TYPES = frozenset({"hourly", "spx_hourly", "weather"})
+
 MARKET_REFRESH_SECONDS = 30.0
 
 # Staleness budget for the active_windows cache (Step #5 watchdog).
@@ -1789,6 +1797,10 @@ CPI_RELEASE_DATES = frozenset([
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
+# Slow-due ticks (hourly/weather/SPX). Separate from the 15M cap so those
+# windows are not starved, but not unbounded — ~275 slow tickers at REST
+# would block the 1 Hz 15M loop for tens of seconds. 12 × ~60–200ms ≈ 0.7–2.4s.
+MAX_OB_FETCHES_PER_SLOW_TICK = 12
 
 BALANCE_CACHE_TTL = 10.0          # seconds to cache balance
 

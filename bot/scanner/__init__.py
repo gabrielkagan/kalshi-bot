@@ -198,6 +198,9 @@ from bot.constants import (
     RTI_LIVE_MIN_CONFIDENCE,
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
+    MAX_OB_FETCHES_PER_SLOW_TICK,
+    SLOW_PRODUCT_SCAN_INTERVAL_S,
+    SLOW_PRODUCT_TYPES,
     MAX_SECONDS_BEFORE_CLOSE,
     MIN_EDGE_PCT,
     MIN_ENTRY_PRICE,
@@ -335,6 +338,10 @@ from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adve
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
     extract_no_ask_and_yes_asks,
+)
+from bot.helpers.scan_cadence import (  # 2026-09-06: weather/hourly/SPX off the 1 Hz 15M tick
+    include_window_this_tick,
+    slow_scan_due,
 )
 from bot.kalshi_client import KalshiClient
 from bot.state import StateManager
@@ -1284,6 +1291,7 @@ class OpportunityScanner:
                 # (insert_evaluated_opportunity already tolerates None).
                 pass
         ob_fetches_this_tick = 0
+        slow_ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
         # WS vs REST drift probe (self-throttles to 60s cadence). See
@@ -1612,6 +1620,19 @@ class OpportunityScanner:
         # selection, etc.) under the SCAN_BODY_SLOW umbrella.
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
+        _preloop_dt = time.perf_counter() - _scan_tick_start_perf
+        if _preloop_dt > 1.5:
+            logging.warning(
+                "SCAN_PRELOOP_SLOW: scan setup took %.2fs", _preloop_dt)
+
+        _slow_due = slow_scan_due(
+            now,
+            getattr(self, "_last_slow_product_scan_ts", 0.0),
+            SLOW_PRODUCT_SCAN_INTERVAL_S,
+        )
+        if _slow_due:
+            self._last_slow_product_scan_ts = now
+
         _scan_loop_start = time.perf_counter()
         # Bit V.1 + V.3-R1-M1 fix round (2026-06-12): per-TICK memo dict
         # (asset → rv300-or-None) so the tape-RV block below computes
@@ -1639,6 +1660,17 @@ class OpportunityScanner:
             _window_start = time.perf_counter()
             asset = window["asset"]
             _pt = window.get("product_type")
+            if not include_window_this_tick(_pt, _slow_due):
+                continue
+            # Per-type REST budgets. Do not `break` the whole loop — that
+            # either starves slow windows (15M cap) or uncaps 15M on
+            # slow-due ticks. Skip only this window's type when its
+            # budget is exhausted.
+            if _pt in SLOW_PRODUCT_TYPES:
+                if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
+                    continue
+            elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
+                continue
 
             # Bit 9.2 ride-along (ticket 86b9vppn3): initialize best_ask
             # at iteration start so the low_probability_15m insert_rejection
@@ -2554,7 +2586,10 @@ class OpportunityScanner:
                         "SCAN_OB_FETCH_SLOW: ticker=%s fresh=%s took %.2fs",
                         ticker, was_fresh, _ob_fetch_dt)
                 if was_fresh:
-                    ob_fetches_this_tick += 1
+                    if _pt in SLOW_PRODUCT_TYPES:
+                        slow_ob_fetches_this_tick += 1
+                    else:
+                        ob_fetches_this_tick += 1
                 if ob_data is None:
                     # Try NBBO fallback before giving up (prefer *_dollars field)
                     mkt_yes_ask_raw = mkt.get("yes_ask_dollars") or mkt.get("yes_ask")
@@ -2830,7 +2865,7 @@ class OpportunityScanner:
                         "best_ask_source": best_ask_source,
                         "best_ask_depth": ask_depth,
                         "total_ob_depth": total_depth,
-                        "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                        "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                         "calibrated_prob": round(cal_prob, 6),
                     })
                 except Exception:
@@ -2913,7 +2948,7 @@ class OpportunityScanner:
                             "calibrated_prob": round(cal_prob, 6),
                             "best_ask_depth": ask_depth,
                             "total_ob_depth": total_depth,
-                            "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                            "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                             **_shadow_diag,
                             **_shadow_extra,
@@ -4265,7 +4300,7 @@ class OpportunityScanner:
                                     "best_yes_ask": best_ask,
                                     "best_ask_depth": ask_depth,
                                     "total_ob_depth": total_depth,
-                                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                                    "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                                     "edge": edge,
                                     "min_entry_price": _ie_scfg2.min_entry_price,
                                     "max_entry_price": _ie_scfg2.max_entry_price,
@@ -5703,7 +5738,7 @@ class OpportunityScanner:
                     "best_yes_ask": best_ask,
                     "best_ask_depth": ask_depth,
                     "total_ob_depth": total_depth,
-                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                    "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                     "edge": edge,
                     "min_entry_price": _entry_floor,
                     "max_entry_price": _entry_ceil,
@@ -7234,8 +7269,13 @@ class OpportunityScanner:
                         except sqlite3.OperationalError:
                             logging.debug("usaft_short_stc insert failed", exc_info=True)
 
-                # Respect per-tick orderbook fetch cap
-                if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
+                # Separate 15M vs slow-product REST budgets. Uncapping
+                # the 15M cap on slow-due ticks let ~275 hourly+weather
+                # REST calls block the main loop for tens of seconds.
+                if _pt in SLOW_PRODUCT_TYPES:
+                    if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
+                        break
+                elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                     break
             # Per-window timing — captures iterations that reach the
             # natural end (slow iterations doing orderbook fetch +
@@ -7246,9 +7286,6 @@ class OpportunityScanner:
                 logging.warning(
                     "SCAN_WINDOW_SLOW: asset=%s ticker=%s took %.2fs",
                     asset, window.get("event_ticker", "?"), _window_dt)
-            if ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
-                break
-
         _scan_loop_dt = time.perf_counter() - _scan_loop_start
         if _scan_loop_dt > 1.5:
             logging.warning(
@@ -9082,21 +9119,41 @@ class OpportunityScanner:
         self._ob_cache[ticker] = (orderbook, now)
         return (orderbook, True)
 
-    def _scanner_convergence_velocity(self, ticker: str) -> float:
-        """Upward ask movement in cents over convergence window, from scan history."""
+    def _scanner_convergence_velocity(
+        self, ticker: str, product_type: Optional[str] = None,
+    ) -> float:
+        """Upward ask movement in cents over CONVERGENCE_WINDOW_SECONDS.
+
+        Slow-product tickers (hourly/weather/SPX) are sampled at
+        SLOW_PRODUCT_SCAN_INTERVAL_S, equal to this window. When scan
+        body is 5–8s the previous sample is just outside cutoff and a
+        naive in-window walk returns 0. Fall back to the previous
+        sample and scale onto a 30s unit — only for SLOW_PRODUCT_TYPES.
+        15M sparse gaps keep the pre-PR 0.0 (do not invent urgency).
+        """
         history = self._ticker_ask_history.get(ticker)
         if not history or len(history) < 2:
             return 0.0
         now = time.time()
         cutoff = now - CONVERGENCE_WINDOW_SECONDS
+        newest_ts, newest_price = history[-1]
+        oldest_ts = None
         oldest_price = None
         for ts, price in history:
             if ts >= cutoff:
+                oldest_ts = ts
                 oldest_price = price
                 break
-        if oldest_price is None:
-            return 0.0
-        return history[-1][1] - oldest_price
+        if oldest_price is None or oldest_ts == newest_ts:
+            if product_type not in SLOW_PRODUCT_TYPES:
+                return 0.0
+            prev_ts, prev_price = history[-2]
+            dt = newest_ts - prev_ts
+            if dt <= 0:
+                return 0.0
+            return (newest_price - prev_price) * (
+                CONVERGENCE_WINDOW_SECONDS / dt)
+        return newest_price - oldest_price
 
     @staticmethod
     def _convert_orderbook_fp(ob_fp: Dict) -> Dict:
