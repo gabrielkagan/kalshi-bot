@@ -139,15 +139,34 @@ _SPORT_DURATION_SEC = {
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 ESPN_TIMEOUT = 10  # seconds
 
+# User-Agent sent to site.api.espn.com — ticket 86bbvqhyr (2026-09-06).
+# ESPN's Akamai edge returns 403 to any UA whose LEADING product token is
+# not a recognised HTTP-client family ("KalshiBot/1.0" was 403'd from
+# ~2026-08-05 for ~5 weeks; "python-requests/<ver>" / "curl/<ver>" pass).
+# The requests library's own default is the single source of truth;
+# collector/espn_archiver.py evaluates the same expression (it cannot
+# import bot.* — collector-no-bot contract) and
+# tests/contracts/test_espn_user_agent.py pins both sites equal + in the
+# accepted family. Re-verify with scripts/ops/espn_live_probe.py before
+# changing. Postmortem: kb/failures/espn-403-user-agent-silent-outage-sep06.md
+ESPN_USER_AGENT: str = requests.utils.default_user_agent()
+
+# Throttle for the non-200 WARN in ESPNLiveFeed._poll_league: one WARN
+# per league per window so a sustained outage is visible in journalctl
+# without flooding it (24 leagues × 30s ticks would be 2,880 lines/hr).
+ESPN_HTTP_WARN_INTERVAL_SECONDS = 3600.0
+
 
 class ESPNLiveFeed:
     """Polls ESPN scoreboard API for live game data across all leagues."""
 
     def __init__(self):
         self._session = requests.Session()
-        self._session.headers["User-Agent"] = "KalshiBot/1.0"
+        self._session.headers["User-Agent"] = ESPN_USER_AGENT
         self._lock = threading.Lock()
         self._games: Dict[str, GameState] = {}  # game_id → GameState
+        # league_slug → time.monotonic() of the last non-200 WARN.
+        self._last_http_warn: Dict[str, float] = {}
 
     def poll_all_leagues(self) -> Dict[str, GameState]:
         """Poll ESPN for all enabled leagues. Returns game_id → GameState."""
@@ -171,6 +190,20 @@ class ESPNLiveFeed:
         url = f"{ESPN_BASE}/{cfg.espn_sport}/{cfg.espn_league}/scoreboard"
         t0 = time.time()
         resp = self._session.get(url, timeout=ESPN_TIMEOUT)
+        if resp.status_code != 200:
+            # Ticket 86bbvqhyr: the pre-fix DEBUG-only swallow in
+            # poll_all_leagues hid 5 weeks of 403s. WARN once per league
+            # per ESPN_HTTP_WARN_INTERVAL_SECONDS, then raise as before.
+            _now_mono = time.monotonic()
+            _last = self._last_http_warn.get(cfg.espn_league)
+            if _last is None or _now_mono - _last >= ESPN_HTTP_WARN_INTERVAL_SECONDS:
+                self._last_http_warn[cfg.espn_league] = _now_mono
+                logging.warning(
+                    "SportsEngine: ESPN HTTP %s for %s (%s) — sports feed "
+                    "blind for this league until it clears; UA=%r. "
+                    "Probe: python3 scripts/ops/espn_live_probe.py",
+                    resp.status_code, cfg.espn_league, url, ESPN_USER_AGENT,
+                )
         resp.raise_for_status()
         data = resp.json()
         elapsed_ms = (time.time() - t0) * 1000
