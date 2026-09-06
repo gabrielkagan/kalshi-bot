@@ -91,6 +91,31 @@ class Test429RetryBounds(unittest.TestCase):
             result = c._request("GET", "/trade-api/v2/markets")
         self.assertIsNone(result)
 
+    def test_429_total_sleep_does_not_exceed_wall_cap(self):
+        """REST_429_WALL_CLOCK_CAP_S must bound sleep, not just refuse the next start.
+
+        Checking elapsed before sleep lets two 5s backoffs sum to 10s.
+        Sleep remaining budget so sum(slept) <= cap. See Claude MAJOR on PR #177.
+        """
+        c = _bare_client()
+        c.session.request.return_value = _resp(429, headers={"Retry-After": "5"})
+        clock = {"t": 0.0}
+        slept = []
+
+        def fake_mono():
+            return clock["t"]
+
+        def fake_sleep(s):
+            slept.append(s)
+            clock["t"] += s
+
+        with patch("bot.kalshi_client.time.sleep", side_effect=fake_sleep), \
+             patch("bot.kalshi_client.time.monotonic", side_effect=fake_mono):
+            result = c._request("GET", "/trade-api/v2/markets")
+        self.assertIsNone(result)
+        self.assertLessEqual(sum(slept), REST_429_WALL_CLOCK_CAP_S)
+        self.assertGreater(sum(slept), 0)
+
     def test_post_orders_429_is_never_retried(self):
         c = _bare_client()
         c.session.request.return_value = _resp(429, headers={"Retry-After": "1"})

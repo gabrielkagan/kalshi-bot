@@ -127,7 +127,13 @@ class KalshiClient:
         429 retry budget is per-call (kwargs), not instance state. Settlement
         and the scan thread share this client; a shared counter + finally:0
         let concurrent GETs reopen each other's budget.
+
+        REST_429_WALL_CLOCK_CAP_S is a remaining-time budget: sleep is
+        min(Retry-After, 5s, time left), and we give up when remaining <= 0
+        so total backoff cannot overshoot the cap by a full sleep.
         """
+        if _429_t0 is None:
+            _429_t0 = time.monotonic()
         is_write = method in ("POST", "PUT", "DELETE")
         self._rate_limit_wait(is_write)
 
@@ -172,23 +178,23 @@ class KalshiClient:
                     retry_after = 1.0
                 if retry_after < 0:
                     retry_after = 1.0
-                sleep_s = min(retry_after, REST_429_MAX_SLEEP_S)
                 now_m = time.monotonic()
                 retries = _429_retries + 1
-                t0 = _429_t0 if _429_t0 is not None else now_m
-                elapsed = now_m - t0
-                if retries > REST_429_MAX_RETRIES or elapsed >= REST_429_WALL_CLOCK_CAP_S:
+                elapsed = now_m - _429_t0
+                remaining = REST_429_WALL_CLOCK_CAP_S - elapsed
+                if retries > REST_429_MAX_RETRIES or remaining <= 0:
                     logging.error(
                         "Rate limited %s times (elapsed=%.1fs), giving up: %s %s",
                         retries, elapsed, method, path)
                     return None
+                sleep_s = min(retry_after, REST_429_MAX_SLEEP_S, remaining)
                 logging.warning(
                     "Rate limited, sleeping %.1fs (attempt %d/%d, Retry-After=%s)",
                     sleep_s, retries, REST_429_MAX_RETRIES, retry_after)
                 time.sleep(sleep_s)
                 return self._request(
                     method, path, params, json_body,
-                    _429_retries=retries, _429_t0=t0,
+                    _429_retries=retries, _429_t0=_429_t0,
                 )
             # Idempotent-DELETE 404: Kalshi has already expired/canceled
             # the resource. Return a sentinel so callers can distinguish
