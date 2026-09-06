@@ -29,9 +29,18 @@ Pins:
 
   1. BronzeArchiver.get_health_snapshot exists + returns the 8 required
      keys with correct types.
-  2. write_bronze_health_sidecar(archivers, path) writes valid JSON
-     matching the schema (schema_version, written_at ISO-8601,
-     archivers list, total_dropped_frames, total_queue_size).
+  2. write_bronze_health_sidecar(archivers, path, extra=None) writes
+     valid JSON matching the schema (schema_version, written_at
+     ISO-8601, archivers list, total_dropped_frames, total_queue_size).
+     Ticket 86bbvdcat (2026-09-05) added ADDITIVE top-level keys via
+     ``extra=`` — ``state`` (booting|running), ``state_since``,
+     ``ticker_set_source`` (persisted|rest|file|empty),
+     ``ticker_cache_age_seconds``, ``rest_refresh`` (the refresher's
+     ``status()`` dict or null) — written from the FIRST drain tick,
+     before any REST fetch, so ``archivers`` may be ``[]`` in a live
+     sidecar. schema_version STAYS 1; the keys are pinned in
+     ``tests/contracts/test_collector_persisted_ticker_boot.py`` and
+     consumed by ``collector_health_monitor.check_boot_state``.
   3. check_dropped_frames returns None when delta == 0.
   4. check_dropped_frames returns alert string when delta >= threshold.
   5. check_dropped_frames persists state across calls (subsequent

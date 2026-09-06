@@ -316,11 +316,15 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
     def _alert(*args, **kwargs):
         return "FORCED-ALERT-FOR-TEST"
 
+    # check_boot_state (5th Kalshi check, ticket 86bbvdcat) is pinned to
+    # None below so the 18-dispatch count is hermetic — on a VPS mid-boot
+    # the real check would add a 19th alert.
     with patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         with patch.object(mod, "check_disk", _alert), \
              patch.object(mod, "check_ws_reconnects", _alert), \
              patch.object(mod, "check_collector_active", _alert), \
-             patch.object(mod, "check_dropped_frames", _alert):
+             patch.object(mod, "check_dropped_frames", _alert), \
+             patch.object(mod, "check_boot_state", lambda **kw: None):
             mod.main()
 
     # Post-B2a-1 (2026-05-28, ticket 86ba1zf5j): 4 checks × 3 WS-collector
@@ -403,21 +407,28 @@ def test_check_dropped_frames_accepts_unit_and_boot_grace_kwargs():
 
 
 def test_default_boot_grace_seconds_is_1200():
-    """``DEFAULT_BOOT_GRACE_SECONDS = 1200`` matches the ~17-min boot window.
+    """``DEFAULT_BOOT_GRACE_SECONDS = 1200`` and equals ``DEFAULT_MAX_BOOT_SECONDS``.
 
-    Boot sequence per umbrella ticket: salvage (1min) + REST snapshot
-    (10 min for 754K-ticker pagination) + per-conn wire-up (60s × 7
-    conns ≈ 7 min) ≈ 17 min. 1200s (20 min) gives a small safety margin
-    above the observed worst-case + accounts for boot-time jitter under
-    CPU load.
+    Historically sized (2026-05-20) for the May-2026 ~17-min synchronous
+    boot (salvage + REST page-through + per-conn wire-up), during which
+    the sidecar was not written at all. Post-86bbvdcat (2026-09-05) the
+    drain thread writes the sidecar from its first tick, BEFORE any REST
+    fetch, so the grace only has to cover the restart gap (the previous
+    process's last sidecar going stale while the new one runs the
+    salvage sweep). It is kept at 1200 s = ``DEFAULT_MAX_BOOT_SECONDS``
+    so the STALE grace and the STILL-BOOTING alert share one figure.
     """
-    from scripts.ops.collector_health_monitor import DEFAULT_BOOT_GRACE_SECONDS
+    from scripts.ops.collector_health_monitor import (
+        DEFAULT_BOOT_GRACE_SECONDS, DEFAULT_MAX_BOOT_SECONDS,
+    )
     assert DEFAULT_BOOT_GRACE_SECONDS == 1200, (
-        f"DEFAULT_BOOT_GRACE_SECONDS=1200 covers the observed ~17-min "
-        f"boot window + safety margin; got {DEFAULT_BOOT_GRACE_SECONDS}. "
-        f"A tighter value would re-introduce STALE false-positives "
-        f"during boot; a looser value would mask real wedged-drain "
-        f"events during the grace window."
+        f"DEFAULT_BOOT_GRACE_SECONDS=1200 is the restart-gap STALE grace; "
+        f"got {DEFAULT_BOOT_GRACE_SECONDS}. A looser value would mask real "
+        f"wedged-drain events during the grace window."
+    )
+    assert DEFAULT_BOOT_GRACE_SECONDS == DEFAULT_MAX_BOOT_SECONDS, (
+        "the STALE boot grace and check_boot_state's threshold are "
+        "documented as the same figure (ticket 86bbvdcat)"
     )
 
 

@@ -19,8 +19,9 @@ with the inherited 60-second in-process dedup. Because the script runs
 under cron (one fresh process per tick), the in-process dedup window is
 RESET on every tick — so a chronically-dead monitor produces one alert
 per cron tick (6/hour at the 10-min cadence). With the verified watchlist
-of 4 monitors, max alert burst is 4 alerts/tick × 6 ticks/hour = 24/hr in
-the all-dead scenario. Acceptable per cron health-script convention;
+of 5 monitors + 1 disk check + 1 rotation-errors check (ticket 86bbvd50a),
+max alert burst is 7 alerts/tick × 6 ticks/hour = 42/hr in the all-dead
+scenario. Acceptable per cron health-script convention;
 operator can throttle by raising the cron interval if false-positives
 become noisy. A future Bit may switch to file-sidecar dedup like
 `scripts/ops/phantom_reconcile_monitor.py` to suppress cross-tick
@@ -29,7 +30,10 @@ duplicates.
 Operator install (manual, post-merge):
 
     # In `crontab -e` (botuser):
-    */10 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+    */10 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+    # (`.` not `source`, and SHELL=/bin/bash on the crontab's FIRST line —
+    #  see ops/CLAUDE.md "Crontab SHELL ordering"; the live line still says
+    #  `source` and works only because it sits below the SHELL= directive.)
 
 Env reads (in main()):
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — from /home/botuser/.env (loaded
@@ -42,9 +46,22 @@ Exit code: ALWAYS 0 (cron health-script convention; alerts go via Telegram,
 not exit code, so a transient health-check failure doesn't flood the
 operator's mail spool).
 
+Disk-usage threshold (ticket 86bbvd50a, 2026-09-05): the VPS root
+filesystem sat at ~95% used from before 2026-08-10 and hit 100% on
+2026-09-04 (kb/failures/vps-disk-full-journal-rotation-collision-sep05.md).
+The 80% canary in `collector_health_monitor.py` never fired because its
+cron line sits ABOVE `SHELL=/bin/bash` in the crontab and therefore runs
+under /bin/sh (dash), where `source` is not a builtin — that job (and
+data_health + quiet_market) has been dead since 2026-05-19 21:2x UTC, and
+this watchdog has been reporting `alerts_sent=3` every 10 minutes since
+(~47K Telegram alerts, unactioned). This script's own cron line is BELOW
+the SHELL= directive and alive, so it carries an independent
+`WATCHED_DISKS` check (`/` at 85%). Alert text is printed to stdout too,
+so the cron log keeps a history instead of Telegram-only.
+
 Self-referential blind spot: this script's OWN log freshness is the residual
 gap. Mitigations:
-  1. Higher cadence (10 min) than any watched monitor (15-120 min) — operator
+  1. Higher cadence (10 min) than any watched monitor (15-500 min) — operator
      notices absence of expected alerts faster.
   2. Future E-followup: external probe or self-referential check.
 """
@@ -52,13 +69,15 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
+import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 # Bootstrap repo root onto sys.path BEFORE any `from bot.*` reference fires.
-# Cron's invocation flow (`cd ~/kalshi-bot-repo && source venv/bin/activate
+# Cron's invocation flow (`cd ~/kalshi-bot-repo && . venv/bin/activate
 # && python3 scripts/ops/monitor_watchdog.py`) does NOT auto-add the repo
 # root to sys.path — only the script's parent dir (scripts/ops/) is added by
 # Python's script-invocation rule. Without this bootstrap the script crashes
@@ -113,12 +132,26 @@ class WatchedMonitor:
 # Promoting any of these requires (a) adding `>> <log_path> 2>&1` to
 # its cron entry in ops/CLAUDE.md + live crontab AND (b) extending the
 # watchlist below in the same Bit.
+# Ticket 86bbvd50a: the rotation script ends every run with
+# `Done. Disk free: <x> errors=<N>`. N>0 means a chunk was refused, could
+# not be moved, or could not be compressed — cron ignores the exit code
+# under the log redirect, so the watchdog reads the marker instead. Single
+# source of truth for BOTH the freshness watch and the errors check.
+ROTATION_LOG_PATH = "~/kalshi-bot-repo/journal_archives/rotation.log"
+
 WATCHED_MONITORS: tuple[WatchedMonitor, ...] = (
     WatchedMonitor("data_health",       "/tmp/data_health.log",       60),  # cron */30 — 2× margin
     WatchedMonitor("quiet_market",      "/tmp/quiet_market.log",      45),  # cron */15 — 3× margin
     WatchedMonitor("collector_health",  "~/collector_health.log",     15),  # cron */5  — 3× margin
     WatchedMonitor("phantom_reconcile", "~/phantom_reconcile.log",   120),  # cron 7 * — 2× margin
+    # Ticket 86bbvd50a (2026-09-05): ops/rotate_journals.sh, cron 0 */4 with
+    # `>> journal_archives/rotation.log 2>&1` (verified on the live crontab).
+    # 500 min ≈ 2× the 240-min cadence. 1,106 `zstd: already exists` lines
+    # sat unread in this file for 109 days — freshness + the errors= marker
+    # below are what make rotation failures non-silent.
+    WatchedMonitor("journal_rotation",  ROTATION_LOG_PATH, 500),
 )
+_ROTATION_DONE_RE = re.compile(r"^Done\..*\berrors=(\d+)")
 
 
 def check_log_freshness(monitor: WatchedMonitor,
@@ -169,8 +202,109 @@ def check_log_freshness(monitor: WatchedMonitor,
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class WatchedDisk:
+    """One filesystem to watch for usage pressure (ticket 86bbvd50a).
+
+    Attributes:
+        name: short identifier, used in the dedup key + alert text.
+        path: any path on the filesystem (``shutil.disk_usage`` resolves
+            the mount). The VPS is a single 48 GB root filesystem.
+        max_used_pct: alert when used% >= this. 85% for ``/``: healthy
+            steady state is ~30% used (~14 GB: repo + venv + state.db +
+            in-flight bronze; measured 34% at 2026-09-05 22:28Z, then
+            29% a few hours later once the 14-day local prune settled),
+            and the 2026-09-04 incident grew at ~0.28
+            GB/day, so 85% (~7 GB free ≈ 25 days of that leak rate) is
+            far above steady state yet still actionable before writers
+            start failing.
+    """
+
+    name: str
+    path: str
+    max_used_pct: int
+
+
+WATCHED_DISKS: tuple[WatchedDisk, ...] = (
+    WatchedDisk("root", "/", 85),
+)
+
+
+def check_disk_usage(disk: WatchedDisk,
+                     disk_usage_fn=shutil.disk_usage) -> Optional[str]:
+    """Check one filesystem's usage.
+
+    Returns None below ``max_used_pct``; otherwise a non-empty alert
+    string. A failed stat ALSO alerts (fail-loud) — a mount we cannot
+    measure is not evidence of health. ``disk_usage_fn`` is a test seam.
+    """
+    try:
+        usage = disk_usage_fn(disk.path)
+    except OSError as exc:
+        return (
+            f"[MONITOR WATCHDOG] DISK check for `{disk.path}` failed: "
+            f"{exc!r}. Investigate the mount."
+        )
+    total = float(getattr(usage, "total", 0) or 0)
+    used = float(getattr(usage, "used", 0) or 0)
+    free = float(getattr(usage, "free", 0) or 0)
+    # df's Use% = used / (used + avail) — excludes the ext4 reserved blocks
+    # (5% on the droplet), so 85% here == the 85% the operator sees in
+    # `df -h`. used/total would be ~4 points laxer (R1-M4).
+    denom = used + free
+    used_pct = round((used / denom * 100.0), 1) if denom else 0.0
+    if used_pct < disk.max_used_pct:
+        return None
+    free_gb = free / (1024 ** 3)
+    total_gb = total / (1024 ** 3)
+    return (
+        f"[MONITOR WATCHDOG] DISK `{disk.path}` at {used_pct:.0f}% used "
+        f"({free_gb:.1f} GB free of {total_gb:.1f} GB; threshold "
+        f"{disk.max_used_pct}%). Every writer on the VPS fails silently at "
+        f"100% (2026-09-04 incident). Check: `du -sh "
+        f"~/kalshi-bot-repo/journal_archives /var/lib/kalshi-*collector*/bronze` "
+        f"+ `ls -la ~/kalshi-bot-repo/journal_archives/*.jsonl`."
+    )
+
+
+def check_rotation_errors(log_path: str = ROTATION_LOG_PATH,
+                          tail_bytes: int = 65536) -> Optional[str]:
+    """Alert when the LAST completed rotation run reported ``errors=N>0``.
+
+    Reads the tail of ``rotation.log`` and finds the most recent
+    ``Done. ... errors=N`` line (the script's per-run footer). None when
+    the log is missing (freshness is a separate WatchedMonitor), has no
+    footer yet (legacy date-only script still installed — the crontab
+    edit is an operator action), or N == 0.
+    """
+    expanded = os.path.expanduser(os.path.expandvars(log_path))
+    try:
+        with open(expanded, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - tail_bytes))
+            tail = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    last = None
+    for line in tail.splitlines():
+        m = _ROTATION_DONE_RE.match(line.strip())
+        if m:
+            last = int(m.group(1))
+    if not last:
+        return None
+    return (
+        f"[MONITOR WATCHDOG] JOURNAL ROTATION reported errors={last} on its "
+        f"last run — a journal chunk was refused (name collision), could not "
+        f"be moved, or could not be compressed. Raw archives never reach S3. "
+        f"Check `grep -n ERROR {expanded} | tail`."
+    )
+
+
 def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
-         notifier: Optional[object] = None) -> int:
+         notifier: Optional[object] = None,
+         disks: tuple[WatchedDisk, ...] = WATCHED_DISKS,
+         rotation_log: Optional[str] = ROTATION_LOG_PATH) -> int:
     """Check all monitors, send alerts for stale ones, exit 0.
 
     ``notifier`` is a test seam; production reads
@@ -188,8 +322,9 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
     because each cron tick spawns a fresh interpreter, the in-process
     dedup resets on every tick. A chronically-dead monitor produces one
     alert per cron tick (6/hour at the 10-min cadence; bounded by
-    ``len(monitors) × 6 = 24/hour`` in the all-dead scenario for the
-    current 4-monitor watchlist). Acceptable per cron-tier convention;
+    ``(len(monitors) + len(disks) + 1) × 6 = 42/hour`` in the all-dead
+    scenario for the current 5-monitor watchlist + 1 disk + the
+    rotation-errors check). Acceptable per cron-tier convention;
     future Bit may switch to file-sidecar dedup like
     ``phantom_reconcile_monitor.py``.
     """
@@ -206,6 +341,7 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
         if alert is None:
             monitors_ok += 1
             continue
+        print(alert, flush=True)  # keep a history in the cron log, not just Telegram
         notifier.send(
             alert,
             silent=False,
@@ -213,8 +349,34 @@ def main(monitors: tuple[WatchedMonitor, ...] = WATCHED_MONITORS,
         )
         alerts_sent += 1
 
+    disks_ok = 0
+    for disk in disks:
+        alert = check_disk_usage(disk)
+        if alert is None:
+            disks_ok += 1
+            continue
+        print(alert, flush=True)
+        notifier.send(
+            alert,
+            silent=False,
+            dedup_key=f"monitor_watchdog_disk_{disk.name}",
+        )
+        alerts_sent += 1
+
+    if rotation_log:
+        alert = check_rotation_errors(rotation_log)
+        if alert is not None:
+            print(alert, flush=True)
+            notifier.send(
+                alert,
+                silent=False,
+                dedup_key="monitor_watchdog_journal_rotation_errors",
+            )
+            alerts_sent += 1
+
     print(
         f"[monitor_watchdog] checked={len(monitors)} ok={monitors_ok} "
+        f"disks_checked={len(disks)} disks_ok={disks_ok} "
         f"alerts_sent={alerts_sent}",
         flush=True,
     )

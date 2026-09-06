@@ -16,7 +16,7 @@ Plan doc: kb/decisions/autoalpha-phase1-scorer-plan.md
 Operator install (manual, post-merge):
 
     # In `crontab -e` (botuser):
-    30 13 * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/autoalpha_edge_scorer.py >> ~/autoalpha.log 2>&1
+    30 13 * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/audit/autoalpha_edge_scorer.py >> ~/autoalpha.log 2>&1
 
 (Runs at 13:30 UTC — 23 minutes after cohort_attribution_nightly.py
 populates the day's data at 13:07 UTC per scripts/CLAUDE.md.)

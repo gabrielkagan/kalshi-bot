@@ -18,17 +18,26 @@ Pinned by `tests/contracts/test_vps_setup_cron_paths.py` — every Python
 script referenced below must exist at the documented path in the repo.
 
 ```cron
+# SHELL= MUST be the first line: cron applies it only to the lines BELOW it,
+# and under the default /bin/sh (dash) `source` does not exist — the three
+# monitors above a mid-file SHELL= line were dead 2026-05-19 → 09-05
+# (ops/CLAUDE.md "Crontab SHELL ordering", ticket 86bbvd50a). Use `.` too.
+SHELL=/bin/bash
+
+# Journal rotation (ticket 86bbvd50a) — every 4 h on the hour, hour-stamped archives
+0 */4 * * * /bin/bash /home/botuser/kalshi-bot-repo/ops/rotate_journals.sh >> /home/botuser/kalshi-bot-repo/journal_archives/rotation.log 2>&1
+
 # Data health monitor — every 30 min, sends Telegram for critical issues
-*/30 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
+*/30 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/audit/data_health_monitor.py --db state.db --telegram >> /tmp/data_health.log 2>&1
 
 # Quiet market monitor — every 15 min, alerts when 15M goes unusually silent
-*/15 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
+*/15 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/audit/quiet_market_monitor.py --db state.db >> /tmp/quiet_market.log 2>&1
 
 # Monitor-the-monitor (E.1, ticket 86ba0xq51) — every 10 min, alerts on stale cron monitor logs
-*/10 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
+*/10 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/ops/monitor_watchdog.py >> ~/monitor_watchdog.log 2>&1
 
 # Autoalpha Phase 1 (ticket TBD, 2026-05-19) — daily at 13:30 UTC, 23 min after cohort_attribution_nightly.py (13:07 UTC). Reads cohort_attribution_daily, emits promote/demote recommendations to kb/findings/, Telegram-alerts top 5 each.
-30 13 * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 scripts/audit/autoalpha_edge_scorer.py >> ~/autoalpha.log 2>&1
+30 13 * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 scripts/audit/autoalpha_edge_scorer.py >> ~/autoalpha.log 2>&1
 ```
 
 ## MCP Server Setup

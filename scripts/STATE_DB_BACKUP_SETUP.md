@@ -690,7 +690,7 @@ python3` in your interactive shell vs `env -i /usr/bin/which python3`.
 The per-tick forensic JSONL streams under
 `~/kalshi-bot-repo/journal_archives/` (`opportunity_journal_*`,
 `scan_journal_*`, `rejection_journal_*`, ...) are NOT covered by the
-state.db backup. `rotate_journals.sh` deletes them at the 90-day local
+state.db backup. `ops/rotate_journals.sh` deletes them at the 14-day (`-mtime +14`, ≥15 full days) local
 retention boundary; without S3 archival the per-tick record is gone
 forever. This step installs an incremental sync that runs 30 min after
 the rotation cron.
@@ -778,8 +778,8 @@ journalctl -u kalshi-journal-archives-sync.service --no-pager -n 20
 
 ### 12.4 Notes for operators
 
-- `rotation.log` is intentionally excluded from the sync (`--exclude rotation.log` in the script's argv): `rotate_journals.sh` appends to it daily, which would trip `--immutable` and abort the entire sync from day 2 onward. The forensic loss is small (rotation.log just logs which file was rotated when); the journals themselves are the valuable artifacts. If forensics is needed, operator can `scp` rotation.log manually.
-- Primitive is `rclone copy` (NOT `sync`). `sync` would mirror local deletions to S3 — when `rotate_journals.sh` prunes a journal at the 90-day boundary, `sync` would DELETE the S3 object too, defeating the entire purpose. `copy` is one-way: upload-or-skip, never delete from destination. The `--checksum` flag keeps it idempotent (re-runs short-circuit per-file via ETag).
+- `rotation.log` is intentionally excluded from the sync (`--exclude rotation.log` in the script's argv): `ops/rotate_journals.sh` appends to it every 4 h (every run), which would trip `--immutable` and abort the entire sync from day 2 onward. The forensic loss is small (rotation.log just logs which file was rotated when); the journals themselves are the valuable artifacts. If forensics is needed, operator can `scp` rotation.log manually.
+- Primitive is `rclone copy` (NOT `sync`). `sync` would mirror local deletions to S3 — when `ops/rotate_journals.sh` prunes a journal at the 14-day (`-mtime +14`) boundary, `sync` would DELETE the S3 object too, defeating the entire purpose. `copy` is one-way: upload-or-skip, never delete from destination. The `--checksum` flag keeps it idempotent (re-runs short-circuit per-file via ETag).
 
 ### 12.5 Drift-check note
 

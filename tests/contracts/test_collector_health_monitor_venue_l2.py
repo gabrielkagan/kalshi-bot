@@ -2,7 +2,7 @@
 ``kalshi-venue-l2-collector``.
 
 Ticket `86ba1zf5j`. The post-D1.11.a monitor has 5 tiers:
-  - kalshi-collector (`d1_6`)        — WS collector, 4 checks
+  - kalshi-collector (`d1_6`)        — WS collector, 4 checks (5 post-86bbvdcat: + boot_state)
   - kalshi-coinbase-collector (`d2_5`) — WS collector, 4 checks
   - kalshi-bot (`b3_fu3`)            — bot, 1 check
   - kalshi-weather-collector (`d1_8`) — HTTP poll, 3 checks

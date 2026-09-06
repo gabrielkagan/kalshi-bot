@@ -8,7 +8,7 @@
 #
 # Creates 1 service+timer pair:
 #   /etc/systemd/system/kalshi-market-obs-archive.{service,timer}
-#       Daily at 05:30 UTC (between rotate_journals @04:00 and
+#       Daily at 05:30 UTC (between the rotate_journals @04:00 tick and
 #       state.db backup @06:00). Wrapped via h4_run_with_alert.py
 #       for Telegram failure alerts.
 #

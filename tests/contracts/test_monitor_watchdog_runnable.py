@@ -1,5 +1,5 @@
 """Data-Integrity E.1 R1-M5 sister-doc lockstep: `scripts/ops/monitor_watchdog.py`
-must be runnable from cron's `cd ~/kalshi-bot-repo && source venv/bin/activate
+must be runnable from cron's `cd ~/kalshi-bot-repo && . venv/bin/activate
 && python3 scripts/ops/monitor_watchdog.py` invocation flow without hitting
 `ModuleNotFoundError: No module named 'bot'`.
 
@@ -88,7 +88,7 @@ def test_monitor_watchdog_has_sys_path_bootstrap():
     assert bootstraps, (
         "monitor_watchdog.py must contain a `sys.path.insert/append(...)` "
         "call at module top level. Without it, cron's invocation flow "
-        "(`cd ~/kalshi-bot-repo && source venv/bin/activate && python3 "
+        "(`cd ~/kalshi-bot-repo && . venv/bin/activate && python3 "
         "scripts/ops/monitor_watchdog.py`) crashes at `from bot.notifier "
         "import TelegramNotifier` with ModuleNotFoundError. Pattern: "
         "see scripts/ops/collector_health_monitor.py."

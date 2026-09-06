@@ -12,9 +12,9 @@
 #   /etc/systemd/system/kalshi-journal-archives-sync.{service,timer}
 #       Every 4h, 30 min offset (00:30, 04:30, 08:30, 12:30, 16:30,
 #       20:30 UTC) — each tick fires 30 min AFTER its paired
-#       rotate_journals.sh tick (rotation cadence was SSH-changed to
-#       every-4h on 2026-05-17; the rotate_journals.sh script is
-#       local-only on the VPS, not in git). The 30-min offset gives
+#       ops/rotate_journals.sh tick (rotation cadence was changed to
+#       every-4h on 2026-05-17; the script is tracked in git since
+#       2026-09-05, ticket 86bbvd50a, hour-stamped archives). The 30-min offset gives
 #       the most-recently-rotated journal time to fully zstd-compress
 #       before sync fires. Wrapped via h4_run_with_alert.py for
 #       Telegram failure alerts. Pre-86b9zkp89 cadence was daily 04:30 UTC.
@@ -41,7 +41,7 @@ for f in "$SCRIPT" "$WRAPPER"; do
 done
 if [ ! -d "$ARCHIVES_DIR" ]; then
     echo "FAIL: journal_archives dir not found: $ARCHIVES_DIR"
-    echo "      Is rotate_journals.sh installed? (~botuser/kalshi-bot-repo/journal_archives/)"
+    echo "      Is ops/rotate_journals.sh on the crontab? (see ops/CLAUDE.md \"Journal rotation\")"
     exit 1
 fi
 
@@ -141,9 +141,9 @@ Description=Sub-daily timer for Kalshi journal_archives/ S3 sync (every 4h, post
 [Timer]
 # Fires at 00:30, 04:30, 08:30, 12:30, 16:30, 20:30 UTC. The systemd
 # `start/step` shorthand `00/4` on the hour field, with minute=30,
-# gives each tick a 30-min gap after the paired rotate_journals.sh
-# tick (rotation now runs every 4h on the hour; the script itself is
-# local-only on the VPS, not in git). The 30-min gap is load-bearing:
+# gives each tick a 30-min gap after the paired ops/rotate_journals.sh
+# tick (rotation runs every 4h on the hour; the script is tracked in git
+# since 2026-09-05, ticket 86bbvd50a). The 30-min gap is load-bearing:
 # zstd compression of the most-recently-rotated journal must complete
 # before sync, else rclone --immutable would treat the partial file
 # as content divergence and surface exit 6. Pre-86b9zkp89 cadence was

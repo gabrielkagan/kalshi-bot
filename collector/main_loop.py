@@ -72,16 +72,20 @@ import signal
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from collector.rest_snapshot import (
     CRYPTO_15M_SERIES,
     DEFAULT_INCREMENTAL_REFRESH_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
+    DEFAULT_TICKER_CACHE_FILENAME,
     IncrementalDiscoveryRefresher,
     RestSnapshotRefresher,
     fetch_tickers_by_tier,
+    utc_now_iso,
+    load_tier_map,
     resolve_excluded_series,
+    save_tier_map,
 )
 from collector.subscription_manager import (
     CHANNELS_DEFAULT,
@@ -238,8 +242,16 @@ def _s3_key_from_outbox(outbox_path: Path, bronze_root: Path) -> str:
 def write_bronze_health_sidecar(
     archivers: Sequence[BronzeArchiver],
     path: Path,
+    extra: Optional[Mapping[str, object]] = None,
 ) -> None:
     """Write an aggregated bronze health snapshot JSON file (D1.6 fu).
+
+    Ticket 86bbvdcat (2026-09-05): ``extra`` carries ADDITIVE keys
+    (``state`` ∈ {booting, running}, ``state_since``,
+    ``ticker_set_source``, ``ticker_cache_age_seconds``, ``rest_refresh``)
+    so the cron monitor can tell "booting for 30 min" from "healthy".
+    ``schema_version`` STAYS at 1 — every extension so far has been
+    additive backward-compat and the monitor rejects any other value.
 
     Atomic-replace via tmp file + os.replace so a reader (the cron-driven
     ``scripts/ops/collector_health_monitor.py``) never observes a torn
@@ -264,6 +276,9 @@ def write_bronze_health_sidecar(
         "total_dropped_frames": total_dropped,
         "total_queue_size": total_queue,
     }
+    if extra:
+        for key, value in extra.items():
+            payload.setdefault(key, value)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload))
@@ -277,8 +292,21 @@ def _drain_rotated(
     shutdown_event: threading.Event,
     archivers: Sequence[BronzeArchiver] = (),
     health_sidecar_path: Optional[Path] = None,
+    status_fn: Optional[Callable[[], Mapping[str, object]]] = None,
 ) -> None:
     """Drain ``rotated_outbox_paths`` across ALL writers → uploader until shutdown.
+
+    Ticket 86bbvdcat (2026-09-05): ``writers`` / ``archivers`` are LIVE
+    lists that ``run()`` keeps appending to after this thread has started
+    — the thread now starts BEFORE the boot REST page-through so the
+    REST bronze it produces (~1 MB raw + ~42 KB zst per page; 17 GB was
+    parked on local disk during the 2026-09-05 boot) uploads as it
+    rotates. Iterating a list while the main thread appends is safe under
+    the GIL (a new element is simply picked up on the next tick).
+    ``status_fn`` supplies the additive sidecar keys (boot state, REST
+    refresh status) and the sidecar is written even while ``archivers``
+    is still empty, so the monitor sees ``state=booting`` from the first
+    tick.
 
     Multi-conn fan-out (D1.3): the single drain thread iterates every
     writer's `rotated_outbox_paths` list. Per-writer queues stay small
@@ -323,10 +351,11 @@ def _drain_rotated(
                 _drain_one(outbox_path, in_flight_path)
 
     def _write_health_sidecar_safe() -> None:
-        if health_sidecar_path is None or not archivers:
+        if health_sidecar_path is None:
             return
         try:
-            write_bronze_health_sidecar(archivers, health_sidecar_path)
+            extra = status_fn() if status_fn is not None else None
+            write_bronze_health_sidecar(archivers, health_sidecar_path, extra=extra)
         except Exception:
             # Sidecar writes are best-effort observability. A disk-full
             # or permission error here MUST NOT stall the drain loop
@@ -650,13 +679,24 @@ def run(
         ``{"<tier>": ["TICKER", ...]}`` map. When set, the file is
         authoritative and the REST refresher is NOT started (useful
         for tests / offline dev). When unset, D1.4 REST snapshot is
-        used: synchronous fetch at boot + hourly background refresh.
+        used: synchronous fetch at boot ONLY when no persisted cache
+        exists (see ``COLLECTOR_TICKER_CACHE_PATH``) + hourly background
+        refresh.
       - ``COLLECTOR_BATCH_SIZE`` — subscribe-frame batch size (default
         1000; tunable for Kalshi WS message-size constraints)
       - ``COLLECTOR_REST_REFRESH_SECONDS`` — REST poll cadence (default
         3600 — hourly). Ignored when COLLECTOR_TICKERS_FILE is set.
       - ``RCLONE_REMOTE`` — rclone S3 remote name (default ``s3prod``)
       - ``S3_BUCKET`` — bucket name (default ``kalshi-bot-archive``)
+      - ``COLLECTOR_TICKER_CACHE_PATH`` — ticket 86bbvdcat (2026-09-05):
+        JSON file holding the last successfully fetched ticker set
+        (default ``<bronze_root.parent>/last_tickers.json``; empty string
+        disables). When present at boot the archivers are planned from it
+        and started IMMEDIATELY; the REST refresher's first tick re-pages
+        the universe in the background and replans only on change.
+        Measured 2026-09-05: the synchronous page-through took 54.9 min
+        (~18,500 pages) and the first WS connect landed 59.8 min after
+        ActiveEnter — every restart cost an hour of orderbook bronze.
 
     Boot sequence:
       1. Resolve config (env vars, with explicit args overriding).
@@ -665,14 +705,20 @@ def run(
          bronze tree (D0.3 §7 last paragraph + B-orphan-sweep AMENDMENT
          2026-05-19 ticket 86ba0jmz9 — symmetric salvage across both
          chunk-pair sides via uploader.salvage_in_flight_orphans).
-      3. Plan subscriptions via SubscriptionManager.assign().
-      4. For each ConnPlan: build per-channel writers + subscribe-frames
-         + archiver.
-      5. Single drain thread fans out across all writers.
+      3. Start the single drain thread over the LIVE writer/archiver
+         lists (ticket 86bbvdcat — before any REST fetch, so REST bronze
+         uploads during the page-through and the sidecar reports
+         ``state=booting`` from the first tick).
+      4. Plan subscriptions: persisted ticker set if present, else the
+         synchronous REST fetch (first boot / file mode), via
+         SubscriptionManager.assign().
+      5. For each ConnPlan: build per-channel writers + subscribe-frames
+         + archiver (appended to the live lists).
       6. Hand control to per-conn ``BronzeArchiver.start()`` via
          ``_start_archivers_staggered`` (staggered by
          ``_RECONNECT_STAGGER_SECONDS`` per D1.3-fu4-boot-stagger
-         2026-05-19); main thread blocks on shutdown_event.
+         2026-05-19); flip ``state=running``; start the refreshers; main
+         thread blocks on shutdown_event.
       7. On shutdown: stop all archivers, close all writers, join drain,
          final outbox sweep.
     """
@@ -726,6 +772,14 @@ def run(
     health_sidecar_path: Optional[Path] = (
         Path(health_sidecar_env) if health_sidecar_env else None
     )
+    # Ticket 86bbvdcat: persisted ticker set (see docstring).
+    ticker_cache_env = os.environ.get(
+        "COLLECTOR_TICKER_CACHE_PATH",
+        str(bronze_root.parent / DEFAULT_TICKER_CACHE_FILENAME),
+    ).strip()
+    ticker_cache_path: Optional[Path] = (
+        Path(ticker_cache_env) if ticker_cache_env else None
+    )
 
     uploader = _build_uploader()
 
@@ -738,103 +792,25 @@ def run(
             "Restart sweep re-uploaded %d leftover outbox chunks", n_swept
         )
 
-    # Step 3 — plan subscriptions.
-    #
-    # Two seams:
-    #   (a) COLLECTOR_TICKERS_FILE set → file-based loader. Authoritative;
-    #       REST refresher is NOT started. Useful for tests + offline dev.
-    #   (b) Default (no file) → D1.4 REST snapshot. Synchronous fetch at
-    #       boot so the WS connects with a populated subscription set;
-    #       RestSnapshotRefresher polls hourly + force-reconnects on change.
-    #
-    # R1-C1 (D1.4 adv round 1): in seam (b) we eagerly load_private_key()
-    # at boot rather than wrapping it in try/except. The WS handshake
-    # (BronzeArchiver.__init__ → load_private_key, ws_connection.py) MUST
-    # succeed on the same PEM, so a soft-fail here would just defer the
-    # crash by a few lines while emitting a misleading log message. Crash
-    # loud + early at the REST step so the operator sees the real cause
-    # before any WS connect attempt. Matches `_required_env`'s posture for
-    # KALSHI_COLLECTOR_KEY_ID + KALSHI_COLLECTOR_KEY_PATH.
-    rest_private_key = None
-    # D1.9 (ticket 86ba0pmzz, 2026-05-19): kalshi_rest/markets bronze
-    # writer. Only constructed in the production REST path (file-mode
-    # boot has no REST fetch → no bronze write surface). Registered
-    # with the drain thread below via ``all_writers`` so the rotation
-    # → upload → delete cycle picks it up automatically.
-    kalshi_rest_writer: Optional[BronzeWriter] = None
-    if tickers_file:
-        tickers_by_tier = _load_tickers_by_tier(tickers_file)
-    else:
-        rest_private_key = load_private_key(private_key_path)
-        kalshi_rest_writer = BronzeWriter(
-            root_dir=bronze_root,
-            source="kalshi_rest",
-            channel="markets",
-            conn=None,
-        )
-        rest_initial = fetch_tickers_by_tier(
-            api_key=api_key,
-            private_key=rest_private_key,
-            bronze_writer=kalshi_rest_writer,
-            excluded_series=excluded_series,
-        )
-        if rest_initial is None:
-            # Fetch failed (transient 5xx exhausted retries, partial
-            # pagination, malformed response). Boot with empty subs and
-            # rely on the refresher to recover; do NOT crash — the PEM
-            # is valid, the network is the issue.
-            logger.warning(
-                "Initial REST snapshot failed; booting with empty ticker "
-                "set. Refresher will retry every %.0fs.",
-                refresh_seconds,
-            )
-            tickers_by_tier = {}
-        else:
-            tickers_by_tier = rest_initial
-            logger.info(
-                "Initial REST snapshot loaded %d tickers across %d tier(s).",
-                sum(len(v) for v in tickers_by_tier.values()),
-                len(tickers_by_tier),
-            )
-    mgr = SubscriptionManager(
-        tickers_by_tier=tickers_by_tier,
-        conn_count=conn_count,
-        channels=CHANNELS_DEFAULT,
-        batch_size=batch_size,
-    )
-    plans = mgr.assign()
-
-    # Step 4 — per-conn components.
+    # Ticket 86bbvdcat — the live component lists + boot state are created
+    # up-front so the drain thread (started next) can serve the REST bronze
+    # writer DURING the boot page-through and write the sidecar with
+    # ``state=booting`` from the first tick.
     archivers: List[BronzeArchiver] = []
     all_writers: List[BronzeWriter] = []
-    # D1.9: include the kalshi_rest/markets writer in the drain set so
-    # rotation → upload → delete fires for it on the same cadence as the
-    # WS writers. Order is irrelevant to drain semantics (each writer's
-    # rotated_outbox_paths is drained independently).
-    if kalshi_rest_writer is not None:
-        all_writers.append(kalshi_rest_writer)
-    for idx, plan in enumerate(plans):
-        writers_by_channel = _build_writers_for_plan(plan, bronze_root)
-        all_writers.extend(writers_by_channel.values())
-        subscribe_frames, cmd_id_to_channel = SubscriptionManager.build_subscribe_frames(
-            plan,
-            cmd_id_start=idx * _PER_CONN_CMD_ID_STRIDE + 1,
-            batch_size=batch_size,
-        )
-        archiver = BronzeArchiver(
-            api_key=api_key,
-            private_key_path=private_key_path,
-            writers_by_channel=writers_by_channel,
-            subscribe_frames=subscribe_frames,
-            cmd_id_to_channel=cmd_id_to_channel,
-            conn_id=plan.conn_id,
-        )
-        archivers.append(archiver)
-        logger.info(
-            "Collector conn=%s wired: tickers=%d channels=%s subscribes=%d",
-            plan.conn_id, len(plan.market_tickers),
-            list(plan.channels), len(subscribe_frames),
-        )
+    boot_status: Dict[str, object] = {
+        "state": "booting",
+        "state_since": utc_now_iso(),
+        "ticker_set_source": None,
+        "ticker_cache_age_seconds": None,
+    }
+    refresher_ref: Dict[str, Optional[RestSnapshotRefresher]] = {"refresher": None}
+
+    def _sidecar_extra() -> Dict[str, object]:
+        extra: Dict[str, object] = dict(boot_status)
+        r = refresher_ref["refresher"]
+        extra["rest_refresh"] = r.status() if r is not None else None
+        return extra
 
     owned_event = shutdown_event is None
     if owned_event:
@@ -854,9 +830,10 @@ def run(
                 "thread). External shutdown source must set the event."
             )
 
-    # Step 5 — single drain thread fans out across ALL writers + writes
+    # Step 3 — single drain thread fans out across ALL writers + writes
     # the D1.6 fu bronze_health.json sidecar each tick for the cron-
-    # driven scripts/ops/collector_health_monitor.py to poll.
+    # driven scripts/ops/collector_health_monitor.py to poll. Started
+    # BEFORE the REST fetch (ticket 86bbvdcat) — the lists are live.
     drain_thread = threading.Thread(
         target=_drain_rotated,
         kwargs={
@@ -866,131 +843,273 @@ def run(
             "shutdown_event": shutdown_event,
             "archivers": archivers,
             "health_sidecar_path": health_sidecar_path,
+            "status_fn": _sidecar_extra,
         },
         daemon=True,
         name="bronze-drain",
     )
     drain_thread.start()
 
-    # Step 5b (D1.4) — REST snapshot refresher (only when no
-    # COLLECTOR_TICKERS_FILE override). Closes over `archivers` so an
-    # on_refresh tick can rebuild each archiver's subscribe frames +
-    # force-reconnect to push the new subscription set to Kalshi.
-    #
-    # D1.3-fu4-oom-closure (86b9zk4hz, 2026-05-19): pass
-    # ``shutdown_event`` through to `_replan_for_archivers` so the
-    # ``_RECONNECT_STAGGER_SECONDS`` between-archiver stagger sleeps
-    # are cancellable — a `systemctl stop kalshi-collector` mid-replan
-    # exits in ≤ one stagger interval instead of pinning the refresher
-    # thread for ~(N-1) * stagger seconds.
-    refresher: Optional[RestSnapshotRefresher] = None
-    incremental_refresher: Optional[IncrementalDiscoveryRefresher] = None
-    if not tickers_file and rest_private_key is not None:
-        # ── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ──
-        # main_loop owns the authoritative subscribed set + a fast cmd_id
-        # counter, both guarded by ``_incr_lock`` since the hourly refresher
-        # thread (``_on_refresh``) and the incremental thread
-        # (``_on_new_crypto_windows``) both mutate them. The fast cmd_id region
-        # starts ABOVE every hourly per-conn range
-        # ([idx*STRIDE+1, (idx+1)*STRIDE]) so incremental adds never collide
-        # with the hourly plan's ids.
-        _incr_lock = threading.Lock()
-        _fast_cmd_id_base = conn_count * _PER_CONN_CMD_ID_STRIDE + 1
-        _incr_state: Dict[str, object] = {
-            "tracked": {t for plan in plans for t in plan.market_tickers},
-            "next_cmd_id": _fast_cmd_id_base,
-            "rr": 0,
-        }
-
-        def _on_refresh(new_tickers_by_tier: Dict[str, List[str]]) -> None:
-            _replan_for_archivers(
-                new_tickers_by_tier=new_tickers_by_tier,
-                archivers=archivers,
-                conn_count=conn_count,
-                batch_size=batch_size,
-                shutdown_event=shutdown_event,
-            )
-            # The hourly reconnect REPLACED each archiver's subscribe set +
-            # cmd_id map from the authoritative REST snapshot, re-subscribing
-            # the full universe (incl. whatever crypto-15M is open now). Reset
-            # incremental tracking to that set + reclaim the fast cmd_id region
-            # (the REPLACE dropped the old fast ids).
-            with _incr_lock:
-                _incr_state["tracked"] = {
-                    t for v in new_tickers_by_tier.values() for t in v
-                }
-                _incr_state["next_cmd_id"] = _fast_cmd_id_base
-                # ``rr`` is intentionally NOT reset — it's a best-effort
-                # balance cursor and ``rr % n`` wraps regardless of magnitude,
-                # so carrying it across hourly resets is harmless (and keeps
-                # round-robin continuity across the reconnect boundary).
-
-        def _on_new_crypto_windows(open_set: set) -> None:
-            # Diff against the authoritative subscribed set; subscribe only the
-            # truly-new windows MID-SESSION (no reconnect — that's the OOM
-            # class we're avoiding). Planning is delegated to the pure,
-            # unit-tested ``_plan_incremental_adds`` helper (cmd_id
-            # non-collision + dedup invariants pinned there); this closure is
-            # the thin lock + dispatch adapter.
-            conn_ids = [a._conn_id for a in archivers]
-            with _incr_lock:
-                dispatch, new_rr, new_next, new = _plan_incremental_adds(
-                    open_set=open_set,
-                    tracked=_incr_state["tracked"],  # type: ignore[arg-type]
-                    rr=_incr_state["rr"],  # type: ignore[arg-type]
-                    next_cmd_id=_incr_state["next_cmd_id"],  # type: ignore[arg-type]
-                    conn_ids=conn_ids,
-                    batch_size=batch_size,
-                )
-                if not dispatch:
-                    return
-                _incr_state["rr"] = new_rr
-                _incr_state["next_cmd_id"] = new_next
-                _incr_state["tracked"].update(new)  # type: ignore[union-attr]
-            # Dispatch OUTSIDE the state lock — add_subscriptions does network
-            # I/O (send_frame) which must not serialize behind _incr_lock.
-            for idx, frames, cmap in dispatch:
-                try:
-                    archivers[idx].add_subscriptions(frames, cmap)
-                except Exception:
-                    logger.exception(
-                        "Incremental add_subscriptions raised for conn idx=%d "
-                        "(%d frames); next poll retries.", idx, len(frames),
-                    )
-            logger.info(
-                "Incremental discovery: subscribed %d new sub-hourly window(s) "
-                "mid-session (no reconnect).", len(new),
-            )
-
-        refresher = RestSnapshotRefresher(
-            api_key=api_key,
-            private_key=rest_private_key,
-            on_refresh=_on_refresh,
-            shutdown_event=shutdown_event,
-            interval_seconds=refresh_seconds,
-            bronze_writer=kalshi_rest_writer,  # D1.9
-            excluded_series=excluded_series,  # ticket 86ba76adw
-        )
-        incremental_refresher = IncrementalDiscoveryRefresher(
-            api_key=api_key,
-            private_key=rest_private_key,
-            series_tickers=CRYPTO_15M_SERIES,
-            on_new=_on_new_crypto_windows,
-            shutdown_event=shutdown_event,
-            interval_seconds=incremental_refresh_seconds,
-        )
-
-    logger.info(
-        "Collector booted — bronze_root=%s, conn_count=%d, archivers=%d, "
-        "rest_refresh=%s, incremental_discovery=%s",
-        bronze_root, conn_count, len(archivers),
-        "on" if refresher is not None else "off (file-mode)",
-        ("on (%.0fs, %d series)" % (
-            incremental_refresh_seconds, len(CRYPTO_15M_SERIES))
-         ) if incremental_refresher is not None else "off (file-mode)",
-    )
-
+    # Ticket 86bbvdcat (R1-M1): the drain thread is live from here on, so
+    # EVERY boot-time exception below (bad PEM at load_private_key, planner
+    # / writer / archiver construction) must reach the finally block that
+    # sets shutdown_event + joins the thread — otherwise a raise leaks a
+    # daemon thread mid-upload (rename → rclone → delete) into the caller.
     try:
+
+        # Step 4 — plan subscriptions.
+        #
+        # Three seams:
+        #   (a) COLLECTOR_TICKERS_FILE set → file-based loader. Authoritative;
+        #       REST refresher is NOT started. Useful for tests + offline dev.
+        #   (b) Default (no file) + persisted ticker cache present → plan from
+        #       the cache and start the WS conns immediately (ticket
+        #       86bbvdcat); the refresher's immediate first tick re-pages the
+        #       universe in the background and replans only on change.
+        #   (c) Default (no file), no cache (first boot after deploy) → D1.4
+        #       synchronous REST fetch so the WS connects with a populated
+        #       subscription set; the result seeds the cache for next boot.
+        #
+        # R1-C1 (D1.4 adv round 1): in seam (b) we eagerly load_private_key()
+        # at boot rather than wrapping it in try/except. The WS handshake
+        # (BronzeArchiver.__init__ → load_private_key, ws_connection.py) MUST
+        # succeed on the same PEM, so a soft-fail here would just defer the
+        # crash by a few lines while emitting a misleading log message. Crash
+        # loud + early at the REST step so the operator sees the real cause
+        # before any WS connect attempt. Matches `_required_env`'s posture for
+        # KALSHI_COLLECTOR_KEY_ID + KALSHI_COLLECTOR_KEY_PATH.
+        rest_private_key = None
+        # D1.9 (ticket 86ba0pmzz, 2026-05-19): kalshi_rest/markets bronze
+        # writer. Only constructed in the production REST path (file-mode
+        # boot has no REST fetch → no bronze write surface). Registered
+        # with the drain thread below via ``all_writers`` so the rotation
+        # → upload → delete cycle picks it up automatically.
+        kalshi_rest_writer: Optional[BronzeWriter] = None
+        if tickers_file:
+            tickers_by_tier = _load_tickers_by_tier(tickers_file)
+            boot_status["ticker_set_source"] = "file"
+        else:
+            rest_private_key = load_private_key(private_key_path)
+            kalshi_rest_writer = BronzeWriter(
+                root_dir=bronze_root,
+                source="kalshi_rest",
+                channel="markets",
+                conn=None,
+            )
+            # D1.9: registered with the (already running) drain thread so
+            # rotation → upload → delete fires during the page-through.
+            all_writers.append(kalshi_rest_writer)
+            cached = (
+                load_tier_map(ticker_cache_path)
+                if ticker_cache_path is not None else None
+            )
+            if cached is not None:
+                tickers_by_tier, cache_age = cached
+                boot_status["ticker_set_source"] = "persisted"
+                boot_status["ticker_cache_age_seconds"] = round(cache_age, 1)
+                logger.info(
+                    "Boot: planning from persisted ticker set %s (%d tickers, "
+                    "%.0fs old); the REST refresher's first tick re-pages the "
+                    "universe in the background and replans only on change.",
+                    ticker_cache_path,
+                    sum(len(v) for v in tickers_by_tier.values()), cache_age,
+                )
+            else:
+                rest_initial = fetch_tickers_by_tier(
+                    api_key=api_key,
+                    private_key=rest_private_key,
+                    bronze_writer=kalshi_rest_writer,
+                    excluded_series=excluded_series,
+                )
+                if rest_initial is None:
+                    # Fetch failed (transient 5xx exhausted retries, partial
+                    # pagination, malformed response). Boot with empty subs and
+                    # rely on the refresher to recover; do NOT crash — the PEM
+                    # is valid, the network is the issue.
+                    logger.warning(
+                        "Initial REST snapshot failed; booting with empty ticker "
+                        "set. Refresher will retry every %.0fs.",
+                        refresh_seconds,
+                    )
+                    tickers_by_tier = {}
+                    boot_status["ticker_set_source"] = "empty"
+                else:
+                    tickers_by_tier = rest_initial
+                    boot_status["ticker_set_source"] = "rest"
+                    logger.info(
+                        "Initial REST snapshot loaded %d tickers across %d tier(s).",
+                        sum(len(v) for v in tickers_by_tier.values()),
+                        len(tickers_by_tier),
+                    )
+                    # R1-m1: never persist an empty set — a 200/empty
+                    # anomaly must not become next boot's "persisted" seed.
+                    if ticker_cache_path is not None and any(
+                        tickers_by_tier.values()
+                    ):
+                        save_tier_map(ticker_cache_path, tickers_by_tier)
+        mgr = SubscriptionManager(
+            tickers_by_tier=tickers_by_tier,
+            conn_count=conn_count,
+            channels=CHANNELS_DEFAULT,
+            batch_size=batch_size,
+        )
+        plans = mgr.assign()
+
+        # Step 5 — per-conn components (appended to the live lists the drain
+        # thread already iterates; order is irrelevant to drain semantics —
+        # each writer's rotated_outbox_paths is drained independently).
+        for idx, plan in enumerate(plans):
+            writers_by_channel = _build_writers_for_plan(plan, bronze_root)
+            all_writers.extend(writers_by_channel.values())
+            subscribe_frames, cmd_id_to_channel = SubscriptionManager.build_subscribe_frames(
+                plan,
+                cmd_id_start=idx * _PER_CONN_CMD_ID_STRIDE + 1,
+                batch_size=batch_size,
+            )
+            archiver = BronzeArchiver(
+                api_key=api_key,
+                private_key_path=private_key_path,
+                writers_by_channel=writers_by_channel,
+                subscribe_frames=subscribe_frames,
+                cmd_id_to_channel=cmd_id_to_channel,
+                conn_id=plan.conn_id,
+            )
+            archivers.append(archiver)
+            logger.info(
+                "Collector conn=%s wired: tickers=%d channels=%s subscribes=%d",
+                plan.conn_id, len(plan.market_tickers),
+                list(plan.channels), len(subscribe_frames),
+            )
+
+        # Step 5b (D1.4) — REST snapshot refresher (only when no
+        # COLLECTOR_TICKERS_FILE override). Closes over `archivers` so an
+        # on_refresh tick can rebuild each archiver's subscribe frames +
+        # force-reconnect to push the new subscription set to Kalshi.
+        #
+        # D1.3-fu4-oom-closure (86b9zk4hz, 2026-05-19): pass
+        # ``shutdown_event`` through to `_replan_for_archivers` so the
+        # ``_RECONNECT_STAGGER_SECONDS`` between-archiver stagger sleeps
+        # are cancellable — a `systemctl stop kalshi-collector` mid-replan
+        # exits in ≤ one stagger interval instead of pinning the refresher
+        # thread for ~(N-1) * stagger seconds.
+        refresher: Optional[RestSnapshotRefresher] = None
+        incremental_refresher: Optional[IncrementalDiscoveryRefresher] = None
+        if not tickers_file and rest_private_key is not None:
+            # ── Sub-hourly incremental discovery (ticket 86ba74hzy, 2026-05-30) ──
+            # main_loop owns the authoritative subscribed set + a fast cmd_id
+            # counter, both guarded by ``_incr_lock`` since the hourly refresher
+            # thread (``_on_refresh``) and the incremental thread
+            # (``_on_new_crypto_windows``) both mutate them. The fast cmd_id region
+            # starts ABOVE every hourly per-conn range
+            # ([idx*STRIDE+1, (idx+1)*STRIDE]) so incremental adds never collide
+            # with the hourly plan's ids.
+            _incr_lock = threading.Lock()
+            _fast_cmd_id_base = conn_count * _PER_CONN_CMD_ID_STRIDE + 1
+            _incr_state: Dict[str, object] = {
+                "tracked": {t for plan in plans for t in plan.market_tickers},
+                "next_cmd_id": _fast_cmd_id_base,
+                "rr": 0,
+            }
+
+            def _on_refresh(new_tickers_by_tier: Dict[str, List[str]]) -> None:
+                _replan_for_archivers(
+                    new_tickers_by_tier=new_tickers_by_tier,
+                    archivers=archivers,
+                    conn_count=conn_count,
+                    batch_size=batch_size,
+                    shutdown_event=shutdown_event,
+                )
+                # The hourly reconnect REPLACED each archiver's subscribe set +
+                # cmd_id map from the authoritative REST snapshot, re-subscribing
+                # the full universe (incl. whatever crypto-15M is open now). Reset
+                # incremental tracking to that set + reclaim the fast cmd_id region
+                # (the REPLACE dropped the old fast ids).
+                with _incr_lock:
+                    _incr_state["tracked"] = {
+                        t for v in new_tickers_by_tier.values() for t in v
+                    }
+                    _incr_state["next_cmd_id"] = _fast_cmd_id_base
+                    # ``rr`` is intentionally NOT reset — it's a best-effort
+                    # balance cursor and ``rr % n`` wraps regardless of magnitude,
+                    # so carrying it across hourly resets is harmless (and keeps
+                    # round-robin continuity across the reconnect boundary).
+
+            def _on_new_crypto_windows(open_set: set) -> None:
+                # Diff against the authoritative subscribed set; subscribe only the
+                # truly-new windows MID-SESSION (no reconnect — that's the OOM
+                # class we're avoiding). Planning is delegated to the pure,
+                # unit-tested ``_plan_incremental_adds`` helper (cmd_id
+                # non-collision + dedup invariants pinned there); this closure is
+                # the thin lock + dispatch adapter.
+                conn_ids = [a._conn_id for a in archivers]
+                with _incr_lock:
+                    dispatch, new_rr, new_next, new = _plan_incremental_adds(
+                        open_set=open_set,
+                        tracked=_incr_state["tracked"],  # type: ignore[arg-type]
+                        rr=_incr_state["rr"],  # type: ignore[arg-type]
+                        next_cmd_id=_incr_state["next_cmd_id"],  # type: ignore[arg-type]
+                        conn_ids=conn_ids,
+                        batch_size=batch_size,
+                    )
+                    if not dispatch:
+                        return
+                    _incr_state["rr"] = new_rr
+                    _incr_state["next_cmd_id"] = new_next
+                    _incr_state["tracked"].update(new)  # type: ignore[union-attr]
+                # Dispatch OUTSIDE the state lock — add_subscriptions does network
+                # I/O (send_frame) which must not serialize behind _incr_lock.
+                for idx, frames, cmap in dispatch:
+                    try:
+                        archivers[idx].add_subscriptions(frames, cmap)
+                    except Exception:
+                        logger.exception(
+                            "Incremental add_subscriptions raised for conn idx=%d "
+                            "(%d frames); next poll retries.", idx, len(frames),
+                        )
+                logger.info(
+                    "Incremental discovery: subscribed %d new sub-hourly window(s) "
+                    "mid-session (no reconnect).", len(new),
+                )
+
+            refresher = RestSnapshotRefresher(
+                api_key=api_key,
+                private_key=rest_private_key,
+                on_refresh=_on_refresh,
+                shutdown_event=shutdown_event,
+                interval_seconds=refresh_seconds,
+                bronze_writer=kalshi_rest_writer,  # D1.9
+                excluded_series=excluded_series,  # ticket 86ba76adw
+                # Ticket 86bbvdcat: seed the change detector with the set the
+                # boot planned from so the immediate first tick replans ONLY
+                # if the universe actually changed; persist every success.
+                initial_tier_map=(
+                    tickers_by_tier
+                    if boot_status["ticker_set_source"] in ("persisted", "rest")
+                    else None
+                ),
+                cache_path=ticker_cache_path,
+            )
+            refresher_ref["refresher"] = refresher
+            incremental_refresher = IncrementalDiscoveryRefresher(
+                api_key=api_key,
+                private_key=rest_private_key,
+                series_tickers=CRYPTO_15M_SERIES,
+                on_new=_on_new_crypto_windows,
+                shutdown_event=shutdown_event,
+                interval_seconds=incremental_refresh_seconds,
+            )
+
+        logger.info(
+            "Collector booted — bronze_root=%s, conn_count=%d, archivers=%d, "
+            "ticker_set_source=%s, rest_refresh=%s, incremental_discovery=%s",
+            bronze_root, conn_count, len(archivers),
+            boot_status["ticker_set_source"],
+            "on" if refresher is not None else "off (file-mode)",
+            ("on (%.0fs, %d series)" % (
+                incremental_refresh_seconds, len(CRYPTO_15M_SERIES))
+             ) if incremental_refresher is not None else "off (file-mode)",
+        )
+
         # Step 6 — start all archivers (staggered per
         # D1.3-fu4-boot-stagger 2026-05-19 — see
         # kb/decisions/d1-3-fu4-boot-stagger-plan.md §RCA), then block
@@ -1019,6 +1138,12 @@ def run(
                 "to refresher.start() + shutdown.",
                 n_started, len(archivers), reason,
             )
+        # Ticket 86bbvdcat: archivers dispatched → the process is serving
+        # (or about to serve) WS data; flip the sidecar state. A boot
+        # cancelled mid-stagger by shutdown stays "booting" (it is exiting).
+        if not shutdown_event.is_set():
+            boot_status["state"] = "running"
+            boot_status["state_since"] = utc_now_iso()
         if refresher is not None:
             refresher.start()
         if incremental_refresher is not None:

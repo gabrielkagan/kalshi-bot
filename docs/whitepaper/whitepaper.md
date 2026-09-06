@@ -152,7 +152,7 @@ kalshi-bot/
 │   │   ├── auditor.py            ← scheduled audit-summary LLM dispatcher
 │   │   └── researcher.py         ← auto-research scheduled jobs (3x daily)
 │   ├── notifier.py               ← TelegramNotifier
-│   └── logger.py                 ← JSONL journals (append-only, daily rotation)
+│   └── logger.py                 ← JSONL journals (append-only; every-4h hour-stamped rotation via ops/rotate_journals.sh)
 │
 ├── collector/                    ← data corpus collector (separate process)
 │   ├── __main__.py
@@ -965,7 +965,7 @@ Structurally:
 
 The off-switch is `sudo systemctl stop kalshi-collector` — bot trading unaffected. Inverse off-switch: bot crash, collector keeps capturing.
 
-The single shared failure surface is **disk full** (both processes write to the same root filesystem). Mitigations: rotate-then-delete-local discipline; D1.6 health-monitor alerts when disk is ≥80% used (free space < 20%); future option to put `bronze_buffer/` on a dedicated mount.
+The single shared failure surface is **disk full** (both processes write to the same root filesystem). Mitigations: rotate-then-delete-local discipline; D1.6 health-monitor alerts when disk is ≥80% used (free space < 20%) plus an independent `monitor_watchdog.py` root-filesystem check at 85% (2026-09-05, after the 80% canary was found dead for 3.5 months); future option to put `bronze_buffer/` on a dedicated mount.
 
 ## 6.8 `kalshi_wire/` — the shared transport layer
 
@@ -1007,7 +1007,7 @@ D2.1 (silver schema design) and D2.2 (ETL implementation) are upcoming tickets.
 
 ## 7.1 Motivation
 
-This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,506 tests, multi-vertical engines, a corpus collector, automated deploys, daily JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
+This project is operated by one person plus AI agents (primarily Claude via the Claude Code CLI). At time of writing, the platform has ~6,506 tests, multi-vertical engines, a corpus collector, automated deploys, every-4h JSONL rotation, an analyst LLM, and a multi-Pillar quality discipline. The typical team-size estimate for this rate of output and quality discipline is 5–15 engineers; the actual headcount is one. This section describes how that arithmetic works in practice.
 
 The published benchmark data is the empirical anchor for this thesis: as of May 2026, SWE-bench Verified shows that *the same LLM in different scaffolds* varies by 15+ percentage points.[^swebench-tech] The model is roughly fixed; the discipline around it varies; the discipline is the moat.
 
@@ -1364,9 +1364,9 @@ Auto-deploy means a push to `main` is a production deploy. The discipline is to 
 - **≤50-row commit batches** — bounds the size of any single write and reduces lock contention.
 - **`recent_writes` ring buffer** + **slow-batch breakdown logging** — when a commit takes >100ms, the breakdown is logged for forensic analysis.
 
-JSONL journals (`logs/journals/`) record every event (scans, opportunities, rejections, trades, settlements, maker fill model training data). Append-only. Daily rotation + zstd compression via `rotate_journals.sh` cron at 04:00 UTC (script lives on the VPS, not in git). The compressed files upload to S3 at 04:30 UTC via `journal_archives_s3_sync.py` (same `--checksum --immutable` rclone discipline as the data corpus).
+JSONL journals (`logs/journals/`) record every event (scans, opportunities, rejections, trades, settlements, maker fill model training data). Append-only. Every-4h, hour-stamped rotation + zstd compression via `ops/rotate_journals.sh` cron (tracked in git since 2026-09-05). The compressed archives upload to S3 30 min after each rotation tick via `journal_archives_s3_sync.py` (same `--checksum --immutable` rclone discipline as the data corpus).
 
-Retention: 90 days local on VPS; S3 lifecycle transitions to DEEP_ARCHIVE at 30 days, never expires.
+Retention: 14 days local on VPS (`ROTATE_LOCAL_RETENTION_DAYS`, `find -mtime +14`); S3 lifecycle transitions to DEEP_ARCHIVE at 30 days, never expires.
 
 ## 9.5 Watchdogs and alerts
 
@@ -1393,8 +1393,8 @@ The discipline is "API wins" — the bot's state.db never overrides Kalshi's rec
 |---|---|---|
 | `scripts/audit/calibrator_feature_health.py` | Every 6h | Checks every cal_mlp feature for >99% population (95% for known-flaky 5min momentum). Telegram alert on `SCHEMA_DRIFT`. |
 | `bot/ai/researcher.py` | 3× daily | Refreshes shadow-system Wilson CIs, SPRT updates; sends summaries via Telegram. |
-| `rotate_journals.sh` (lives on VPS, not in git) | Daily 04:00 UTC | Rotates JSONL journals and compresses with zstd. |
-| `journal_archives_s3_sync.py` | Daily 04:30 UTC | Uploads zstd-compressed rotated journals to S3. |
+| `ops/rotate_journals.sh` (tracked in git since 2026-09-05) | Every 4 h on the hour (00/04/08/12/16/20 UTC) | Rotates JSONL journals to hour-stamped archives and compresses with zstd; 14-day local retention, S3 holds the long-term copy. |
+| `journal_archives_s3_sync.py` | Every 4 h at :30 (00/04/08/12/16/20:30 UTC, ticket 86b9zkp89) | Uploads zstd-compressed rotated journals to S3. |
 | `state_db_s3_backup.py` | Daily 06:00 UTC | Backs up `state.db` to S3 (`daily/` prefix). |
 | `export_market_obs_to_s3.py` | Daily 05:30 UTC | Archives `market_observations` table to S3 (`market_obs/` prefix). |
 | `collector_health_monitor.py` | Cron (configured per VPS — installed by operator) | §6.9. |

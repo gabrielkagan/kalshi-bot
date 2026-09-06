@@ -1,7 +1,7 @@
 """Tests for scripts/ops/journal_archives_s3_sync.py.
 
 Ticket: 86b9xgp7k — incremental S3 sync of ~/kalshi-bot-repo/journal_archives/
-so per-tick forensic JSONL streams survive past the 90-day local rotation.
+so per-tick forensic JSONL streams survive past the 14-day local rotation prune (`ops/rotate_journals.sh`, `-mtime +14`).
 
 Why these tests:
   - The HARD AC is idempotency: re-running the script must be a no-op.
@@ -72,7 +72,7 @@ class TestBuildRcloneArgv:
         )
         assert "sync" not in argv, (
             "sync subcommand reintroduced — would mirror-delete S3 objects "
-            "when rotate_journals.sh prunes local files at 90d boundary"
+            "when ops/rotate_journals.sh prunes local files at the 14d boundary"
         )
 
     def test_has_checksum_flag(self, sync_module, archives_dir):

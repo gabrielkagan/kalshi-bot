@@ -7,7 +7,7 @@ snapshotter.py — tightened from 14d by ticket 86ba0jb39 2026-05-19 to
 reduce executemany lock-hold tail). Without this archive ~41.5K NBBO
 rows/day are permanently lost.
 
-Flow (one nightly run, 05:30 UTC, between journal-rotate @04:00 and
+Flow (one nightly run, 05:30 UTC, between the rotate_journals 04:00 tick (every 4 h) and
 state.db backup @06:00):
   1. target_date = today_utc - 4d (one day inside the 5d retention
      boundary so rows still exist when the read fires).

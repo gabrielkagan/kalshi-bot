@@ -59,11 +59,25 @@ Install with `bash scripts/ops/setup_market_obs_archive_timer.sh` on the VPS. Co
 
 ## journal_archives/ sync (ticket 86b9xgp7k)
 
-`~/kalshi-bot-repo/journal_archives/` holds the per-tick forensic JSONL streams (`opportunity_journal_*`, `scan_journal_*`, `rejection_journal_*`, ...). `rotate_journals.sh` deletes them at the 90-day local retention boundary; without S3 archival they're gone forever.
+`~/kalshi-bot-repo/journal_archives/` holds the per-tick forensic JSONL streams (`opportunity_journal_*`, `scan_journal_*`, `rejection_journal_*`, ...). `ops/rotate_journals.sh` prunes local archives with `find -mtime +14` (`ROTATE_LOCAL_RETENTION_DAYS`, i.e. ≥15 full days old; the live VPS value — earlier docs said 90 d and were wrong); without S3 archival they're gone forever.
 
-- `kalshi-journal-archives-sync.{service,timer}` — every 4h, 30-min offset (00:30, 04:30, 08:30, 12:30, 16:30, 20:30 UTC); cadence revised from daily 04:30 UTC by ticket `86b9zkp89` (2026-05-17). Each tick fires 30 min AFTER its paired `rotate_journals.sh` tick (rotation cadence was SSH-changed from daily @04:00 UTC to every-4h on the hour on 2026-05-17 by the same Bronze-durability push; `rotate_journals.sh` is local-only on the VPS, not in git, so no in-repo edit is possible). The 30-min offset is load-bearing: zstd compression of the most-recently-rotated journal must complete before sync, else `rclone --immutable` would treat the partial file as content divergence and surface exit 6. Uses `rclone copy --checksum --immutable` (one-way: upload-or-skip, never deletes from S3) from the local archives dir → `s3prod:kalshi-bot-archive/journals/`. Live current-day `*.jsonl` files AND `rotation.log` (which is appended-to daily) are excluded via `--exclude` filter. Single-runner flock at `/var/lock/kalshi-journal-sync.lock`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+### Journal rotation (`ops/rotate_journals.sh`, ticket 86bbvd50a, 2026-09-05)
 
-**WHY `copy` not `sync`** (R1 catch, ticket 86b9xgp7k): `rclone sync` mirror-deletes — when `rotate_journals.sh` prunes a journal locally at the 90-day boundary, `sync` would DELETE the S3 object too, defeating the entire archive. `rclone copy` is one-way.
+Tracked in git since 2026-09-05. Every 4 h (`0 */4 * * *`) it atomically renames (`mv`, same filesystem) each journal ≥ 10 MiB to `journal_archives/<journal>_YYYY-MM-DDTHH.jsonl` and compresses it to `.zst` — the stamp carries the **UTC hour**. `mv` rather than the old copy-then-truncate because the bot opens the journal with mode `a` per append (no held handle): the rename loses nothing, whereas every line appended between `cp` finishing and the truncate was dropped, and the copy transiently doubled the largest journal on disk. The previous VPS-local, untracked copy used a date-only stamp; when PR #64 moved the cron from daily to every-4h the second+ run of each day hit `zstd: ... already exists; not overwritten`, the raw copy stayed, and the next run's `cp` clobbered it — 436 intermediate 4-h chunks per journal (opportunity 52.0 GB raw, scan 41.5 GB raw; 16 of every 24 h) were destroyed over 109 days and 30.2 GB of orphan raws filled the disk on 2026-09-04 (`kb/failures/vps-disk-full-journal-rotation-collision-sep05.md`). The script fails CLOSED before touching the live file (existing archive name / failed `mv` → ERROR, live untouched, exit 1), retries any leftover uncompressed raw in the archive dir on every run, and ends each run with `Done. Disk free: … errors=N`. Because cron ignores exit codes under the `>> rotation.log` redirect, `monitor_watchdog.py` watches `rotation.log` freshness (`journal_rotation`, 500 min) AND alerts on `errors=N>0` (`check_rotation_errors`, dedup `monitor_watchdog_journal_rotation_errors`). `ops/install.sh` validates it (`+x` + `bash -n`) on every install and prints the crontab line. Env seams for tests: `ROTATE_REPO_DIR`, `ROTATE_ARCHIVE_DIR`, `ROTATE_MIN_SIZE_BYTES`, `ROTATE_LOCAL_RETENTION_DAYS`, `ROTATE_JOURNALS`, `ROTATE_STAMP`. Pinned by `tests/contracts/test_rotate_journals_sh.py`.
+
+Crontab line (operator-owned; **`SHELL=/bin/bash` must be the FIRST line of the crontab** — see "Crontab SHELL ordering" below):
+```
+0 */4 * * * /bin/bash /home/botuser/kalshi-bot-repo/ops/rotate_journals.sh >> /home/botuser/kalshi-bot-repo/journal_archives/rotation.log 2>&1
+```
+After switching the line, delete the legacy untracked `~/kalshi-bot-repo/rotate_journals.sh` (+ its `.bak-*` siblings) so nothing can run the date-only version again.
+
+### Crontab SHELL ordering (RCA 2026-09-05, ticket 86bbvd50a)
+
+cron applies `SHELL=` only to the lines BELOW it. On the VPS the directive sat mid-file (added 2026-05-19 with the phantom-reconcile line), so every line above it — `quiet_market_monitor`, `data_health_monitor`, `collector_health_monitor` — ran under `/bin/sh` (dash), where `source` is not a builtin: `sh: 1: source: not found`, and the `&&` chain died before the `>> log` redirect, so nothing was logged. Those three monitors have been DEAD since 2026-05-19 ~21:25 UTC (`~/collector_health.log` mtime), which is why the 80 % disk canary never fired while `/` sat at ~95 % for 4+ weeks. `monitor_watchdog.py` (below the directive) alerted `alerts_sent=3` every 10 min for 109 days — ~47K Telegram messages, unactioned. Rules: `SHELL=/bin/bash` on line 1 of the crontab; prefer `. venv/bin/activate` over `source` in cron lines; check `crontab -l | grep -n SHELL` whenever a cron job's log goes quiet.
+
+- `kalshi-journal-archives-sync.{service,timer}` — every 4h, 30-min offset (00:30, 04:30, 08:30, 12:30, 16:30, 20:30 UTC); cadence revised from daily 04:30 UTC by ticket `86b9zkp89` (2026-05-17). Each tick fires 30 min AFTER its paired `rotate_journals.sh` tick (rotation cadence was SSH-changed from daily @04:00 UTC to every-4h on the hour on 2026-05-17 by the same Bronze-durability push; `rotate_journals.sh` was VPS-local until 2026-09-05 — it now lives at `ops/rotate_journals.sh`, see "Journal rotation" above). The 30-min offset is load-bearing: zstd compression of the most-recently-rotated journal must complete before sync, else `rclone --immutable` would treat the partial file as content divergence and surface exit 6. Uses `rclone copy --checksum --immutable` (one-way: upload-or-skip, never deletes from S3) from the local archives dir → `s3prod:kalshi-bot-archive/journals/`. Live (current, uncompressed) `*.jsonl` files AND `rotation.log` (which is appended-to on every run, every 4 h) are excluded via `--exclude` filter. Single-runner flock at `/var/lock/kalshi-journal-sync.lock`. Wrapped in `h4_run_with_alert.py` for Telegram failure alerts.
+
+**WHY `copy` not `sync`** (R1 catch, ticket 86b9xgp7k): `rclone sync` mirror-deletes — when `rotate_journals.sh` prunes a journal locally at the 14-day boundary, `sync` would DELETE the S3 object too, defeating the entire archive. `rclone copy` is one-way.
 
 Idempotent: re-runs are no-ops (rclone short-circuits per-file via S3 ETag). First run uploads the ~11 GB backlog (~33 days post-2026-04-10).
 
@@ -238,7 +252,7 @@ Key file invariants:
 ### Crontab line
 
 ```
-*/2 * * * * cd ~/kalshi-bot-repo && source venv/bin/activate && set -a && source ~/.env && set +a && python3 ops/watchdog.py
+*/2 * * * * cd ~/kalshi-bot-repo && . venv/bin/activate && set -a && . ~/.env && set +a && python3 ops/watchdog.py
 ```
 
 ### Post-Bit-X.5 operator action (one-time, post-merge)
@@ -336,13 +350,13 @@ crontab -e
 # Sources BOTH env files: TELEGRAM_* live in ~/.env (user-scope cron
 # convention shared by auditor.py / analyst.py / watchdog.py); KALSHI_*
 # live in ~/kalshi-bot-repo/.env (systemd EnvironmentFile= for kalshi-bot.service).
-7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && source venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
+7 * * * * cd /home/botuser/kalshi-bot-repo && set -a && . ~/.env && . .env && set +a && . venv/bin/activate && python3 scripts/ops/phantom_reconcile_monitor.py >> ~/phantom_reconcile.log 2>&1
 ```
 
 Pre-install operator checks:
 - `~/.env` exports `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` (production VPS layout; same file the existing cron jobs source).
 - `~/kalshi-bot-repo/.env` exports `KALSHI_API_KEY` (or `KALSHI_API_KEY_ID`) + `KALSHI_PRIVATE_KEY_PATH` (same file the kalshi-bot systemd unit sources via `EnvironmentFile=`).
-- The exact split may differ on a fresh setup — what matters is that ALL four keys reach the cron process after the `set -a && source ... && set +a` block. Verify with `crontab -l` + a manual dry-run (`cd ~/kalshi-bot-repo && set -a && source ~/.env && source .env && set +a && python3 -c 'import os; [print(k, "=<set>" if os.environ.get(k) else "=MISSING") for k in ("KALSHI_API_KEY","KALSHI_API_KEY_ID","KALSHI_PRIVATE_KEY_PATH","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID")]'`).
+- The exact split may differ on a fresh setup — what matters is that ALL four keys reach the cron process after the `set -a && . ... && set +a` block. Verify with `crontab -l` + a manual dry-run (`cd ~/kalshi-bot-repo && set -a && . ~/.env && . .env && set +a && python3 -c 'import os; [print(k, "=<set>" if os.environ.get(k) else "=MISSING") for k in ("KALSHI_API_KEY","KALSHI_API_KEY_ID","KALSHI_PRIVATE_KEY_PATH","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID")]'`).
 - `~/kalshi-bot-repo/phantom_reconcile_dedup.json` + `.lock` siblings writable (auto-created on first run; gitignored).
 
 Three alert classes with day-stable cross-process dedup via JSON sidecar at `./phantom_reconcile_dedup.json` (configurable via `PHANTOM_RECONCILE_DEDUP_PATH` env or `--dedup-sidecar`):
@@ -353,6 +367,14 @@ Three alert classes with day-stable cross-process dedup via JSON sidecar at `./p
 `audit_run_id` is day-granular `auto-YYYY-MM-DD` (UTC). 24 hourly cron firings within a UTC day share one run_id; `INSERT OR REPLACE` on `UNIQUE(audit_run_id, ticker, side)` keeps `phantom_corrections` to AT MOST one row per (day, ticker, side). Downstream LEFT JOIN consumers see no row multiplication. The `auto-` prefix namespace-isolates from operator manual `--run-id <name>` runs.
 
 Cron convention: always exits 0 (cron's mail-spool reservation; signal goes via Telegram, not exit code).
+
+## Root-filesystem usage alert in `monitor_watchdog.py` (ticket 86bbvd50a, 2026-09-05)
+
+`scripts/ops/monitor_watchdog.py` (cron `*/10`, BELOW the `SHELL=` directive → alive) now also checks `WATCHED_DISKS = (WatchedDisk("root", "/", 85),)` via `shutil.disk_usage` — percentage computed as `used / (used + free)` so it equals `df`'s Use% (not `used/total`, which hides the ext4 reserved blocks) — and Telegram-alerts with dedup key `monitor_watchdog_disk_root`; alert text is printed to `~/monitor_watchdog.log` too so the log keeps a history. It is an INDEPENDENT second canary — `collector_health_monitor.check_disk` (80 %) still exists but was dead for 3.5 months because of the crontab SHELL ordering above. 85 % ≈ 7 GB free on the 48 GB root (≈ 25 days at the 0.28 GB/day raw-leak rate of the incident); healthy steady state is ~30 % used (~14 GB: repo + venv + state.db + in-flight bronze; measured 29 % on 2026-09-05 post-recovery). Pinned by `tests/contracts/test_monitor_watchdog_disk.py`.
+
+## Collector boot on the persisted ticker set (ticket 86bbvdcat, 2026-09-05)
+
+`kalshi-collector` writes the last successful REST ticker set to `COLLECTOR_TICKER_CACHE_PATH` (default `/var/lib/kalshi-collector/last_tickers.json`, ~10 MB) after every refresh. On boot, if the file exists the archivers are planned from it: the first WS conn starts ~5 min after ActiveEnter (3.0 min restart sweep + salvage, then the ~2 min plan/frame-build/connect the 09-05 timeline showed after the page-through), all 7 within ~7 min (6 × 20 s stagger — no leading stagger before the first conn) — confirm on the first post-deploy restart; the refresher's immediate first tick re-pages the universe in the background and force-reconnects only if the set changed. Measured before the change (2026-09-05 12:13Z restart): synchronous page-through 54.9 min (~18,500 pages ≈ 3.7M rows → 358,625 tickers after `COLLECTOR_EXCLUDED_SERIES`), first `kalshi_ws_connected` 59.8 min after ActiveEnter, cgroup MemoryPeak 1.68 GB / 2 GB, and 17 GB of REST bronze parked on local disk because the drain thread started after the fetch (it now starts first). `bronze_health.json` gains additive keys `state` (`booting`/`running`), `state_since`, `ticker_set_source` (`persisted`/`rest`/`file`/`empty`), `ticker_cache_age_seconds`, `rest_refresh{in_progress,last_duration_seconds,last_ticker_count,last_outcome,...}`; `collector_health_monitor.check_boot_state` alerts (`d1_6_boot_state`) after 1200 s of `booting`. The FIRST restart after deploy still pays the synchronous page-through (no cache yet); every later restart boots from the cache. Delete the cache file to force a synchronous boot.
 
 ## D1.11.a ESPN collector deploy (REQUIRES-APPROVAL discipline)
 
@@ -444,7 +466,7 @@ sudo visudo -f /etc/sudoers.d/botuser-systemctl-restart
 - `kalshi-weather-collector.service` — D1.8 weather collector systemd unit, source of truth (ticket `86ba0duck`, 2026-05-18)
 - `kalshi-espn-collector.service` — D1.11.a ESPN collector systemd unit, source of truth (ticket `86ba0ppy0`, 2026-05-19)
 - `kalshi-venue-l2-collector.service` — B2a-1 venue-L2 collector systemd unit, source of truth (ticket `86ba1zf5j`, 2026-05-28)
-- `install.sh` — 6-unit install + reload (validates + enables ALL SIX — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector + kalshi-espn-collector + kalshi-venue-l2-collector)
+- `install.sh` — 6-unit install + reload (validates + enables ALL SIX — kalshi-bot + kalshi-collector + kalshi-coinbase-collector + kalshi-weather-collector + kalshi-espn-collector + kalshi-venue-l2-collector) + validates `ops/rotate_journals.sh` (+x, `bash -n`) and prints its crontab line (ticket 86bbvd50a)
 - `watchdog.py` — 2-min cron health monitor (Sprint 14-A Bit X.5, 2026-05-17)
 - `__init__.py` — empty file; makes `ops/` a Python package so `import ops.watchdog` resolves
 

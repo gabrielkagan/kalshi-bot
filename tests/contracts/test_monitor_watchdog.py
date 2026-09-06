@@ -52,9 +52,9 @@ def test_watched_monitor_dataclass_shape():
 
 
 def test_default_config_covers_verified_cron_monitors():
-    """`WATCHED_MONITORS` includes exactly the 4 verified cron monitors that
+    """`WATCHED_MONITORS` includes exactly the 5 verified cron monitors that
     use `>> <log_path> 2>&1` redirection (data_health, quiet_market,
-    collector_health, phantom_reconcile) — and nothing else.
+    collector_health, phantom_reconcile, journal_rotation) — and nothing else.
 
     Each must correspond to a real cron line on the VPS; adding entries for
     non-existent cron lines would Telegram-storm MISSING alerts on every
@@ -71,6 +71,7 @@ def test_default_config_covers_verified_cron_monitors():
         "quiet_market",       # 86ba0k557; cron */15, >> /tmp/quiet_market.log
         "collector_health",   # 86ba0jvka root cause; cron */5, >> ~/collector_health.log
         "phantom_reconcile",  # Stage B precondition; cron 7 *, >> ~/phantom_reconcile.log
+        "journal_rotation",   # 86bbvd50a; cron 0 */4, >> ~/kalshi-bot-repo/journal_archives/rotation.log
     }
     assert names == expected, (
         f"WATCHED_MONITORS must equal {expected}; got {names}. "
@@ -156,7 +157,10 @@ def test_main_sends_alert_with_correct_dedup_key(tmp_path: Path) -> None:
     monitors = (mod.WatchedMonitor("test_dedup", str(stale), 60),)
 
     fake_notifier = MagicMock()
-    rc = mod.main(monitors=monitors, notifier=fake_notifier)
+    # disks=() — ticket 86bbvd50a added a real-filesystem usage check to
+    # main(); pin the log-freshness dispatch in isolation from the host's
+    # disk (tests/contracts/test_monitor_watchdog_disk.py pins the disk path).
+    rc = mod.main(monitors=monitors, notifier=fake_notifier, disks=(), rotation_log=None)
     assert rc == 0, "main() must return 0 even on alert fire (cron convention)"
     fake_notifier.send.assert_called_once()
     _, kwargs = fake_notifier.send.call_args
@@ -173,7 +177,8 @@ def test_main_returns_zero_when_all_fresh(tmp_path: Path) -> None:
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("test_ok", str(fresh), 60),)
     fake_notifier = MagicMock()
-    rc = mod.main(monitors=monitors, notifier=fake_notifier)
+    # disks=() — see test_main_sends_alert_with_correct_dedup_key.
+    rc = mod.main(monitors=monitors, notifier=fake_notifier, disks=(), rotation_log=None)
     assert rc == 0
     fake_notifier.send.assert_not_called()
 
@@ -280,8 +285,9 @@ def test_main_production_path_does_not_crash_without_notifier_seam(
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("smoke", str(fresh), 60),)
     # Call main() WITHOUT notifier= kwarg — exercises the production
-    # path that R1-C1 said would TypeError-crash.
-    rc = mod.main(monitors=monitors)
+    # path that R1-C1 said would TypeError-crash. disks=()/rotation_log=None
+    # keep the host filesystem out of the pin (ticket 86bbvd50a).
+    rc = mod.main(monitors=monitors, disks=(), rotation_log=None)
     assert rc == 0, (
         "main() production path must exit 0 (R1-C1 regression: was "
         "TypeError-crashing on every cron tick because TelegramNotifier() "
@@ -319,7 +325,7 @@ def test_main_production_path_reads_telegram_env_vars(
     fresh = tmp_path / "fresh.log"
     fresh.write_text("now\n")
     monitors = (mod.WatchedMonitor("env_test", str(fresh), 60),)
-    rc = mod.main(monitors=monitors)
+    rc = mod.main(monitors=monitors, disks=(), rotation_log=None)
 
     assert rc == 0
     assert captured.get("bot_token") == "fake-token-XYZ", (

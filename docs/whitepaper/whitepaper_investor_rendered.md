@@ -445,7 +445,7 @@ Order escalation prefers in-place amendment (`amend_order`) over cancel-then-rep
 
 A separate **collector health-monitor** cron (shipped 2026-05-17 as `scripts/ops/collector_health_monitor.py`) emits Telegram alerts for disk pressure, WebSocket reconnection storms, and service-down events. The bot itself emits Telegram alerts for losses, large fills, and any error condition. An AI analyst (`bot/ai/analyst.py`) examines every losing trade and emits high-confidence root-cause findings via Telegram.
 
-The SQLite database runs in WAL mode with `busy_timeout=30000` (30-second wait on lock contention) and per-row retry-on-busy logic. Journal archives rotate daily and upload to S3 with the same `--checksum --immutable` rclone discipline used by the data collector.
+The SQLite database runs in WAL mode with `busy_timeout=30000` (30-second wait on lock contention) and per-row retry-on-busy logic. Journal archives rotate every 4 h to hour-stamped archives (`ops/rotate_journals.sh`, tracked in git since 2026-09-05) and upload to S3 30 min after each rotation tick with the same `--checksum --immutable` rclone discipline used by the data collector.
 
 The VPS runs systemd with `Restart=always` on the bot and `Restart=on-failure RestartSec=10s` on the collector. If either service crashes, it restarts within seconds.
 

@@ -1,5 +1,5 @@
 """Ticket 86ba0jvka — `scripts/ops/collector_health_monitor.py` must be
-runnable from cron's `cd ~/kalshi-bot-repo && source venv/bin/activate &&
+runnable from cron's `cd ~/kalshi-bot-repo && . venv/bin/activate &&
 python3 scripts/ops/collector_health_monitor.py` invocation flow without
 hitting `ModuleNotFoundError: No module named 'bot'`.
 

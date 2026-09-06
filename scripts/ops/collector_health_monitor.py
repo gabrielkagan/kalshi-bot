@@ -11,9 +11,10 @@ same HTTP-poll subset as weather) + 86ba1zf5j (B2a-1, 2026-05-28 —
 extends to also poll kalshi-venue-l2-collector with the FULL WS
 subset: disk + ws_reconnects + collector_active + dropped_frames,
 since the venue-L2 recorder runs 3 persistent WS conns). Standalone
-CLI run via cron on the VPS. Polls 4 health surfaces × 3 WS-collectors
+CLI run via cron on the VPS. Polls 5 health surfaces on kalshi-collector
+(incl. boot_state, ticket 86bbvdcat 2026-09-05) + 4 × 2 other WS-collectors
 + 3 health surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3,
-2026-05-18) = 19 total alert classes; sends Telegram alerts via the
+2026-05-18) = 20 total alert classes; sends Telegram alerts via the
 existing ``bot.notifier.TelegramNotifier`` (no Telegram client
 re-implementation).
 
@@ -31,7 +32,11 @@ D1.6 adds 3 checks:
   - check_collector_active: alert if `systemctl is-active kalshi-collector`
     returns non-zero
 
-D1.6 fu adds the 4th check:
+Ticket 86bbvdcat (2026-09-05) adds, Kalshi tier only:
+  - check_boot_state: alert if bronze_health.json reports state=booting for
+    > DEFAULT_MAX_BOOT_SECONDS
+
+D1.6 fu adds the 4th D1.6-era check:
   - check_dropped_frames: positive observability for D1.3-fu4 worker
     queue saturation. Reads ``bronze_health.json`` sidecar written by
     the collector drain thread; alerts on:
@@ -53,7 +58,7 @@ crontab at incident time used `/tmp/collector_health.log` which
 explains why the canary's `ModuleNotFoundError: No module named 'bot'`
 crashes went undetected for 2 days):
     # In `crontab -e` (botuser):
-    */5 * * * * cd /home/botuser/kalshi-bot-repo && source venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> ~/collector_health.log 2>&1
+    */5 * * * * cd /home/botuser/kalshi-bot-repo && . venv/bin/activate && python3 scripts/ops/collector_health_monitor.py >> ~/collector_health.log 2>&1
 
 Env reads:
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID — from /home/botuser/.env (loaded
@@ -76,7 +81,7 @@ from typing import Optional
 
 # Bit 86ba0jvka (2026-05-19): bootstrap repo root onto sys.path BEFORE
 # any `from bot.*` / `import bot.*` reference fires below. Cron's
-# invocation flow (`cd ~/kalshi-bot-repo && source venv/bin/activate
+# invocation flow (`cd ~/kalshi-bot-repo && . venv/bin/activate
 # && python3 scripts/ops/collector_health_monitor.py`) does NOT
 # auto-add the repo root to sys.path — only the script's parent dir
 # (scripts/ops/) is added by Python's script-invocation rule. Without
@@ -189,6 +194,18 @@ DEFAULT_SIDECAR_STALE_SECONDS = 120
 # wedged-but-fresh-sidecar drain) deserve to alert even during boot.
 DEFAULT_BOOT_GRACE_SECONDS = 1200
 
+# Ticket 86bbvdcat (2026-09-05): the collector now writes
+# ``state: booting|running`` + ``state_since`` into bronze_health.json
+# from the moment the drain thread starts (BEFORE any REST page-through).
+# ``check_boot_state`` alerts when the process has been ``booting`` for
+# longer than this. Same figure as the STALE boot grace above: with the
+# persisted ticker set a boot reaches WS in ~5 min; a boot still paging
+# after 20 min is the first-boot-after-deploy (no last_tickers.json yet)
+# or a regression — either way the operator should know, because the
+# 2026-09-05 restart spent 59.8 min with all six units "active" and zero
+# orderbook bronze flowing.
+DEFAULT_MAX_BOOT_SECONDS = 1200
+
 
 def _systemctl_show_property(unit: str, prop: str) -> Optional[str]:
     """Read a single systemctl ``show`` property; return value or None.
@@ -219,7 +236,11 @@ def _collector_uptime_seconds(unit: str) -> Optional[float]:
     """Return seconds since the unit's ActiveEnterTimestamp, or None.
 
     Used by ``check_dropped_frames`` to skip the STALE-sidecar alert
-    during the collector's ~17-min boot window. Returns None on any
+    during the collector's boot window, and by ``check_boot_state`` as the
+    process-age gate (a ``booting`` sidecar older than the current process
+    is ignored; see the grace rationale in check_dropped_frames —
+    post-86bbvdcat the sidecar is written from the first drain tick, so
+    the grace covers the restart gap, not a page-through). Returns None on any
     systemctl-show failure — caller treats as "no grace, run normal
     check" (fail-open posture matches the cron framework's bias).
 
@@ -264,7 +285,10 @@ def check_disk(
     """
     target = Path(path) if Path(path).exists() else Path("/")
     usage = shutil.disk_usage(target)
-    used_pct = int((usage.used / usage.total) * 100)
+    # df's Use% = used / (used + avail); used/total hid the ext4 reserved
+    # blocks (~4 points laxer on the 48 GB root). Ticket 86bbvd50a R1-M4.
+    denom = usage.used + usage.free
+    used_pct = int((usage.used / denom) * 100) if denom else 0
     if used_pct < threshold_pct:
         return None
     used_gb = usage.used / (1024 ** 3)
@@ -395,6 +419,74 @@ def check_insert_evaluated_opportunity_failures(
     )
 
 
+def _parse_sidecar_utc(value) -> Optional[float]:
+    """Parse the sidecar's ``%Y-%m-%dT%H:%M:%S.%fZ`` timestamps → epoch."""
+    if not isinstance(value, str):
+        return None
+    try:
+        import datetime as _dt
+        return _dt.datetime.strptime(
+            value, "%Y-%m-%dT%H:%M:%S.%fZ",
+        ).replace(tzinfo=_dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def check_boot_state(
+    sidecar_path: Optional[Path] = None,
+    max_boot_seconds: int = DEFAULT_MAX_BOOT_SECONDS,
+    now: Optional[float] = None,
+    unit: str = DEFAULT_COLLECTOR_UNIT,
+) -> Optional[str]:
+    """Alert when bronze_health.json reports ``state == "booting"`` for
+    longer than ``max_boot_seconds`` (ticket 86bbvdcat).
+
+    Fail-quiet on: missing sidecar, malformed JSON, no ``state`` key
+    (pre-Bit collectors and the Coinbase / weather / ESPN sidecars, which
+    never carry the key), unparseable ``state_since``, or any state other
+    than ``booting``. A sidecar left behind by a PREVIOUS process (its
+    ``state_since`` predates the unit's ActiveEnterTimestamp — e.g. a
+    stop mid-stagger, or a restart still inside the salvage sweep) is
+    also ignored: ``collector_active`` / STALE cover that case and the
+    "no WS until boot completes" text would mislead. ``now`` is a test
+    seam (defaults to ``time.time()``); when ``systemctl`` is unavailable
+    (tests, dev hosts) the process-age gate is skipped.
+    """
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "COLLECTOR_HEALTH_SIDECAR_PATH", DEFAULT_SIDECAR_PATH,
+        ))
+    if not sidecar_path.is_file():
+        return None
+    try:
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("state") != "booting":
+        return None
+    since = _parse_sidecar_utc(data.get("state_since"))
+    if since is None:
+        return None
+    if now is None:
+        now = time.time()
+    uptime = _collector_uptime_seconds(unit)
+    if uptime is not None and since < now - uptime:
+        return None  # sidecar predates the current process
+    age = now - since
+    if age <= max_boot_seconds:
+        return None
+    return (
+        f"*COLLECTOR STILL BOOTING* — {sidecar_path} reports state=booting "
+        f"for {int(age)}s (threshold {max_boot_seconds}s; "
+        f"ticker_set_source={data.get('ticker_set_source')!r}). No WS "
+        f"conn / no orderbook bronze until boot completes. If "
+        f"`last_tickers.json` is missing this is the first boot after "
+        f"deploy (synchronous REST page-through, ~55 min on 2026-09-05); "
+        f"otherwise check `journalctl -u kalshi-collector --since '30 min "
+        f"ago' | grep -E 'Boot|REST|wired|booted'`."
+    )
+
+
 def check_collector_active(unit: str = DEFAULT_COLLECTOR_UNIT) -> Optional[str]:
     """Return alert string if `systemctl is-active <unit>` reports inactive."""
     try:
@@ -481,9 +573,10 @@ def check_dropped_frames(
             Kalshi's uptime (R1-M1 fix, 2026-05-20).
         boot_grace_seconds: skip the STALE alert if the unit's
             ActiveEnterTimestamp is younger than this (default 1200s
-            ≈ 20 min, covers the observed ~17-min boot window with
-            safety margin). SCHEMA + DROPS checks remain active
-            during the grace.
+            ≈ 20 min; originally sized for the May-2026 ~17-min
+            synchronous boot, kept post-86bbvdcat as the restart-gap
+            margin and equal to DEFAULT_MAX_BOOT_SECONDS). SCHEMA +
+            DROPS checks remain active during the grace.
 
     Returns:
         Alert string (Markdown for Telegram) or None.
@@ -500,11 +593,15 @@ def check_dropped_frames(
 
     # STALE check (before reading content — a stale file's content may
     # also be uninformative). RCA-F `86ba12xr6` (2026-05-20): skip the
-    # STALE alert during the collector's ~17-min boot window. The drain
-    # thread + sidecar writer don't run until AFTER all archivers are
-    # wired (boot sequence: salvage → REST snapshot 10 min → 60s/conn ×
-    # 7 conns wire-up = ~17 min total). Alerting STALE during boot fires
-    # a false-positive on every deploy + every restart cycle.
+    # STALE alert during the collector's boot window. Pre-86bbvdcat the
+    # sidecar was first written only AFTER the synchronous REST
+    # page-through + per-conn wire-up (~17 min in May 2026, 55+ min by
+    # September), so STALE fired on every deploy + restart. Post-86bbvdcat
+    # (2026-09-05) the drain thread writes the sidecar from its first
+    # 1 s tick, BEFORE any REST fetch; the grace now only has to cover the
+    # previous process's last sidecar going stale across the restart gap
+    # (salvage sweep + rclone re-uploads). Kept at 1200 s =
+    # DEFAULT_MAX_BOOT_SECONDS.
     #
     # CRITICAL: the grace SKIPS ONLY the STALE alert (R1-C1 fix). SCHEMA
     # + DROPS checks below MUST still run during boot grace — they read
@@ -638,9 +735,10 @@ def _save_state(
 
 
 def main() -> int:
-    """Entry point. Runs collector checks (4) × 3 WS-collector tiers +
+    """Entry point. Runs collector checks (5 on kalshi-collector incl.
+    boot_state, 4 on each other WS-collector tier) +
     collector checks (3) × 2 HTTP-poll-collector tiers + bot checks
-    (1) × 1 bot tier = 19 total check dispatches per tick; sends
+    (1) × 1 bot tier = 20 total check dispatches per tick; sends
     Telegram alerts as needed.
 
     D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
@@ -707,6 +805,11 @@ def main() -> int:
             sidecar_path=Path(DEFAULT_SIDECAR_PATH),
             state_path=Path(DEFAULT_MONITOR_STATE_PATH),
             unit=DEFAULT_COLLECTOR_UNIT,
+        )),
+        # Ticket 86bbvdcat: "booting for 30 min" vs "healthy" — only the
+        # Kalshi collector writes the boot state (REST page-through boot).
+        ("boot_state", lambda: check_boot_state(
+            sidecar_path=Path(DEFAULT_SIDECAR_PATH),
         )),
     ]
     # R4-M2 + R5-M1: resolve the Coinbase sidecar path at call time
