@@ -47,9 +47,30 @@ def test_convergence_velocity_slow_cadence_not_identically_zero():
         "T": deque([(now - 32.0, 88), (now, 94)], maxlen=300),
     }
     with patch("bot.scanner.time.time", return_value=now):
-        vel = scanner._scanner_convergence_velocity("T")
+        vel = scanner._scanner_convergence_velocity("T", product_type="hourly")
     assert vel != 0.0
     assert abs(vel - (6.0 * CONVERGENCE_WINDOW_SECONDS / 32.0)) < 1e-9
+
+
+def test_convergence_velocity_15m_gap_stays_zero():
+    """15M sparse gap must stay 0.0 — scaled fallback is slow-product only.
+
+    A 31s 15M hole (one-sided book / OB-fetch cap) previously returned 0.
+    Ungated fallback would scale ~6¢ into TAKER_URGENT (velocity > 5).
+    """
+    from collections import deque
+    from unittest.mock import patch
+
+    from bot.scanner import OpportunityScanner
+
+    now = 1_700_000_032.0
+    scanner = OpportunityScanner.__new__(OpportunityScanner)
+    scanner._ticker_ask_history = {
+        "T": deque([(now - 32.0, 88), (now, 94)], maxlen=300),
+    }
+    with patch("bot.scanner.time.time", return_value=now):
+        assert scanner._scanner_convergence_velocity("T") == 0.0
+        assert scanner._scanner_convergence_velocity("T", product_type="15m") == 0.0
 
 
 def test_convergence_velocity_dense_15m_unchanged():
@@ -68,5 +89,16 @@ def test_convergence_velocity_dense_15m_unchanged():
         ),
     }
     with patch("bot.scanner.time.time", return_value=now):
-        vel = scanner._scanner_convergence_velocity("T")
+        vel = scanner._scanner_convergence_velocity("T", product_type="15m")
     assert vel == 3.0
+
+
+def test_scan_wires_include_window_this_tick():
+    """OpportunityScanner.scan must call the cadence helper. Helper unit
+    tests stay green if the continue is deleted.
+    """
+    from pathlib import Path
+
+    src = Path("bot/scanner/__init__.py").read_text(encoding="utf-8")
+    assert "include_window_this_tick(_pt, _slow_due)" in src
+    assert "from bot.helpers.scan_cadence import" in src

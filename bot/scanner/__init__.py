@@ -197,6 +197,7 @@ from bot.constants import (
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
     SLOW_PRODUCT_SCAN_INTERVAL_S,
+    SLOW_PRODUCT_TYPES,
     MAX_SECONDS_BEFORE_CLOSE,
     MIN_EDGE_PCT,
     MIN_ENTRY_PRICE,
@@ -2848,7 +2849,7 @@ class OpportunityScanner:
                         "best_ask_source": best_ask_source,
                         "best_ask_depth": ask_depth,
                         "total_ob_depth": total_depth,
-                        "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                        "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                         "calibrated_prob": round(cal_prob, 6),
                     })
                 except Exception:
@@ -2931,7 +2932,7 @@ class OpportunityScanner:
                             "calibrated_prob": round(cal_prob, 6),
                             "best_ask_depth": ask_depth,
                             "total_ob_depth": total_depth,
-                            "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                            "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                             "raw_prob": round(raw_prob_pre, 6) if raw_prob_pre is not None else None,
                             **_shadow_diag,
                             **_shadow_extra,
@@ -4280,7 +4281,7 @@ class OpportunityScanner:
                                     "best_yes_ask": best_ask,
                                     "best_ask_depth": ask_depth,
                                     "total_ob_depth": total_depth,
-                                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                                    "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                                     "edge": edge,
                                     "min_entry_price": _ie_scfg2.min_entry_price,
                                     "max_entry_price": _ie_scfg2.max_entry_price,
@@ -5712,7 +5713,7 @@ class OpportunityScanner:
                     "best_yes_ask": best_ask,
                     "best_ask_depth": ask_depth,
                     "total_ob_depth": total_depth,
-                    "convergence_velocity": self._scanner_convergence_velocity(ticker),
+                    "convergence_velocity": self._scanner_convergence_velocity(ticker, product_type=_pt),
                     "edge": edge,
                     "min_entry_price": _entry_floor,
                     "max_entry_price": _entry_ceil,
@@ -9029,14 +9030,17 @@ class OpportunityScanner:
         self._ob_cache[ticker] = (orderbook, now)
         return (orderbook, True)
 
-    def _scanner_convergence_velocity(self, ticker: str) -> float:
+    def _scanner_convergence_velocity(
+        self, ticker: str, product_type: Optional[str] = None,
+    ) -> float:
         """Upward ask movement in cents over CONVERGENCE_WINDOW_SECONDS.
 
         Slow-product tickers (hourly/weather/SPX) are sampled at
         SLOW_PRODUCT_SCAN_INTERVAL_S, equal to this window. When scan
         body is 5–8s the previous sample is just outside cutoff and a
         naive in-window walk returns 0. Fall back to the previous
-        sample and scale onto a 30s unit.
+        sample and scale onto a 30s unit — only for SLOW_PRODUCT_TYPES.
+        15M sparse gaps keep the pre-PR 0.0 (do not invent urgency).
         """
         history = self._ticker_ask_history.get(ticker)
         if not history or len(history) < 2:
@@ -9052,6 +9056,8 @@ class OpportunityScanner:
                 oldest_price = price
                 break
         if oldest_price is None or oldest_ts == newest_ts:
+            if product_type not in SLOW_PRODUCT_TYPES:
+                return 0.0
             prev_ts, prev_price = history[-2]
             dt = newest_ts - prev_ts
             if dt <= 0:
