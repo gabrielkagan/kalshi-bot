@@ -341,6 +341,7 @@ from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adve
 )
 from bot.helpers.scan_cadence import (  # 2026-09-06: weather/hourly/SPX off the 1 Hz 15M tick
     include_window_this_tick,
+    rotate_slow_product_windows,
     slow_scan_due,
 )
 from bot.kalshi_client import KalshiClient
@@ -1293,6 +1294,32 @@ class OpportunityScanner:
         ob_fetches_this_tick = 0
         slow_ob_fetches_this_tick = 0
         candidates: List[Dict] = []
+        _pre_sections: Dict[str, float] = {}
+        _pre_t = _scan_tick_start_perf
+
+        def _pre_mark(name: str) -> None:
+            nonlocal _pre_t
+            nowp = time.perf_counter()
+            _pre_sections[name] = nowp - _pre_t
+            _pre_t = nowp
+
+        def _emit_preloop_if_slow() -> None:
+            _preloop_dt = time.perf_counter() - _scan_tick_start_perf
+            if _preloop_dt > 1.5:
+                logging.warning(
+                    "SCAN_PRELOOP_SLOW: scan setup took %.2fs "
+                    "watchdogs=%.2fs kill_sql=%.2fs cooldown=%.2fs "
+                    "cleanup=%.2fs subscribe=%.2fs filter=%.2fs "
+                    "occupied=%.2fs",
+                    _preloop_dt,
+                    _pre_sections.get("watchdogs", 0.0),
+                    _pre_sections.get("kill_sql", 0.0),
+                    _pre_sections.get("cooldown", 0.0),
+                    _pre_sections.get("cleanup", 0.0),
+                    _pre_sections.get("subscribe", 0.0),
+                    _pre_sections.get("filter", 0.0),
+                    _pre_sections.get("occupied", 0.0),
+                )
 
         # WS vs REST drift probe (self-throttles to 60s cadence). See
         # _drift_probe_tick docstring and kb/failures/kalshi-ws-schema-drift.md.
@@ -1337,6 +1364,7 @@ class OpportunityScanner:
             except Exception:
                 logging.debug(
                     "scan-productive watchdog check failed", exc_info=True)
+        _pre_mark("watchdogs")
 
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
@@ -1404,6 +1432,7 @@ class OpportunityScanner:
             except Exception:
                 pass  # Non-critical
         self._lp_hour_signals = {}  # Low-price shadow: per-hour signal count
+        _pre_mark("kill_sql")
 
         # Loss burst cooldown: build per-asset lockout set (see kb/failures/loss-clustering.md)
         # Any 15M loss in the last LOSS_COOLDOWN_SECONDS locks out that asset's 15M entries.
@@ -1441,6 +1470,7 @@ class OpportunityScanner:
                         self._dc_window_risk[evt] = self._dc_window_risk.get(evt, 0.0) + _dc_cost
         except Exception:
             pass  # Non-critical: worst case is slight over-allocation
+        _pre_mark("cooldown")
 
         # Clean up ask history and dedup set for tickers no longer in active windows
         active_tickers = set()
@@ -1491,6 +1521,7 @@ class OpportunityScanner:
                 self._ml.hourly_alt_shadow.cleanup_expired(active_tickers)
             except Exception:
                 pass
+        _pre_mark("cleanup")
 
         # Build ticker set for product types that skip WS orderbook subscription (too many strikes)
         _hourly_tickers = set()
@@ -1501,24 +1532,37 @@ class OpportunityScanner:
 
         # Pre-subscribe all active tickers to WS and feed OFT from WS orderbooks
         if self._kalshi_feed and self._kalshi_feed.is_connected:
+            try:
+                _already_sub = set(self._kalshi_feed.get_subscribed_tickers())
+            except Exception:
+                _already_sub = set()
             for t in active_tickers:
-                if t in _hourly_tickers:
+                if t in _hourly_tickers or t in _already_sub:
                     continue  # skip WS subscription for hourly (too many strikes per event)
                 try:
                     self._kalshi_feed.subscribe_ticker(t)
                 except Exception:
                     pass
-            # Feed OFT with any available WS orderbook data (zero API cost)
+            # Feed OFT with any available WS orderbook data (zero API cost).
+            # One deepcopy under KalshiFeed._lock — not N get_orderbook
+            # lock acquisitions (hourly/weather are not subscribed).
             if self._kalshi_oft is not None:
-                for t in active_tickers:
+                try:
+                    _ws_books = self._kalshi_feed.get_all_orderbooks_snapshot()
+                except Exception:
+                    _ws_books = {}
+                for t, ws_ob in _ws_books.items():
+                    if t not in active_tickers or t in _hourly_tickers:
+                        continue
                     try:
-                        ws_ob = self._kalshi_feed.get_orderbook(t)
                         if ws_ob and now - ws_ob.get("ts", 0) < 30:
                             best_ask = self._best_yes_ask_cents(ws_ob)
                             if best_ask is not None:
-                                self._kalshi_oft.record_snapshot(t, ws_ob, best_ask)
+                                self._kalshi_oft.record_snapshot(
+                                    t, ws_ob, best_ask)
                     except Exception:
                         pass
+        _pre_mark("subscribe")
 
         # Dynamic scan_stats: include all assets from active windows (SPX, weather, etc.)
         _all_scan_assets = set(ASSETS)
@@ -1573,7 +1617,9 @@ class OpportunityScanner:
                     ", ".join(
                         f"{w.get('asset', '?')}={w.get('seconds_to_close', '?'):.1f}s"
                         for w in _15m_in))
+        _pre_mark("filter")
         if not time_ok_windows:
+            _emit_preloop_if_slow()
             return None
 
         # 2. Get occupied timeslots (positions + resting orders)
@@ -1610,7 +1656,9 @@ class OpportunityScanner:
                         for w in _15m_time_ok),
                     {k: sorted(list(v)) for k, v in occupied.items()})
 
+        _pre_mark("occupied")
         if not eligible_windows:
+            _emit_preloop_if_slow()
             return None
 
         # 4. Evaluate each market in each surviving window.
@@ -1620,10 +1668,7 @@ class OpportunityScanner:
         # selection, etc.) under the SCAN_BODY_SLOW umbrella.
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
-        _preloop_dt = time.perf_counter() - _scan_tick_start_perf
-        if _preloop_dt > 1.5:
-            logging.warning(
-                "SCAN_PRELOOP_SLOW: scan setup took %.2fs", _preloop_dt)
+        _emit_preloop_if_slow()
 
         _slow_due = slow_scan_due(
             now,
@@ -1632,6 +1677,10 @@ class OpportunityScanner:
         )
         if _slow_due:
             self._last_slow_product_scan_ts = now
+            _rot = getattr(self, "_slow_window_rotate_offset", 0)
+            eligible_windows = rotate_slow_product_windows(
+                eligible_windows, _rot)
+            self._slow_window_rotate_offset = _rot + 1
 
         _scan_loop_start = time.perf_counter()
         # Bit V.1 + V.3-R1-M1 fix round (2026-06-12): per-TICK memo dict

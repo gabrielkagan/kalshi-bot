@@ -724,6 +724,10 @@ class OrderExecutor:
         )
         if resp is None:
             self._state.mark_order_status(client_oid, "api_error")
+            try:
+                engine.record_api_error()
+            except Exception:
+                logging.debug("twaplock record_api_error failed", exc_info=True)
             logging.warning(
                 "TWAPLOCK_IOC_REJECTED: %s %s %dct @ %dc (api error)",
                 ticker, side, count, price)
@@ -740,8 +744,16 @@ class OrderExecutor:
                 "(order=%r) — ledger row marked api_error",
                 ticker, resp.get("order"))
             self._state.mark_order_status(client_oid, "api_error")
+            try:
+                engine.record_api_error()
+            except Exception:
+                logging.debug("twaplock record_api_error failed", exc_info=True)
             return None
         self._state.confirm_order_submitted(client_oid, order_id)
+        try:
+            engine.record_api_ok()
+        except Exception:
+            logging.debug("twaplock record_api_ok failed", exc_info=True)
         # FP-primary fill read from the synchronous IOC response. A
         # malformed count field (R1-MN5) DEGRADES to the 0-fill path
         # below (row canceled, no position) — it must never raise past

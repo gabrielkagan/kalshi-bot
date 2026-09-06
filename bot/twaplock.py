@@ -216,6 +216,10 @@ class TwaplockEngine:
         self._mark_inputs: Dict[str, Tuple[float, float, float]] = {}
         self._disabled_reason: Optional[str] = None
         self._disabled_utc_date: Optional[str] = None
+        # Cross-ticker api_error circuit (A2 2026-09-06). Separate from
+        # _disabled_reason so _refresh_disabled cannot clobber it.
+        self._consecutive_api_errors: int = 0
+        self._circuit_tripped_utc_date: Optional[str] = None
         # One-shot boot sweep latch (first tick): stranded tw- ledger rows.
         self._boot_swept = False
         # The COMBINED cap sums marks across engines — register ours.
@@ -296,6 +300,8 @@ class TwaplockEngine:
                                              now)
         self._refresh_disabled()
         if self._disabled_reason:
+            return []
+        if self._circuit_blocked(now):
             return []
 
         if (seconds_to_close is None
@@ -439,6 +445,8 @@ class TwaplockEngine:
         self._refresh_disabled()
         if self._disabled_reason:
             return 0
+        if self._circuit_blocked():
+            return 0
         ticker = candidate["ticker"]
         if self._already_entered(ticker):
             return 0
@@ -519,6 +527,53 @@ class TwaplockEngine:
             cur_t, cur_v = ts, px
         area += (now - cur_t) * cur_v
         return area / (now - window_start)
+
+    def record_api_error(self, now: Optional[float] = None) -> None:
+        """Count a place_order None. Trips the UTC-day circuit at threshold.
+
+        Cross-ticker: each 15M window is a new ticker, so the executor's
+        per-ticker TICKER_API_ERROR_CAP never fires on this path.
+        """
+        if now is None:
+            now = time.time()
+        today = datetime.datetime.fromtimestamp(
+            now, timezone.utc).date().isoformat()
+        thresh = int(C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD)
+        with self._lock:
+            if self._circuit_tripped_utc_date == today:
+                return
+            self._consecutive_api_errors += 1
+            n = self._consecutive_api_errors
+            if n >= thresh:
+                self._circuit_tripped_utc_date = today
+                logging.error(
+                    "TWAPLOCK_CIRCUIT_OPEN: consecutive_api_errors=%d "
+                    "threshold=%d — no more twaplock POSTs until next "
+                    "UTC date", n, thresh)
+
+    def record_api_ok(self) -> None:
+        """HTTP 200 from place_order (fill or 0-fill) resets the streak."""
+        with self._lock:
+            if self._circuit_tripped_utc_date is None:
+                self._consecutive_api_errors = 0
+
+    def _circuit_blocked(self, now: Optional[float] = None) -> bool:
+        """True when the UTC-day api_error circuit is open."""
+        if now is None:
+            now = time.time()
+        today = datetime.datetime.fromtimestamp(
+            now, timezone.utc).date().isoformat()
+        with self._lock:
+            tripped = self._circuit_tripped_utc_date
+            if tripped is None:
+                return False
+            if tripped == today:
+                return True
+            self._circuit_tripped_utc_date = None
+            self._consecutive_api_errors = 0
+            logging.info(
+                "TWAPLOCK_CIRCUIT_CLOSED: new UTC day after %s", tripped)
+            return False
 
     def _already_entered(self, ticker: str) -> bool:
         """One shot per window per asset — STRUCTURAL invariant, no knob.

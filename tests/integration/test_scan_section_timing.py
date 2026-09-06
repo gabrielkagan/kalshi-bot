@@ -63,6 +63,25 @@ class TestScanSectionTiming(unittest.TestCase):
             "1.5s. Without this we can't distinguish loop slowness "
             "from post-loop slowness.")
 
+    def test_scan_preloop_slow_logs_section_breakdown(self):
+        """Post-#178 leftover cost is scan() setup (2.1–6.6s live).
+        SCAN_PRELOOP_SLOW must name the subsections or the next
+        deploy cannot tell kill-switch SQL from KalshiFeed._lock.
+        """
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
+        self.assertIn("SCAN_PRELOOP_SLOW", src)
+        for key in (
+                "watchdogs=", "kill_sql=", "cooldown=", "cleanup=",
+                "subscribe=", "filter=", "occupied="):
+            self.assertIn(
+                key, src,
+                "SCAN_PRELOOP_SLOW must include section timing %s "
+                "(2026-09-06 live: preloop 2.1–6.6s, loop rarely fires)"
+                % key)
+
 
 if __name__ == "__main__":
     unittest.main()

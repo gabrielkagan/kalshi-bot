@@ -910,8 +910,9 @@ class KalshiFeed:
         Holding `_lock` across deepcopy is the right trade-off: the deep
         copy of ~30 active 15M tickers × ~5 levels per side is ~300 ints,
         which is sub-millisecond. The WS thread waits at most that long
-        on the next delta — much shorter than the 10s polling cadence of
-        the only caller.
+        on the next delta. Callers: DashboardSnapshotBuilder (10s poll)
+        and OpportunityScanner.scan pre-loop OFT feed (1 Hz — must not
+        take `_lock` per ticker; that convoy was the 2–6s SCAN_PRELOOP).
         """
         import copy as _copy
         with self._lock:
