@@ -1665,6 +1665,55 @@ class TestTickMechanics(unittest.TestCase):
         # Should be removed from active orders after full fill
         self.assertNotIn("BTC", ex._active_orders)
 
+    def test_tick_ws_fill_not_dropped_inside_poll_interval(self):
+        """WS fills must be consumed even when MAKER_POLL_INTERVAL has not elapsed.
+
+        Regression: tick() pop_fills() then _tick_one returned None on the
+        2s poll gate BEFORE the ws_fills loop. Those fills were gone from
+        the feed buffer. REST recovered the position ~2s later — latency
+        and telemetry loss, and a live-path drop the moment scan ticks
+        fall under 2s. See kb/failures/ws-fill-poll-interval-drop-sep06.md.
+        """
+        ex = _make_executor()
+        now = time.time()
+        order = {
+            "order_id": "ord-ws-fast",
+            "ticker": "KXBTC15M-TEST",
+            "event_ticker": "KXBTC15M-26MAR091200",
+            "asset": "BTC",
+            "count": 5,
+            "price_cents": 91,
+            "submit_time": now - 5,
+            "seconds_to_close_at_submit": 400,
+            "_last_poll": now - 0.2,  # well inside 2s interval
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0,
+            "candidate": _make_candidate(),
+            "balance_at_entry": 50000,
+            "is_taker": False,
+            "filled_so_far": 0,
+        }
+        ex._active_orders["BTC"] = order
+        ex._kalshi_feed.pop_fills.return_value = [{
+            "order_id": "ord-ws-fast",
+            "trade_id": "ws-fast-1",
+            "count": 5,
+            "price": 91,
+        }]
+
+        def on_fill_side_effect(fill, ord_dict):
+            ord_dict["filled_so_far"] = ord_dict.get("filled_so_far", 0) + 5
+            return 5
+        ex._on_fill = MagicMock(side_effect=on_fill_side_effect)
+
+        result = ex.tick()
+
+        self.assertEqual(ex._session_ws_fills, 1, "WS fill dropped by poll-interval early-return")
+        ex._on_fill.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertNotIn("BTC", ex._active_orders)
+        ex._client.get_fills.assert_not_called()
+
     def test_hard_timeout_cancels_order(self):
         """Orders exceeding MAKER_TIMEOUT_SECONDS get canceled."""
         ex = _make_executor()

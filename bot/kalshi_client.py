@@ -47,6 +47,15 @@ from bot.helpers.breakers import (
 from bot.infra.circuit_breaker import REGISTRY as _BREAKER_REGISTRY  # Sprint 10.5a (2026-05-11)
 from kalshi_wire.auth import load_private_key as _wire_load_private_key
 from kalshi_wire.auth import sign as _wire_sign
+
+# Transport bounds (kb/failures/scan-body-5-8s-collecting-mode-sep06.md).
+# Scalar timeout=10 let connect+read each run 10s; 429 Retry-After was
+# slept verbatim and retried without a wall-clock cap.
+REST_CONNECT_TIMEOUT_S = 3.0
+REST_READ_TIMEOUT_S = 7.0
+REST_429_MAX_SLEEP_S = 5.0
+REST_429_MAX_RETRIES = 3
+REST_429_WALL_CLOCK_CAP_S = 8.0
 from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live as _tm_is_live, strategy_is_live as _tm_strategy_is_live, strategy_from_client_order_id as _tm_strategy_from_coid  # modular live/shadow backstop
 
 
@@ -60,6 +69,9 @@ class KalshiClient:
         self._read_timestamps: List[float] = []
         self._write_timestamps: List[float] = []
         self._rate_lock = threading.Lock()
+        self._429_lock = threading.Lock()
+        self._429_retries = 0
+        self._429_t0: Optional[float] = None
 
     # ── Auth (D1.1.5: delegates to kalshi_wire.auth) ──────────────────────
 
@@ -132,7 +144,7 @@ class KalshiClient:
                 headers=headers,
                 params=params,
                 json=json_body,
-                timeout=10,
+                timeout=(REST_CONNECT_TIMEOUT_S, REST_READ_TIMEOUT_S),
             )
             # Clock drift detection from server Date header
             server_date = resp.headers.get("Date")
@@ -150,18 +162,46 @@ class KalshiClient:
                 if method == "POST" and "/orders" in path:
                     logging.error(f"Rate limited on POST {path} — NOT retrying to prevent duplicate orders")
                     return None
-                retry_after = float(resp.headers.get("Retry-After", "1"))
-                retries = getattr(self, '_429_retries', 0) + 1
-                if retries > 3:
-                    logging.error(f"Rate limited {retries} times, giving up: {method} {path}")
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "1"))
+                except (TypeError, ValueError):
+                    retry_after = 1.0
+                if retry_after < 0:
+                    retry_after = 1.0
+                sleep_s = min(retry_after, REST_429_MAX_SLEEP_S)
+                now_m = time.monotonic()
+                if not hasattr(self, "_429_lock"):
+                    self._429_lock = threading.Lock()
                     self._429_retries = 0
+                    self._429_t0 = None
+                with self._429_lock:
+                    if self._429_t0 is None:
+                        self._429_t0 = now_m
+                    self._429_retries = getattr(self, "_429_retries", 0) + 1
+                    retries = self._429_retries
+                    elapsed = now_m - self._429_t0
+                    give_up = (
+                        retries > REST_429_MAX_RETRIES
+                        or elapsed >= REST_429_WALL_CLOCK_CAP_S
+                    )
+                    if give_up:
+                        self._429_retries = 0
+                        self._429_t0 = None
+                if give_up:
+                    logging.error(
+                        "Rate limited %s times (elapsed=%.1fs), giving up: %s %s",
+                        retries, elapsed, method, path)
                     return None
-                self._429_retries = retries
-                logging.warning(f"Rate limited, sleeping {retry_after}s (attempt {retries}/3)")
-                time.sleep(retry_after)
-                result = self._request(method, path, params, json_body)
-                self._429_retries = 0
-                return result
+                logging.warning(
+                    "Rate limited, sleeping %.1fs (attempt %d/%d, Retry-After=%s)",
+                    sleep_s, retries, REST_429_MAX_RETRIES, retry_after)
+                time.sleep(sleep_s)
+                try:
+                    return self._request(method, path, params, json_body)
+                finally:
+                    with self._429_lock:
+                        self._429_retries = 0
+                        self._429_t0 = None
             # Idempotent-DELETE 404: Kalshi has already expired/canceled
             # the resource. Return a sentinel so callers can distinguish
             # "gone" (success-equivalent) from None (transient → retry).
