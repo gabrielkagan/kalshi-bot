@@ -61,6 +61,16 @@ class KalshiBook:
             self.apply_delta(msg["side"], msg["price_dollars"], msg["delta_fp"])
         # other inner types (e.g. control msgs) are ignored
 
+    def apply_frames(self, inners) -> None:
+        """Apply an iterable of inner frames. Same semantics as looping apply_frame.
+
+        Hot path for day-scale bronze replay. Pin equivalence vs apply_frame
+        in tests/research/test_kalshi_book_reconstruct.py. Rust/Cython only
+        if a profile shows this loop ≥60% of a day's wall time.
+        """
+        for inner in inners:
+            self.apply_frame(inner)
+
     def best_yes_bid_cents(self) -> Optional[float]:
         live = [t for t, s in self.yes.items() if s > 0]
         return (max(live) / 100.0) if live else None

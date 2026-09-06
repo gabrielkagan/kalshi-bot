@@ -71,6 +71,32 @@ def test_delta_negative_size_clamped_removes():
     assert b.best_yes_ask_cents() is None  # no side empty -> ask undefined
 
 
+def test_apply_frames_matches_sequential_apply_frame():
+    """Batch apply_frames must be byte-equivalent to looping apply_frame."""
+    snap = {
+        "type": "orderbook_snapshot",
+        "msg": {
+            "yes_dollars_fp": [["0.4000", "100"], ["0.4500", "50"]],
+            "no_dollars_fp": [["0.5000", "100"], ["0.5200", "30"]],
+        },
+    }
+    deltas = [
+        {"type": "orderbook_delta", "msg": {"side": "yes", "price_dollars": "0.4600", "delta_fp": "10"}},
+        {"type": "orderbook_delta", "msg": {"side": "no", "price_dollars": "0.5200", "delta_fp": "-30"}},
+        {"type": "orderbook_delta", "msg": {"side": "yes", "price_dollars": "0.4000", "delta_fp": "-100"}},
+    ]
+    frames = [snap] + deltas
+    sequential = kbr.KalshiBook()
+    for inner in frames:
+        sequential.apply_frame(inner)
+    batched = kbr.KalshiBook()
+    batched.apply_frames(frames)
+    assert sequential.best_yes_bid_cents() == batched.best_yes_bid_cents()
+    assert sequential.best_yes_ask_cents() == batched.best_yes_ask_cents()
+    assert sequential.yes == batched.yes
+    assert sequential.no == batched.no
+
+
 # ----- Snapshot resets ----------------------------------------------------
 
 
