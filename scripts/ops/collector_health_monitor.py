@@ -851,8 +851,10 @@ def check_bot_espn_poll_errors(
     which requires ≥20 live-game ticks before it looks at the DB — could
     never have fired for the very class it was written for. That is a
     "no alert" returned for the reason "ESPN is dead", the same silent
-    class as the original bug. This check closes it, and it is the ONLY
-    bot-side consumer of ``espn_last_poll_status``.
+    class as the original bug. This check closes it, and it is the only
+    check whose ALERT CONDITION is predicated on ``espn_last_poll_status``
+    (``check_sports_eval_silence`` also reads the key, but only to render
+    the non-200 tail of its own message).
 
     Fail-quiet on: missing / malformed / stale sidecar (the engine-dead
     class belongs to ``check_sports_eval_silence``), an absent or empty
