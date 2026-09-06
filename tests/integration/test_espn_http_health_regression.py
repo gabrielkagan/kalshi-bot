@@ -422,7 +422,11 @@ def test_incident_replay_403_everywhere_alerts_bot_tier(tmp_path):
     db = tmp_path / "state.db"
     _make_db(db, [])
     eng = se.SportsEngine(db_path=str(db))
-    n_leagues = len(eng._espn._session.headers) * 0 + 64
+    # One 403 per enabled + espn-eligible league, derived (R7-MINOR-4) so
+    # the script cannot under-run if LEAGUES grows.
+    n_leagues = len([
+        c for c in se.LEAGUES.values() if c.enabled and c.espn_league
+    ])
     eng._espn._session = _FakeSession([_Resp(403)] * n_leagues)
     eng._tick()
     sc = tmp_path / "sports_health.json"
@@ -442,6 +446,33 @@ def test_incident_replay_403_everywhere_alerts_bot_tier(tmp_path):
     )
     assert "BOT ESPN POLL ERRORS" in out
     assert "403" in out
+
+
+def test_last_poll_status_prunes_disabled_leagues(monkeypatch):
+    """R7-MINOR-1: a league disabled mid-outage must not keep its stale
+    non-200 in the map, which check_bot_espn_poll_errors divides by."""
+    import bot.engines.sports_engine as se
+    feed = se.ESPNLiveFeed()
+    enabled = [c for c in se.LEAGUES.values() if c.enabled and c.espn_league]
+    assert len(enabled) >= 2, "need >=2 eligible leagues for this test"
+    feed._session = _FakeSession([_Resp(403)] * (len(enabled) + 5))
+    feed.poll_all_leagues()
+    assert set(feed.last_poll_status()) == {c.espn_league for c in enabled}
+    assert all(v == 403 for v in feed.last_poll_status().values())
+
+    # Disable all but one, re-poll: the map must shrink to the survivor.
+    keep = enabled[0]
+    trimmed = {
+        k: v for k, v in se.LEAGUES.items()
+        if v is keep or not (v.enabled and v.espn_league)
+    }
+    monkeypatch.setattr(se, "LEAGUES", trimmed)
+    feed._session = _FakeSession([_Resp(200)] * 5)
+    feed.poll_all_leagues()
+    assert set(feed.last_poll_status()) == {keep.espn_league}, (
+        "stale disabled leagues survived the prune — they would hold the "
+        "non-200 ratio above threshold and alert every tick"
+    )
 
 
 def test_bot_espn_poll_errors_quiet_when_all_200(tmp_path):

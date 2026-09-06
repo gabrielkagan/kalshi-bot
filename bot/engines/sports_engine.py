@@ -194,6 +194,17 @@ class ESPNLiveFeed:
     def poll_all_leagues(self) -> Dict[str, GameState]:
         """Poll ESPN for all enabled leagues. Returns game_id → GameState."""
         results: Dict[str, GameState] = {}
+        # R7-MINOR-1: prune leagues that are no longer enabled/eligible.
+        # The map is read as a whole by check_bot_espn_poll_errors, which
+        # divides by len(map): a league disabled DURING an outage would
+        # otherwise keep its stale non-200 forever and hold the ratio
+        # above threshold, alerting every tick until the bot restarts.
+        _eligible = {
+            cfg.espn_league for cfg in LEAGUES.values()
+            if cfg.enabled and cfg.espn_league
+        }
+        for _stale in [k for k in self._last_poll_status if k not in _eligible]:
+            del self._last_poll_status[_stale]
         for series, league_cfg in LEAGUES.items():
             if not league_cfg.enabled or not league_cfg.espn_league:
                 continue

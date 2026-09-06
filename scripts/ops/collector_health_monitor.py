@@ -605,16 +605,23 @@ def check_espn_http_errors(
     stats = data.get("espn_http_status_1h")
     if not isinstance(stats, dict) or not stats:
         return None
+    try:
+        sidecar_age = time.time() - sidecar_path.stat().st_mtime
+    except OSError:
+        return None
     failing = []
     n_polled = 0
     n_eligible = 0
+    n_unparseable = 0
     for league, st in sorted(stats.items()):
         if not isinstance(st, dict):
+            n_unparseable += 1
             continue
         try:
             polls = int(st.get("polls") or 0)
             non_200 = int(st.get("non_200") or 0)
         except (TypeError, ValueError):
+            n_unparseable += 1
             continue
         if polls <= 0:
             continue
@@ -631,13 +638,16 @@ def check_espn_http_errors(
         uptime = _collector_uptime_seconds(ESPN_COLLECTOR_UNIT)
         if uptime is not None and uptime >= DEFAULT_BOOT_GRACE_SECONDS:
             return (
-                f"*COLLECTOR ESPN POLL LOOP WEDGED* — {sidecar_path} is "
-                f"being rewritten but all {len(stats)} leagues report 0 "
-                f"polls in the rolling window, and {ESPN_COLLECTOR_UNIT} "
-                f"has been up {int(uptime)}s. The drain thread is alive "
-                f"while the poll loop is not — bronze chunks keep landing "
-                f"with no new ESPN data. Check: `journalctl -u "
-                f"{ESPN_COLLECTOR_UNIT} --since '30 min ago' | tail`."
+                f"*COLLECTOR ESPN POLL LOOP WEDGED* — {sidecar_path} was "
+                f"written {int(sidecar_age)}s ago but no league reports a "
+                f"single poll in the rolling window "
+                f"({len(stats) - n_unparseable} readable entries, "
+                f"{n_unparseable} unparseable), and {ESPN_COLLECTOR_UNIT} "
+                f"has been up {int(uptime)}s. If the sidecar age is small "
+                f"the drain thread is alive while the poll loop is not — "
+                f"bronze chunks keep landing with no new ESPN data. Check: "
+                f"`journalctl -u {ESPN_COLLECTOR_UNIT} --since '30 min "
+                f"ago' | tail`."
             )
         return None
     if not failing:
@@ -657,7 +667,10 @@ def check_espn_http_errors(
         f"in the last "
         f"{window_s or '?'}s: {detail}. Bronze chunks are still landing "
         f"but carry NO scoreboard data (ticket 86bbvqhyr class — ESPN "
-        f"403'd our User-Agent for 5 weeks unnoticed). Probe: "
+        f"403'd our User-Agent for 5 weeks unnoticed). If the cause is "
+        f"upstream (UA rejected / ESPN outage) expect a matching "
+        f"*BOT ESPN POLL ERRORS* alert on the kalshi-bot tier in the same "
+        f"tick — same root cause, two blind services, one fix. Probe: "
         f"`python3 scripts/ops/espn_live_probe.py`; then "
         f"`journalctl -u {ESPN_COLLECTOR_UNIT} --since '1 hour ago' | "
         f"grep 'ESPN non-200' | tail`."
@@ -739,8 +752,9 @@ def check_sports_eval_silence(
                 f"{sidecar_path} does not exist. SportsEngine._note_tick "
                 f"writes it every {DEFAULT_SPORTS_TICK_SECONDS}s tick, so "
                 f"the engine thread never started (bot/main_loop.py sets "
-                f"sports_engine=None and continues on a start failure) or "
-                f"this bot predates ticket 86bbvqhyr. Check: `journalctl "
+                f"sports_engine=None and continues on a start failure), or "
+                f"SPORTS_ENABLED is False, or this bot predates ticket "
+                f"86bbvqhyr. Check: `journalctl "
                 f"-u {unit} --since '30 min ago' | grep -i sportsengine`."
             )
         return None
@@ -877,7 +891,9 @@ def check_bot_espn_poll_errors(
         f"403'd our User-Agent for 5 weeks). Probe: `python3 "
         f"scripts/ops/espn_live_probe.py`; the UA is "
         f"`bot.engines.sports_engine.ESPN_USER_AGENT` and the accepted "
-        f"family is pinned in tests/contracts/test_espn_user_agent.py."
+        f"family is pinned in tests/contracts/test_espn_user_agent.py. "
+        f"Expect a matching *COLLECTOR ESPN HTTP ERRORS* alert on the "
+        f"{ESPN_COLLECTOR_UNIT} tier in the same tick — same root cause."
     )
 
 
