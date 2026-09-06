@@ -7,13 +7,27 @@ applies changes by force-reconnect. Markets whose lifespan < poll interval
 (15M crypto windows, ~15 min) are caught only ~25% of the time — the rest open
 AND close inside the hourly gap and are never subscribed → permanent bronze loss.
 
-Fix: a fast incremental discovery path scoped to the sub-hourly crypto-15M
-series that dispatches subscribe frames MID-SESSION via send_frame (no reconnect,
-so the D1.3-fu4 ack-flood/OOM class can't reopen).
+Fix: a fast incremental discovery path that dispatches subscribe frames
+MID-SESSION via send_frame (no reconnect, so the D1.3-fu4 ack-flood/OOM class
+can't reopen).
+
+Ticket 86bbvdc8y (2026-09-05) GENERALIZED the discovery query. The 86ba74hzy
+ship polled a hand-mirrored ``CRYPTO_15M_SERIES`` tuple (one request per
+series), so every 15M family the bot did NOT trade — KXNEAR15M / KXZEC15M
+(2026-06-30), KXGOLD/WTI/SILVER15M (2026-07-31), KXCOPPER/NATGAS15M
+(2026-08-27), KXCRYPTOLEAD15M, FX + index 15M among others (27 fifteen_min
+series on the venue, 18 untraded) — was NEVER discovered; measured
+Sep-3 14Z orderbook hour: BTC 7 windows, BNB 9, NEAR 1 (stale), GOLD/ZEC/WTI/
+SILVER 0. The poll is now ONE series-agnostic ``/markets?status=open&
+min_close_ts=now&max_close_ts=now+horizon`` query (default horizon 1200s ≥ the
+900s window lifespan + poll lag) filtered by the same ``excluded_series``
+firehose list the hourly snapshot uses. No series list to maintain; a new 15M
+series on the venue is collected from its first window.
 
 These tests are TDD-first (RED before implementation):
-  1. CRYPTO_15M_SERIES exists + drift-pins against bot.constants.SERIES_TICKERS.
-  2. fetch_open_tickers_for_series queries per-series + unions.
+  1. Horizon constant is ≥ a 15-min window + one poll interval; no series list.
+  2. fetch_open_tickers_closing_within issues one close-window query, pages,
+     filters excluded series, never raises.
   3. IncrementalDiscoveryRefresher fires on_new with the open set (immediate first tick).
   4. BronzeArchiver.add_subscriptions merges maps + dispatches mid-session, no reconnect.
 """
@@ -25,80 +39,163 @@ from unittest.mock import MagicMock
 import pytest
 
 
-# ─── 1. CRYPTO_15M_SERIES constant + drift-pin ──────────────────────────────
+# ─── 1. Horizon constant — series-agnostic discovery (86bbvdc8y) ────────────
 
 
-def test_crypto_15m_series_constant_exists():
+def test_no_hand_mirrored_series_list_remains():
+    """86bbvdc8y: the hand-mirrored ``CRYPTO_15M_SERIES`` tuple was the
+    structural cause of the NEAR/ZEC/commodity bronze gap (any 15M series the
+    bot did not trade was never discovered). It must be GONE so it cannot be
+    re-wired as the discovery scope."""
     from collector import rest_snapshot as rs
-    assert isinstance(rs.CRYPTO_15M_SERIES, tuple), (
-        "CRYPTO_15M_SERIES must be a tuple of Kalshi series_ticker strings."
+    assert not hasattr(rs, "CRYPTO_15M_SERIES"), (
+        "CRYPTO_15M_SERIES must not exist — discovery is series-agnostic "
+        "(close-horizon query). Re-adding a series list reopens the "
+        "new-15M-family bronze gap measured 2026-09-05."
     )
-    assert rs.CRYPTO_15M_SERIES, "CRYPTO_15M_SERIES must be non-empty."
-    assert all(isinstance(s, str) and s for s in rs.CRYPTO_15M_SERIES)
+    assert not hasattr(rs, "fetch_open_tickers_for_series")
 
 
-def test_crypto_15m_series_mirrors_bot_series_tickers():
-    """Drift-pin (mirrors the LEAGUES_ESPN pattern): collector cannot import
-    bot.* (collector-no-bot contract), so it mirrors the 15M series list. This
-    test fails RED if the bot's SERIES_TICKERS drifts from the collector mirror,
-    forcing the operator to update both sides + restart kalshi-collector."""
+def test_horizon_covers_a_full_window_plus_poll_lag():
+    """A 15M window is listed ~15 min before close. To subscribe it at (or
+    before) its open, the close-horizon must be ≥ 900s + one poll interval."""
     from collector import rest_snapshot as rs
-    from bot.constants import SERIES_TICKERS
-
-    assert set(rs.CRYPTO_15M_SERIES) == set(SERIES_TICKERS.values()), (
-        "collector.rest_snapshot.CRYPTO_15M_SERIES drifted from "
-        "bot.constants.SERIES_TICKERS. Update the collector mirror + restart "
-        "kalshi-collector to pick up the new 15M series."
-    )
-
-
-# ─── 2. fetch_open_tickers_for_series ───────────────────────────────────────
+    assert isinstance(rs.DEFAULT_INCREMENTAL_HORIZON_SECONDS, float)
+    assert rs.DEFAULT_INCREMENTAL_HORIZON_SECONDS >= (
+        900.0 + rs.DEFAULT_INCREMENTAL_REFRESH_SECONDS
+    ), "horizon must cover a full 15-min window plus one poll interval."
+    # Bounded: a multi-hour horizon would sweep in hourly/daily markets that
+    # the hourly snapshot already covers and inflate per-tick payload.
+    assert rs.DEFAULT_INCREMENTAL_HORIZON_SECONDS <= 3600.0
 
 
-def _series_session(by_series: dict):
-    """MagicMock session whose .get returns a single open page per series_ticker
-    param. ``by_series`` maps series_ticker -> [tickers]."""
+# ─── 2. fetch_open_tickers_closing_within ───────────────────────────────────
+
+
+def _horizon_session(pages):
+    """MagicMock session returning ``pages`` (list of market-row lists) in
+    order, threading a cursor between them. Records every ``params``."""
+    calls = []
+
     def _get(url, params=None, headers=None, timeout=None):
-        series = (params or {}).get("series_ticker")
+        idx = len(calls)
+        calls.append(dict(params or {}))
         resp = MagicMock()
         resp.status_code = 200
+        rows = pages[idx] if idx < len(pages) else []
         resp.json.return_value = {
-            "markets": [
-                {"ticker": t, "status": "active"}
-                for t in by_series.get(series, [])
-            ],
-            "cursor": "",
+            "markets": rows,
+            "cursor": f"c{idx + 1}" if idx + 1 < len(pages) else "",
         }
         return resp
     session = MagicMock()
     session.get.side_effect = _get
+    session._calls = calls
     return session
 
 
-def test_fetch_open_tickers_for_series_unions_across_series():
-    from collector import rest_snapshot as rs
-    session = _series_session({
-        "KXBTC15M": ["KXBTC15M-A", "KXBTC15M-B"],
-        "KXETH15M": ["KXETH15M-A"],
-    })
-    out = rs.fetch_open_tickers_for_series(
-        series_tickers=("KXBTC15M", "KXETH15M"),
-        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
-    )
-    assert out == {"KXBTC15M-A", "KXBTC15M-B", "KXETH15M-A"}
+def _row(ticker, status="open"):
+    return {"ticker": ticker, "status": status}
 
 
-def test_fetch_open_tickers_for_series_passes_series_param():
+def test_fetch_closing_within_is_one_close_window_query_no_series_param():
     from collector import rest_snapshot as rs
-    session = _series_session({"KXBTC15M": ["KXBTC15M-A"]})
-    rs.fetch_open_tickers_for_series(
-        series_tickers=("KXBTC15M",),
+    session = _horizon_session([[_row("KXBTC15M-A"), _row("KXGOLD15M-B")]])
+    out = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=(),
+        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
+        _now=1_000_000.0,
+    )
+    assert out == {"KXBTC15M-A", "KXGOLD15M-B"}
+    assert len(session._calls) == 1, "single page → exactly one request"
+    p = session._calls[0]
+    assert "series_ticker" not in p, "discovery must be series-agnostic"
+    assert p["status"] == "open"
+    assert p["min_close_ts"] == 1_000_000
+    assert p["max_close_ts"] == 1_000_000 + 1200
+    assert p["limit"] == rs._HORIZON_PAGE_LIMIT
+
+
+def test_fetch_closing_within_pages_until_cursor_exhausted():
+    from collector import rest_snapshot as rs
+    session = _horizon_session([[_row("A-1")], [_row("B-1")], [_row("C-1")]])
+    out = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=(),
         api_key="kid", private_key=None, session=session, _test_skip_auth=True,
     )
-    call = session.get.call_args_list[0]
-    params = call.kwargs.get("params") or call.args[1]
-    assert params.get("series_ticker") == "KXBTC15M"
-    assert params.get("status") == "open"
+    assert out == {"A-1", "B-1", "C-1"}
+    assert [c.get("cursor") for c in session._calls] == [None, "c1", "c2"]
+
+
+def test_fetch_closing_within_filters_excluded_firehose_series():
+    """The close-window sweep sees EVERY short-lived market, incl. the esports
+    / MVE firehose the hourly snapshot excludes (measured 2026-09-05: 374 of
+    388 markets closing within 16 min were KXMVECROSSCATEGORY). The same
+    ``excluded_series`` prefixes MUST apply here or the incremental path would
+    re-open the socket.send() reconnect-storm class (86ba76adw)."""
+    from collector import rest_snapshot as rs
+    session = _horizon_session([[
+        _row("KXMVECROSSCATEGORY-26SEP05-X"), _row("KXNEAR15M-26SEP051600-00"),
+        _row("KXMVESPORTSMULTIGAMEEXTENDED-1"), _row("KXWTI15M-26SEP051600-00"),
+    ]])
+    out = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=rs.DEFAULT_EXCLUDED_SERIES,
+        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
+    )
+    assert out == {"KXNEAR15M-26SEP051600-00", "KXWTI15M-26SEP051600-00"}
+
+
+def test_fetch_closing_within_excluded_match_is_series_exact():
+    """``KXBTC15M`` excluded must NOT exclude a lookalike ``KXBTC15MX``; the
+    match is an exact series match on the pre-``-`` segment via the shared
+    ``is_excluded_series`` helper (single chokepoint with the hourly
+    snapshot — R1-MN1)."""
+    from collector import rest_snapshot as rs
+    session = _horizon_session([[_row("KXBTC15M-A"), _row("KXBTC15MX-A")]])
+    out = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=("KXBTC15M",),
+        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
+    )
+    assert out == {"KXBTC15MX-A"}
+    assert rs.is_excluded_series("KXBTC15M-A", ("KXBTC15M",)) is True
+    assert rs.is_excluded_series("KXBTC15MX-A", ("KXBTC15M",)) is False
+    assert rs.is_excluded_series("KXBTC15M-A", ()) is False
+    # Both fetch paths must route through the one helper (source pin).
+    import inspect
+    assert inspect.getsource(rs.fetch_tickers_by_tier).count("is_excluded_series(") == 1
+    assert inspect.getsource(rs.fetch_open_tickers_closing_within).count("is_excluded_series(") == 1
+
+
+def test_main_loop_threads_excluded_series_and_horizon_into_refresher():
+    """R1-MN8: the storm-reopen vector is a DROPPED kwarg at the wiring site.
+    Pin that main_loop constructs IncrementalDiscoveryRefresher with the same
+    ``excluded_series`` it hands the hourly refresher + the env-driven horizon."""
+    import inspect
+    import collector.main_loop as ml
+    src = inspect.getsource(ml.run)
+    i = src.index("IncrementalDiscoveryRefresher(")
+    block = src[i:src.index(")", i + 1) + 1]
+    assert "excluded_series=excluded_series" in block
+    assert "horizon_seconds=incremental_horizon_seconds" in block
+
+
+def test_fetch_closing_within_skips_non_open_rows_and_never_raises():
+    from collector import rest_snapshot as rs
+    session = _horizon_session([[_row("A-1", status="settled"), _row("B-1")]])
+    out = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=(),
+        api_key="kid", private_key=None, session=session, _test_skip_auth=True,
+    )
+    assert out == {"B-1"}
+    # Transport failure → empty set, no exception (best-effort ADD path).
+    bad = MagicMock()
+    bad.get.side_effect = RuntimeError("boom")
+    out2 = rs.fetch_open_tickers_closing_within(
+        horizon_seconds=1200.0, excluded_series=(),
+        api_key="kid", private_key=None, session=bad, _test_skip_auth=True,
+        _test_backoff_seconds=0.0,
+    )
+    assert out2 == set()
 
 
 # ─── 3. IncrementalDiscoveryRefresher ───────────────────────────────────────
@@ -108,7 +205,7 @@ def test_incremental_refresher_fires_on_new_with_open_set(monkeypatch):
     from collector import rest_snapshot as rs
 
     monkeypatch.setattr(
-        rs, "fetch_open_tickers_for_series",
+        rs, "fetch_open_tickers_closing_within",
         lambda **kw: {"KXBTC15M-A", "KXBTC15M-B"},
     )
     seen = {}
@@ -121,7 +218,7 @@ def test_incremental_refresher_fires_on_new_with_open_set(monkeypatch):
     shutdown = threading.Event()
     ref = rs.IncrementalDiscoveryRefresher(
         api_key="kid", private_key=None,
-        series_tickers=("KXBTC15M",),
+        excluded_series=(),
         on_new=_on_new,
         shutdown_event=shutdown,
         interval_seconds=3600.0,  # long — we only want the immediate first tick
@@ -136,10 +233,37 @@ def test_incremental_refresher_rejects_nonpositive_interval():
     from collector import rest_snapshot as rs
     with pytest.raises(ValueError):
         rs.IncrementalDiscoveryRefresher(
-            api_key="k", private_key=None, series_tickers=("X",),
+            api_key="k", private_key=None, excluded_series=(),
             on_new=lambda s: None, shutdown_event=threading.Event(),
             interval_seconds=0,
         )
+
+
+def test_incremental_refresher_passes_horizon_and_exclusions_to_fetch(monkeypatch):
+    """The refresher is the ONLY caller of the horizon fetch; pin that it
+    threads its horizon + the shared firehose exclusions through (a dropped
+    kwarg would silently widen the sweep to the excluded series)."""
+    from collector import rest_snapshot as rs
+    seen = {}
+    ev = threading.Event()
+
+    def _fake(**kw):
+        seen.update(kw)
+        ev.set()
+        return set()
+    monkeypatch.setattr(rs, "fetch_open_tickers_closing_within", _fake)
+    shutdown = threading.Event()
+    ref = rs.IncrementalDiscoveryRefresher(
+        api_key="kid", private_key=None,
+        excluded_series=("KXMVECROSSCATEGORY",),
+        on_new=lambda s: None, shutdown_event=shutdown,
+        interval_seconds=3600.0, horizon_seconds=1500.0,
+    )
+    ref.start()
+    assert ev.wait(timeout=5.0)
+    shutdown.set()
+    assert seen["horizon_seconds"] == 1500.0
+    assert seen["excluded_series"] == ("KXMVECROSSCATEGORY",)
 
 
 # ─── 4. BronzeArchiver.add_subscriptions ────────────────────────────────────
@@ -326,24 +450,20 @@ def test_incremental_default_interval_captures_near_full_window():
 
 
 def test_incremental_poll_stays_well_under_read_rate_limit():
-    """Data-backed (CLAUDE.md 'no config tuning without data'): the scoped poll
-    fires one request per crypto-15M series per tick. Even as a same-instant
-    burst, that must stay well under Kalshi's READ_RATE_LIMIT (30 req/s,
-    Advanced tier; collector runs on its own key). At 7 series / 10s = 0.7
-    req/s avg, 7 req/s peak — comfortable headroom. This guards against a
-    future interval drop + series-count growth jointly breaching the budget."""
+    """Data-backed (CLAUDE.md 'no config tuning without data'): the close-
+    horizon poll is ONE request per tick (+1 per extra 1000-row page; measured
+    2026-09-05: 388 rows within 16 min incl. the MVE firehose → 1 page). At
+    10s that is 0.1 req/s average, ~10× cheaper than the retired 9-series
+    poll (0.9 req/s), vs Kalshi's READ_RATE_LIMIT (30 req/s, Advanced tier;
+    the collector runs on its own key). Pins the page size so a future drop
+    back to 200 rows/page cannot silently multiply request count."""
     from collector import rest_snapshot as rs
     from bot.constants import READ_RATE_LIMIT
 
-    n_series = len(rs.CRYPTO_15M_SERIES)
-    # Peak burst (all series fired same instant) must keep ≥2× headroom.
-    assert n_series <= READ_RATE_LIMIT / 2, (
-        f"peak burst {n_series} req would exceed half the {READ_RATE_LIMIT} "
-        "req/s read budget — add a per-request spacing or split the poll."
+    assert rs._HORIZON_PAGE_LIMIT == 1000, (
+        "close-horizon poll must request 1000 rows/page so the sweep is "
+        "normally a single request per tick."
     )
-    # Sustained average must stay under 10% of the read budget.
-    avg_rps = n_series / rs.DEFAULT_INCREMENTAL_REFRESH_SECONDS
-    assert avg_rps < READ_RATE_LIMIT * 0.1, (
-        f"avg {avg_rps:.2f} req/s exceeds 10% of the {READ_RATE_LIMIT} req/s "
-        "read budget; raise the interval or reduce the series scope."
-    )
+    # Sustained average (1 page/tick) must stay under 10% of the read budget.
+    avg_rps = 1.0 / rs.DEFAULT_INCREMENTAL_REFRESH_SECONDS
+    assert avg_rps < READ_RATE_LIMIT * 0.1

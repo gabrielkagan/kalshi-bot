@@ -219,7 +219,8 @@ def _boot(tmp_path: Path, monkeypatch, *, cache_map=None, fetch_returns,
         return fetch_returns
     monkeypatch.setattr(ml, "fetch_tickers_by_tier", fake_fetch)
     monkeypatch.setattr(rs, "fetch_tickers_by_tier", fake_fetch)
-    monkeypatch.setattr(rs, "fetch_open_tickers_for_series", lambda **kw: set())
+    # 86bbvdc8y: the fast poll is the series-agnostic close-horizon sweep now.
+    monkeypatch.setattr(rs, "fetch_open_tickers_closing_within", lambda **kw: set())
     monkeypatch.setattr("collector.uploader.subprocess.run", _fake_rclone)
 
     pem_path = _generate_pem_file(tmp_path)  # 2048-bit keygen BEFORE the timer

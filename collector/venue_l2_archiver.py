@@ -100,17 +100,23 @@ VENUE_CHANNELS: Mapping[str, str] = {
 #   venue would bias the synthetic AWAY from the settlement reference
 #   (e.g. Gemini absent for XRP; Bitstamp absent for DOGE/BNB).
 #
-#   CORPUS-COLLECT (ADA, BCH — added 2026-05-30): the new Kalshi 15M assets
-#   the bot does NOT trade. Their CFB-RTI constituents are NOT yet resolved,
-#   so they are collected on EVERY venue that LISTS the pair (corpus-max).
+#   CORPUS-COLLECT (ADA, BCH — added 2026-05-30; NEAR, ZEC — added 2026-09-05,
+#   ticket 86bbvdc8y): Kalshi 15M assets the bot does NOT trade. Their
+#   CFB-RTI constituents are NOT yet resolved, so they are collected on
+#   EVERY venue that LISTS the pair (corpus-max).
 #   This is SAFE for the synthetic: BOTH reconstruction gates skip any asset
-#   absent from their per-asset params map, and NEITHER map has an ADA/BCH
-#   entry — the offline RMSE harness's local CFB_PARAMS
+#   absent from their per-asset params map, and NEITHER map has an
+#   ADA/BCH/NEAR/ZEC entry — the offline RMSE harness's local CFB_PARAMS
 #   (scripts/research/synthetic_rti_rmse.py) and the B2b live feed's
 #   _CFB_PARAMS (bot.feeds.synthetic_rti_feed). Raw bronze accumulates but is
 #   never reconstructed until their RTI constituents are resolved (follow-up
 #   ticket). Live-probed listings
 #   2026-05-30: ADA on kraken+bitstamp (NOT Gemini); BCH on all four.
+#   2026-09-05: NEAR on kraken (NEAR/USD online) + bitstamp (nearusd Enabled),
+#   NOT Gemini; ZEC on kraken (ZEC/USD, REST pair XZECZUSD) + bitstamp (zecusd)
+#   + gemini (ZECUSD status=open). Memory: measured 3-venue MemoryPeak
+#   178 MiB (186,781,696 B) / 512 MiB cap (2026-09-05); +5 books is well
+#   within the cap.
 #
 # Collector-local (no bot.* import); the Kraken DOGE symbol mirrors
 # bot.constants.CROSS_EXCHANGE_SYMBOLS["DOGE"]["kraken"] = "XDG/USD".
@@ -125,6 +131,8 @@ VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
         "HYPE": "HYPE/USD",
         "ADA": "ADA/USD",   # corpus-collect
         "BCH": "BCH/USD",   # corpus-collect
+        "NEAR": "NEAR/USD", # corpus-collect (86bbvdc8y)
+        "ZEC": "ZEC/USD",   # corpus-collect (86bbvdc8y)
     },
     "bitstamp": {
         "BTC": "btcusd",
@@ -134,6 +142,8 @@ VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
         "HYPE": "hypeusd",
         "ADA": "adausd",    # corpus-collect
         "BCH": "bchusd",    # corpus-collect
+        "NEAR": "nearusd",  # corpus-collect (86bbvdc8y)
+        "ZEC": "zecusd",    # corpus-collect (86bbvdc8y)
     },
     "gemini": {
         "BTC": "BTCUSD",
@@ -141,6 +151,7 @@ VENUE_SYMBOLS: Mapping[str, Mapping[str, str]] = {
         "SOL": "SOLUSD",
         "DOGE": "DOGEUSD",
         "BCH": "BCHUSD",    # corpus-collect (ADA not listed on Gemini)
+        "ZEC": "ZECUSD",    # corpus-collect (86bbvdc8y; NEAR not listed on Gemini)
     },
 }
 

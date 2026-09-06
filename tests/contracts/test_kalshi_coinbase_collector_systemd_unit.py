@@ -23,11 +23,13 @@ Per-unit deltas vs ``kalshi-collector.service`` (D1.5):
     wherever it lands.
   - ``MemoryMax=384M`` (vs Kalshi's 2048M post-2026-05-20 raise;
     originally 256M at D2.5 ship, 512M at the very first cut).
-    Coinbase single-conn × 9 products × 5 channels (ADA+BCH added
-    2026-05-30 for the 9-asset corpus) is well under Kalshi's 7-conn
-    × 21K-subs steady-state footprint; bumped 256M → 384M when the
-    product count went 7 → 9 (measured 7-product peak 229M → ~295M
-    projected at 9).
+    Coinbase single-conn × 11 products × 5 channels (ADA+BCH added
+    2026-05-30; NEAR+ZEC added 2026-09-05, ticket 86bbvdc8y) is well
+    under Kalshi's 7-conn × 21K-subs steady-state footprint; bumped
+    256M → 384M when the product count went 7 → 9 (measured 7-product
+    peak 229 MiB). Measured 9-product MemoryPeak 229 MiB (240,500,736 B)
+    / 384 MiB on 2026-09-05 — flat vs 7 products — so +2 products leaves
+    ≥150 MiB headroom and the cap is unchanged at 11.
   - ``LimitNOFILE=512`` (vs Kalshi's 4096). 1 conn × 5 channels ×
     rotation + rclone needs ~30 fds; 512 gives ample headroom.
 
@@ -219,9 +221,11 @@ def test_service_memory_max_is_384m():
     resize. The Coinbase cap was 256M for single-conn × 7 products ×
     5 channels (post-D2.5 level2_batch promotion); bumped 256M → 384M
     on 2026-05-30 when ADA-USD + BCH-USD were added for the 9-asset
-    corpus (the collector now collects 9 products; the bot still
-    trades 7). Measured peak was 229M/256M (90%) at 7 products; 9
-    products projects ~295M, so 384M restores headroom. Still far
+    corpus; NEAR-USD + ZEC-USD joined 2026-09-05 (ticket 86bbvdc8y —
+    the collector now collects 11 products; the bot still trades 7).
+    Measured peak was 229 MiB/256 MiB (90%) at 7 products and 229 MiB
+    (240,500,736 B)/384 MiB at 9 (MemoryPeak 2026-09-05) — flat, so +2
+    products keeps ≥150 MiB headroom without a unit change. Still far
     below Kalshi's 7-conn × ~21K-subs steady-state. Host has 5.4G
     free, so the per-unit cap is the only constraint. 384M leaves room
     for the worker queue (10K items × ~1KB envelope ≈ 10MB) + zstd
@@ -230,10 +234,11 @@ def test_service_memory_max_is_384m():
     text = _read_unit()
     assert _directive(text, "MemoryMax") == "384M", (
         "MemoryMax=384M — bumped from 256M on 2026-05-30 for the 9-asset "
-        "corpus (ADA+BCH added). Coinbase single-conn is still "
-        "structurally lighter than the Kalshi side. Sized against "
-        "measured 7-product peak (229M) scaled to 9 products (~295M) + "
-        "worker queue + zstd buffer + rclone overhead."
+        "corpus (ADA+BCH added); unchanged at 11 products (NEAR+ZEC "
+        "2026-09-05). Coinbase single-conn is still structurally lighter "
+        "than the Kalshi side. Sized against the measured 9-product peak "
+        "(229 MiB, flat vs 7 products) + worker queue + zstd buffer + "
+        "rclone overhead; +2 products leaves >=150 MiB headroom."
     )
 
 
