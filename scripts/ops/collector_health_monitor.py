@@ -1,4 +1,4 @@
-"""D1.6 + D1.6 fu + D2.5 + D1.8 + D1.11.a + B2a-1: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames alerts.
+"""D1.6 + D1.6 fu + D2.5 + D1.8 + D1.11.a + B2a-1 + 86bbvqhyr: collector health monitor — disk + WS-conn-loss + service-down + bronze-dropped-frames + ESPN-content-class alerts.
 
 Ticket 86b9zk4we (D1.6, 2026-05-17) + 86b9zkktr (D1.6 fu, 2026-05-17)
 + 86b9znq4w (D2.5, 2026-05-18 — extends to also poll
@@ -13,10 +13,40 @@ subset: disk + ws_reconnects + collector_active + dropped_frames,
 since the venue-L2 recorder runs 3 persistent WS conns). Standalone
 CLI run via cron on the VPS. Polls 5 health surfaces on kalshi-collector
 (incl. boot_state, ticket 86bbvdcat 2026-09-05) + 4 × 2 other WS-collectors
-+ 3 health surfaces × 2 HTTP-poll-collectors + 1 bot check (B3-fu3,
-2026-05-18) = 20 total alert classes; sends Telegram alerts via the
-existing ``bot.notifier.TelegramNotifier`` (no Telegram client
++ 3 health surfaces on kalshi-weather-collector + 4 on
+kalshi-espn-collector (incl. http_errors, ticket 86bbvqhyr 2026-09-06)
++ 3 bot checks (B3-fu3 insert_eval_failures + 86bbvqhyr
+sports_eval_silence + espn_poll_errors) = 23 total alert classes; sends Telegram alerts via
+the existing ``bot.notifier.TelegramNotifier`` (no Telegram client
 re-implementation).
+
+Ticket 86bbvqhyr (2026-09-06) adds three CONTENT-CLASS checks after
+ESPN 403'd the ``KalshiBot/1.0`` User-Agent for ~5 weeks while every
+volume-based check here stayed green ("chunks landing" ≠ "data
+landing" — L-espn-1, same class as L-rot-7). Which check sees which
+failure matters, and the split is not obvious:
+  - check_espn_http_errors (COLLECTOR side, dedup
+    ``d1_11_http_errors``): per-league rolling-1h non-200 rate from the
+    ESPN sidecar's ``espn_http_status_1h`` key; alert at >50% for any
+    league with ≥ min_polls samples. Also alerts when the sidecar is
+    fresh but every league reports 0 polls — a wedged poll loop behind
+    a live drain thread (R6-MINOR-5).
+  - check_bot_espn_poll_errors (BOT side, dedup
+    ``b3_fu3_espn_poll_errors``): >50% of leagues non-200 (or raised)
+    on the engine's LAST poll, from ``sports_health.json``'s
+    ``espn_last_poll_status``. This is the bot-side detector for the
+    2026-08-05 class and it exists because the check below cannot see
+    it (R6-CRITICAL-1): a 403 makes ``poll_all_leagues`` return {}, so
+    ``live_ticks_in_window`` stays 0 and the live-tick precondition
+    never arms.
+  - check_sports_eval_silence (BOT side, dedup
+    ``b3_fu3_sports_eval_silence``): a DIFFERENT class — ESPN is
+    working (≥ min_live_ticks live-game ticks in 24h) but
+    ``evaluated_opportunities`` has 0 ``product_type='sports'`` rows in
+    that window. Also covers a dead or wedged engine thread: a missing
+    or stale sidecar while ``kalshi-bot`` is active past its boot grace
+    (R6-MAJOR-1 — nothing else supervises that thread). No journal
+    decode — R2 measured a 24h ``journalctl -g`` pull at ~50s on the VPS.
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -70,9 +100,11 @@ flood the operator's mail spool).
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -142,6 +174,12 @@ ESPN_BRONZE_ROOT = "/var/lib/kalshi-espn-collector"
 ESPN_COLLECTOR_UNIT = "kalshi-espn-collector"
 ESPN_SIDECAR_PATH = "/var/lib/kalshi-espn-collector/bronze_health.json"
 ESPN_MONITOR_STATE_PATH = "/var/lib/kalshi-espn-collector/monitor_state.json"
+# Ticket 86bbvqhyr: ESPN content-class check. Alert when a league's
+# non-200 share over the sidecar's rolling window exceeds the pct AND
+# the window holds at least min_polls samples (60s cadence → 10 polls ≈
+# 10 min; avoids a boot-time single-403 false alarm).
+DEFAULT_ESPN_HTTP_ERROR_THRESHOLD_PCT = 50
+DEFAULT_ESPN_HTTP_ERROR_MIN_POLLS = 10
 
 # B2a-1 Venue-L2-side defaults (2026-05-28, ticket 86ba1zf5j). UNLIKE the
 # weather/ESPN HTTP-poll tiers, the venue-L2 recorder runs THREE persistent
@@ -172,6 +210,43 @@ BOT_UNIT = "kalshi-bot"
 DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
 DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
 DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
+# Ticket 86bbvqhyr: bot-side sports silence check. "ESPN reported live
+# games" comes from the sports engine's OWN sidecar
+# (bot/engines/sports_engine.py::SportsEngine._note_tick writes
+# sports_health.json next to state.db every 30s tick with
+# live_ticks_in_window over a 24h window). R1 tried the bot journal;
+# R2 measured a 24h `journalctl -g` pull at ~50s on the VPS (decode
+# cost, not output volume) — the engine self-reporting is O(1).
+# 24h window (R1-M2): sports evaluated_opportunities rows are sparse on
+# a HEALTHY system (1-43/day, 17:00-05:00 UTC, only for live games that
+# matched a Kalshi market) — a 180-min window produced ~3-5 false
+# alarms/day on the last 16 healthy days; 24h produced 0 and still
+# catches a 5-week-class outage within a day. ≥20 live ticks (≈10 min
+# of live play) is the precondition.
+DEFAULT_SPORTS_SILENCE_WINDOW_MIN = 1440
+DEFAULT_SPORTS_SILENCE_MIN_LIVE_TICKS = 20
+# Sidecar older than this → the sports engine thread is dead or wedged.
+# R6-MAJOR-1: this used to fail-quiet and delegate to "the watchdog",
+# which does not exist — bot/main_loop.py sets self.sports_engine=None
+# and continues if the engine fails to start, nothing calls is_alive()
+# on the thread, and no check here polls `is-active kalshi-bot`. A dead
+# sports thread inside a live bot therefore looked identical to health.
+# Now: stale/missing sidecar WHILE kalshi-bot is active (and outside the
+# bot's boot grace) is itself the alert.
+DEFAULT_SPORTS_SIDECAR_STALE_SECONDS = 900
+DEFAULT_BOT_BOOT_GRACE_SECONDS = 900
+# SportsEngine.TICK_INTERVAL — quoted in alert text only.
+DEFAULT_SPORTS_TICK_SECONDS = 30
+SPORTS_HEALTH_SIDECAR_NAME = "sports_health.json"
+# R6-CRITICAL-1: share of leagues whose LAST bot-side ESPN poll returned
+# non-200 (or raised) above which the bot tier alerts. This is the bot's
+# mirror of check_espn_http_errors: during the 2026-08-05 outage every
+# poll raised, so `games` was empty, so live_ticks_in_window stayed 0
+# forever and the live-games-vs-rows check could never fire for the very
+# class it was built for. The last-poll status map closes that hole.
+DEFAULT_BOT_ESPN_ERROR_THRESHOLD_PCT = 50
+# Read-only sqlite path; mirrors scripts/vps_mcp_server.py's default.
+DEFAULT_STATE_DB_PATH = os.path.expanduser("~/kalshi-bot-repo/state.db")
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
 # 2x the cron tick interval (5min = 300s) = ~610s. Use 120s as a tight
 # floor so we catch a wedged drain thread within 2 monitor ticks, not 2
@@ -487,6 +562,351 @@ def check_boot_state(
     )
 
 
+def check_espn_http_errors(
+    sidecar_path: Optional[Path] = None,
+    threshold_pct: int = DEFAULT_ESPN_HTTP_ERROR_THRESHOLD_PCT,
+    min_polls: int = DEFAULT_ESPN_HTTP_ERROR_MIN_POLLS,
+) -> Optional[str]:
+    """Alert when any ESPN league's rolling-window non-200 share exceeds
+    ``threshold_pct`` (ticket 86bbvqhyr, 2026-09-06).
+
+    Reads the ``espn_http_status_1h`` key that
+    ``collector.espn_main_loop.write_bronze_health_sidecar`` publishes
+    from ``ESPNArchiver.get_http_status_stats()``. Fail-quiet on: missing
+    sidecar, malformed JSON, missing key (pre-Bit collector), or a
+    league with fewer than ``min_polls`` samples in the window.
+
+    Why this exists: ESPN returned 403 to our User-Agent for ~5 weeks;
+    the collector wrote well-formed 403 rows so chunk counts, disk,
+    dropped_frames and collector_active all stayed green. A 403 row is
+    not data — monitor the CONTENT class per source (L-espn-1).
+
+    Also alerts when the sidecar is FRESH but every league reports zero
+    polls in the window (R6-MINOR-5): the drain thread keeps rewriting
+    the sidecar every few seconds, so a wedged poll loop would let
+    `polls` decay to 0 and leave all four ESPN checks green. Skipped
+    inside the unit's boot grace, when no poll has happened yet.
+
+    ``sidecar_path`` resolves via ``ESPN_HEALTH_SIDECAR_PATH`` at CALL
+    time when None (same env-var coupling as check_dropped_frames).
+    """
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "ESPN_HEALTH_SIDECAR_PATH", ESPN_SIDECAR_PATH,
+        ))
+    if not sidecar_path.is_file():
+        return None
+    try:
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    stats = data.get("espn_http_status_1h")
+    if not isinstance(stats, dict) or not stats:
+        return None
+    failing = []
+    n_polled = 0
+    n_eligible = 0
+    n_unparseable = 0
+    for league, st in sorted(stats.items()):
+        if not isinstance(st, dict):
+            n_unparseable += 1
+            continue
+        try:
+            polls = int(st.get("polls") or 0)
+            non_200 = int(st.get("non_200") or 0)
+        except (TypeError, ValueError):
+            n_unparseable += 1
+            continue
+        if polls <= 0:
+            continue
+        n_polled += 1
+        if polls < min_polls:
+            continue
+        n_eligible += 1
+        if non_200 * 100 > threshold_pct * polls:
+            failing.append((league, non_200, polls, st.get("last_status")))
+    if n_polled == 0:
+        # R6-MINOR-5: sidecar is being rewritten (drain thread alive) but
+        # NO league has polled inside the window — the poll loop is
+        # wedged. Silent under the rate check, which needs polls > 0.
+        uptime = _collector_uptime_seconds(ESPN_COLLECTOR_UNIT)
+        # R8-MINOR-1: stat INSIDE this branch and tolerate failure. Read
+        # at the top it was a new "no alert for a non-healthy reason"
+        # path — a stat() race could suppress a genuine rate alert, which
+        # is the very class this ticket closes.
+        try:
+            age_s = f"{int(time.time() - sidecar_path.stat().st_mtime)}s"
+        except OSError:
+            age_s = "unknown"
+        if uptime is not None and uptime >= DEFAULT_BOOT_GRACE_SECONDS:
+            return (
+                f"*COLLECTOR ESPN POLL LOOP WEDGED* — {sidecar_path} was "
+                f"written {age_s} ago but no league reports a "
+                f"single poll in the rolling window "
+                f"({len(stats) - n_unparseable} readable entries, "
+                f"{n_unparseable} unparseable), and {ESPN_COLLECTOR_UNIT} "
+                f"has been up {int(uptime)}s. If the sidecar age is small "
+                f"the drain thread is alive while the poll loop is not — "
+                f"bronze chunks keep landing with no new ESPN data. Check: "
+                f"`journalctl -u {ESPN_COLLECTOR_UNIT} --since '30 min "
+                f"ago' | tail`."
+            )
+        return None
+    if not failing:
+        return None
+    window_s = next(
+        (st.get("window_seconds") for st in stats.values()
+         if isinstance(st, dict) and st.get("window_seconds")),
+        None,
+    )
+    detail = ", ".join(
+        f"{league} {non_200}/{polls} (last {last!r})"
+        for league, non_200, polls, last in failing
+    )
+    return (
+        f"*COLLECTOR ESPN HTTP ERRORS* — {len(failing)}/{n_eligible} "
+        f"leagues with >={min_polls} polls are >{threshold_pct}% non-200 "
+        f"in the last "
+        f"{window_s or '?'}s: {detail}. Bronze chunks are still landing "
+        f"but carry NO scoreboard data (ticket 86bbvqhyr class — ESPN "
+        f"403'd our User-Agent for 5 weeks unnoticed). If the cause is "
+        f"upstream (UA rejected / ESPN outage) expect a matching "
+        f"*BOT ESPN POLL ERRORS* alert on the kalshi-bot tier in the same "
+        f"tick — same root cause, two blind services, one fix. Probe: "
+        f"`python3 scripts/ops/espn_live_probe.py`; then "
+        f"`journalctl -u {ESPN_COLLECTOR_UNIT} --since '1 hour ago' | "
+        f"grep 'ESPN non-200' | tail`."
+    )
+
+
+def check_sports_eval_silence(
+    db_path: Optional[Path] = None,
+    sidecar_path: Optional[Path] = None,
+    window_min: int = DEFAULT_SPORTS_SILENCE_WINDOW_MIN,
+    min_live_ticks: int = DEFAULT_SPORTS_SILENCE_MIN_LIVE_TICKS,
+    stale_after_seconds: int = DEFAULT_SPORTS_SIDECAR_STALE_SECONDS,
+    boot_grace_seconds: int = DEFAULT_BOT_BOOT_GRACE_SECONDS,
+    unit: str = BOT_UNIT,
+) -> Optional[str]:
+    """Bot-tier alert: ESPN reported live games but the sports engine
+    evaluated nothing (ticket 86bbvqhyr, 2026-09-06).
+
+    Two inputs:
+      1. ``sports_health.json`` written by
+         ``bot.engines.sports_engine.SportsEngine._note_tick`` every 30s
+         tick: ``live_ticks_in_window`` = number of ticks in the last
+         ``live_ticks_window_seconds`` (24h) on which ESPN returned ≥1
+         live game. Need ≥ ``min_live_ticks``. (R1 used the bot journal;
+         R2 measured a 24h ``journalctl -g`` pull at ~50s on the VPS —
+         the engine self-reporting is the only O(1) source.)
+      2. ``SELECT 1 … WHERE product_type='sports' AND evaluation_time
+         >= cutoff ORDER BY id DESC LIMIT 1`` on a READ-ONLY sqlite
+         connection (rowid-desc scan stops at the first recent hit on
+         the healthy path; no index on these columns). The cutoff uses
+         the sidecar's own window when present so both inputs cover
+         the same span.
+    Alert iff (1) ≥ min_live_ticks AND (2) finds no row.
+
+    A missing or stale sidecar WHILE ``kalshi-bot`` is active (and past
+    its boot grace) is itself an alert (R6-MAJOR-1): the sports engine
+    runs as a daemon thread that `bot/main_loop.py` sets to None and
+    continues without if it fails to start, nothing calls `is_alive()`
+    on it, and no other check here polls the bot unit — so a dead sports
+    thread inside a healthy bot was invisible to all 22 checks.
+
+    Fail-quiet (return None) on: malformed sidecar, DB file absent, any
+    sqlite error, and on a missing/stale sidecar when systemctl is
+    unavailable or reports the bot inactive/booting (a stopped bot is
+    the operator's intent, not a sports failure). A window in which
+    every live game lacked a Kalshi market can trip the live-games
+    branch legitimately — the message says so; treat it as "look", not
+    "page".
+
+    ``db_path`` resolves via ``STATE_DB_PATH`` env at call time when
+    None, else ``DEFAULT_STATE_DB_PATH``; ``sidecar_path`` via
+    ``SPORTS_HEALTH_SIDECAR_PATH`` else next to the DB.
+    """
+    if db_path is None:
+        db_path = Path(os.environ.get("STATE_DB_PATH", DEFAULT_STATE_DB_PATH))
+    db_path = Path(db_path)
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "SPORTS_HEALTH_SIDECAR_PATH",
+            str(db_path.parent / SPORTS_HEALTH_SIDECAR_NAME),
+        ))
+    sidecar_path = Path(sidecar_path)
+
+    def _bot_is_up_past_grace() -> bool:
+        """True only when kalshi-bot is active AND past its boot grace.
+
+        Fail-CLOSED on an unavailable systemctl (dev box / test env):
+        returns False so a missing sidecar there stays quiet.
+        """
+        if check_collector_active(unit=unit) is not None:
+            return False  # unit inactive → operator intent, not a fault
+        uptime = _collector_uptime_seconds(unit)
+        return uptime is not None and uptime >= boot_grace_seconds
+
+    if not sidecar_path.is_file():
+        if _bot_is_up_past_grace():
+            return (
+                f"*BOT SPORTS ENGINE SILENT* — {unit} is active but "
+                f"{sidecar_path} does not exist. SportsEngine._note_tick "
+                f"writes it every {DEFAULT_SPORTS_TICK_SECONDS}s tick, so "
+                f"the engine thread never started (bot/main_loop.py sets "
+                f"sports_engine=None and continues on a start failure), or "
+                f"SPORTS_ENABLED is False, or this bot predates ticket "
+                f"86bbvqhyr. Check: `journalctl "
+                f"-u {unit} --since '30 min ago' | grep -i sportsengine`."
+            )
+        return None
+    try:
+        age = time.time() - sidecar_path.stat().st_mtime
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if age > stale_after_seconds:
+        if _bot_is_up_past_grace():
+            return (
+                f"*BOT SPORTS ENGINE WEDGED* — {unit} is active but "
+                f"{sidecar_path} has not been written in {int(age)}s "
+                f"(threshold {stale_after_seconds}s; the engine ticks "
+                f"every {DEFAULT_SPORTS_TICK_SECONDS}s). The SportsEngine "
+                f"thread is dead or blocked — nothing else watches it. "
+                f"Check: `journalctl -u {unit} --since '30 min ago' | "
+                f"grep -i 'sportsengine'`."
+            )
+        return None
+    try:
+        live_ticks = int(data.get("live_ticks_in_window") or 0)
+        window_s = int(data.get("live_ticks_window_seconds") or window_min * 60)
+    except (TypeError, ValueError):
+        return None
+    if live_ticks < min_live_ticks:
+        return None
+
+    if not db_path.is_file():
+        return None
+    cutoff = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=window_s)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM evaluated_opportunities "
+                "WHERE product_type = 'sports' AND evaluation_time >= ? "
+                "ORDER BY id DESC LIMIT 1",
+                (cutoff,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if row is not None:
+        return None
+    last_live = data.get("last_live_at")
+    statuses = data.get("espn_last_poll_status")
+    if not isinstance(statuses, dict):
+        statuses = {}
+    non_200 = sorted(f"{lg}={st}" for lg, st in statuses.items() if st != 200)
+    return (
+        f"*BOT SPORTS EVAL SILENCE* — {sidecar_path.name} reports "
+        f"{live_ticks} ticks with live ESPN games in the last "
+        f"{window_s // 3600}h (last live {last_live}) but "
+        f"evaluated_opportunities has 0 product_type='sports' rows in that "
+        f"window (should be ≥1/day whenever games run). Last-poll non-200 "
+        f"leagues: {', '.join(non_200) or 'none'}. Either ESPN data is not "
+        f"reaching the engine (ticket 86bbvqhyr class — `python3 "
+        f"scripts/ops/espn_live_probe.py`; `journalctl -u {unit} --since "
+        f"'1 hour ago' | grep 'ESPN HTTP' | tail`), or no live game had a "
+        f"Kalshi market match for the whole window (`grep 'no Kalshi "
+        f"market match'`)."
+    )
+
+
+def check_bot_espn_poll_errors(
+    db_path: Optional[Path] = None,
+    sidecar_path: Optional[Path] = None,
+    threshold_pct: int = DEFAULT_BOT_ESPN_ERROR_THRESHOLD_PCT,
+    stale_after_seconds: int = DEFAULT_SPORTS_SIDECAR_STALE_SECONDS,
+) -> Optional[str]:
+    """Bot-tier mirror of ``check_espn_http_errors`` (R6-CRITICAL-1).
+
+    Alerts when more than ``threshold_pct`` of the leagues in the sports
+    engine's last poll cycle returned a non-200 status (or raised, which
+    the engine records as ``None``), read from ``sports_health.json``'s
+    ``espn_last_poll_status`` map.
+
+    WHY THIS EXISTS SEPARATELY from ``check_sports_eval_silence``: during
+    the 2026-08-05 outage every ESPN request 403'd, so
+    ``ESPNLiveFeed._poll_league`` raised, ``poll_all_leagues`` swallowed
+    the exception and returned ``{}``, and ``SportsEngine._note_tick``
+    recorded a tick with zero live games. ``live_ticks_in_window`` would
+    therefore have stayed 0 forever, and the live-games-vs-rows check —
+    which requires ≥20 live-game ticks before it looks at the DB — could
+    never have fired for the very class it was written for. That is a
+    "no alert" returned for the reason "ESPN is dead", the same silent
+    class as the original bug. This check closes it, and it is the only
+    check whose ALERT CONDITION is predicated on ``espn_last_poll_status``
+    (``check_sports_eval_silence`` also reads the key, but only to render
+    the non-200 tail of its own message).
+
+    Fail-quiet on: missing / malformed / stale sidecar (the engine-dead
+    class belongs to ``check_sports_eval_silence``), an absent or empty
+    status map (engine booted, no poll yet), or a map whose values are
+    all unusable.
+    """
+    if db_path is None:
+        db_path = Path(os.environ.get("STATE_DB_PATH", DEFAULT_STATE_DB_PATH))
+    db_path = Path(db_path)
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "SPORTS_HEALTH_SIDECAR_PATH",
+            str(db_path.parent / SPORTS_HEALTH_SIDECAR_NAME),
+        ))
+    sidecar_path = Path(sidecar_path)
+    if not sidecar_path.is_file():
+        return None
+    try:
+        age = time.time() - sidecar_path.stat().st_mtime
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or age > stale_after_seconds:
+        return None
+    statuses = data.get("espn_last_poll_status")
+    if not isinstance(statuses, dict) or not statuses:
+        return None
+    n_total = len(statuses)
+    bad = sorted(
+        f"{lg}={st}" for lg, st in statuses.items() if st != 200
+    )
+    if len(bad) * 100 <= threshold_pct * n_total:
+        return None
+    shown = ", ".join(bad[:6]) + (f", +{len(bad) - 6} more" if len(bad) > 6 else "")
+    return (
+        f"*BOT ESPN POLL ERRORS* — {len(bad)}/{n_total} leagues returned "
+        f"non-200 (or raised) on the sports engine's last poll: {shown}. "
+        f"The bot's sports feed is blind; `None` means the request raised "
+        f"before a status came back. This is the 2026-08-05 class (ESPN "
+        f"403'd our User-Agent for 5 weeks). Probe: `python3 "
+        f"scripts/ops/espn_live_probe.py`; the UA is "
+        f"`bot.engines.sports_engine.ESPN_USER_AGENT` and the accepted "
+        f"family is pinned in tests/contracts/test_espn_user_agent.py. "
+        f"If the cause is upstream (UA rejected / ESPN outage) expect a "
+        f"matching *COLLECTOR ESPN HTTP ERRORS* alert on the "
+        f"{ESPN_COLLECTOR_UNIT} tier in the same tick. Its ABSENCE points "
+        f"at something bot-only: a UA or feed change deployed to the bot "
+        f"but not the collector (the deploy.yml ESPN block is path-aware), "
+        f"or an operator-stopped collector."
+    )
+
+
 def check_collector_active(unit: str = DEFAULT_COLLECTOR_UNIT) -> Optional[str]:
     """Return alert string if `systemctl is-active <unit>` reports inactive."""
     try:
@@ -737,8 +1157,9 @@ def _save_state(
 def main() -> int:
     """Entry point. Runs collector checks (5 on kalshi-collector incl.
     boot_state, 4 on each other WS-collector tier) +
-    collector checks (3) × 2 HTTP-poll-collector tiers + bot checks
-    (1) × 1 bot tier = 20 total check dispatches per tick; sends
+    collector checks (3 on weather, 4 on ESPN incl. http_errors) + bot
+    checks (3: insert_eval_failures + sports_eval_silence +
+    espn_poll_errors) = 23 total check dispatches per tick; sends
     Telegram alerts as needed.
 
     D2.5 (ticket 86b9znq4w, 2026-05-18) extended the original single-
@@ -883,6 +1304,18 @@ def main() -> int:
         ("insert_eval_failures", lambda: check_insert_evaluated_opportunity_failures(
             unit=BOT_UNIT,
         )),
+        # Ticket 86bbvqhyr (2026-09-06): live games reported, nothing
+        # evaluated → dedup key b3_fu3_sports_eval_silence. Also covers
+        # the engine-thread-dead class (missing/stale sidecar while the
+        # unit is active), which nothing else watched.
+        ("sports_eval_silence", lambda: check_sports_eval_silence(
+            unit=BOT_UNIT,
+        )),
+        # R6-CRITICAL-1: the bot's own ESPN poll returning non-200 across
+        # most leagues — the 2026-08-05 class, which the check above
+        # structurally could not see (a 403 yields zero live games, so
+        # its live-tick precondition never arms).
+        ("espn_poll_errors", lambda: check_bot_espn_poll_errors()),
     ]
     # D1.8 (2026-05-18, ticket 86ba0duck): weather collector tier.
     # SUBSET of the WS-collector checks — NO ws_reconnects because HTTP
@@ -955,6 +1388,11 @@ def main() -> int:
             sidecar_path=Path(_espn_sidecar_resolved),
             state_path=Path(ESPN_MONITOR_STATE_PATH),
             unit=ESPN_COLLECTOR_UNIT,
+        )),
+        # Ticket 86bbvqhyr (2026-09-06): content-class check — per-league
+        # rolling-1h non-200 rate → dedup key d1_11_http_errors.
+        ("http_errors", lambda: check_espn_http_errors(
+            sidecar_path=Path(_espn_sidecar_resolved),
         )),
     ]
     # B2a-1 (2026-05-28, ticket 86ba1zf5j): venue-L2 collector tier. FULL

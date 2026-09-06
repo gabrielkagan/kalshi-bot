@@ -381,5 +381,69 @@ jobs:
                 echo "D2.5 path-aware restart: $COINBASE_RESTART_REASON — but kalshi-coinbase-collector is NOT active (operator stopped); skipping restart to preserve operator intent. Run 'sudo systemctl start kalshi-coinbase-collector' on VPS to resume auto-restart."
               fi
             fi
+            # 86bbvqhyr (2026-09-06): path-aware kalshi-espn-collector
+            # restart. Found at R4 of the ESPN-403 fix gate: the ESPN
+            # collector had NO restart block, so a push touching
+            # collector/espn_archiver.py left the old process (old
+            # User-Agent, no espn_http_status_1h sidecar key) running
+            # while the deploy looked green. Mirror of the D2.5 Coinbase
+            # block with the ESPN delta path set + independent ESPN_*
+            # state. Pinned by
+            # tests/contracts/test_deploy_yml_path_aware_espn_collector_restart.py.
+            #
+            # Affecting path set:
+            #   - collector/espn_archiver.py                  (poller)
+            #   - collector/espn_main_loop.py                 (orchestrator)
+            #   - collector/writer.py + collector/uploader.py (shared bronze I/O)
+            #   - kalshi_wire/ws_client.py                    (build_envelope)
+            #   - ops/kalshi-espn-collector.service           (systemd unit)
+            #   - espn-collector-start.sh                     (wrapper)
+            #   - requirements.txt                            (shared venv)
+            # (kalshi-weather-collector still has no block — ticket 86bbvr4vk.)
+            ESPN_RESTART_REASON=""
+            # Initialized next to ESPN_RESTART_REASON so the unit-drift
+            # guard's `echo "$ESPN_PATHS_CHANGED" | grep -q` is safe on the
+            # null-SHA / force-push path (where the else-branch that sets it
+            # is skipped). With `set -euo pipefail` at the top of this
+            # script an unbound var ABORTS the whole SSH script mid-deploy
+            # (R6-MINOR-4 — the D2.5 wording called it a stderr line, which
+            # understates it), so this init is load-bearing, not cosmetic.
+            # (Carried from the D2.5 Coinbase block's R6 MINOR-1 closure.)
+            ESPN_PATHS_CHANGED=""
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              ESPN_RESTART_REASON="initial-push / force-push history rewrite (null SHA)"
+            else
+              set +e
+              ESPN_DIFF_OUT=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>&1)
+              ESPN_DIFF_EXIT=$?
+              set -e
+              if [ $ESPN_DIFF_EXIT -ne 0 ]; then
+                ESPN_RESTART_REASON="git diff failed (exit=$ESPN_DIFF_EXIT): $(echo "$ESPN_DIFF_OUT" | head -3 | tr '\n' '|') — falling back to always-restart"
+              else
+                ESPN_PATHS_CHANGED=$(echo "$ESPN_DIFF_OUT" | grep -E "^(collector/espn_archiver.py$|collector/espn_main_loop.py$|collector/writer.py$|collector/uploader.py$|kalshi_wire/ws_client.py$|ops/kalshi-espn-collector.service$|espn-collector-start.sh$|requirements.txt$)" || true)
+                if [ -n "$ESPN_PATHS_CHANGED" ]; then
+                  ESPN_RESTART_REASON="affected paths: $ESPN_PATHS_CHANGED"
+                fi
+              fi
+            fi
+            if [ -n "$ESPN_RESTART_REASON" ]; then
+              # Unit-drift guard (mirror of the Coinbase one): deploy.yml
+              # never cp's units / daemon-reloads, so a bare restart after
+              # a unit-file change would run against the STALE on-disk unit.
+              if echo "$ESPN_PATHS_CHANGED" | grep -q "ops/kalshi-espn-collector.service"; then
+                ON_VPS_ESPN_UNIT=$(systemctl cat kalshi-espn-collector 2>/dev/null) \
+                  || { echo "FAIL: kalshi-espn-collector.service not installed on VPS. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git reset --hard origin/main && bash ops/install.sh"; exit 1; }
+                REPO_ESPN_UNIT=$(git show ${{ github.sha }}:ops/kalshi-espn-collector.service) \
+                  || { echo "FAIL: cannot read ops/kalshi-espn-collector.service @ commit ${{ github.sha }}."; exit 1; }
+                diff <(echo "$ON_VPS_ESPN_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') <(echo "$REPO_ESPN_UNIT" | grep -E -v '^# /(etc|run|usr/lib)/') \
+                  || { echo "FAIL: on-VPS kalshi-espn-collector unit differs from ops/kalshi-espn-collector.service @ ${{ github.sha }}. Recovery (ssh -t to VPS): cd ~/kalshi-bot-repo && git reset --hard origin/main && bash ops/install.sh, then re-trigger this deploy."; exit 1; }
+              fi
+              if systemctl is-active --quiet kalshi-espn-collector; then
+                echo "86bbvqhyr path-aware restart: $ESPN_RESTART_REASON"
+                sudo -n /bin/systemctl restart kalshi-espn-collector
+              else
+                echo "86bbvqhyr path-aware restart: $ESPN_RESTART_REASON — but kalshi-espn-collector is NOT active (operator stopped); skipping restart to preserve operator intent. Run 'sudo systemctl start kalshi-espn-collector' on VPS to resume auto-restart."
+              fi
+            fi
             # Documentation drift check (warning only — never blocks deploy)
             python3 scripts/audit/doc_drift_check.py --telegram 2>&1 || echo "DOC DRIFT DETECTED — see report above"

@@ -113,6 +113,14 @@ def write_bronze_health_sidecar(
     schema parity with the Kalshi/Coinbase/Weather sidecars so the
     monitor's tier-uniform shape works without per-tier branches.
 
+    Ticket 86bbvqhyr (2026-09-06): ADDITIVE ``espn_http_status_1h`` key
+    (per-league rolling-1h polls / non_200 / non_200_rate / last_status
+    from ``ESPNArchiver.get_http_status_stats``) so
+    ``collector_health_monitor.check_espn_http_errors`` can alert on the
+    CONTENT class of what is landing, not just that chunks land.
+    schema_version STAYS 1 — additive backward-compat, same precedent as
+    ``write_queue_peak_size`` (86ba1xraq).
+
     Atomic-replace via tmp file + os.replace so the cron-driven monitor
     never observes a torn JSON write.
     """
@@ -128,12 +136,15 @@ def write_bronze_health_sidecar(
         "collector_seq": getattr(archiver, "_collector_seq", 0),
         "ack_frames_processed": 0,
     }
+    _stats_fn = getattr(archiver, "get_http_status_stats", None)
+    espn_http_status_1h = _stats_fn() if callable(_stats_fn) else {}
     payload = {
         "schema_version": 1,
         "written_at": written_at,
         "archivers": [archiver_snapshot],
         "total_dropped_frames": 0,
         "total_queue_size": 0,
+        "espn_http_status_1h": espn_http_status_1h,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")

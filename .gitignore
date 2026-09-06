@@ -127,3 +127,6 @@ DOC_DRIFT_REPORT.txt
 # Leading `/` anchors to repo root only (per /data/, /state/ rationale above).
 /.p*_run/
 /.claude/worktrees/
+# 86bbvqhyr: sports engine health sidecar, written next to state.db every tick
+sports_health.json
+sports_health.json.tmp

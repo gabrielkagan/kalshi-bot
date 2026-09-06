@@ -317,22 +317,29 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         return "FORCED-ALERT-FOR-TEST"
 
     # check_boot_state (5th Kalshi check, ticket 86bbvdcat) is pinned to
-    # None below so the 18-dispatch count is hermetic — on a VPS mid-boot
-    # the real check would add a 19th alert.
+    # None below so the 20-dispatch count is hermetic — on a VPS mid-boot
+    # the real check would add a 21st alert. The two 86bbvqhyr checks
+    # (ESPN http_errors + bot sports_eval_silence) are forced to alert so
+    # their dedup keys are asserted, not left to a dev-box None.
     with patch("bot.notifier.TelegramNotifier", return_value=mock_notifier):
         with patch.object(mod, "check_disk", _alert), \
              patch.object(mod, "check_ws_reconnects", _alert), \
              patch.object(mod, "check_collector_active", _alert), \
              patch.object(mod, "check_dropped_frames", _alert), \
+             patch.object(mod, "check_espn_http_errors", _alert), \
+             patch.object(mod, "check_sports_eval_silence", _alert), \
+             patch.object(mod, "check_bot_espn_poll_errors", _alert), \
              patch.object(mod, "check_boot_state", lambda **kw: None):
             mod.main()
 
     # Post-B2a-1 (2026-05-28, ticket 86ba1zf5j): 4 checks × 3 WS-collector
-    # tiers (Kalshi + Coinbase + Venue-L2) + 3 checks × 2 HTTP-poll tiers
-    # (Weather + ESPN) + bot tier OK = 18.
-    assert len(sent_calls) == 18, (
-        f"Expected 18 alert dispatches (4×3 WS-collector + 3×2 "
-        f"HTTP-poll-collector + 0 bot); got {len(sent_calls)}. Dispatch "
+    # tiers (Kalshi + Coinbase + Venue-L2) + 3 checks weather + 4 checks
+    # ESPN (+http_errors, 86bbvqhyr) + 2 forced bot alerts
+    # (sports_eval_silence + espn_poll_errors, 86bbvqhyr;
+    # insert_eval_failures stays None without a journal) = 21.
+    assert len(sent_calls) == 21, (
+        f"Expected 21 alert dispatches (4×3 WS-collector + 3 weather + "
+        f"4 ESPN + 2 bot); got {len(sent_calls)}. Dispatch "
         f"loop may have lost a tier."
     )
 
@@ -345,11 +352,18 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
     assert len(kalshi_keys) == 4
     assert len(coinbase_keys) == 4
     assert len(weather_keys) == 3
-    assert len(espn_keys) == 3, (
-        f"Expected 3 dedup keys with `d1_11_` prefix (ESPN side, same "
-        f"HTTP-poll subset NO ws_reconnects); got {len(espn_keys)}: "
-        f"{espn_keys}. The D1.11.a ESPN-tier dispatch was lost or "
-        f"its dedup-key prefix regressed."
+    assert len(espn_keys) == 4, (
+        f"Expected 4 dedup keys with `d1_11_` prefix (ESPN side: weather "
+        f"HTTP-poll subset NO ws_reconnects + http_errors from "
+        f"86bbvqhyr); got {len(espn_keys)}: {espn_keys}. The D1.11.a "
+        f"ESPN-tier dispatch was lost or its dedup-key prefix regressed."
+    )
+    bot_keys = [k for k in dedup_keys if k and k.startswith("b3_fu3_")]
+    assert sorted(bot_keys) == [
+        "b3_fu3_espn_poll_errors", "b3_fu3_sports_eval_silence",
+    ], (
+        f"Expected both forced bot-tier alerts (86bbvqhyr: the 403-class "
+        f"detector espn_poll_errors AND sports_eval_silence); got {bot_keys}."
     )
     assert len(venue_l2_keys) == 4, (
         f"Expected 4 dedup keys with `b2a_` prefix (Venue-L2 side, FULL "
@@ -373,10 +387,11 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
     weather_check_names = {k.removeprefix("d1_8_") for k in weather_keys}
     espn_check_names = {k.removeprefix("d1_11_") for k in espn_keys}
     assert weather_check_names == expected_http_checks
-    assert espn_check_names == expected_http_checks, (
+    assert espn_check_names == expected_http_checks | {"http_errors"}, (
         f"ESPN-tier check set mismatch. Got: {espn_check_names}; "
-        f"expected: {expected_http_checks}. The D1.11.a ESPN tier "
-        f"subset (NO ws_reconnects) must mirror D1.8 weather subset."
+        f"expected: {expected_http_checks | {'http_errors'}}. The D1.11.a "
+        f"ESPN tier is the weather HTTP-poll subset (NO ws_reconnects) "
+        f"plus the 86bbvqhyr content-class http_errors check."
     )
 
 
