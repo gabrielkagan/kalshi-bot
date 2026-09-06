@@ -53,6 +53,10 @@ from kalshi_wire.auth import sign as _wire_sign
 # slept verbatim and retried without a wall-clock cap.
 REST_CONNECT_TIMEOUT_S = 3.0
 REST_READ_TIMEOUT_S = 7.0
+# POST /orders: a false timeout returns None and the bot abandons the
+# order with no order_id to reconcile. Keep the pre-PR 10s read bound
+# on writes. Reads stay (3, 7).
+REST_WRITE_READ_TIMEOUT_S = 10.0
 REST_429_MAX_SLEEP_S = 5.0
 REST_429_MAX_RETRIES = 3
 REST_429_WALL_CLOCK_CAP_S = 8.0
@@ -149,12 +153,13 @@ class KalshiClient:
         }
 
         try:
+            read_s = REST_WRITE_READ_TIMEOUT_S if is_write else REST_READ_TIMEOUT_S
             resp = self.session.request(
                 method, url,
                 headers=headers,
                 params=params,
                 json=json_body,
-                timeout=(REST_CONNECT_TIMEOUT_S, REST_READ_TIMEOUT_S),
+                timeout=(REST_CONNECT_TIMEOUT_S, read_s),
             )
             # Clock drift detection from server Date header
             server_date = resp.headers.get("Date")

@@ -18,6 +18,7 @@ from bot.kalshi_client import (
     KalshiClient,
     REST_CONNECT_TIMEOUT_S,
     REST_READ_TIMEOUT_S,
+    REST_WRITE_READ_TIMEOUT_S,
     REST_429_MAX_SLEEP_S,
     REST_429_MAX_RETRIES,
     REST_429_WALL_CLOCK_CAP_S,
@@ -59,6 +60,18 @@ class TestRequestTimeoutTuple(unittest.TestCase):
             (REST_CONNECT_TIMEOUT_S, REST_READ_TIMEOUT_S),
             "timeout must be a (connect, read) tuple, not a scalar",
         )
+
+    def test_post_orders_keeps_longer_read_timeout(self):
+        """False timeout on POST /orders abandons a live resting order."""
+        c = _bare_client()
+        c.session.request.return_value = _resp(200)
+        c._request("POST", "/trade-api/v2/portfolio/orders", json_body={})
+        kwargs = c.session.request.call_args.kwargs
+        self.assertEqual(
+            kwargs.get("timeout"),
+            (REST_CONNECT_TIMEOUT_S, REST_WRITE_READ_TIMEOUT_S),
+        )
+        self.assertGreaterEqual(REST_WRITE_READ_TIMEOUT_S, 10.0)
 
 
 class Test429RetryBounds(unittest.TestCase):

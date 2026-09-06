@@ -1858,14 +1858,17 @@ class OrderExecutor:
             seen = order.setdefault("_seen_fill_ids", set())
             if ws_trade_id in seen:
                 continue
-            seen.add(ws_trade_id)
             order["fill_source"] = "websocket"
             self._session_ws_fills += 1
             latency_ms = round((now - order["submit_time"]) * 1000, 1)
             logging.info(
                 f"kalshi_ws_fill: {order['ticker']} order={order['order_id']} "
                 f"latency={latency_ms}ms")
+            # Apply then stamp. Stamp-first blacklisted the id from REST
+            # if _on_fill raised (locked DB). Skip-if-seen still prevents
+            # REST-then-WS double-count. See Claude MAJOR on PR #177.
             self._on_fill(ws_fill, order)
+            seen.add(ws_trade_id)
             if order.get("filled_so_far", 0) >= order["count"]:
                 self._active_orders.pop(asset, None)
                 self._state.update_evaluated_opportunity_order(

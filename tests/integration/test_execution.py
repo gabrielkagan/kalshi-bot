@@ -1763,6 +1763,39 @@ class TestTickMechanics(unittest.TestCase):
         self.assertIn("BTC", ex._active_orders)
         self.assertEqual(ex._session_ws_fills, 0)
 
+    def test_tick_ws_on_fill_raise_does_not_blacklist_trade_id(self):
+        """If _on_fill raises, REST must still be able to apply this trade_id."""
+        ex = _make_executor()
+        now = time.time()
+        order = {
+            "order_id": "ord-ws-raise",
+            "ticker": "KXBTC15M-TEST",
+            "event_ticker": "KXBTC15M-26MAR091200",
+            "asset": "BTC",
+            "count": 5,
+            "price_cents": 91,
+            "submit_time": now - 5,
+            "seconds_to_close_at_submit": 400,
+            "_last_poll": now - 0.2,
+            "_ask_history": deque(maxlen=30),
+            "_last_queue_poll": 0,
+            "candidate": _make_candidate(),
+            "balance_at_entry": 50000,
+            "is_taker": False,
+            "filled_so_far": 0,
+        }
+        ex._active_orders["BTC"] = order
+        ex._kalshi_feed.pop_fills.return_value = [{
+            "order_id": "ord-ws-raise",
+            "trade_id": "T-raise",
+            "count": 2,
+            "yes_price": 91,
+        }]
+        ex._on_fill = MagicMock(side_effect=RuntimeError("db locked"))
+        with self.assertRaises(RuntimeError):
+            ex.tick()
+        self.assertNotIn("T-raise", order.get("_seen_fill_ids", set()))
+
     def test_tick_ws_duplicate_trade_id_in_one_batch_on_fills_once(self):
         """Same trade_id twice in one pop_fills batch must apply once."""
         ex = _make_executor()
