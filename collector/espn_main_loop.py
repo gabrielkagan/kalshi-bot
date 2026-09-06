@@ -9,7 +9,7 @@ Mirrors ``collector/weather_main_loop.py`` (D1.8) for the ESPN deltas:
     The run loop fires ``archiver.poll_once()`` on a 60-second cadence
     (configurable via ``ESPN_POLL_INTERVAL_SECONDS``) + sleeps
     between cycles.
-  - **24 BronzeWriters** (one per enabled league in
+  - **23 BronzeWriters** (one per enabled league in
     ``espn_archiver.LEAGUES_ESPN``) at ``interval_seconds=3600``
     (60-min rotation, NOT D0.3 §4 default 5-min). The 60-min cadence
     keeps each chunk to ~60 polls' payload (~30-50 KB compressed per
@@ -60,8 +60,8 @@ from collector.writer import BronzeWriter
 
 logger = logging.getLogger(__name__)
 
-# Drain-thread polling cadence. ESPN is light — 24 leagues × 60s polls
-# = ~24 envelopes per second peak (well below WS-collector burst rates).
+# Drain-thread polling cadence. ESPN is light — 23 leagues × 60s polls
+# = ~23 envelopes per second peak (well below WS-collector burst rates).
 # 5s polling is generous; rotation cadence (60-min) bounds drain backlog.
 _DRAIN_POLL_SECONDS: float = 5.0
 
@@ -72,7 +72,7 @@ _DRAIN_POLL_SECONDS: float = 5.0
 #     (basketball clock 60s+ granularity).
 #   - No quota: ESPN doesn't document a rate limit at site.api.espn.com;
 #     bot has polled at this rate for ~year without throttling.
-#   - 1440 ticks/day × 24 leagues = 34,560 calls/day — negligible.
+#   - 1440 ticks/day × 23 leagues = 33,120 calls/day — negligible.
 DEFAULT_POLL_INTERVAL_SECONDS: int = 60
 
 # Default rotation cadence (60 min). Aligns chunk boundaries with the

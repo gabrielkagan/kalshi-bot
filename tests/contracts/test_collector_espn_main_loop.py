@@ -8,7 +8,7 @@ Mirrors ``collector/weather_main_loop.py`` (D1.8) for the ESPN deltas:
   - **HTTP-poll loop, NOT a WS reader.** No WSClient construction,
     no drain-bounded WS callbacks; the run loop is a 60-second poll
     tick + sleep.
-  - **24 BronzeWriters** (one per enabled league per
+  - **23 BronzeWriters** (one per enabled league per
     ``espn_archiver.LEAGUES_ESPN``) at construction. No ``conn=``
     dimension (HTTP polling has no persistent conn); writers are
     constructed with ``conn=None`` (writer.py:245 handles this

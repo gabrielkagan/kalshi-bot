@@ -99,7 +99,7 @@ ESPN_USER_AGENT: str = requests.utils.default_user_agent()
 HTTP_STATUS_WINDOW_SECONDS: int = 3600
 
 # Sleep between intra-cycle league calls to be polite + spread load
-# across the 60s tick. Default 0.2s × 24 leagues = ~4.8s of inter-call
+# across the 60s tick. Default 0.2s × 23 leagues = ~4.6s of inter-call
 # sleep per cycle, plus per-call HTTP latency (~150ms each → ~3.6s);
 # ~8.4s total cycle leaves ~52s idle within the 60s tick. The kwarg
 # is plumbed test-injectable (pass 0.0 in unit-test fixtures to skip
@@ -108,7 +108,9 @@ HTTP_STATUS_WINDOW_SECONDS: int = 3600
 DEFAULT_INTER_LEAGUE_SLEEP_SECONDS: float = 0.2
 
 # League slug → sport mapping. Mirrors the enabled+espn-eligible
-# subset of bot.engines.sports_data.LEAGUES (24 entries at D1.11.a
+# subset of bot.engines.sports_data.LEAGUES. 23 entries as of
+# 2026-09-06 (ticket 86bbvt12r detached fifa.worldcup — ESPN returns
+# HTTP 400 for it upstream). Was 24 entries at D1.11.a
 # ship; CSGO/LoL/Valorant/AFC-Intl have espn_league=None so are
 # excluded). Drift-pinned by
 # tests/contracts/test_collector_espn_archiver.py::test_leagues_espn_mirrors_bot_leagues.
@@ -118,7 +120,12 @@ LEAGUES_ESPN: Mapping[str, str] = {
     "eng.1": "soccer",
     "esp.1": "soccer",
     "fifa.friendly": "soccer",
-    "fifa.worldcup": "soccer",
+    # "fifa.worldcup": "soccer",  -- REMOVED 2026-09-06 (ticket 86bbvt12r).
+    # ESPN returns HTTP 400 upstream for this league (NOT a UA issue); at
+    # 100% non-200 it fired d1_11_http_errors every 5 min indefinitely.
+    # Lock-stepped with enabled=False on KXWCGAME in
+    # bot/engines/sports_data.py — restore BOTH together, then restart
+    # kalshi-espn-collector so the channel is re-registered as a BronzeWriter.
     "fra.1": "soccer",
     "ger.1": "soccer",
     "ita.1": "soccer",
