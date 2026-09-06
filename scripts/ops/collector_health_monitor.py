@@ -199,7 +199,7 @@ DEFAULT_BOOT_GRACE_SECONDS = 1200
 # from the moment the drain thread starts (BEFORE any REST page-through).
 # ``check_boot_state`` alerts when the process has been ``booting`` for
 # longer than this. Same figure as the STALE boot grace above: with the
-# persisted ticker set a boot reaches WS in ~3 min; a boot still paging
+# persisted ticker set a boot reaches WS in ~5 min; a boot still paging
 # after 20 min is the first-boot-after-deploy (no last_tickers.json yet)
 # or a regression — either way the operator should know, because the
 # 2026-09-05 restart spent 59.8 min with all six units "active" and zero

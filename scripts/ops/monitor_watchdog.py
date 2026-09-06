@@ -132,6 +132,13 @@ class WatchedMonitor:
 # Promoting any of these requires (a) adding `>> <log_path> 2>&1` to
 # its cron entry in ops/CLAUDE.md + live crontab AND (b) extending the
 # watchlist below in the same Bit.
+# Ticket 86bbvd50a: the rotation script ends every run with
+# `Done. Disk free: <x> errors=<N>`. N>0 means a chunk was refused, could
+# not be moved, or could not be compressed — cron ignores the exit code
+# under the log redirect, so the watchdog reads the marker instead. Single
+# source of truth for BOTH the freshness watch and the errors check.
+ROTATION_LOG_PATH = "~/kalshi-bot-repo/journal_archives/rotation.log"
+
 WATCHED_MONITORS: tuple[WatchedMonitor, ...] = (
     WatchedMonitor("data_health",       "/tmp/data_health.log",       60),  # cron */30 — 2× margin
     WatchedMonitor("quiet_market",      "/tmp/quiet_market.log",      45),  # cron */15 — 3× margin
@@ -142,14 +149,8 @@ WATCHED_MONITORS: tuple[WatchedMonitor, ...] = (
     # 500 min ≈ 2× the 240-min cadence. 1,106 `zstd: already exists` lines
     # sat unread in this file for 109 days — freshness + the errors= marker
     # below are what make rotation failures non-silent.
-    WatchedMonitor("journal_rotation",  "~/kalshi-bot-repo/journal_archives/rotation.log", 500),
+    WatchedMonitor("journal_rotation",  ROTATION_LOG_PATH, 500),
 )
-
-# Ticket 86bbvd50a: the rotation script ends every run with
-# `Done. Disk free: <x> errors=<N>`. N>0 means a chunk was refused, could
-# not be moved, or could not be compressed — cron ignores the exit code
-# under the log redirect, so the watchdog reads the marker instead.
-ROTATION_LOG_PATH = "~/kalshi-bot-repo/journal_archives/rotation.log"
 _ROTATION_DONE_RE = re.compile(r"^Done\..*\berrors=(\d+)")
 
 

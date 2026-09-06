@@ -25,8 +25,11 @@
 #   - atomic `mv`: the bot appends with open/close per write (bot/logger.py
 #     for opportunity/scan/rejection, bot/shadows/fifteenm_shadow.py for the
 #     shadow journal — both open with mode "a" per line; no held handle), so
-#     renaming the live file loses nothing — the next append creates a
-#     fresh live file. (The previous copy-then-truncate DROPPED every line
+#     renaming the live file loses nothing for any writer that opens after
+#     the rename — the next append creates a fresh live file. (Residual
+#     window: a handle opened just before the rename and appended to
+#     between zstd's read and `--rm`'s unlink — milliseconds, vs. seconds on
+#     a multi-GB journal under the old copy-then-truncate.) (The previous copy-then-truncate DROPPED every line
 #     written between `cp` finishing and the truncate — seconds on a
 #     multi-GB journal — and transiently doubled the largest journal on a
 #     disk being defended at 85%.) ROTATE_ARCHIVE_DIR must be on the same
