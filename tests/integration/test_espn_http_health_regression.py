@@ -406,6 +406,171 @@ def test_sports_silence_never_shells_out(tmp_path):
         assert mod.check_sports_eval_silence(db_path=db) is not None
 
 
+# ─── D2. R6-CRITICAL-1: the 403 class must alert on the BOT side ────────────
+
+def test_incident_replay_403_everywhere_alerts_bot_tier(tmp_path):
+    """Replay of the 2026-08-05 outage against the real SportsEngine.
+
+    Every ESPN request 403s -> _poll_league raises -> poll_all_leagues
+    swallows -> games={} -> _note_tick(n_live=0) -> live_ticks_in_window
+    stays 0 forever. check_sports_eval_silence therefore CANNOT fire
+    (its >=20-live-tick precondition never arms) — that was R6-CRITICAL-1.
+    check_bot_espn_poll_errors must catch it.
+    """
+    import bot.engines.sports_engine as se
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    eng = se.SportsEngine(db_path=str(db))
+    n_leagues = len(eng._espn._session.headers) * 0 + 64
+    eng._espn._session = _FakeSession([_Resp(403)] * n_leagues)
+    eng._tick()
+    sc = tmp_path / "sports_health.json"
+    data = json.loads(sc.read_text())
+    assert data["live_ticks_in_window"] == 0, "precondition of the bug"
+    assert data["espn_last_poll_status"], "engine must record last-poll statuses"
+    assert all(v == 403 for v in data["espn_last_poll_status"].values())
+
+    # The silence check is structurally blind here — pin that, so nobody
+    # "fixes" this test by weakening the other check.
+    assert mod.check_sports_eval_silence(db_path=db) is None
+
+    out = mod.check_bot_espn_poll_errors(db_path=db)
+    assert out is not None, (
+        "bot tier must alert during a 100% ESPN 403 outage — this is the "
+        "exact 5-week silent failure the ticket exists to close"
+    )
+    assert "BOT ESPN POLL ERRORS" in out
+    assert "403" in out
+
+
+def test_bot_espn_poll_errors_quiet_when_all_200(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=5,
+                          statuses={"nba": 200, "nhl": 200, "mlb": 200})
+    assert mod.check_bot_espn_poll_errors(db_path=db) is None
+
+
+def test_bot_espn_poll_errors_quiet_below_threshold(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=5,
+                          statuses={"a": 403, "b": 200, "c": 200, "d": 200})
+    assert mod.check_bot_espn_poll_errors(db_path=db) is None
+
+
+def test_bot_espn_poll_errors_counts_transport_errors_as_bad(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=5,
+                          statuses={"a": None, "b": None, "c": 200})
+    out = mod.check_bot_espn_poll_errors(db_path=db)
+    assert out is not None and "a=None" in out
+
+
+def test_bot_espn_poll_errors_quiet_on_missing_stale_or_empty(tmp_path):
+    import os
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    assert mod.check_bot_espn_poll_errors(db_path=db) is None      # missing
+    sc = tmp_path / "sports_health.json"
+    _write_sports_sidecar(sc, live_ticks=5, statuses={})
+    assert mod.check_bot_espn_poll_errors(db_path=db) is None      # empty map
+    _write_sports_sidecar(sc, live_ticks=5, statuses={"a": 403})
+    old = _dt.datetime.now().timestamp() - 3600
+    os.utime(sc, (old, old))
+    assert mod.check_bot_espn_poll_errors(db_path=db) is None      # stale
+
+
+def test_main_dispatches_bot_espn_poll_errors_dedup_key(monkeypatch):
+    import scripts.ops.collector_health_monitor as mod
+    sent = []
+
+    class _N:
+        def __init__(self, *a, **k):
+            pass
+
+        def send(self, msg, dedup_key=None, **k):
+            sent.append(dedup_key)
+
+    monkeypatch.setattr("bot.notifier.TelegramNotifier", _N)
+    for name in dir(mod):
+        if name.startswith("check_") and name != "check_bot_espn_poll_errors":
+            monkeypatch.setattr(mod, name, lambda *a, **k: None)
+    monkeypatch.setattr(mod, "check_bot_espn_poll_errors", lambda *a, **k: "*X*")
+    assert mod.main() == 0
+    assert sent == ["b3_fu3_espn_poll_errors"]
+
+
+# ─── D3. R6-MAJOR-1: dead/wedged sports thread inside a live bot ────────────
+
+def _patch_bot_up(mod, monkeypatch, active=True, uptime=5000.0):
+    monkeypatch.setattr(mod, "check_collector_active",
+                        lambda unit=None: None if active else "*DOWN*")
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda unit: uptime)
+
+
+def test_sports_silence_alerts_when_sidecar_missing_and_bot_active(tmp_path, monkeypatch):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    _patch_bot_up(mod, monkeypatch)
+    out = mod.check_sports_eval_silence(db_path=db)
+    assert out is not None and "SPORTS ENGINE SILENT" in out
+
+
+def test_sports_silence_alerts_when_sidecar_stale_and_bot_active(tmp_path, monkeypatch):
+    import os
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    sc = tmp_path / "sports_health.json"
+    _write_sports_sidecar(sc, live_ticks=500)
+    old = _dt.datetime.now().timestamp() - 3600
+    os.utime(sc, (old, old))
+    _patch_bot_up(mod, monkeypatch)
+    out = mod.check_sports_eval_silence(db_path=db)
+    assert out is not None and "SPORTS ENGINE WEDGED" in out
+
+
+def test_sports_silence_quiet_when_bot_stopped_or_booting(tmp_path, monkeypatch):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    _patch_bot_up(mod, monkeypatch, active=False)
+    assert mod.check_sports_eval_silence(db_path=db) is None   # operator stopped
+    _patch_bot_up(mod, monkeypatch, active=True, uptime=60.0)
+    assert mod.check_sports_eval_silence(db_path=db) is None   # boot grace
+    _patch_bot_up(mod, monkeypatch, active=True, uptime=None)
+    assert mod.check_sports_eval_silence(db_path=db) is None   # no systemctl
+
+
+# ─── D4. R6-MINOR-5: wedged collector poll loop with a fresh sidecar ────────
+
+def test_espn_http_errors_alerts_when_all_leagues_have_zero_polls(tmp_path, monkeypatch):
+    import scripts.ops.collector_health_monitor as mod
+    p = tmp_path / "s.json"
+    _write_espn_sidecar(p, {"nba": _stat(0, 0, None), "nhl": _stat(0, 0, None)})
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda unit: 5000.0)
+    out = mod.check_espn_http_errors(sidecar_path=p)
+    assert out is not None and "POLL LOOP WEDGED" in out
+
+
+def test_espn_http_errors_zero_polls_quiet_during_boot_grace(tmp_path, monkeypatch):
+    import scripts.ops.collector_health_monitor as mod
+    p = tmp_path / "s.json"
+    _write_espn_sidecar(p, {"nba": _stat(0, 0, None)})
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda unit: 60.0)
+    assert mod.check_espn_http_errors(sidecar_path=p) is None
+    monkeypatch.setattr(mod, "_collector_uptime_seconds", lambda unit: None)
+    assert mod.check_espn_http_errors(sidecar_path=p) is None
+
+
 def test_sports_silence_opens_db_read_only(tmp_path):
     import scripts.ops.collector_health_monitor as mod
     src = Path(mod.__file__).read_text()

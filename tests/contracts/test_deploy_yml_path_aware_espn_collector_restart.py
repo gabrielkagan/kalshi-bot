@@ -214,19 +214,27 @@ def test_deploy_yml_espn_collector_restart_handles_null_sha_initial_push():
     """
     script_text = "\n".join(_ssh_script_lines())
     null_sha = "0" * 40
-    # R5-M1: the threshold must be ONE PER BLOCK or this pin cannot fail
-    # for the block it is named after. Pre-86bbvqhyr the sentinel appeared
-    # TWICE (D1.5.2 Kalshi + D2.5 Coinbase); the substitution that
-    # generated this file copied the Coinbase-era `>= 2` unchanged, so a
-    # surgical deletion of the ESPN null-SHA branch would have left this
-    # test green at 2. Three blocks → 3.
-    occurrences = script_text.count(null_sha)
-    assert occurrences >= 3, (
-        f"deploy.yml contains null-SHA sentinel only {occurrences} times; "
-        f"expected ≥ 3 (D1.5.2 Kalshi + D2.5 Coinbase + 86bbvqhyr ESPN "
-        f"blocks, each with their own independent null-SHA fallback). "
-        f"At 2, one block dropped its null-SHA check — on a force-push "
-        f"or initial push that block's unit is not restarted."
+    # R6-MINOR-1: scope the assertion to the ESPN BLOCK, not the whole
+    # script. A global count is unfailable for this block the moment a
+    # sibling block also carries the sentinel — R5 raised the threshold
+    # 2→3, but that form goes unfailable again as soon as the weather
+    # block lands (86bbvr4vk) and the count becomes 4. Slicing binds the
+    # pin to the block it is named after, permanently.
+    lines = _ssh_script_lines()
+    start = _line_index_containing(lines, 'ESPN_RESTART_REASON=""')
+    end = _line_index_containing(lines, "restart kalshi-espn-collector")
+    assert 0 <= start < end, (
+        f"Could not slice the ESPN block (start={start}, end={end}); the "
+        f"block's shape changed — re-anchor this test."
+    )
+    espn_block = "\n".join(lines[start:end])
+    assert null_sha in espn_block, (
+        f"The 86bbvqhyr ESPN restart block does not contain the 40-zero "
+        f"null-SHA sentinel. Without it, an initial push or a force-push "
+        f"history rewrite makes `git diff <before> <sha>` meaningless and "
+        f"the ESPN collector is silently not restarted. (Whole-script "
+        f"count is {script_text.count(null_sha)}, which is why a global "
+        f"count cannot defend this block.)"
     )
 
 

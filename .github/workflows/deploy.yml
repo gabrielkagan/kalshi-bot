@@ -399,14 +399,16 @@ jobs:
             #   - ops/kalshi-espn-collector.service           (systemd unit)
             #   - espn-collector-start.sh                     (wrapper)
             #   - requirements.txt                            (shared venv)
-            # (kalshi-weather-collector still has no block — ticket filed.)
+            # (kalshi-weather-collector still has no block — ticket 86bbvr4vk.)
             ESPN_RESTART_REASON=""
             # Initialized next to ESPN_RESTART_REASON so the unit-drift
             # guard's `echo "$ESPN_PATHS_CHANGED" | grep -q` is safe on the
             # null-SHA / force-push path (where the else-branch that sets it
-            # is skipped) — avoids a `set -u` unbound-variable stderr line
-            # and makes the guard's skip behavior explicit. (Carried from
-            # the D2.5 Coinbase block's R6 MINOR-1 closure; R5-MN5.)
+            # is skipped). With `set -euo pipefail` at the top of this
+            # script an unbound var ABORTS the whole SSH script mid-deploy
+            # (R6-MINOR-4 — the D2.5 wording called it a stderr line, which
+            # understates it), so this init is load-bearing, not cosmetic.
+            # (Carried from the D2.5 Coinbase block's R6 MINOR-1 closure.)
             ESPN_PATHS_CHANGED=""
             if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
               ESPN_RESTART_REASON="initial-push / force-push history rewrite (null SHA)"

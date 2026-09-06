@@ -328,17 +328,18 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
              patch.object(mod, "check_dropped_frames", _alert), \
              patch.object(mod, "check_espn_http_errors", _alert), \
              patch.object(mod, "check_sports_eval_silence", _alert), \
+             patch.object(mod, "check_bot_espn_poll_errors", _alert), \
              patch.object(mod, "check_boot_state", lambda **kw: None):
             mod.main()
 
     # Post-B2a-1 (2026-05-28, ticket 86ba1zf5j): 4 checks × 3 WS-collector
     # tiers (Kalshi + Coinbase + Venue-L2) + 3 checks weather + 4 checks
-    # ESPN (+http_errors, 86bbvqhyr) + 1 forced bot alert
-    # (sports_eval_silence, 86bbvqhyr; insert_eval_failures stays None
-    # without a journal) = 20.
-    assert len(sent_calls) == 20, (
-        f"Expected 20 alert dispatches (4×3 WS-collector + 3 weather + "
-        f"4 ESPN + 1 bot); got {len(sent_calls)}. Dispatch "
+    # ESPN (+http_errors, 86bbvqhyr) + 2 forced bot alerts
+    # (sports_eval_silence + espn_poll_errors, 86bbvqhyr;
+    # insert_eval_failures stays None without a journal) = 21.
+    assert len(sent_calls) == 21, (
+        f"Expected 21 alert dispatches (4×3 WS-collector + 3 weather + "
+        f"4 ESPN + 2 bot); got {len(sent_calls)}. Dispatch "
         f"loop may have lost a tier."
     )
 
@@ -358,9 +359,11 @@ def test_main_polls_both_collectors_with_distinct_dedup_keys():
         f"ESPN-tier dispatch was lost or its dedup-key prefix regressed."
     )
     bot_keys = [k for k in dedup_keys if k and k.startswith("b3_fu3_")]
-    assert bot_keys == ["b3_fu3_sports_eval_silence"], (
-        f"Expected the forced bot-tier alert under b3_fu3_sports_eval_silence "
-        f"(86bbvqhyr); got {bot_keys}."
+    assert sorted(bot_keys) == [
+        "b3_fu3_espn_poll_errors", "b3_fu3_sports_eval_silence",
+    ], (
+        f"Expected both forced bot-tier alerts (86bbvqhyr: the 403-class "
+        f"detector espn_poll_errors AND sports_eval_silence); got {bot_keys}."
     )
     assert len(venue_l2_keys) == 4, (
         f"Expected 4 dedup keys with `b2a_` prefix (Venue-L2 side, FULL "
