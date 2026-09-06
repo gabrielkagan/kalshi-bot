@@ -9,10 +9,10 @@ D2.5, kalshi-weather-collector D1.8). Mirror of
 Per-unit deltas vs ``kalshi-weather-collector.service`` (D1.8):
   - Different ExecStart wrapper (``espn-collector-start.sh``).
   - Different EnvironmentFile (``/home/botuser/.env.espn-collector``).
-  - ``MemoryMax=256M`` (vs Weather's 128M). ESPN polls 24 leagues at
+  - ``MemoryMax=256M`` (vs Weather's 128M). ESPN polls 23 leagues at
     60s cadence via a sequential ``for league in self._leagues`` loop
     on a single ``requests.Session`` — peak in-flight is 1 response ×
-    ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈ ~250 KB working
+    ~50 KB + 23 BronzeWriter chunk buffers × ~8 KB ≈ ~250 KB working
     set. 256M matched Coinbase's known-good precedent (Coinbase bumped
     to 384M on 2026-05-30 for the 9-asset corpus; ESPN unchanged) rather
     than right-sizing tightly so envelope-construction + json-decode
@@ -141,9 +141,9 @@ def test_service_nice_is_10():
 def test_service_memory_max_is_256m():
     """``MemoryMax=256M`` — matched Coinbase's original cap, double Weather's 128M.
 
-    ESPN polls 24 leagues sequentially (`for league in self._leagues`
+    ESPN polls 23 leagues sequentially (`for league in self._leagues`
     loop on a single `requests.Session`) at 60s cadence. Peak in-flight
-    = 1 response × ~50 KB + 24 BronzeWriter chunk buffers × ~8 KB ≈
+    = 1 response × ~50 KB + 23 BronzeWriter chunk buffers × ~8 KB ≈
     ~250 KB working set. 256M matched Coinbase's known-good precedent
     (Coinbase bumped 256M→384M on 2026-05-30 for the 9-asset corpus;
     ESPN unchanged) rather than right-sizing tightly so
@@ -165,7 +165,7 @@ def test_service_memory_swap_max_is_zero():
 
 
 def test_service_limit_nofile_is_512():
-    """``LimitNOFILE=512`` — same as Coinbase + Weather. 24 writers ×
+    """``LimitNOFILE=512`` — same as Coinbase + Weather. 23 writers ×
     2 rotation files + rclone subprocess + HTTP keep-alive sockets ≈
     60 fd typical; 512 gives ~8× headroom.
     """
