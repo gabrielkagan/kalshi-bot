@@ -196,6 +196,7 @@ from bot.constants import (
     RTI_LIVE_MIN_CONFIDENCE,
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
+    MAX_OB_FETCHES_PER_SLOW_TICK,
     SLOW_PRODUCT_SCAN_INTERVAL_S,
     SLOW_PRODUCT_TYPES,
     MAX_SECONDS_BEFORE_CLOSE,
@@ -1288,6 +1289,7 @@ class OpportunityScanner:
                 # (insert_evaluated_opportunity already tolerates None).
                 pass
         ob_fetches_this_tick = 0
+        slow_ob_fetches_this_tick = 0
         candidates: List[Dict] = []
 
         # WS vs REST drift probe (self-throttles to 60s cadence). See
@@ -2573,7 +2575,10 @@ class OpportunityScanner:
                         "SCAN_OB_FETCH_SLOW: ticker=%s fresh=%s took %.2fs",
                         ticker, was_fresh, _ob_fetch_dt)
                 if was_fresh:
-                    ob_fetches_this_tick += 1
+                    if _pt in SLOW_PRODUCT_TYPES:
+                        slow_ob_fetches_this_tick += 1
+                    else:
+                        ob_fetches_this_tick += 1
                 if ob_data is None:
                     # Try NBBO fallback before giving up (prefer *_dollars field)
                     mkt_yes_ask_raw = mkt.get("yes_ask_dollars") or mkt.get("yes_ask")
@@ -7186,14 +7191,13 @@ class OpportunityScanner:
                         except sqlite3.OperationalError:
                             logging.debug("usaft_short_stc insert failed", exc_info=True)
 
-                # Respect per-tick orderbook fetch cap. On slow-due ticks
-                # 15M cache is warm (TTL 5s) so the budget would otherwise
-                # be spent on the first 6 stale hourly/SPX/weather books
-                # and the rest of that 30s pass would starve. Do not
-                # break the window loop on the cap when slow products
-                # are in this tick.
-                if (ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK
-                        and not _slow_due):
+                # Separate 15M vs slow-product REST budgets. Uncapping
+                # the 15M cap on slow-due ticks let ~275 hourly+weather
+                # REST calls block the main loop for tens of seconds.
+                if _pt in SLOW_PRODUCT_TYPES:
+                    if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
+                        break
+                elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                     break
             # Per-window timing — captures iterations that reach the
             # natural end (slow iterations doing orderbook fetch +
@@ -7204,8 +7208,10 @@ class OpportunityScanner:
                 logging.warning(
                     "SCAN_WINDOW_SLOW: asset=%s ticker=%s took %.2fs",
                     asset, window.get("event_ticker", "?"), _window_dt)
-            if (ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK
-                    and not _slow_due):
+            if _slow_due:
+                if slow_ob_fetches_this_tick >= MAX_OB_FETCHES_PER_SLOW_TICK:
+                    break
+            elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK:
                 break
 
         _scan_loop_dt = time.perf_counter() - _scan_loop_start

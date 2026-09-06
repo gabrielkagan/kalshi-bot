@@ -1769,6 +1769,10 @@ CPI_RELEASE_DATES = frozenset([
 ORDERBOOK_CACHE_TTL = 5.0         # seconds to cache orderbook responses
 
 MAX_OB_FETCHES_PER_TICK = 6       # cap API calls for orderbooks per tick (Advanced tier)
+# Slow-due ticks (hourly/weather/SPX). Separate from the 15M cap so those
+# windows are not starved, but not unbounded — ~275 slow tickers at REST
+# would block the 1 Hz 15M loop for tens of seconds. 12 × ~60–200ms ≈ 0.7–2.4s.
+MAX_OB_FETCHES_PER_SLOW_TICK = 12
 
 BALANCE_CACHE_TTL = 10.0          # seconds to cache balance
 
