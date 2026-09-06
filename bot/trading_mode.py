@@ -47,7 +47,9 @@ def strategy_is_live(strategy, asset: str) -> bool:
     live universe — an asset being main-pipeline live says nothing about
     longshot/twaplock edge there, and ADA/BCH stay excluded (Kalshi 15M
     series not yet listed; T1 zero-live-orders shadow designation
-    ADA_15M_SHADOW/BCH_15M_SHADOW). For every other strategy this is
+    ADA_15M_SHADOW/BCH_15M_SHADOW), as do NEAR/ZEC (series listed since
+    2026-06-30 but T1 shadow 2026-09-05 — NEAR_15M_SHADOW/ZEC_15M_SHADOW —
+    and outside the 01b/02b validation corpora). For every other strategy this is
     EXACTLY ``is_live(asset)`` — main-pipeline behavior unchanged.
     Consulted at the two existing chokepoints only: ``executor.execute()``
     (which passes the candidate's strategy) and the

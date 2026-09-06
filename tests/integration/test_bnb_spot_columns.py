@@ -295,7 +295,7 @@ class TestBnbSpotAtDecisionBackfill:
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
                     "HYPE": 24.512, "DOGE": 0.1837,
-                    "BNB": 655.42, "ADA": 0.4512, "BCH": 512.3}[asset]
+                    "BNB": 655.42, "ADA": 0.4512, "BCH": 512.3, "NEAR": 2.2427, "ZEC": 38.15}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)
@@ -331,7 +331,7 @@ class TestBnbSpotAtDecisionBackfill:
             base = {"BTC": 67432.5, "ETH": 3210.5,
                     "SOL": 142.7, "XRP": 2.51,
                     "HYPE": 24.512, "DOGE": 0.1837,
-                    "BNB": 655.42, "ADA": 0.4512, "BCH": 512.3}[asset]
+                    "BNB": 655.42, "ADA": 0.4512, "BCH": 512.3, "NEAR": 2.2427, "ZEC": 38.15}[asset]
             return [[epoch_sec, base, base, base, base, 1.0]]
 
         n = backfill_xasset_spots(sm.conn, fetcher=_mock_fetch, batch_size=10)

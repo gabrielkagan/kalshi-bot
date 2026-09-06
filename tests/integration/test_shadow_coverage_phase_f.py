@@ -55,6 +55,7 @@ class TestPhaseFCrossAssetSpotSnapshot:
                     "SOL": 142.7, "XRP": 2.51,
                     "HYPE": 43.01, "DOGE": 0.11,
                     "BNB": 655.4, "ADA": 0.4512, "BCH": 512.3,
+                    "NEAR": 2.2427, "ZEC": 38.15,
                 }
             def get_all_prices(self):
                 return dict(self._prices)
@@ -76,6 +77,8 @@ class TestPhaseFCrossAssetSpotSnapshot:
             "bnb_spot_at_decision": 655.4,
             "ada_spot_at_decision": 0.4512,
             "bch_spot_at_decision": 512.3,
+            "near_spot_at_decision": 2.2427,
+            "zec_spot_at_decision": 38.15,
         }
 
     def test_compute_cross_asset_spot_handles_missing_feed_data(self):

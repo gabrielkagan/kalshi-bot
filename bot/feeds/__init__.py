@@ -7,7 +7,7 @@ calibration, and execution pipelines:
 - ``CoinbaseFeed`` (`coinbase` submodule, Bit 4.5a) — Coinbase WS
   feed for every symbol in ``bot.config.ASSETS`` spot prices
   (BTC/ETH/SOL/XRP/HYPE/DOGE post-T1 2026-05-10; BNB added post-T1
-  2026-05-17, ticket 86b9zmj0c; ADA + BCH post-T1 2026-05-30 15M shadow)
+  2026-05-17, ticket 86b9zmj0c; ADA + BCH post-T1 2026-05-30 15M shadow; NEAR + ZEC post-T1 2026-09-05 15M shadow)
   with persistent 30-min snapshot buffer.
 - ``OrderbookSchemaError`` (`orderbook_schema` submodule, Bit 4.5a)
   — exception raised when a Kalshi WS orderbook message violates

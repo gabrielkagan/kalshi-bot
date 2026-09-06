@@ -43,7 +43,7 @@ from typing import Dict
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ─── Assets ──────────────────────────────────────────────────────────────────
-ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"]  # ADA/BCH = 15M shadow (T1 2026-05-30); shadow-gated via ADA_15M_SHADOW/BCH_15M_SHADOW
+ASSETS = ["BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"]  # ADA/BCH = 15M shadow (T1 2026-05-30); NEAR/ZEC = 15M shadow (T1 2026-09-05, 86bbvdc8y); shadow-gated via <ASSET>_15M_SHADOW
 
 # Module-scoped logger. Using `logging.info(...)` directly at module-load time
 # auto-triggers `logging.basicConfig()` when no handler is configured yet,

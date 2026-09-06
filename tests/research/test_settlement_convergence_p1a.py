@@ -40,10 +40,11 @@ def test_parse_iso_handles_z_suffix_and_micros():
 
 
 def test_crypto_15m_asset_universe_pinned_with_15m_prefix():
-    # All 9 Kalshi 15M crypto series: the 7 the bot trades + ADA/BCH (shadow
-    # onboarding T1 #156, 2026-05-30). The platform handles all 9; ADA/BCH are
-    # registered series (markets list when Kalshi schedules windows).
-    expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"}
+    # All 11 Kalshi 15M crypto series the bot knows: the 7 it trades + ADA/BCH
+    # (shadow onboarding T1 #156, 2026-05-30) + NEAR/ZEC (shadow T1 2026-09-05,
+    # 86bbvdc8y). The platform handles all 11; shadow assets are registered
+    # series (markets list when Kalshi schedules windows).
+    expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"}  # NEAR/ZEC T1 shadow 2026-09-05 (86bbvdc8y)
     prefix_map = getattr(scp, "ASSET_TICKER_PREFIX", None)
     assert prefix_map is not None, "ASSET_TICKER_PREFIX not yet defined (scaffold-pending)"
     assert set(prefix_map.keys()) == expected

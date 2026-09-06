@@ -64,7 +64,7 @@ def test_shipped_default_is_all_shadow():
     # the master switch is OFF so no asset trades live until deliberately enabled.
     assert C.GLOBAL_LIVE_TRADING is False
     # every known crypto asset is present in the per-asset map (explicit surface)
-    for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"):
+    for a in ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"):
         assert a in C.ASSET_LIVE_TRADING
 
 

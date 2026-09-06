@@ -121,7 +121,7 @@ def test_seven_asset_universe_pinned_with_15m_prefix():
     # (T1 2026-05-30); they carry no settled corpus yet, so the F0.5 gamma
     # analysis simply iterates them to empty result sets (harmless). The pin
     # going RED was the intended signal to re-affirm the universe here.
-    expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH"}
+    expected = {"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH", "NEAR", "ZEC"}  # NEAR/ZEC T1 shadow 2026-09-05 (86bbvdc8y)
     prefix_map = getattr(gamma, "ASSET_TICKER_PREFIX", None)
     assert prefix_map is not None, "ASSET_TICKER_PREFIX not yet defined (scaffold-pending)"
     assert set(prefix_map.keys()) == expected

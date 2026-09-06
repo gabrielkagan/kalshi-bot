@@ -195,6 +195,9 @@ class TestTMScanIntercept(unittest.TestCase):
         # block grows as assets onboard (BNB, then ADA/BCH T1 2026-05-30 each
         # add `and not (<ASSET>_15M_SHADOW and asset == "<ASSET>")` lines),
         # pushing `get_open_positions` further past the intercept anchor.
+        # NEAR/ZEC T1 (2026-09-05) added 224 chars here; measured anchor →
+        # `get_open_positions` distance is 4393, so the 4800 bound still has
+        # ~400 chars of headroom and is deliberately NOT widened again.
         tm_block = self.source[self.source.find("Terminal Momentum intercept"):][:4800]
         self.assertIn("get_open_positions", tm_block)
 
