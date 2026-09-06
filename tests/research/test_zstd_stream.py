@@ -113,3 +113,64 @@ def test_assert_zstd_ok_raises_for_an_exhausted_failed_read(tmp_path):
     z.wait()
     with pytest.raises(ZstdTruncatedError):
         assert_zstd_ok(z, str(f), exhausted=True, n_lines=n)
+
+
+# ---------------------------------------------------------------------------
+# Variants 2 and 3 (ticket 86bbvrx1t): the ones the first audit MISSED.
+# ---------------------------------------------------------------------------
+
+def test_run_zstd_checked_raises_on_truncation(tmp_path):
+    """`subprocess.run(...).stdout` hands back a prefix with no complaint.
+
+    This spelling was missed by an audit that grepped for `Popen`, and it is the
+    read path for ~38 algo_zoo mechanisms via phase1b's _zst_lines.
+    """
+    from scripts.research.zstd_stream import run_zstd_checked
+    f = _write_zst(tmp_path / "t.jsonl.zst", 200_000)
+    data = f.read_bytes()
+    f.write_bytes(data[: len(data) // 2])
+    with pytest.raises(ZstdTruncatedError) as exc:
+        run_zstd_checked(str(f))
+    assert "TRUNCATED" in str(exc.value)
+
+
+def test_run_zstd_checked_returns_full_text_on_a_good_file(tmp_path):
+    from scripts.research.zstd_stream import run_zstd_checked
+    f = _write_zst(tmp_path / "g.jsonl.zst", 5_000)
+    assert len(run_zstd_checked(str(f)).splitlines()) == 5_000
+
+
+def test_zstandard_library_reads_truncated_files_SILENTLY(tmp_path):
+    """Pins the hazard itself, so nobody 'simplifies' the guard away later.
+
+    Measured: a half-truncated file yields tens of thousands of lines and raises
+    NOTHING. Comparing bytes-consumed to file size does not detect it either —
+    the file IS fully consumed; the frame is merely incomplete.
+    """
+    zstandard = pytest.importorskip("zstandard")
+    import io
+    f = _write_zst(tmp_path / "s.jsonl.zst", 100_000)
+    data = f.read_bytes()
+    f.write_bytes(data[: len(data) // 2])
+    with open(f, "rb") as fh:
+        r = zstandard.ZstdDecompressor().stream_reader(fh)
+        n = sum(1 for _ in io.BufferedReader(r))
+    assert n > 0, "expected a silent partial read — the hazard this guards"
+
+
+def test_checked_zstandard_lines_raises_on_truncation(tmp_path):
+    pytest.importorskip("zstandard")
+    from scripts.research.zstd_stream import checked_zstandard_lines
+    f = _write_zst(tmp_path / "z.jsonl.zst", 100_000)
+    data = f.read_bytes()
+    f.write_bytes(data[: len(data) // 2])
+    with pytest.raises(ZstdTruncatedError) as exc:
+        list(checked_zstandard_lines(str(f)))
+    assert "did NOT terminate" in str(exc.value)
+
+
+def test_checked_zstandard_lines_reads_a_good_file_completely(tmp_path):
+    pytest.importorskip("zstandard")
+    from scripts.research.zstd_stream import checked_zstandard_lines
+    f = _write_zst(tmp_path / "z2.jsonl.zst", 100_000)
+    assert len(list(checked_zstandard_lines(str(f)))) == 100_000

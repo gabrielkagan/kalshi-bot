@@ -73,6 +73,7 @@ from scripts.research.phase1b_real_price_economics import (  # noqa: E402
     _is_crypto_15m,
     close_epoch_from_ticker,
 )
+from scripts.research.zstd_stream import run_zstd_checked  # noqa: E402  (repo root on sys.path above)
 def kalshi_fee_per_contract_cents(price_cents: float) -> float:
     """Conservative honest Kalshi fee for a SMALL resting maker order: the per-order
     fee is ceil(0.07 * C * P * (1-P)) cents and Kalshi rounds UP to the next cent, so
@@ -172,7 +173,7 @@ def stream_venue_mid_series(venue: str, assets) -> dict:
     # replay; per-conn baseline (snapshot / first full book) is included from file 0.
     files = sorted(glob.glob(f"{VENUE_ROOT}/{src}/day=*/hour=*/conn=*/*.jsonl.zst"))
     for f in files:
-        raw = subprocess.run(["zstd", "-dc", f], capture_output=True).stdout.decode()
+        raw = run_zstd_checked(f)  # ticket 86bbvrx1t: was .stdout (exit code discarded)
         for line in raw.splitlines():
             if not line.strip():
                 continue

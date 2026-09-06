@@ -76,6 +76,7 @@ from scripts.research.phase1b_real_price_economics import (  # noqa: E402
 from scripts.research.settlement_convergence_p1a import (  # noqa: E402
     kalshi_fee_per_contract_cents,
 )
+from scripts.research.zstd_stream import run_zstd_checked  # noqa: E402  (repo root on sys.path above)
 
 CR = os.path.expanduser("~/kalshi-research-data/fairvalue")
 ALL_ASSETS = ("BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB", "ADA", "BCH")
@@ -131,7 +132,7 @@ def load_bitstamp_region_mids(day: str) -> dict:
             if q1 > e + REGION_S:
                 continue
         kept += 1
-        raw = subprocess.run(["zstd", "-dc", f], capture_output=True).stdout
+        raw = run_zstd_checked(f).encode()  # ticket 86bbvrx1t: exit code was discarded
         for line in raw.splitlines():
             if not line:
                 continue

@@ -73,6 +73,7 @@ from scripts.research.mm_markout_evaluator import (
     first_yes_bid_fill_ts,
     first_no_bid_fill_ts,
 )
+from scripts.research.zstd_stream import run_zstd_checked  # noqa: E402  (repo root on sys.path above)
 
 FRAMES = "/tmp/edge_daily/frames_crypto.jsonl"
 TRADES = "/tmp/edge_daily/trades_crypto.jsonl"
@@ -174,9 +175,9 @@ def load_venue_asset_frames(venue: str, asset: str) -> list:
     pattern = f"{VENUE_ROOT}/{src}/**/*.jsonl.zst"
     out = []
     for f in sorted(glob.glob(pattern, recursive=True)):
-        raw = subprocess.run(["zstd", "-dc", f], capture_output=True).stdout.decode(
-            "utf-8", "replace"
-        )
+        # ticket 86bbvrx1t: was subprocess.run(...).stdout — the exit code was
+        # discarded, so a truncated file yielded a silent PREFIX.
+        raw = run_zstd_checked(f)
         for line in raw.splitlines():
             if not line.strip():
                 continue

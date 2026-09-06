@@ -80,6 +80,7 @@ from scripts.research.venue_book_reconstruct import (
     KrakenBook,
     parse_envelope as venue_parse_envelope,
 )
+from scripts.research.zstd_stream import run_zstd_checked  # noqa: E402  (repo root on sys.path above)
 
 FRAMES = "/tmp/edge_daily/frames_crypto.jsonl"
 DB = "/tmp/edge_daily/state.db"
@@ -138,9 +139,9 @@ def load_venue_asset_frames(venue: str, asset: str) -> list:
     pattern = f"{VENUE_ROOT}/{src}/**/*.jsonl.zst"
     out = []
     for f in sorted(glob.glob(pattern, recursive=True)):
-        raw = subprocess.run(["zstd", "-dc", f], capture_output=True).stdout.decode(
-            "utf-8", "replace"
-        )
+        # ticket 86bbvrx1t: was subprocess.run(...).stdout — the exit code was
+        # discarded, so a truncated file yielded a silent PREFIX.
+        raw = run_zstd_checked(f)
         for line in raw.splitlines():
             if not line.strip():
                 continue

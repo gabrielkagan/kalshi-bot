@@ -77,7 +77,8 @@ from __future__ import annotations
 import subprocess
 from typing import Iterator, Optional
 
-__all__ = ["checked_stream_lines", "assert_zstd_ok", "ZstdTruncatedError"]
+__all__ = ["checked_stream_lines", "assert_zstd_ok", "checked_zstandard_lines",
+           "run_zstd_checked", "ZstdTruncatedError"]
 
 
 class ZstdTruncatedError(RuntimeError):
@@ -187,4 +188,77 @@ def checked_stream_lines(
         assert_zstd_ok(
             proc, path, exhausted=exhausted, n_lines=n,
             require_nonempty=require_nonempty,
+        )
+
+
+def run_zstd_checked(path: str) -> str:
+    """`subprocess.run(["zstd","-dc",path])` with the exit code ACTUALLY checked.
+
+    Ticket 86bbvrx1t, second variant. The original audit grepped for ``Popen``
+    and MISSED this spelling entirely::
+
+        raw = subprocess.run(["zstd","-dc",path], capture_output=True).stdout
+
+    That is the same defect wearing different clothes: on a truncated file zstd
+    writes a PREFIX to stdout and exits non-zero, and `.stdout` hands you the
+    prefix with no complaint. This mattered more than the Popen sites, because
+    the loader carrying it (``phase1b_real_price_economics._zst_lines``) is the
+    read path for ~38 of the algo_zoo mechanisms.
+
+    Note there is no `exhausted` subtlety here: subprocess.run always reads to
+    completion, so any non-zero exit IS a truncation.
+    """
+    import subprocess
+    r = subprocess.run(["zstd", "-dc", path], capture_output=True)
+    if r.returncode != 0:
+        raise ZstdTruncatedError(
+            f"zstd exited {r.returncode} decompressing {path} "
+            f"({len(r.stdout):,} bytes recovered) — the stream was TRUNCATED. "
+            f"Do not trust any result built from this read."
+        )
+    return r.stdout.decode("utf-8", "replace")
+
+
+def checked_zstandard_lines(path: str, *, decode: bool = True) -> Iterator:
+    """Stream a .zst via the `zstandard` LIBRARY, raising on a truncated frame.
+
+    Ticket 86bbvrx1t, THIRD variant and the most insidious of the three,
+    because it involves no subprocess and so has no exit code to forget.
+
+    Measured 2026-09-06: `ZstdDecompressor().stream_reader(fh)` over a
+    half-truncated file yielded **44,617 lines and raised NOTHING**. Comparing
+    bytes consumed against file size does NOT detect it either — a truncated
+    file is fully consumed; the frame is simply incomplete.
+
+    The reliable signal is `ZstdDecompressionObj.eof`, which is True only when
+    a complete frame terminated: True on a good file, False on a truncated one.
+    This streams in chunks rather than reading the file into memory, so it is
+    safe on the multi-GB frame days.
+    """
+    import zstandard
+
+    dctx = zstandard.ZstdDecompressor()
+    dobj = dctx.decompressobj()
+    tail = b""
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                break
+            out = dobj.decompress(chunk)
+            if not out:
+                continue
+            buf = tail + out
+            lines = buf.split(b"\n")
+            tail = lines.pop()
+            for ln in lines:
+                if ln.strip():
+                    yield ln.decode("utf-8", "replace") if decode else ln
+    if tail.strip():
+        yield tail.decode("utf-8", "replace") if decode else tail
+    if not dobj.eof:
+        raise ZstdTruncatedError(
+            f"{path}: zstandard frame did NOT terminate (decompressobj.eof is "
+            f"False) — the stream was TRUNCATED. The library yields a silent "
+            f"prefix here and raises nothing, so this check is the only signal."
         )
