@@ -11,16 +11,20 @@ NO reference to OrderExecutor. NO code path to place orders.
 
 from __future__ import annotations
 
+import collections
 import datetime
+import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timezone
-from typing import Dict, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 import requests
 
@@ -151,6 +155,14 @@ ESPN_TIMEOUT = 10  # seconds
 # changing. Postmortem: kb/failures/espn-403-user-agent-silent-outage-sep06.md
 ESPN_USER_AGENT: str = requests.utils.default_user_agent()
 
+# Sports-engine health sidecar (ticket 86bbvqhyr, R2-C1). The engine
+# self-reports "did ESPN give us live games" so the cron monitor never
+# has to decode the bot journal (a 24h `journalctl -g` pull measured
+# ~50s on the VPS — past any sane timeout, and ~17% of a core forever).
+# Written atomically next to state.db every tick (~30s, <1 KB).
+SPORTS_HEALTH_SIDECAR_NAME = "sports_health.json"
+SPORTS_HEALTH_WINDOW_SECONDS = 86400
+
 # Throttle for the non-200 WARN in ESPNLiveFeed._poll_league: one WARN
 # per league per window so a sustained outage is visible in journalctl
 # without flooding it (24 leagues × 30s ticks would be 2,880 lines/hr).
@@ -170,6 +182,14 @@ class ESPNLiveFeed:
         self._monotonic_fn = monotonic_fn
         # league_slug → monotonic ts of the last non-200 WARN.
         self._last_http_warn: Dict[str, float] = {}
+        # league_slug → http status of the most recent poll (None when
+        # the request raised before a status came back). Published in
+        # the sports_health.json sidecar (ticket 86bbvqhyr).
+        self._last_poll_status: Dict[str, Optional[int]] = {}
+
+    def last_poll_status(self) -> Dict[str, Optional[int]]:
+        """Copy of league_slug → last HTTP status (None = transport error)."""
+        return dict(self._last_poll_status)
 
     def poll_all_leagues(self) -> Dict[str, GameState]:
         """Poll ESPN for all enabled leagues. Returns game_id → GameState."""
@@ -177,6 +197,7 @@ class ESPNLiveFeed:
         for series, league_cfg in LEAGUES.items():
             if not league_cfg.enabled or not league_cfg.espn_league:
                 continue
+            self._last_poll_status[league_cfg.espn_league] = None
             try:
                 games = self._poll_league(league_cfg)
                 for g in games:
@@ -193,6 +214,7 @@ class ESPNLiveFeed:
         url = f"{ESPN_BASE}/{cfg.espn_sport}/{cfg.espn_league}/scoreboard"
         t0 = time.time()
         resp = self._session.get(url, timeout=ESPN_TIMEOUT)
+        self._last_poll_status[cfg.espn_league] = resp.status_code
         if resp.status_code != 200:
             # Ticket 86bbvqhyr: the pre-fix DEBUG-only swallow in
             # poll_all_leagues hid 5 weeks of 403s. WARN once per league
@@ -1166,11 +1188,31 @@ class SportsEngine:
 
     TICK_INTERVAL = 30  # seconds
 
-    def __init__(self, kalshi_client=None, state_manager=None, db_path: str = "state.db"):
+    def __init__(self, kalshi_client=None, state_manager=None, db_path: str = "state.db",
+                 health_sidecar_path: Optional[str] = None,
+                 monotonic_fn=time.monotonic):
         self._client = kalshi_client
         self._state = state_manager
         self._db_path = db_path
         self._espn = ESPNLiveFeed()
+        # Health sidecar (ticket 86bbvqhyr): default = sports_health.json
+        # next to state.db, which is where collector_health_monitor's
+        # bot tier already looks for the DB. None for :memory: DBs.
+        if health_sidecar_path:
+            self._health_sidecar_path: Optional[Path] = Path(health_sidecar_path)
+        elif db_path == ":memory:":
+            self._health_sidecar_path = None
+        else:
+            self._health_sidecar_path = (
+                Path(db_path).resolve().parent / SPORTS_HEALTH_SIDECAR_NAME
+            )
+        self._monotonic_fn = monotonic_fn
+        # monotonic ts of every tick on which ESPN returned ≥1 live game
+        # (non-excluded group), evicted past SPORTS_HEALTH_WINDOW_SECONDS.
+        self._live_tick_ts: Deque[float] = collections.deque()
+        self._last_poll_games: int = 0
+        self._last_poll_live: int = 0
+        self._last_live_at: Optional[str] = None
         self._discovery = KalshiSportsDiscovery(kalshi_client) if kalshi_client else None
         self._model = BayesianComebackModel()
         self._platt = PlattCalibrator()
@@ -1257,10 +1299,13 @@ class SportsEngine:
 
         # 2. Poll ESPN for all live games
         games = self._espn.poll_all_leagues()
-        if not games:
-            return
         _live_games = sum(1 for g in games.values() if g.game_status == "live")
         _pre_games = sum(1 for g in games.values() if g.game_status == "pre")
+        # Health sidecar BEFORE the early return so a dead/403'd ESPN
+        # still stamps last_tick_at + last_poll_games=0 (ticket 86bbvqhyr).
+        self._note_tick(n_games=len(games), n_live=_live_games)
+        if not games:
+            return
         if _live_games > 0:
             logging.info("SportsEngine: ESPN returned %d games (%d live, %d pre)",
                          len(games), _live_games, _pre_games)
@@ -1464,6 +1509,58 @@ class SportsEngine:
         if live_count > 0:
             logging.info("SportsEngine tick: %d live games, %d signals",
                          live_count, signal_count)
+
+    # ── Health sidecar (ticket 86bbvqhyr) ──────────────────────────────
+
+    def _note_tick(self, *, n_games: int, n_live: int) -> None:
+        """Record one ESPN poll outcome + rewrite sports_health.json.
+
+        ``n_live`` counts games with ``game_status == "live"`` as ESPN
+        reported them (before the excluded-group / Kalshi-match filters)
+        — that is the "ESPN reported live games" precondition the
+        monitor's ``check_sports_eval_silence`` needs. Never raises.
+        """
+        now = self._monotonic_fn()
+        self._last_poll_games = n_games
+        self._last_poll_live = n_live
+        if n_live > 0:
+            self._live_tick_ts.append(now)
+            self._last_live_at = datetime.datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ")
+        cutoff = now - SPORTS_HEALTH_WINDOW_SECONDS
+        while self._live_tick_ts and self._live_tick_ts[0] < cutoff:
+            self._live_tick_ts.popleft()
+        try:
+            self._write_health_sidecar()
+        except Exception:
+            logging.debug("SportsEngine: health sidecar write failed",
+                          exc_info=True)
+
+    def health_snapshot(self) -> Dict[str, object]:
+        """The sports_health.json payload (schema_version 1)."""
+        return {
+            "schema_version": 1,
+            "written_at": datetime.datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"),
+            "live_ticks_window_seconds": SPORTS_HEALTH_WINDOW_SECONDS,
+            "live_ticks_in_window": len(self._live_tick_ts),
+            "last_live_at": self._last_live_at,
+            "last_poll_games": self._last_poll_games,
+            "last_poll_live": self._last_poll_live,
+            "espn_last_poll_status": self._espn.last_poll_status(),
+            "tick_interval_seconds": self.TICK_INTERVAL,
+        }
+
+    def _write_health_sidecar(self) -> None:
+        """Atomic-replace write (tmp + os.replace) so the cron monitor
+        never reads a torn file. No-op when no path is configured."""
+        path = self._health_sidecar_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.health_snapshot()))
+        os.replace(tmp, path)
 
     def _try_capture_pregame(self, game: GameState) -> None:
         """Capture pregame Kalshi prices before game starts.

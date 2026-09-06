@@ -102,7 +102,9 @@ def test_espn_checks_subset_excludes_ws_reconnects():
 
 
 def test_espn_checks_include_disk_active_dropped_frames():
-    """The 3 ESPN checks: disk + collector_active + dropped_frames."""
+    """The 3 original ESPN checks (disk + collector_active + dropped_frames)
+    must remain; 86bbvqhyr added a 4th (http_errors), pinned by
+    test_collector_health_monitor_espn_http_errors.py."""
     src = _module_source()
     espn_checks_idx = src.find("espn_checks = [")
     if espn_checks_idx == -1:

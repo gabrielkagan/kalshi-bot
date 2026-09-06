@@ -291,121 +291,119 @@ def _iso(minutes_ago: int) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-_LIVE_LINE = "Sep 06 16:00:00 host python[1]: SportsEngine tick: 3 live games, 0 signals\n"
+def _write_sports_sidecar(path: Path, live_ticks: int, statuses=None,
+                          window_s: int = 86400):
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "written_at": _iso(0),
+        "live_ticks_window_seconds": window_s,
+        "live_ticks_in_window": live_ticks,
+        "last_live_at": _iso(30),
+        "last_poll_games": 3, "last_poll_live": 1,
+        "espn_last_poll_status": statuses or {"nba": 200},
+        "tick_interval_seconds": 30,
+    }))
+
+
+def test_sports_silence_none_when_sidecar_missing(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    assert mod.check_sports_eval_silence(db_path=db) is None
+
+
+def test_sports_silence_none_when_sidecar_malformed(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    (tmp_path / "sports_health.json").write_text("{nope")
+    assert mod.check_sports_eval_silence(db_path=db) is None
+
+
+def test_sports_silence_none_when_sidecar_stale(tmp_path):
+    import scripts.ops.collector_health_monitor as mod
+    import os
+    db = tmp_path / "state.db"
+    _make_db(db, [])
+    sc = tmp_path / "sports_health.json"
+    _write_sports_sidecar(sc, live_ticks=500)
+    old = _dt.datetime.now().timestamp() - 3600
+    os.utime(sc, (old, old))
+    assert mod.check_sports_eval_silence(db_path=db, stale_after_seconds=900) is None
 
 
 def test_sports_silence_none_when_db_missing(tmp_path):
     import scripts.ops.collector_health_monitor as mod
-    with patch.object(mod.subprocess, "check_output", return_value=_LIVE_LINE * 30):
-        assert mod.check_sports_eval_silence(db_path=tmp_path / "no.db") is None
-
-
-def test_sports_silence_none_when_journalctl_unavailable(tmp_path):
-    import scripts.ops.collector_health_monitor as mod
-    db = tmp_path / "state.db"
-    _make_db(db, [])
-    with patch.object(mod.subprocess, "check_output", side_effect=FileNotFoundError):
-        assert mod.check_sports_eval_silence(db_path=db) is None
-
-
-def test_sports_silence_none_when_no_live_games(tmp_path):
-    import scripts.ops.collector_health_monitor as mod
-    db = tmp_path / "state.db"
-    _make_db(db, [])
-    with patch.object(mod.subprocess, "check_output", return_value="nothing here\n"):
-        assert mod.check_sports_eval_silence(db_path=db) is None
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=500)
+    assert mod.check_sports_eval_silence(db_path=tmp_path / "no.db") is None
 
 
 def test_sports_silence_none_below_min_live_ticks(tmp_path):
     import scripts.ops.collector_health_monitor as mod
     db = tmp_path / "state.db"
     _make_db(db, [])
-    with patch.object(mod.subprocess, "check_output", return_value=_LIVE_LINE * 5):
-        assert mod.check_sports_eval_silence(db_path=db, min_live_ticks=20) is None
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=5)
+    assert mod.check_sports_eval_silence(db_path=db, min_live_ticks=20) is None
 
 
 def test_sports_silence_none_when_sports_rows_exist(tmp_path):
     import scripts.ops.collector_health_monitor as mod
     db = tmp_path / "state.db"
     _make_db(db, [("sports", _iso(10)), ("15m", _iso(5))])
-    with patch.object(mod.subprocess, "check_output", return_value=_LIVE_LINE * 30):
-        assert mod.check_sports_eval_silence(
-            db_path=db, window_min=180, min_live_ticks=20,
-        ) is None
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=500)
+    assert mod.check_sports_eval_silence(db_path=db, min_live_ticks=20) is None
 
 
 def test_sports_silence_alerts_when_live_games_but_zero_sports_rows(tmp_path):
     import scripts.ops.collector_health_monitor as mod
     db = tmp_path / "state.db"
-    # Only non-sports rows in-window + a sports row OUTSIDE the window.
-    _make_db(db, [("15m", _iso(5)), ("sports", _iso(600))])
-    with patch.object(mod.subprocess, "check_output", return_value=_LIVE_LINE * 30):
-        out = mod.check_sports_eval_silence(
-            db_path=db, window_min=180, min_live_ticks=20,
-        )
+    # Only non-sports rows in-window + a sports row OUTSIDE the 24h window.
+    _make_db(db, [("15m", _iso(5)), ("sports", _iso(3000))])
+    _write_sports_sidecar(
+        tmp_path / "sports_health.json", live_ticks=500,
+        statuses={"nba": 403, "nhl": 200, "mlb": None},
+    )
+    out = mod.check_sports_eval_silence(db_path=db, min_live_ticks=20)
     assert out is not None
     assert "SPORTS" in out.upper()
     assert "evaluated_opportunities" in out
-    assert "30" in out  # live-game tick count surfaced
+    assert "500" in out
+    assert "nba=403" in out and "mlb=None" in out and "nhl" not in out
 
 
-def test_archiver_deque_bounded_without_reader():
-    """R1-m2: eviction happens on write, so a never-read stats deque
-    stays bounded to one window."""
-    clock = _Clock()
-    arch, _ = _make_archiver([_Resp(200)] * 200, monotonic=clock)
-    for _ in range(200):
-        arch.poll_once()
-        clock.t += 60  # 200 min of polls, window is 60 min
-    assert len(arch._http_status_samples["nba"]) <= 61
+def test_sports_silence_uses_sidecar_window_for_db_cutoff(tmp_path):
+    """A sports row 2h old counts as healthy when the sidecar window is
+    24h, but NOT when the sidecar says its window is 1h."""
+    import scripts.ops.collector_health_monitor as mod
+    db = tmp_path / "state.db"
+    _make_db(db, [("sports", _iso(120))])
+    sc = tmp_path / "sports_health.json"
+    _write_sports_sidecar(sc, live_ticks=500, window_s=86400)
+    assert mod.check_sports_eval_silence(db_path=db) is None
+    _write_sports_sidecar(sc, live_ticks=500, window_s=3600)
+    assert mod.check_sports_eval_silence(db_path=db) is not None
 
 
-def test_sports_silence_journal_filtered_server_side_with_long_timeout(tmp_path):
-    """R1-C1: the unfiltered 3h journal pull took ~14s on the VPS vs a
-    10s timeout — the check could never evaluate. Pin -g/-o cat + ≥60s."""
+def test_sports_silence_resolves_sidecar_via_env(tmp_path, monkeypatch):
     import scripts.ops.collector_health_monitor as mod
     db = tmp_path / "state.db"
     _make_db(db, [])
-    seen = {}
-
-    def _co(args, **kw):
-        seen["args"] = args
-        seen["kw"] = kw
-        return ""
-
-    with patch.object(mod.subprocess, "check_output", side_effect=_co):
-        mod.check_sports_eval_silence(db_path=db)
-    args = seen["args"]
-    assert "-g" in args and args[args.index("-g") + 1] == mod.SPORTS_LIVE_TICK_PATTERN
-    assert "-o" in args and args[args.index("-o") + 1] == "cat"
-    assert seen["kw"]["timeout"] >= 60
-    assert "1440 minutes ago" in args, "default window is 24h (R1-M2)"
+    sc = tmp_path / "elsewhere" / "sh.json"
+    sc.parent.mkdir()
+    _write_sports_sidecar(sc, live_ticks=500)
+    monkeypatch.setenv("SPORTS_HEALTH_SIDECAR_PATH", str(sc))
+    assert mod.check_sports_eval_silence(db_path=db) is not None
 
 
-def test_sports_silence_timeout_prints_skipped_not_silent(tmp_path, capsys):
+def test_sports_silence_never_shells_out(tmp_path):
+    """R2-C1: no journalctl decode on the cron path (24h pull ≈ 50s on VPS)."""
     import scripts.ops.collector_health_monitor as mod
     db = tmp_path / "state.db"
     _make_db(db, [])
-    with patch.object(
-        mod.subprocess, "check_output",
-        side_effect=mod.subprocess.TimeoutExpired(cmd="journalctl", timeout=60),
-    ):
-        assert mod.check_sports_eval_silence(db_path=db) is None
-    assert "SKIPPED" in capsys.readouterr().err
-
-
-def test_sports_silence_grep_no_match_exit_1_is_quiet(tmp_path, capsys):
-    """journalctl -g exits 1 when nothing matches — that is 'no live
-    games', not a skip."""
-    import scripts.ops.collector_health_monitor as mod
-    db = tmp_path / "state.db"
-    _make_db(db, [])
-    with patch.object(
-        mod.subprocess, "check_output",
-        side_effect=mod.subprocess.CalledProcessError(1, "journalctl"),
-    ):
-        assert mod.check_sports_eval_silence(db_path=db) is None
-    assert "SKIPPED" not in capsys.readouterr().err
+    _write_sports_sidecar(tmp_path / "sports_health.json", live_ticks=500)
+    with patch.object(mod.subprocess, "check_output", side_effect=AssertionError("shelled out")), \
+            patch.object(mod.subprocess, "run", side_effect=AssertionError("shelled out")):
+        assert mod.check_sports_eval_silence(db_path=db) is not None
 
 
 def test_sports_silence_opens_db_read_only(tmp_path):
@@ -526,6 +524,46 @@ def test_bot_feed_warns_on_non_200_throttled(caplog):
              if r.levelno == logging.WARNING and "403" in r.getMessage()]
     assert len(warns) == 2, [r.getMessage() for r in caplog.records]
     assert cfg.espn_league in warns[0].getMessage()
+
+
+def test_sports_engine_note_tick_counts_live_ticks_in_24h_window(tmp_path):
+    import bot.engines.sports_engine as se
+    clock = _Clock()
+    eng = se.SportsEngine(db_path=str(tmp_path / "state.db"), monotonic_fn=clock)
+    for _ in range(25):
+        eng._note_tick(n_games=5, n_live=2)
+        clock.t += 30
+    eng._note_tick(n_games=5, n_live=0)  # a tick with no live games
+    sc = json.loads((tmp_path / "sports_health.json").read_text())
+    assert sc["schema_version"] == 1
+    assert sc["live_ticks_in_window"] == 25
+    assert sc["live_ticks_window_seconds"] == se.SPORTS_HEALTH_WINDOW_SECONDS
+    assert sc["last_poll_live"] == 0 and sc["last_poll_games"] == 5
+    assert sc["last_live_at"] is not None
+    clock.t += se.SPORTS_HEALTH_WINDOW_SECONDS + 1
+    eng._note_tick(n_games=0, n_live=0)
+    sc = json.loads((tmp_path / "sports_health.json").read_text())
+    assert sc["live_ticks_in_window"] == 0
+
+
+def test_sports_engine_tick_writes_sidecar_even_when_espn_403s(tmp_path):
+    """The early `if not games: return` must not skip the health stamp —
+    a 403'd ESPN is exactly when the sidecar matters."""
+    import bot.engines.sports_engine as se
+    eng = se.SportsEngine(db_path=str(tmp_path / "state.db"))
+    eng._espn._session = _FakeSession([_Resp(403)] * 64)
+    eng._tick()
+    sc = json.loads((tmp_path / "sports_health.json").read_text())
+    assert sc["last_poll_games"] == 0 and sc["live_ticks_in_window"] == 0
+    statuses = sc["espn_last_poll_status"]
+    assert statuses and all(v == 403 for v in statuses.values())
+
+
+def test_sports_engine_memory_db_has_no_sidecar():
+    import bot.engines.sports_engine as se
+    eng = se.SportsEngine(db_path=":memory:")
+    assert eng._health_sidecar_path is None
+    eng._note_tick(n_games=1, n_live=1)  # must not raise
 
 
 def test_bot_feed_poll_all_leagues_survives_403(caplog):

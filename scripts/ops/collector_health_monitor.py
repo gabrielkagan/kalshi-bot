@@ -27,11 +27,12 @@ landing" — L-espn-1, same class as L-rot-7):
   - check_espn_http_errors: per-league rolling-1h non-200 rate from the
     ESPN sidecar's ``espn_http_status_1h`` key; alert at >50% for any
     league with ≥ min_polls samples (dedup ``d1_11_http_errors``).
-  - check_sports_eval_silence: bot journal reports live games
-    (``SportsEngine tick: N live games``) ≥ min_live_ticks times in the
-    window but ``evaluated_opportunities`` has 0 ``product_type='sports'``
-    rows in that window (dedup ``b3_fu3_sports_eval_silence``; 24h window,
-    journal filtered server-side with ``journalctl -g``).
+  - check_sports_eval_silence: the sports engine's own
+    ``sports_health.json`` sidecar reports ≥ min_live_ticks ticks with
+    live games in its 24h window but ``evaluated_opportunities`` has 0
+    ``product_type='sports'`` rows in that window (dedup
+    ``b3_fu3_sports_eval_silence``). No journal decode — R2 measured a
+    24h ``journalctl -g`` pull at ~50s on the VPS.
 
 D0.3 §6 isolation contract enumerated 2 failure modes with NO alert
 surface pre-D1.6:
@@ -88,7 +89,6 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -196,24 +196,25 @@ BOT_UNIT = "kalshi-bot"
 DEFAULT_INSERT_EVAL_FAILURE_WINDOW_MIN = 5
 DEFAULT_INSERT_EVAL_FAILURE_THRESHOLD = 1
 DEFAULT_INSERT_EVAL_FAILURE_LOG_MARKER = "insert_evaluated_opportunity failed"
-# Ticket 86bbvqhyr: bot-side sports silence check. The journal line is
-# emitted by bot/engines/sports_engine.py::SportsEngine._tick only when
-# live_count > 0 (30s tick) — "ESPN reported live games" by construction.
+# Ticket 86bbvqhyr: bot-side sports silence check. "ESPN reported live
+# games" comes from the sports engine's OWN sidecar
+# (bot/engines/sports_engine.py::SportsEngine._note_tick writes
+# sports_health.json next to state.db every 30s tick with
+# live_ticks_in_window over a 24h window). R1 tried the bot journal;
+# R2 measured a 24h `journalctl -g` pull at ~50s on the VPS (decode
+# cost, not output volume) — the engine self-reporting is O(1).
 # 24h window (R1-M2): sports evaluated_opportunities rows are sparse on
 # a HEALTHY system (1-43/day, 17:00-05:00 UTC, only for live games that
 # matched a Kalshi market) — a 180-min window produced ~3-5 false
 # alarms/day on the last 16 healthy days; 24h produced 0 and still
 # catches a 5-week-class outage within a day. ≥20 live ticks (≈10 min
-# of live play) is the "ESPN reported live games" precondition.
+# of live play) is the precondition.
 DEFAULT_SPORTS_SILENCE_WINDOW_MIN = 1440
 DEFAULT_SPORTS_SILENCE_MIN_LIVE_TICKS = 20
-SPORTS_LIVE_TICK_PATTERN = r"SportsEngine tick: [0-9]+ live games"
-SPORTS_LIVE_TICK_RE = re.compile(r"SportsEngine tick: (\d+) live games")
-# R1-C1: an unfiltered 180-min `journalctl -u kalshi-bot` pull is 33 MB /
-# 153K lines and takes ~14 s on the VPS — past the 10 s timeout the
-# sibling 5-min check uses, so the check would silently never evaluate.
-# Filter server-side (`-g` PCRE + `-o cat`) and allow 60 s.
-SPORTS_SILENCE_JOURNAL_TIMEOUT_SECONDS = 60
+# Sidecar older than this → bot/engine not running; other checks own
+# that class (fail-quiet here).
+DEFAULT_SPORTS_SIDECAR_STALE_SECONDS = 900
+SPORTS_HEALTH_SIDECAR_NAME = "sports_health.json"
 # Read-only sqlite path; mirrors scripts/vps_mcp_server.py's default.
 DEFAULT_STATE_DB_PATH = os.path.expanduser("~/kalshi-bot-repo/state.db")
 # Stale-sidecar threshold: 2x the drain-thread poll cadence (1s) +
@@ -610,77 +611,71 @@ def check_espn_http_errors(
 
 def check_sports_eval_silence(
     db_path: Optional[Path] = None,
+    sidecar_path: Optional[Path] = None,
     window_min: int = DEFAULT_SPORTS_SILENCE_WINDOW_MIN,
     min_live_ticks: int = DEFAULT_SPORTS_SILENCE_MIN_LIVE_TICKS,
+    stale_after_seconds: int = DEFAULT_SPORTS_SIDECAR_STALE_SECONDS,
     unit: str = BOT_UNIT,
 ) -> Optional[str]:
     """Bot-tier alert: ESPN reported live games but the sports engine
     evaluated nothing (ticket 86bbvqhyr, 2026-09-06).
 
-    Two inputs over the same ``window_min`` window (default 24h — R1-M2:
-    sports rows are sparse and game-hour-clustered even when healthy,
-    so shorter windows false-alarm several times a day):
-      1. journalctl -u kalshi-bot lines matching ``SportsEngine tick: N
-         live games`` with N > 0 — emitted by ``SportsEngine._tick`` only
-         when at least one live, non-excluded-group game came back from
-         ESPN. Need ≥ ``min_live_ticks`` of them. Filtered SERVER-SIDE
-         via ``journalctl -g`` + ``-o cat`` (R1-C1: the unfiltered pull
-         is ~14 s on the VPS, longer than the sibling checks' 10 s
-         timeout — the check would have silently never evaluated).
+    Two inputs:
+      1. ``sports_health.json`` written by
+         ``bot.engines.sports_engine.SportsEngine._note_tick`` every 30s
+         tick: ``live_ticks_in_window`` = number of ticks in the last
+         ``live_ticks_window_seconds`` (24h) on which ESPN returned ≥1
+         live game. Need ≥ ``min_live_ticks``. (R1 used the bot journal;
+         R2 measured a 24h ``journalctl -g`` pull at ~50s on the VPS —
+         the engine self-reporting is the only O(1) source.)
       2. ``SELECT 1 … WHERE product_type='sports' AND evaluation_time
          >= cutoff ORDER BY id DESC LIMIT 1`` on a READ-ONLY sqlite
          connection (rowid-desc scan stops at the first recent hit on
-         the healthy path; the table has no index on these columns).
+         the healthy path; no index on these columns). The cutoff uses
+         the sidecar's own window when present so both inputs cover
+         the same span.
     Alert iff (1) ≥ min_live_ticks AND (2) finds no row.
 
-    Fail-quiet (return None) on: journalctl absent/timeout (a SKIPPED
-    line goes to stderr so the cron log shows the check did NOT
-    evaluate), DB file absent, any sqlite error. A window in which every
-    live game lacked a Kalshi market can trip this legitimately — the
-    message says so; treat it as "look", not "page".
+    Fail-quiet (return None) on: sidecar missing (pre-Bit bot) /
+    malformed / older than ``stale_after_seconds`` (bot down — the
+    watchdog owns that), DB file absent, any sqlite error. A window in
+    which every live game lacked a Kalshi market can trip this
+    legitimately — the message says so; treat it as "look", not "page".
 
     ``db_path`` resolves via ``STATE_DB_PATH`` env at call time when
-    None, else ``DEFAULT_STATE_DB_PATH``.
+    None, else ``DEFAULT_STATE_DB_PATH``; ``sidecar_path`` via
+    ``SPORTS_HEALTH_SIDECAR_PATH`` else next to the DB.
     """
-    try:
-        out = subprocess.check_output(
-            [
-                "journalctl",
-                "-u", unit,
-                "--since", f"{window_min} minutes ago",
-                "-q", "--no-pager",
-                "-o", "cat",
-                "-g", SPORTS_LIVE_TICK_PATTERN,
-            ],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=SPORTS_SILENCE_JOURNAL_TIMEOUT_SECONDS,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        # journalctl -g exits 1 when nothing matches (CalledProcessError)
-        # — that is a legitimate "no live games" outcome, not a skip.
-        if not (isinstance(exc, subprocess.CalledProcessError) and exc.returncode == 1):
-            print(
-                f"[{unit}/sports_eval_silence] SKIPPED: journalctl "
-                f"{type(exc).__name__} — check did not evaluate",
-                file=sys.stderr,
-            )
-        return None
-    live_ticks = 0
-    for line in out.splitlines():
-        m = SPORTS_LIVE_TICK_RE.search(line)
-        if m and int(m.group(1)) > 0:
-            live_ticks += 1
-    if live_ticks < min_live_ticks:
-        return None
-
     if db_path is None:
         db_path = Path(os.environ.get("STATE_DB_PATH", DEFAULT_STATE_DB_PATH))
     db_path = Path(db_path)
+    if sidecar_path is None:
+        sidecar_path = Path(os.environ.get(
+            "SPORTS_HEALTH_SIDECAR_PATH",
+            str(db_path.parent / SPORTS_HEALTH_SIDECAR_NAME),
+        ))
+    sidecar_path = Path(sidecar_path)
+    if not sidecar_path.is_file():
+        return None
+    try:
+        age = time.time() - sidecar_path.stat().st_mtime
+        data = json.loads(sidecar_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or age > stale_after_seconds:
+        return None
+    try:
+        live_ticks = int(data.get("live_ticks_in_window") or 0)
+        window_s = int(data.get("live_ticks_window_seconds") or window_min * 60)
+    except (TypeError, ValueError):
+        return None
+    if live_ticks < min_live_ticks:
+        return None
+
     if not db_path.is_file():
         return None
     cutoff = (
-        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=window_min)
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=window_s)
     ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
@@ -697,14 +692,22 @@ def check_sports_eval_silence(
         return None
     if row is not None:
         return None
+    last_live = data.get("last_live_at")
+    statuses = data.get("espn_last_poll_status") or {}
+    non_200 = sorted(
+        f"{lg}={st}" for lg, st in statuses.items()
+        if isinstance(statuses, dict) and st != 200
+    )
     return (
-        f"*BOT SPORTS EVAL SILENCE* — journal shows {live_ticks} "
-        f"`SportsEngine tick: N live games` lines in the last {window_min}min "
-        f"but evaluated_opportunities has 0 product_type='sports' rows in "
-        f"that window (should be ≥1/day whenever games run). Either ESPN data is not reaching the engine (ticket "
-        f"86bbvqhyr class — check `journalctl -u {unit} --since "
-        f"'{window_min} min ago' | grep 'ESPN HTTP' | tail` and "
-        f"`python3 scripts/ops/espn_live_probe.py`), or no live game had a "
+        f"*BOT SPORTS EVAL SILENCE* — {sidecar_path.name} reports "
+        f"{live_ticks} ticks with live ESPN games in the last "
+        f"{window_s // 3600}h (last live {last_live}) but "
+        f"evaluated_opportunities has 0 product_type='sports' rows in that "
+        f"window (should be ≥1/day whenever games run). Last-poll non-200 "
+        f"leagues: {', '.join(non_200) or 'none'}. Either ESPN data is not "
+        f"reaching the engine (ticket 86bbvqhyr class — `python3 "
+        f"scripts/ops/espn_live_probe.py`; `journalctl -u {unit} --since "
+        f"'1 hour ago' | grep 'ESPN HTTP' | tail`), or no live game had a "
         f"Kalshi market match for the whole window (`grep 'no Kalshi "
         f"market match'`)."
     )
