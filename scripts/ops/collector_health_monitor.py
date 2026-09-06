@@ -693,11 +693,10 @@ def check_sports_eval_silence(
     if row is not None:
         return None
     last_live = data.get("last_live_at")
-    statuses = data.get("espn_last_poll_status") or {}
-    non_200 = sorted(
-        f"{lg}={st}" for lg, st in statuses.items()
-        if isinstance(statuses, dict) and st != 200
-    )
+    statuses = data.get("espn_last_poll_status")
+    if not isinstance(statuses, dict):
+        statuses = {}
+    non_200 = sorted(f"{lg}={st}" for lg, st in statuses.items() if st != 200)
     return (
         f"*BOT SPORTS EVAL SILENCE* — {sidecar_path.name} reports "
         f"{live_ticks} ticks with live ESPN games in the last "

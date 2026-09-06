@@ -1194,7 +1194,7 @@ class SportsEngine:
         self._client = kalshi_client
         self._state = state_manager
         self._db_path = db_path
-        self._espn = ESPNLiveFeed()
+        self._espn = ESPNLiveFeed(monotonic_fn=monotonic_fn)
         # Health sidecar (ticket 86bbvqhyr): default = sports_health.json
         # next to state.db, which is where collector_health_monitor's
         # bot tier already looks for the DB. None for :memory: DBs.
