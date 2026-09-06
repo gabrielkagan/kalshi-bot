@@ -9030,20 +9030,35 @@ class OpportunityScanner:
         return (orderbook, True)
 
     def _scanner_convergence_velocity(self, ticker: str) -> float:
-        """Upward ask movement in cents over convergence window, from scan history."""
+        """Upward ask movement in cents over CONVERGENCE_WINDOW_SECONDS.
+
+        Slow-product tickers (hourly/weather/SPX) are sampled at
+        SLOW_PRODUCT_SCAN_INTERVAL_S, equal to this window. When scan
+        body is 5–8s the previous sample is just outside cutoff and a
+        naive in-window walk returns 0. Fall back to the previous
+        sample and scale onto a 30s unit.
+        """
         history = self._ticker_ask_history.get(ticker)
         if not history or len(history) < 2:
             return 0.0
         now = time.time()
         cutoff = now - CONVERGENCE_WINDOW_SECONDS
+        newest_ts, newest_price = history[-1]
+        oldest_ts = None
         oldest_price = None
         for ts, price in history:
             if ts >= cutoff:
+                oldest_ts = ts
                 oldest_price = price
                 break
-        if oldest_price is None:
-            return 0.0
-        return history[-1][1] - oldest_price
+        if oldest_price is None or oldest_ts == newest_ts:
+            prev_ts, prev_price = history[-2]
+            dt = newest_ts - prev_ts
+            if dt <= 0:
+                return 0.0
+            return (newest_price - prev_price) * (
+                CONVERGENCE_WINDOW_SECONDS / dt)
+        return newest_price - oldest_price
 
     @staticmethod
     def _convert_orderbook_fp(ob_fp: Dict) -> Dict:
