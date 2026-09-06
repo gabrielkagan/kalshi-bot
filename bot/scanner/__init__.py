@@ -196,6 +196,7 @@ from bot.constants import (
     RTI_LIVE_MIN_CONFIDENCE,
     MAX_ENTRY_PRICE,
     MAX_OB_FETCHES_PER_TICK,
+    SLOW_PRODUCT_SCAN_INTERVAL_S,
     MAX_SECONDS_BEFORE_CLOSE,
     MIN_EDGE_PCT,
     MIN_ENTRY_PRICE,
@@ -333,6 +334,10 @@ from bot.helpers.adverse_selection import (  # B1 (86ba1zdwm) — composite adve
     check_hype_high_price_buf_gate,
     check_orderbook_prior_gate,
     extract_no_ask_and_yes_asks,
+)
+from bot.helpers.scan_cadence import (  # 2026-09-06: weather/hourly/SPX off the 1 Hz 15M tick
+    include_window_this_tick,
+    slow_scan_due,
 )
 from bot.kalshi_client import KalshiClient
 from bot.state import StateManager
@@ -1610,6 +1615,19 @@ class OpportunityScanner:
         # selection, etc.) under the SCAN_BODY_SLOW umbrella.
         # Apr 25 01:09 incident: SCAN_BODY_SLOW 5.64s — need to
         # localize within scan() body.
+        _preloop_dt = time.perf_counter() - _scan_tick_start_perf
+        if _preloop_dt > 1.5:
+            logging.warning(
+                "SCAN_PRELOOP_SLOW: scan setup took %.2fs", _preloop_dt)
+
+        _slow_due = slow_scan_due(
+            now,
+            getattr(self, "_last_slow_product_scan_ts", 0.0),
+            SLOW_PRODUCT_SCAN_INTERVAL_S,
+        )
+        if _slow_due:
+            self._last_slow_product_scan_ts = now
+
         _scan_loop_start = time.perf_counter()
         # Bit V.1 + V.3-R1-M1 fix round (2026-06-12): per-TICK memo dict
         # (asset → rv300-or-None) so the tape-RV block below computes
@@ -1637,6 +1655,8 @@ class OpportunityScanner:
             _window_start = time.perf_counter()
             asset = window["asset"]
             _pt = window.get("product_type")
+            if not include_window_this_tick(_pt, _slow_due):
+                continue
 
             # Bit 9.2 ride-along (ticket 86b9vppn3): initialize best_ask
             # at iteration start so the low_probability_15m insert_rejection

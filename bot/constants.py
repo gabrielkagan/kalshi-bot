@@ -851,6 +851,14 @@ FILL_MODEL_JOURNAL = "fill_model_journal.jsonl"
 # ─── Loop Timing ─────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 1.0
 
+# Weather / hourly / SPX markets share OpportunityScanner.scan() with 15M.
+# They skip WS and REST-fallback; putting them on the 1 Hz clock produced
+# 5–8s SCAN_BODY_SLOW (2026-09-06). 15M stays 1 Hz; these product types
+# evaluate at this slower cadence. Daily weather and hourly windows do
+# not need 1 Hz. See kb/failures/scan-body-5-8s-collecting-mode-sep06.md.
+SLOW_PRODUCT_SCAN_INTERVAL_S = 30.0
+SLOW_PRODUCT_TYPES = frozenset({"hourly", "spx_hourly", "weather"})
+
 MARKET_REFRESH_SECONDS = 30.0
 
 # Staleness budget for the active_windows cache (Step #5 watchdog).
