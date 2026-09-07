@@ -1432,8 +1432,10 @@ class StateManager:
             ticker = pos["ticker"]
             api_tickers.add(ticker)
             try:
-                position_count = fp_str_to_int(pos.get("position_fp")) or (
-                    pos.get("position") or 0)
+                position_count = fp_str_to_int(pos.get("position_fp"))
+                if not position_count:
+                    position_count = pos.get("position") or 0
+                position_count = int(position_count)
             except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "RECONCILE_POSITION_PARSE_MALFORMED ticker=%s "

@@ -4886,6 +4886,7 @@ class OrderExecutor:
             else:
                 fill_price_d = fill.get("yes_price_dollars")
                 fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+            fill_price = int(fill_price)
         except (TypeError, ValueError, OverflowError):
             logging.warning(
                 "ON_FILL_PRICE_PARSE_MALFORMED: %s order=%s — using limit",
