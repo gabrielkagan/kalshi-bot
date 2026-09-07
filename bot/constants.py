@@ -1157,11 +1157,27 @@ SYNTHETIC_RTI_ENABLED = os.environ.get("SYNTHETIC_RTI_ENABLED", "0") == "1"
 # MARKET_BLEND_W_BY_ASSET pattern — going live = a one-line edit here plus the
 # re-fit blend weights, shipped same commit, after the data gate + approval.
 SYNTHETIC_RTI_LIVE_ASSETS: set = set()
-# Minimum rti_confidence (contributed venues / expected, the CFB-shape
-# denominator) for a synthetic value to be trusted as the decision spot. Below
-# this the scanner falls back to the Coinbase spot — never trade on a
-# low-confidence synthetic. UNVALIDATED placeholder — MUST be tuned from the
-# RTI-3 corpus before any asset is promoted; 0.75 is a guess, not a result.
+# Minimum rti_confidence for a synthetic value to be trusted as the decision
+# spot. Below this the scanner falls back to the Coinbase spot — never trade on
+# a low-confidence synthetic.
+#
+# rti_confidence = contributed venues / expected venues (the CFB-shape
+# denominator), where a venue COUNTS only if its book is fresh, in-sync
+# (Kraken CRC32), rebuilt since that venue's last (re)connect, TWO-SIDED (a
+# book missing either side is excluded as `one_sided`) and not crossed. It is
+# a COVERAGE ratio over healthy books, not a probability.
+#
+# Ticket 86bbvztem: before the reconnect book-epoch fix, "healthy" was wrong —
+# a reconnecting Gemini kept contributing a stale, often crossed book, so
+# confidence read marginally HIGHER on corrupt rows than clean ones and this
+# gate actively PREFERRED bad data. The numerator is now health-gated, but the
+# metric still cannot see a silently-wrong book that is neither crossed nor
+# stale on the three venues that carry no checksum (Coinbase/Bitstamp/Gemini).
+#
+# UNVALIDATED placeholder — MUST be tuned from the RTI-3 corpus before any
+# asset is promoted; 0.75 is a guess, not a result. Any pre-86bbvztem
+# rti_confidence in that corpus is NOT comparable to a post-fix value and must
+# not be pooled with it.
 RTI_LIVE_MIN_CONFIDENCE = 0.75
 
 # ─── Cross-Exchange Order Flow ──────────────────────────────────────────
