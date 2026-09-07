@@ -273,6 +273,19 @@ def load_kraken_spot(assets: set, tmin: float, tmax: float) -> dict:
         with open(fp, "rb") as fh:
             with dctx.stream_reader(fh) as reader:
                 data = reader.read()
+        # ticket 86bbvrx1t: stream_reader.read() returns a silent PREFIX on a
+        # truncated frame. Re-assert frame completion before trusting `data`.
+        _dobj = zstd.ZstdDecompressor().decompressobj()
+        with open(path, "rb") as _vfh:
+            while True:
+                _c = _vfh.read(1 << 20)
+                if not _c:
+                    break
+                _dobj.decompress(_c)
+        if not _dobj.eof:
+            raise RuntimeError(
+                f"{path}: zstd frame did NOT terminate — TRUNCATED read; "
+                f"the venue mid series would be silently short.")
         for line in data.decode("utf-8", "replace").splitlines():
             if not line.strip():
                 continue

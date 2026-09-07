@@ -71,6 +71,7 @@ from scripts.research.venue_book_reconstruct import (  # noqa: E402
     KrakenBook,
     VENUE_SYMBOLS,
 )
+from scripts.research.zstd_stream import checked_zstandard_lines  # noqa: E402  (repo root on sys.path above)
 
 try:
     import zstandard as zstd
@@ -111,15 +112,17 @@ def _iso_epoch(iso: str) -> float:
 
 
 def _read_zst_lines(path: str):
+    """Stream a .zst, RAISING on a truncated frame (ticket 86bbvrx1t).
+
+    The previous body used `dctx.stream_reader(fh)` directly, which raises
+    NOTHING on truncation — measured: 44,617 lines yielded from a half file.
+    Byte counts cannot detect it either (a truncated file is fully consumed;
+    only the frame is incomplete), so the shared helper asserts
+    `decompressobj.eof`, which is the one reliable signal.
+    """
     if zstd is None:  # pragma: no cover
         raise RuntimeError("zstandard not available")
-    with open(path, "rb") as fh:
-        dctx = zstd.ZstdDecompressor()
-        with dctx.stream_reader(fh) as reader:
-            text = io.TextIOWrapper(reader, encoding="utf-8")
-            for line in text:
-                if line.strip():
-                    yield line
+    yield from checked_zstandard_lines(path)
 
 
 def _kraken_event_epoch(inner: dict):
