@@ -443,10 +443,11 @@ class TestMN2CleanPollBefore404Pop:
             "after a clean re-poll on a subsequent tick the 404 path "
             "pops normally")
 
-    def test_retry_cancel_reduced_by_zero_holds_until_clean_poll(
+    def test_retry_cancel_reduced_by_zero_holds_until_local_filled_catches_up(
             self, engine, state, client, enabled):
-        """reduced_by=0 on a retry must not pop while needs_clean_poll
-        is set (partial fills snapshot). After a clean poll it may pop.
+        """Persist count-reduced_by from the first cancel. A retry with
+        reduced_by=0 must not pop while local filled lags that number
+        (tick() clears needs_clean_poll in the same tick as re-cancel).
         """
         engine._boot_reconciled = True
         _seed_pending_resting(state, client_oid="ls-oid-z",
@@ -459,19 +460,19 @@ class TestMN2CleanPollBefore404Pop:
         assert "oid-z" in engine._resting
         with engine._lock:
             engine._resting["oid-z"]["filled"] = 1
-            engine._resting["oid-z"]["needs_clean_poll"] = True
+            engine._resting["oid-z"].pop("needs_clean_poll", None)
         client.cancel_order.return_value = {
             "order": {"reduced_by": 0, "reduced_by_fp": "0.00"}}
         engine._cancel_quote("oid-z", "t_minus_3min")
         assert "oid-z" in engine._resting, (
-            "reduced_by=0 retry must not pop past needs_clean_poll — "
-            "a partial snapshot can still be missing a fill")
+            "reduced_by=0 retry must hold while filled < first-cancel "
+            "api_filled (same-tick needs_clean_poll clear is not enough)")
         with engine._lock:
             engine._resting["oid-z"]["filled"] = 2
-            engine._resting["oid-z"].pop("needs_clean_poll", None)
         engine._cancel_quote("oid-z", "t_minus_3min")
         assert "oid-z" not in engine._resting, (
-            "after a clean poll, reduced_by=0 retry pops")
+            "pop only after local filled catches Kalshi's first-cancel "
+            "fill count")
 
     def test_first_cancel_reduced_by_zero_still_holds_for_fill_lag(
             self, engine, state, client, enabled, caplog):

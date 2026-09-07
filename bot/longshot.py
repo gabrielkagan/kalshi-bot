@@ -1411,17 +1411,18 @@ class LongshotEngine:
                         api_filled = max(0, int(q["count"]) - reduced)
                     except (TypeError, ValueError):
                         api_filled = None
-                    if reduced > 0:
-                        q["_cancel_reduced_positive"] = True
-                    # reduced_by=0 is "already gone" only after a prior
-                    # DELETE actually canceled a remainder. On the first
-                    # cancel it is a full fill + fills-API lag — hold.
-                    if (isinstance(api_filled, int)
-                            and reduced == 0
-                            and q.get("_cancel_reduced_positive")
-                            and int(q.get("filled") or 0) > 0
-                            and not q.get("needs_clean_poll")):
-                        api_filled = int(q["filled"])
+                    if reduced > 0 and isinstance(api_filled, int):
+                        q["_cancel_api_filled"] = api_filled
+                    elif (reduced == 0
+                            and isinstance(q.get("_cancel_api_filled"), int)):
+                        # Retry of an already-gone order: keep Kalshi's
+                        # first-cancel fill count, not the local filled
+                        # (which can lag on a same-tick poll or a locked
+                        # record_position_from_fill).
+                        api_filled = int(q["_cancel_api_filled"])
+            if (not isinstance(api_filled, int)
+                    and isinstance(q.get("_cancel_api_filled"), int)):
+                api_filled = int(q["_cancel_api_filled"])
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
             # SUBSEQUENT tick before any 404-path terminal pop —
