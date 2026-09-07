@@ -221,6 +221,16 @@ class TwaplockEngine:
         self._consecutive_api_errors: int = 0
         self._consecutive_utc_date: Optional[str] = None
         self._circuit_tripped_utc_date: Optional[str] = None
+        # Restart restore: in-memory latch is lost on deploy/crash.
+        # Reconstruct trailing tw- api_error rows for today's UTC date
+        # from pending_orders (no new table — the ledger is the source).
+        self._circuit_restored = False
+        try:
+            self._restore_circuit_from_ledger()
+            self._circuit_restored = True
+        except Exception:
+            logging.warning("twaplock circuit restore failed — will retry",
+                            exc_info=True)
         # One-shot boot sweep latch (first tick): stranded tw- ledger rows.
         self._boot_swept = False
         # The COMBINED cap sums marks across engines — register ours.
@@ -537,6 +547,7 @@ class TwaplockEngine:
         """
         if now is None:
             now = time.time()
+        self._ensure_circuit_restored(now)
         today = datetime.datetime.fromtimestamp(
             now, timezone.utc).date().isoformat()
         thresh = int(C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD)
@@ -558,14 +569,71 @@ class TwaplockEngine:
 
     def record_api_ok(self) -> None:
         """HTTP 200 from place_order (fill or 0-fill) resets the streak."""
+        self._ensure_circuit_restored()
         with self._lock:
             if self._circuit_tripped_utc_date is None:
                 self._consecutive_api_errors = 0
+
+    def _ensure_circuit_restored(self, now: Optional[float] = None) -> None:
+        if self._circuit_restored:
+            return
+        try:
+            self._restore_circuit_from_ledger(now)
+            self._circuit_restored = True
+        except Exception:
+            logging.warning("twaplock circuit restore failed — will retry",
+                            exc_info=True)
+
+    def _restore_circuit_from_ledger(self, now: Optional[float] = None) -> None:
+        """Rebuild the UTC-day latch from trailing tw- api_error rows.
+
+        Restart drops the in-memory trip. pending_orders is the source
+        of truth: count consecutive api_error statuses from the newest
+        tw- row today backward. A later HTTP 200 (canceled/filled)
+        breaks the streak. Yesterday's rows are out of scope.
+        """
+        if now is None:
+            now = time.time()
+        today = datetime.datetime.fromtimestamp(
+            now, timezone.utc).date().isoformat()
+        cutoff = today + "T00:00:00.000000Z"
+        rows = self._state.conn.execute(
+            "SELECT status FROM pending_orders "
+            "WHERE client_order_id LIKE ? AND created_at >= ? "
+            "ORDER BY created_at DESC, rowid DESC",
+            (C.TWAPLOCK_CLIENT_OID_PREFIX + "%", cutoff),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            if (r["status"] or "") == "api_error":
+                n += 1
+            else:
+                break
+        thresh = int(C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD)
+        with self._lock:
+            self._consecutive_utc_date = today
+            self._consecutive_api_errors = n
+            if n >= thresh:
+                self._circuit_tripped_utc_date = today
+                logging.error(
+                    "TWAPLOCK_CIRCUIT_OPEN: restored from ledger "
+                    "consecutive_api_errors=%d threshold=%d utc_date=%s",
+                    n, thresh, today)
+            else:
+                self._circuit_tripped_utc_date = None
 
     def _circuit_blocked(self, now: Optional[float] = None) -> bool:
         """True when the UTC-day api_error circuit is open."""
         if now is None:
             now = time.time()
+        self._ensure_circuit_restored(now)
+        if not self._circuit_restored:
+            # Fail-closed: a restart that cannot read the ledger must
+            # not re-arm POSTs. Restore retries on the next call.
+            logging.warning(
+                "TWAPLOCK_CIRCUIT_UNKNOWN: ledger restore failed — "
+                "blocking POSTs")
+            return True
         today = datetime.datetime.fromtimestamp(
             now, timezone.utc).date().isoformat()
         with self._lock:

@@ -933,6 +933,93 @@ class TestExecutorChokepoint:
         assert engine._consecutive_api_errors == 1
         assert engine._circuit_blocked(now=t_d2) is False
 
+    def test_circuit_survives_engine_restart_same_db(
+            self, wired, state, enabled):
+        """Restart must not re-arm POSTs after a UTC-day trip.
+
+        The latch is in-memory; a deploy/crash mid-day currently
+        forgets it and hammers Kalshi again (2582 api_error class).
+        Reconstruct trailing tw- api_error rows from pending_orders
+        for today's UTC date.
+        """
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        shots = (
+            (TICKER, EVENT, "BTC"),
+            (TICKER2, EVENT2, "ETH"),
+            (TICKER3, EVENT3, "SOL"),
+        )
+        for ticker, event, asset in shots:
+            cands = _eval(engine, ticker=ticker, event=event, asset=asset)
+            assert executor.execute(cands[0]) is None
+        assert engine._circuit_blocked() is True
+
+        engine2 = TwaplockEngine(client, state)
+        assert engine2._circuit_blocked() is True
+        assert engine2.authorize({
+            "ticker": TICKER4, "position_size": 2,
+        }) == 0
+
+    def test_partial_streak_survives_restart(self, wired, state, enabled):
+        """Two api_errors, restart, third must still trip (not reset to 0)."""
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        for ticker, event, asset in (
+            (TICKER, EVENT, "BTC"),
+            (TICKER2, EVENT2, "ETH"),
+        ):
+            cands = _eval(engine, ticker=ticker, event=event, asset=asset)
+            assert executor.execute(cands[0]) is None
+        assert engine._circuit_blocked() is False
+
+        from bot.executor import OrderExecutor
+        engine2 = TwaplockEngine(client, state)
+        ml = MagicMock()
+        ml.twaplock_engine = engine2
+        executor2 = OrderExecutor(client, state, MagicMock(),
+                                  main_loop=ml, kalshi_feed=None)
+        cands = _eval(engine2, ticker=TICKER3, event=EVENT3, asset="SOL")
+        assert executor2.execute(cands[0]) is None
+        assert engine2._circuit_blocked() is True
+
+    def test_http_ok_then_restart_does_not_restore_trip(
+            self, wired, state, enabled):
+        """Trailing HTTP 200 (canceled 0-fill) breaks the streak across restart."""
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        for ticker, event, asset in (
+            (TICKER, EVENT, "BTC"),
+            (TICKER2, EVENT2, "ETH"),
+        ):
+            cands = _eval(engine, ticker=ticker, event=event, asset=asset)
+            assert executor.execute(cands[0]) is None
+        client.place_order.return_value = {
+            "order": {"order_id": "oid-tw-ok-rst", "fill_count_fp": "0.00"}}
+        cands = _eval(engine, ticker=TICKER3, event=EVENT3, asset="SOL")
+        assert executor.execute(cands[0]) is None
+        assert engine._circuit_blocked() is False
+
+        engine2 = TwaplockEngine(client, state)
+        assert engine2._circuit_blocked() is False
+        assert engine2._consecutive_api_errors == 0
+
+    def test_yesterdays_api_errors_do_not_trip_today(self, state, enabled):
+        """Ledger rows from yesterday must not restore a trip today."""
+        yesterday = (_today_utc() - datetime.timedelta(days=1)).isoformat()
+        now_iso = f"{yesterday}T12:00:00.000000Z"
+        for i, ticker in enumerate((TICKER, TICKER2, TICKER3)):
+            state.conn.execute(
+                "INSERT INTO pending_orders (order_id, client_order_id, "
+                "ticker, event_ticker, asset, side, action, count, "
+                "price_cents, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (f"oid-old-{i}", f"tw-old-{i}", ticker, EVENT, "BTC",
+                 "yes", "buy", 2, 95, "api_error", now_iso, now_iso))
+        state.conn.commit()
+        engine = TwaplockEngine(MagicMock(), state)
+        assert engine._circuit_blocked() is False
+        assert engine._consecutive_api_errors == 0
+
     def test_kill_switch_midflight_places_nothing(self, wired, enabled,
                                                   monkeypatch):
         executor, engine, client = wired
