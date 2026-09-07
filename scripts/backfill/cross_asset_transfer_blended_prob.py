@@ -8,7 +8,7 @@ Why BTC's predictor on HYPE/DOGE rows?
     No HYPE/DOGE-trained cal_mlp predictor exists at either deployment site
     (per `scripts/cal_mlp/integration.py:1156` — production
     `_calmlp_predictors` covers only BTC/ETH/SOL/XRP). The original Phase 2
-    replay backfill (`scripts/backfill/hype_doge_replay_backfill.py`)
+    replay backfill (`scripts/backfill/crypto_replay_backfill.py`)
     docstring explicitly scopes a "future cross-asset transfer eval (fu1 of
     86b9wy7v3)" through `CalMLPPredictor("BTC")` for exactly this reason.
     BTC's predictor sees an unseen HYPE/DOGE ticker and routes it to vocab
@@ -44,7 +44,7 @@ Lock-step contract:
     (`bot.helpers.derived_features` + `scripts.cal_mlp.features.apply_sigma_winsor`).
     No inline math.sin/cos on hour-of-day; no inline sigma winsorization.
     Mirrors the sister-script pattern at
-    `scripts/backfill/hype_doge_replay_backfill.py:80-84` (lock-step
+    `scripts/backfill/crypto_replay_backfill.py:80-84` (lock-step
     contract A.1b 2026-05-12, ticket 86b9veppa).
 
 Plan doc: kb/decisions/v1-1-A-cross-asset-transfer-plan.md.
@@ -83,7 +83,7 @@ ASSETS = ("HYPE", "DOGE")
 DEFAULT_SECONDS_TO_CLOSE = 900.0
 
 # Replay rows have no live market_price (Kalshi historical orderbook not
-# stored). Sentinel matches `hype_doge_replay_backfill.py:360`'s
+# stored). Sentinel matches `crypto_replay_backfill.py:360`'s
 # entry_price_cents=0 convention.
 ENTRY_PRICE_CENTS_SENTINEL = 0
 

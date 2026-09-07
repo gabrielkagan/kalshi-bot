@@ -3,7 +3,8 @@
 P2.1.a-3 produced bundles in two distinct recipe namespaces:
   - production v1.1 (BTC/ETH/SOL/XRP, cfg_fp 345978797274721f / ablation
     1969b12c6c0c39bf, 8 CONT_FEATURE_COLS)
-  - replay_v1     (HYPE/DOGE, cfg_fp 9347942aaba71146, 4
+  - replay_v1     (HYPE/DOGE/BNB — BNB added Bit F 86ba1wpck 2026-05-21,
+    cfg_fp ea9c30477f844afa (pre-Bit-F: 9347942aaba71146), 4
     CONT_FEATURE_COLS_REPLAY)
 
 train.py/validate.py/conformal.py today hardcode `--asset` choices to
@@ -19,7 +20,8 @@ Bundles produced by `extract_data_replay.py` stamp
 `recipe_namespace='replay_v1'`; pre-P2.1.a-3 production bundles do NOT
 stamp the field (back-compat default = 'v1.1_production'). train.py /
 validate.py / conformal.py:
-  1.  Widen `--asset` choices to the 6-asset set.
+  1.  Widen `--asset` choices to the 7-asset set (4 production CORE +
+      3 replay-recipe — HYPE/DOGE/BNB; BNB added Bit F `86ba1wpck` 2026-05-21).
   2.  Read `ext_bundle.get('recipe_namespace', 'v1.1_production')` and
       route through `resolve_recipe(...)` to pick the right CONT_FEATURE_COLS
       / CONT_FEATURE_TRANSFORMS / MISSING_INDICATOR_COLS / ASSET_FLOORS.
@@ -49,9 +51,11 @@ CONFORMAL_PY = CAL_MLP / "conformal.py"
 FEATURES_PY = CAL_MLP / "features.py"
 
 
-SIX_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE"})
+SEVEN_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP", "HYPE", "DOGE", "BNB"})
 PRODUCTION_ASSETS = frozenset({"BTC", "ETH", "SOL", "XRP"})
-REPLAY_ASSETS = frozenset({"HYPE", "DOGE"})
+# Bit F (2026-05-21, ticket 86ba1wpck) widened replay recipe to include BNB
+# (ASSET_FLOORS_REPLAY['BNB']=75). The replay-namespace anchor must mirror.
+REPLAY_ASSETS = frozenset({"HYPE", "DOGE", "BNB"})
 
 NAMESPACE_PRODUCTION = "v1.1_production"
 NAMESPACE_REPLAY = "replay_v1"
@@ -166,7 +170,8 @@ def test_resolve_recipe_production_namespace():
 def test_resolve_recipe_replay_namespace():
     """Anchor 3: replay_v1 namespace resolves to CONT_FEATURE_COLS_REPLAY
     (4 features, NO market_price, NO prob_breakeven_gap, NO seconds_to_close,
-    NO time_decayed_proximity) and to ASSET_FLOORS_REPLAY (HYPE/DOGE).
+    NO time_decayed_proximity) and to ASSET_FLOORS_REPLAY (HYPE/DOGE/BNB —
+    BNB added Bit F `86ba1wpck` 2026-05-21).
 
     Excluding these production-recipe features is load-bearing — see
     `features.py` CONT_FEATURE_COLS_REPLAY comment (zero-variance stc in
@@ -180,14 +185,14 @@ def test_resolve_recipe_replay_namespace():
         f"{tuple(features.CONT_FEATURE_COLS_REPLAY)}"
     )
     # Load-bearing exclusions (RCA F1 from P2.1.a-3 session resume + the
-    # `Methodology gotchas` section of hype_doge_replay_backfill.py).
+    # `Methodology gotchas` section of crypto_replay_backfill.py).
     for excluded in ("market_price", "prob_breakeven_gap",
                      "seconds_to_close", "time_decayed_proximity"):
         assert excluded not in cont_cols, (
             f"replay recipe must NOT include {excluded} — see features.py "
             f"CONT_FEATURE_COLS_REPLAY commentary on why each is dropped."
         )
-    # Asset floors are the HYPE/DOGE pair.
+    # Asset floors are the HYPE/DOGE/BNB triple.
     assert set(recipe.asset_floors.keys()) == REPLAY_ASSETS, (
         f"replay recipe asset_floors must be exactly {REPLAY_ASSETS}, "
         f"got {set(recipe.asset_floors.keys())}"
@@ -258,7 +263,7 @@ def test_resolve_recipe_exposes_transforms_and_missing():
 # ─────────────────────────────────────────────────────────────────────
 
 def test_train_py_asset_choices_includes_replay_assets():
-    """Anchor 7: train.py argparse --asset must accept HYPE + DOGE. Before
+    """Anchor 7: train.py argparse --asset must accept HYPE + DOGE + BNB. Before
     fix, choices=['BTC','ETH','SOL','XRP'] rejected HYPE at parse_args
     and Phase4 training for replay bundles was structurally blocked."""
     choices = _argparse_asset_choices(TRAIN_PY)
@@ -266,7 +271,7 @@ def test_train_py_asset_choices_includes_replay_assets():
     missing = REPLAY_ASSETS - choices
     assert not missing, (
         f"train.py --asset choices missing {missing}; got {choices}. "
-        f"Widen to include HYPE + DOGE for P2.1.b training on replay bundles."
+        f"Widen to include HYPE + DOGE + BNB for P2.1.b training on replay bundles."
     )
     # Defense-in-depth: original 4-asset set MUST still be accepted.
     assert PRODUCTION_ASSETS <= choices, (
@@ -275,7 +280,7 @@ def test_train_py_asset_choices_includes_replay_assets():
 
 
 def test_validate_py_asset_choices_includes_replay_assets():
-    """Anchor 8: validate.py argparse --asset must accept HYPE + DOGE for
+    """Anchor 8: validate.py argparse --asset must accept HYPE + DOGE + BNB for
     P2.1.c Brier+coverage on replay-namespace bundles. (sim_pnl counterfactual
     skipped via separate runtime guard; see Bit description.)"""
     choices = _argparse_asset_choices(VALIDATE_PY)
@@ -289,8 +294,9 @@ def test_validate_py_asset_choices_includes_replay_assets():
 
 def test_conformal_py_asset_choices_includes_replay_assets():
     """Anchor 9: conformal.py (Phase 5) argparse --asset must accept HYPE
-    + DOGE so a P2.1.b-trained HYPE/DOGE bundle can advance to Phase 5
-    conformal-fit on its way to P2.1.c validate."""
+    + DOGE + BNB so a P2.1.b/Bit-F-trained replay bundle can advance to
+    Phase 5 conformal-fit on its way to P2.1.c validate (BNB added Bit F
+    `86ba1wpck` 2026-05-21)."""
     choices = _argparse_asset_choices(CONFORMAL_PY)
     assert choices is not None, "could not parse --asset choices from conformal.py"
     missing = REPLAY_ASSETS - choices

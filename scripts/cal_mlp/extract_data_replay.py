@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE replay-corpus
-extraction for v1.1 cal_mlp retrain. Parallel pull path to extract_data.py.
+"""P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) + Bit F (2026-05-21, ticket
+86ba1wpck) — HYPE/DOGE/BNB replay-corpus extraction for v1.1 cal_mlp
+retrain. Parallel pull path to extract_data.py.
 
 Why a separate module
 =====================
@@ -9,11 +10,11 @@ Why a separate module
 demands 32 source columns (REQUIRED_SOURCE_COLS) — most are bot-state
 features (market_price, NBBO, vol_regime, momentum, balance, depth, etc.).
 The Phase 2 replay backfill table `historical_replay_calmlp` (Mac-only,
-written by `scripts/backfill/hype_doge_replay_backfill.py`, ticket
-`86b9wy7v3`, harness shipped at `fe75cf0`) has 20 columns post-P2.3.b-fu2
-(19 pre-fu2 + `threshold REAL` added 2026-05-13 ticket `86b9xtam7` to preserve
-sub-cent strike precision for DOGE) by design because the harness explicitly
-notes:
+written by `scripts/backfill/crypto_replay_backfill.py`, ticket
+`86b9wy7v3`, harness shipped at `fe75cf0`; renamed + BNB-widened in Bit F
+`86ba1wpck` 2026-05-21) has 21 columns post-Bit-F (19 pre-fu2 + `threshold
+REAL` ticket `86b9xtam7` 2026-05-13 + `spot_staleness_seconds REAL` ticket
+`86ba1wpck` 2026-05-21) by design because the harness explicitly notes:
 
   > Bot-state features cannot be replayed accurately (market_price/NBBO,
   > depth, OFT, queue position, recent_bot_pnl, drawdown_scaler). These
@@ -77,13 +78,18 @@ with these specific differences:
   - bundle dirs land at the standard `data/cal_mlp/<asset>/<train_id>/`
     so train.py / validate.py find them under the established convention
 
-Train.py asset-list extension required (P2.1.b)
-================================================
+Train.py asset-list extension (SHIPPED across multiple Bits)
+============================================================
 
-This module produces extract bundles for HYPE/DOGE but train.py's
-`--asset` choices is hardcoded to `('BTC','ETH','SOL','XRP')`. The
-P2.1.b sub-Bit will extend train.py to consume HYPE/DOGE bundles + the
-reduced CONT_FEATURE_COLS_REPLAY recipe.
+This module produces extract bundles for HYPE/DOGE/BNB. train.py's
+`--asset` choices was widened to 7 assets (`{BTC,ETH,SOL,XRP,HYPE,DOGE,BNB}`)
+via P2.1.a-3-fu1 (HYPE/DOGE landed `04982c66`) + BNB-T1 shadow activation
+(commit `fbfc25da`, ticket `86b9zmj0c`, 2026-05-17; added BNB to train.py
++ validate.py + conformal.py). The reduced CONT_FEATURE_COLS_REPLAY
+recipe is consumed via `compute_cfg_fp_replay()` namespace routing —
+bundles whose cfg_fp matches `ea9c30477f844afa` (post-Bit-F) route
+through the replay path. Bit F (`86ba1wpck`, 2026-05-21) added BNB to
+the REPLAY recipe (no train.py changes; the asset was already accepted).
 
 Lock-step rule
 ==============
@@ -201,7 +207,7 @@ REPLAY_REQUIRED_SOURCE_COLS = (
 # is NULL (HYPE legacy path stays intact).
 REPLAY_OPTIONAL_SOURCE_COLS = ('threshold',)
 
-REPLAY_ASSET_CHOICES = ('HYPE', 'DOGE')
+REPLAY_ASSET_CHOICES = ('HYPE', 'DOGE', 'BNB')
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +239,7 @@ def _normalize_cutoff_end(s: Optional[str]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="P2.1.a-3 cal_mlp replay-corpus extraction (HYPE/DOGE)")
+    ap = argparse.ArgumentParser(description="P2.1.a-3 + Bit F cal_mlp replay-corpus extraction (HYPE/DOGE/BNB)")
     ap.add_argument('--asset', required=True, choices=list(REPLAY_ASSET_CHOICES))
     ap.add_argument('--folds', type=int, default=2,
                     help='default 2 — replay corpus is 53d per asset; v1 used 2 folds')
@@ -341,7 +347,7 @@ def _check_schema(conn: sqlite3.Connection, db_path: str) -> set[str]:
     if not cols:
         raise Phase2SchemaError(
             f"{REPLAY_TABLE} table missing in {db_path}. Was Phase 2 backfill "
-            f"(scripts/backfill/hype_doge_replay_backfill.py) run against this DB?"
+            f"(scripts/backfill/crypto_replay_backfill.py) run against this DB?"
         )
     missing = [c for c in REPLAY_REQUIRED_SOURCE_COLS if c not in cols]
     if missing:

@@ -45,7 +45,7 @@ def _open(path: Path) -> sqlite3.Connection:
 
 
 def _seed_replay_table(conn: sqlite3.Connection) -> None:
-    """Mirror the schema shipped by hype_doge_replay_backfill.ensure_schema()."""
+    """Mirror the schema shipped by crypto_replay_backfill.ensure_schema()."""
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {REPLAY_TABLE} (

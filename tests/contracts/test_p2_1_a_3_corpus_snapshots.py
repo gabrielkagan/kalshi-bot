@@ -15,18 +15,20 @@ Pins the artifacts P2.1.a-3 produces so P2.1.b/P2.1.c can rely on them:
         table (see `86b9wuhhr` "Why" section). Not strict bounds; guards
         against silent extract regressions.
 
-  HYPE/DOGE replay arm (source = local `data/replay/state.db`,
-  `historical_replay_calmlp` table; harness shipped at `fe75cf0`):
+  HYPE/DOGE/BNB replay arm (source = local `data/replay/state.db`,
+  `historical_replay_calmlp` table; harness shipped at `fe75cf0`; BNB
+  added Bit F `86ba1wpck` 2026-05-21):
     5.  `scripts/cal_mlp/extract_data_replay.py` exists.
     6.  `scripts/cal_mlp/features.py` exports `compute_cfg_fp_replay`,
         `CONT_FEATURE_COLS_REPLAY`, `CONT_FEATURE_TRANSFORMS_REPLAY`,
         `DROP_PREDICATES_ORDER_REPLAY`, `REPLAY_PROVENANCE_FILTER_CHOICES`.
     7.  `compute_cfg_fp_replay()` returns `_PINNED_CFG_FP_REPLAY` —
         deterministic recipe fingerprint locked at first-extract time.
-    8.  `ASSET_FLOORS` includes HYPE + DOGE entries.
-    9.  HYPE/DOGE replay bundles exist with cfg_fp == `_PINNED_CFG_FP_REPLAY`
-        and row counts ≥ 4500 (replay corpus is 4,897 per asset; allow
-        small reduction from drop predicates).
+    8.  `ASSET_FLOORS_REPLAY` includes HYPE + DOGE + BNB entries (BNB
+        added Bit F `86ba1wpck` 2026-05-21).
+    9.  HYPE/DOGE/BNB replay bundles exist with cfg_fp == `_PINNED_CFG_FP_REPLAY`
+        and row counts ≥ 4500 (HYPE/DOGE corpus is 4,897 per asset; BNB
+        corpus is 5,906 post-Bit-F; allow small reduction from drop predicates).
     10. Lock-step AST guard: extract_data_replay.py contains NO inline
         hour_sin/cos or sigma_winsor formulas — must route through
         canonical helpers (`features.compute_hour_features` /
@@ -41,9 +43,10 @@ arms' artifacts are gitignored.
 
 REGEN protocol: see `kb/decisions/session-resume-may13-from-p2-1-a-3-*`
 (once filed) for the snapshot+extract command sequence. Do NOT run
-extract_data_replay.py for HYPE/DOGE on the production VPS state.db —
-HYPE/DOGE replay corpus lives in the separate Mac-only DB at
-`data/replay/state.db` (Phase 2 backfill design, ticket `86b9wy7v3`).
+extract_data_replay.py for HYPE/DOGE/BNB on the production VPS state.db
+— HYPE/DOGE/BNB replay corpus lives in the separate Mac-only DB at
+`data/replay/state.db` (Phase 2 backfill design ticket `86b9wy7v3`;
+BNB added via Bit F `86ba1wpck` 2026-05-21).
 """
 from __future__ import annotations
 
@@ -81,15 +84,23 @@ _PINNED_CFG_FP_ABLATION = "1969b12c6c0c39bf"
 #     each market at `open_time` exactly, so stc=900s constant for every
 #     row — `fit_normstats` raises on zero-variance columns.
 #   - DROP_PREDICATES_ORDER_REPLAY (8 predicates)
-#   - ASSET_FLOORS_REPLAY (HYPE=75, DOGE=75)
+#   - ASSET_FLOORS_REPLAY (HYPE=75, DOGE=75 — initial recipe;
+#       BNB=75 added Bit F 86ba1wpck 2026-05-21 — see rotation note below)
 #   - replay_phase2_v1 provenance
 # Drift-detector — any change to the replay recipe shifts this hash and
 # trips test_p2_1_a_3_compute_cfg_fp_replay_pinned.
-_PINNED_CFG_FP_REPLAY = "9347942aaba71146"
+# Bit F (2026-05-21, ticket 86ba1wpck) rotated from `9347942aaba71146` via
+# the ASSET_FLOORS_REPLAY['BNB']=75 addition. The pre-Bit-F value is
+# captured in `kb/decisions/bit-f-bnb-replay-backfill-plan.md` for audit.
+_PINNED_CFG_FP_REPLAY = "ea9c30477f844afa"
 
 
 PRODUCTION_ASSETS = ("BTC", "ETH", "SOL", "XRP")
-REPLAY_ASSETS = ("HYPE", "DOGE")
+# Bit F (2026-05-21, ticket 86ba1wpck) widened replay recipe to include BNB.
+# Anchor 9 self-skips when a per-asset bundle is absent on the workstation,
+# so widening here is safe — the BNB bundle artifact lives Mac-side post-
+# Bit F (`data/cal_mlp/BNB/<train_id>/` + `models/cal_mlp_BNB/<train_id>/`).
+REPLAY_ASSETS = ("HYPE", "DOGE", "BNB")
 
 # Per-asset post-DROP_PREDICATES row-count expectations from the P2.1.a-3
 # extract run. The C0 ticket `86b9wuhhr` "Why" table cites RAW source-table
@@ -105,8 +116,9 @@ _EXPECTED_ROWS_DEFAULT = {
     "XRP": 9_045,
 }
 _ROW_TOLERANCE_PCT = 0.10
-# Replay corpus = 4,897 per asset. Drop predicates may remove a handful for
-# null-eval-time / settled-after-cutoff / non-yes-no-result.
+# Replay corpus: 4,897 HYPE / 4,897 DOGE / 5,906 BNB (BNB added Bit F
+# 86ba1wpck 2026-05-21). Drop predicates may remove a handful per asset
+# for null-eval-time / settled-after-cutoff / non-yes-no-result.
 _MIN_ROWS_REPLAY = 4500
 
 
@@ -273,7 +285,7 @@ def test_p2_1_a_3_default_bundle_row_counts_within_tolerance(asset):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# HYPE/DOGE replay arm — anchors 5-9
+# HYPE/DOGE/BNB replay arm — anchors 5-9 (BNB added Bit F 86ba1wpck 2026-05-21)
 # ─────────────────────────────────────────────────────────────────────
 
 def test_p2_1_a_3_extract_data_replay_module_exists():
@@ -351,14 +363,19 @@ def test_p2_1_a_3_compute_cfg_fp_replay_pinned():
 
 
 def test_p2_1_a_3_asset_floors_replay_has_hype_doge():
-    """Anchor 8: features.ASSET_FLOORS_REPLAY includes HYPE + DOGE.
-    Kept SEPARATE from production ASSET_FLOORS so adding/removing replay
-    assets doesn't shift the v1.1 production cfg_fp pin (which bakes
-    ASSET_FLOORS into its canonical dict). See test_p2_1_a_3_production
-    _cfg_fps_unchanged for the load-bearing companion check."""
+    """Anchor 8: features.ASSET_FLOORS_REPLAY includes HYPE + DOGE + BNB.
+    (BNB added Bit F `86ba1wpck` 2026-05-21 — rotates cfg_fp_replay
+    9347942aaba71146 → ea9c30477f844afa.) Kept SEPARATE from production
+    ASSET_FLOORS so adding/removing replay assets doesn't shift the v1.1
+    production cfg_fp pin (which bakes ASSET_FLOORS into its canonical
+    dict). See test_p2_1_a_3_production_cfg_fps_unchanged for the
+    load-bearing companion check."""
     features = _import_features()
     assert "HYPE" in features.ASSET_FLOORS_REPLAY, "ASSET_FLOORS_REPLAY missing HYPE"
     assert "DOGE" in features.ASSET_FLOORS_REPLAY, "ASSET_FLOORS_REPLAY missing DOGE"
+    assert "BNB" in features.ASSET_FLOORS_REPLAY, (
+        "ASSET_FLOORS_REPLAY missing BNB (Bit F `86ba1wpck` 2026-05-21)"
+    )
     # Ensure HYPE/DOGE NOT silently in production ASSET_FLOORS (would shift
     # production cfg_fp pin).
     assert "HYPE" not in features.ASSET_FLOORS, (
@@ -373,8 +390,9 @@ def test_p2_1_a_3_asset_floors_replay_has_hype_doge():
 
 @pytest.mark.parametrize("asset", REPLAY_ASSETS)
 def test_p2_1_a_3_replay_bundle_exists_per_asset(asset):
-    """Anchor 9: HYPE/DOGE replay bundles exist with the pinned replay cfg_fp
-    and row counts ≥ 4500 (replay corpus is 4,897 per asset).
+    """Anchor 9: HYPE/DOGE/BNB replay bundles exist with the pinned replay
+    cfg_fp and row counts ≥ 4500 (HYPE/DOGE corpus is 4,897 each; BNB is
+    5,906 post-Bit-F, 2026-05-21).
 
     Replay bundles do NOT have `state_db_snapshot_sha256` because their
     source is `data/replay/state.db::historical_replay_calmlp` (a

@@ -157,9 +157,29 @@ def decompress(src_path: Path, dst_path: Path) -> None:
                 f"snapshot {src_path} is zstd-compressed but zstandard is "
                 f"not importable; install with `pip install zstandard`."
             ) from e
+        # Ticket 86bbvrx1t (2026-09-06). `dctx.copy_stream` does NOT raise on a
+        # truncated frame: measured, it wrote 2,228,224 of 5,000,000 bytes and
+        # returned normally. On THIS path that means a truncated backup in S3
+        # silently restores a PARTIAL state.db — which sqlite may even open.
+        # `decompressobj().eof` is the reliable signal (True only when a
+        # complete frame terminated); byte counts cannot detect it, because a
+        # truncated file is fully consumed and only the frame is incomplete.
         dctx = zstandard.ZstdDecompressor()
+        dobj = dctx.decompressobj()
         with open(src_path, 'rb') as fin, open(dst_path, 'wb') as fout:
-            dctx.copy_stream(fin, fout, read_size=_HASH_CHUNK_SIZE, write_size=_HASH_CHUNK_SIZE)
+            while True:
+                chunk = fin.read(_HASH_CHUNK_SIZE)
+                if not chunk:
+                    break
+                out = dobj.decompress(chunk)
+                if out:
+                    fout.write(out)
+        if not dobj.eof:
+            raise RuntimeError(
+                f"{src_path}: zstd frame did NOT terminate — the snapshot is "
+                f"TRUNCATED and {dst_path} holds only a PREFIX of the database. "
+                f"Refusing to present a partial restore as a successful one."
+            )
     elif suffix == '.gz':
         with gzip.open(str(src_path), 'rb') as fin, open(dst_path, 'wb') as fout:
             shutil.copyfileobj(fin, fout, length=_HASH_CHUNK_SIZE)

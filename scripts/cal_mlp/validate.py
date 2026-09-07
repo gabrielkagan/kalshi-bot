@@ -240,7 +240,8 @@ def empirical_coverage(
     REPLAY_RECIPE_NAMESPACE the per-row reads tolerate the
     structurally-absent columns from extract_data_replay.build_feature_frame
     (no `price_tier` / `vol_regime_int` — no `market_price` to digitize and
-    no vol regime feed for HYPE/DOGE; no `side` string column — only
+    no vol regime feed for any replay-recipe asset (HYPE/DOGE/BNB; BNB
+    added Bit F `86ba1wpck` 2026-05-21); no `side` string column — only
     `side_int=1`). Production-recipe and recipe=None preserve the legacy
     literal-lookup behavior so missing columns on a BTC/ETH/SOL/XRP path
     still surface as KeyError (extraction bug, not silent default).
@@ -258,8 +259,9 @@ def empirical_coverage(
     # blend resolution stack (CLI > ENV > MARKET_CONFIGS['15m']) can
     # silently pick up a non-zero scalar (e.g., 0.40 legacy scalar fallback
     # for unknown assets or non-15M product types; post-P2.3 2026-05-14
-    # HYPE/DOGE are themselves in the per-asset map with 0.80/0.60 — see
-    # bot.constants.MARKET_BLEND_W_BY_ASSET) — refuse the combination
+    # HYPE/DOGE are themselves in the per-asset map with 0.80/0.60; post-P2.4
+    # 2026-05-19 BNB added at 0.20 — see bot.constants.MARKET_BLEND_W_BY_ASSET)
+    # — refuse the combination
     # loudly rather than emit subtly-wrong coverage stats.
     if replay_mode and abs(market_blend_w) > 1e-9:
         raise SystemExit(
@@ -289,11 +291,12 @@ def empirical_coverage(
         #
         # fu3 (86b9xe3ku): replay-namespace test_df structurally lacks
         # price_tier (no market_price→PRICE_BIN_CUTOFFS digitize) and
-        # vol_regime_int (no vol regime feed for HYPE/DOGE). Default both
+        # vol_regime_int (no vol regime feed for any replay-recipe asset
+        # — HYPE/DOGE/BNB; BNB added Bit F 86ba1wpck 2026-05-21). Default both
         # to 0 in replay mode — mirrors Phase4Dataset's int64-zero defaults
         # for absent categoricals per fu2 (86b9xd9hn). The conformal cells
         # for a replay-namespace bundle are built per-stc_bucket only
-        # (extract_data_replay.compute_per_stc_bucket_stats:541), so
+        # (`extract_data_replay.compute_per_stc_bucket_stats`), so
         # collapsing price_tier and vol_regime axes is the conformal-
         # artifact-correct lookup form here.
         if replay_mode:
@@ -326,7 +329,8 @@ def empirical_coverage(
         #
         # fu3 (86b9xe3ku): replay parquet has no `market_price` (no
         # orderbook) and no `side` string (only `side_int=1`, hardcoded YES
-        # per extract_data_replay.py:528). Default both to 50¢/YES in
+        # per `extract_data_replay.py::build_feature_frame`'s
+        # `df['side_int'] = np.int8(1)` assignment). Default both to 50¢/YES in
         # replay mode — neutral breakeven so the inner blend reduces to
         # `0.5*w + (1-w)*p_pred`. Replay paths SHOULD run with
         # market_blend_w=0 (no real orderbook to blend toward), in which

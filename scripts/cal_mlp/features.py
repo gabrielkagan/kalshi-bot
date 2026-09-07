@@ -97,15 +97,22 @@ ASSET_FLOORS_EXT = {
 }
 
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — HYPE/DOGE T1 shadow assets in
-# the REPLAY recipe namespace. Kept SEPARATE so the replay-corpus
+# the REPLAY recipe namespace; BNB added Bit F (`86ba1wpck`, 2026-05-21).
+# Kept SEPARATE so the replay-corpus
 # pipeline (`extract_data_replay.py` + `compute_cfg_fp_replay()`) has
-# its own asset-floor universe (cfg_fp_replay=9347942aaba71146). Adding
+# its own asset-floor universe (cfg_fp_replay=ea9c30477f844afa post-Bit-F
+# `86ba1wpck` 2026-05-21; pre-Bit-F: 9347942aaba71146). Adding
 # a new asset to ASSET_FLOORS_REPLAY rotates cfg_fp_replay; the EXT
 # pattern above is the production-recipe equivalent that explicitly
 # does NOT rotate cfg_fp.
 ASSET_FLOORS_REPLAY = {
     'HYPE': 75,
     'DOGE': 75,
+    # Bit F (2026-05-21, ticket 86ba1wpck) — BNB added to replay recipe.
+    # Rotates cfg_fp_replay from `9347942aaba71146` → `ea9c30477f844afa`;
+    # pin captured in tests/contracts/test_p2_1_a_3_corpus_snapshots.py
+    # AND tests/contracts/test_crypto_replay_backfill_bnb.py.
+    'BNB': 75,
 }
 
 
@@ -416,22 +423,24 @@ def is_bleed_cell(price_tier: int, stc_bucket: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Replay-corpus recipe (HYPE/DOGE — Phase 2 replay backfill)
+# Replay-corpus recipe (HYPE/DOGE/BNB — Phase 2 replay backfill; BNB added Bit F)
 # ---------------------------------------------------------------------------
 # P2.1.a-3 (2026-05-13, ticket 86b9wuhhr) — pull path for HYPE/DOGE
-# `historical_replay_calmlp` rows. The replay corpus has 20 cols post-P2.3.b-fu2
-# (19 pre-fu2 + `threshold REAL`, ticket `86b9xtam7`) vs
+# `historical_replay_calmlp` rows. Bit F (2026-05-21, ticket 86ba1wpck) widened
+# to include BNB. The replay corpus has 21 cols post-Bit-F (19 pre-fu2 +
+# `threshold REAL` ticket `86b9xtam7` + `spot_staleness_seconds REAL` ticket
+# `86ba1wpck`) vs
 # the 32 REQUIRED_SOURCE_COLS in extract_data.py; most bot-state features
 # (market_price, vol_regime, z_score, momentum/realized-vol, NBBO, balance,
 # strategy, side) are honest-NULL on replay rows by design (see
-# scripts/backfill/hype_doge_replay_backfill.py docstring "Methodology
+# scripts/backfill/crypto_replay_backfill.py docstring "Methodology
 # gotchas"). Two production-recipe features are 100% NULL in replay:
 #   - market_price        (replay's `predict()` uses entry_price_cents=0
 #                          sentinel; `market_price` not stored)
 #   - prob_breakeven_gap  (no historical Kalshi orderbook → can't derive)
 #
-# REPLAY recipe is therefore a strict subset of the v1.1 recipe with 6
-# CONT_FEATURE_COLS (vs 8). Other features derive from replay's
+# REPLAY recipe is therefore a strict subset of the v1.1 recipe with 4
+# CONT_FEATURE_COLS (vs 8 in production). Other features derive from replay's
 # (spot_at_evaluation, sigma_at_evaluation, strike_cents, close_time,
 # evaluation_time) tuple via the same formulas extract_data.py uses.
 #
@@ -513,8 +522,10 @@ class RecipeSpec(NamedTuple):
         merges CORE (`ASSET_FLOORS` = {BTC, ETH, SOL, XRP}, baked into
         cfg_fp) + EXT (`ASSET_FLOORS_EXT` = {HYPE, DOGE, ...}, NOT in
         cfg_fp; extensible for future Kalshi crypto rollouts per Bit C
-        86ba0jn2b 2026-05-19). Replay namespace = HYPE/DOGE only
-        (separate `ASSET_FLOORS_REPLAY`). Caller membership-tests
+        86ba0jn2b 2026-05-19). Replay namespace = HYPE/DOGE/BNB
+        (separate `ASSET_FLOORS_REPLAY`; BNB added Bit F `86ba1wpck`
+        2026-05-21, rotated cfg_fp_replay 9347942aaba71146 →
+        ea9c30477f844afa). Caller membership-tests
         `if asset not in recipe.asset_floors` to guard `--asset NAME`
         against `recipe_namespace=NS` mismatch.
       - categorical_feature_cols: per-recipe tuple of categorical column
@@ -599,9 +610,10 @@ def resolve_recipe(recipe_namespace):
             #     evaluates at `open_time`, so `stc = close_time -
             #     evaluation_time = 900s` for every 15M market → bucket 3
             #     under STC_BIN_CUTOFFS=[120,300,600]).
-            #   - `side_int=1` always (extract_data_replay.py:528
-            #     hard-codes `np.int8(1)` per its "always YES side in
-            #     replay" docstring — YES side per the production
+            #   - `side_int=1` always (`extract_data_replay.py::
+            #     build_feature_frame` hard-codes `df['side_int'] =
+            #     np.int8(1)` per its "always YES side in replay"
+            #     docstring — YES side per the production
             #     `extract_data.py:404` convention `side_int = (side ==
             #     'yes').astype(int8)`).
             # All four CalibrationMLP one-hots are therefore constant

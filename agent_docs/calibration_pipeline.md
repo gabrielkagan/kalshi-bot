@@ -103,7 +103,7 @@ Untracked dev artifacts (NOT in the AST-guard surface; ticket `86b9wjd3e` pendin
 - `bot/helpers/derived_features.py::compute_derived_features` owns `spot_distance_to_strike_sigma` + `prob_breakeven_gap`. Extracted in Bit 3.2 (2026-05-08); allowed by `.importlinter` Contract 4 (helpers-leaf). A.1b (2026-05-12) routed `scripts/cal_mlp/integration.py` inline formulas through this helper.
 - `bot/helpers/derived_features.py::compute_hour_sin_cos` — scalar hour-of-day cyclic encoding (Bit B.1a, 2026-05-12). Mirrored by `scripts/cal_mlp/features.compute_hour_features` (A.1b) which additionally accepts a numpy/pandas Series for DataFrame-side extract paths.
 
-**Helper-call sites (preserve when editing):** `bot/state.py:1713` + `:2010` (pre-DB-write `compute_derived_features` calls + `:1723` `apply_sigma_winsor` on the returned sigma) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py` (evaluated_opportunities pre-B.1a Tier 4/5 backfill) + `scripts/backfill/wave1_derived_cols.py` (B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill) + `scripts/backfill/hype_doge_replay_backfill.py` (Phase 2 replay backfill, 2026-05-12, ticket `86b9wy7v3`: per-market `replay_market()` calls helpers for `hour_sin`/`hour_cos`/`sigma_winsorize` on `historical_replay_calmlp` rows. `prob_breakeven_gap` honest-NULL in v1 — no historical Kalshi orderbook — but the helper IS called with `market_price_cents=None` to preserve the lock-step call shape) + `scripts/cal_mlp/integration.py` (serve-path `should_block_tm96`, post-A.1b).
+**Helper-call sites (preserve when editing):** `bot/state.py:1713` + `:2010` (pre-DB-write `compute_derived_features` calls + `:1723` `apply_sigma_winsor` on the returned sigma) + `bot/engines/sports_engine.py` (2 sites) + `scripts/backfill/backfill_extended_features.py` (evaluated_opportunities pre-B.1a Tier 4/5 backfill) + `scripts/backfill/wave1_derived_cols.py` (B.1a-fu2 2026-05-12: rejected_opportunities Wave 1 + evaluated_opportunities prob_breakeven_gap backfill) + `scripts/backfill/crypto_replay_backfill.py` (Phase 2 replay backfill, 2026-05-12 as HYPE/DOGE ticket `86b9wy7v3`; renamed + BNB-widened in Bit F ticket `86ba1wpck` 2026-05-21: per-market `replay_market()` calls helpers for `hour_sin`/`hour_cos`/`sigma_winsorize` on `historical_replay_calmlp` rows. `prob_breakeven_gap` honest-NULL in v1 — no historical Kalshi orderbook — but the helper IS called with `market_price_cents=None` to preserve the lock-step call shape. Bit F added `spot_staleness_seconds` audit column that does NOT route through `bot.helpers.derived_features` — it's computed inline as `eval_ts - warmup[-1][0]` since it's a corpus-construction audit signal, not a feature) + `scripts/cal_mlp/integration.py` (serve-path `should_block_tm96`, post-A.1b).
 
 Splitting any of these creates train/serve skew — model trained on one distribution, served from another. The R3 review of A.1a caught this exact regression after R2 winsorize landed in extract but not the serve paths. Cross-site AST + runtime parity guard: `tests/contracts/test_calmlp_lockstep.py` (Sprint A.1a 2026-05-12 + A.1b 2026-05-12).
 
@@ -119,13 +119,13 @@ and requires a sister anchor in the dispatch test):
 | Namespace | CONT_FEATURE_COLS | Assets | cfg_fp |
 |---|---|---|---|
 | `v1.1_production` | 8 (incl. market_price, prob_breakeven_gap) | CORE: BTC/ETH/SOL/XRP (baked into cfg_fp) + EXT: HYPE/DOGE/... (NOT in cfg_fp; extensible per Bit C 86ba0jn2b 2026-05-19) | `345978797274721f` (default flags) / `1969b12c6c0c39bf` (ablation) |
-| `replay_v1` | 4 (no market_price, no prob_breakeven_gap, no seconds_to_close, no time_decayed_proximity) | HYPE/DOGE | `9347942aaba71146` |
+| `replay_v1` | 4 (no market_price, no prob_breakeven_gap, no seconds_to_close, no time_decayed_proximity) | HYPE/DOGE/BNB (BNB added Bit F `86ba1wpck` 2026-05-21) | `ea9c30477f844afa` (pre-Bit-F: `9347942aaba71146`) |
 
 **CORE vs EXT split in `v1.1_production`** (Bit C, `86ba0jn2b`, 2026-05-19):
 - `features.ASSET_FLOORS` (CORE) = `{BTC: 88, ETH: 90, SOL: 86, XRP: 92}`.
   Frozen. Membership baked into `compute_cfg_fp()` canonical dict. Changing this rotates cfg_fp and invalidates all production bundles.
 - `features.ASSET_FLOORS_EXT` (EXTENSION) = `{HYPE: 75, DOGE: 75, ...}`.
-  Extensible. Membership NOT in cfg_fp — adding a new Kalshi crypto rollout (BNB next; future SHIB/ADA/etc.) is a 1-line edit with no cfg_fp rotation, no production-bundle invalidation.
+  Extensible. Membership NOT in cfg_fp — adding a new Kalshi crypto rollout (future SHIB/ADA/etc.) is a 1-line edit with no cfg_fp rotation, no production-bundle invalidation. (BNB has a production-side T4 promotion via P2.4 2026-05-19 but no cal_mlp v1.1 production bundle yet; the Bit F replay-recipe BNB bundle is a head-to-head-verdict input, NOT a production-CURRENT candidate — that flip would be Bit I scope.)
 - `resolve_recipe('v1.1_production').asset_floors` returns the UNION
   (CORE ∪ EXT). `train.py:693`'s membership guard reads the union;
   `compute_cfg_fp()` reads CORE only.
@@ -199,8 +199,10 @@ and requires a sister anchor in the dispatch test):
   than silently defaulting. Replay-mode with `market_blend_w != 0`
   raises `SystemExit` at function entry — the neutral-50¢ breakeven
   only cancels the blend term when `w=0` and `validate.main`'s blend
-  resolution stack can otherwise pick up a non-zero scalar for
-  HYPE/DOGE silently. Pinned by
+  resolution stack can otherwise pick up a non-zero scalar for any
+  15M-product asset silently (HYPE 0.80 / DOGE 0.60 post-P2.3; BNB
+  0.20 post-P2.4 2026-05-19; or the legacy 0.40 fallback for non-15M
+  product types / assets absent from MARKET_BLEND_W_BY_ASSET). Pinned by
   `tests/contracts/test_p2_1_a_3_fu3_validate_replay_tolerance.py`
   (8 anchors: functional regression + nonzero-blend hard-fail +
   zero-blend success + keyword-only kwarg + production no-regression +
@@ -213,12 +215,15 @@ time, `Phase4Dataset.__getitem__` unconditionally read `df['price_tier']`
 `validate.py::empirical_coverage` made a parallel set of per-row reads
 including `df['market_price']` + `df['side']`. Replay parquets lack all
 four columns (no market_price → no price_tier digitization; no vol
-regime feed for HYPE/DOGE in replay backfill; no orderbook for
+regime feed for any replay-recipe asset (HYPE/DOGE/BNB) in replay backfill; no orderbook for
 market_price; only `side_int=1` hardcoded YES). fu2 (`86b9xd9hn`,
 SHIPPED `b566ae9`) closed the train.py categorical-FE side via
 `RecipeSpec.categorical_feature_cols`. fu3 (`86b9xe3ku`, this commit)
 closed the validate.py empirical_coverage row-iter side via the
 keyword-only `recipe=` kwarg. The validate.py row-iter dispatch surface
-for HYPE/DOGE replay bundles is now closed; P2.3.b (HYPE/DOGE validation)
+for replay-recipe bundles is now closed (covers HYPE/DOGE/BNB — BNB
+added Bit F `86ba1wpck` 2026-05-21; the dispatch keys on
+`recipe_namespace='replay_v1'`, not on asset, so BNB is structurally
+included); P2.3.b (HYPE/DOGE validation)
 becomes runnable once P2.3.a's HYPE/DOGE bundle exists (P2.3.a remains
 blocked on `86b9xednb` — HYPE/DOGE replay corpus proxy).
