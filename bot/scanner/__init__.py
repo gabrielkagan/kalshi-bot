@@ -10170,7 +10170,8 @@ class OpportunityScanner:
                     (tick_start_ts, tick_start_ts)
                 ).fetchone()
             except Exception:
-                rows_written = 0
+                logging.debug(
+                    "scan-productive EXISTS failed", exc_info=True)
             else:
                 rows_written = 1 if row and row[0] else 0
         # Phase 3 R-review A1: detect WS disconnect→reconnect

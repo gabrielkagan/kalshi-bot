@@ -1126,9 +1126,31 @@ class StateManager:
                 "CREATE INDEX IF NOT EXISTS idx_rejected_opp_pt_time "
                 "ON rejected_opportunities(product_type, rejection_time)")
             self.conn.commit()
-        except sqlite3.OperationalError:
+        except sqlite3.Error:
             logging.warning(
                 "idx_eval_opp_pt_time / idx_rejected_opp_pt_time failed",
+                exc_info=True)
+        try:
+            _have = {
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='index' AND name IN "
+                    "('idx_eval_opp_pt_time','idx_rejected_opp_pt_time')"
+                )
+            }
+            _need = {"idx_eval_opp_pt_time", "idx_rejected_opp_pt_time"}
+            if _need - _have:
+                logging.error(
+                    "idx_eval_opp_pt_time / idx_rejected_opp_pt_time missing "
+                    "after boot: have=%s — miss-path EXISTS reverts to full "
+                    "scan (~1.5s/tick on 2.4M reject rows)",
+                    sorted(_have),
+                )
+        except sqlite3.Error:
+            logging.error(
+                "could not verify idx_eval_opp_pt_time / "
+                "idx_rejected_opp_pt_time",
                 exc_info=True)
 
         # Migration: add enrichment columns to settled_trades

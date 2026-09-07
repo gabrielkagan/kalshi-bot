@@ -196,9 +196,10 @@
   cid=155 name=cal_mlp_train_id                                         type=TEXT                   notnull=0  pk=0  dflt=None
   cid=156 name=cal_mlp_skipped_reason                                   type=TEXT                   notnull=0  pk=0  dflt=None
   cid=157 name=cal_mlp_request_id                                       type=TEXT                   notnull=0  pk=0  dflt=None
-  Indexes (5):
+  Indexes (6):
     idx_eval_opp_calmlp_pending                               unique=0  origin=c  partial=1  cols=['evaluation_time']
     idx_eval_opp_config_snapshot                              unique=0  origin=c  partial=0  cols=['config_snapshot_id']
+    idx_eval_opp_pt_time                                      unique=0  origin=c  partial=0  cols=['product_type', 'evaluation_time']
     idx_eval_opp_ticker_stage                                 unique=1  origin=c  partial=0  cols=['ticker', 'filter_stage', 'side']
     idx_eval_opp_ticker                                       unique=0  origin=c  partial=0  cols=['ticker']
     idx_eval_opp_status                                       unique=0  origin=c  partial=0  cols=['status']
@@ -381,8 +382,9 @@
   cid= 34  name=data_provenance                                     type=TEXT                  notnull=0  pk=0  dflt=None
   cid= 35  name=orderbook_levels_json                               type=TEXT                  notnull=0  pk=0  dflt=None
   cid= 36  name=config_snapshot_id                                type=INTEGER               notnull=0  pk=0  dflt=None
-  Indexes (3):
+  Indexes (4):
     idx_rejected_opp_config_snapshot                          unique=0  origin=c  partial=0  cols=['config_snapshot_id']
+    idx_rejected_opp_pt_time                                  unique=0  origin=c  partial=0  cols=['product_type', 'rejection_time']
     idx_rejected_status                                       unique=0  origin=c  partial=0  cols=['status']
     sqlite_autoindex_rejected_opportunities_1                 unique=1  origin=pk  partial=0  cols=['ticker']
 
@@ -593,6 +595,10 @@ CREATE INDEX idx_eval_opp_calmlp_pending
           AND cal_mlp_skipped_reason IS NULL
     
 
+--- [index] idx_eval_opp_pt_time ---
+CREATE INDEX idx_eval_opp_pt_time
+        ON evaluated_opportunities(product_type, evaluation_time)
+
 --- [index] idx_eval_opp_status ---
 CREATE INDEX idx_eval_opp_status
                 ON evaluated_opportunities(status)
@@ -633,6 +639,10 @@ CREATE INDEX idx_positions_status
 
 --- [index] idx_ppo_ticker ---
 CREATE INDEX idx_ppo_ticker ON position_price_observations(ticker)
+
+--- [index] idx_rejected_opp_pt_time ---
+CREATE INDEX idx_rejected_opp_pt_time
+        ON rejected_opportunities(product_type, rejection_time)
 
 --- [index] idx_rejected_status ---
 CREATE INDEX idx_rejected_status

@@ -127,11 +127,53 @@ class TestScanSectionTiming(unittest.TestCase):
         kill_mark = src.find('_pre_mark("kill_sql")')
         self.assertGreater(kill_mark, prod)
         kill_block = src[prod:kill_mark]
-        self.assertIn("if bot.constants.WEATHER_NO_SIDE_LIVE:", kill_block)
-        self.assertIn("if bot.constants.HOURLY_NO_SIDE_LIVE:", kill_block)
-        self.assertIn("if bot.constants.BRACKET_NO_ENABLED:", kill_block)
+        # Indent-blind substring checks pass a 30s wrap (Claude R1
+        # 0894409b MAJOR 1). Pin method-body indent (8 spaces) AND
+        # AST: the three Ifs are direct children of scan(), so a
+        # nested `if _kill_gate_due:` fails.
+        kill_flags = (
+            "WEATHER_NO_SIDE_LIVE",
+            "HOURLY_NO_SIDE_LIVE",
+            "BRACKET_NO_ENABLED",
+        )
+        for flag in kill_flags:
+            self.assertIn(
+                "\n        if bot.constants.%s:" % flag,
+                kill_block,
+                "kill switch %s must be a 1 Hz scan() body If "
+                "(8-space indent); nesting under a throttle is a "
+                "money-kill delay" % flag)
         self.assertNotIn("slow_scan_due", kill_block)
         self.assertNotIn("_last_kill_sql_ts", kill_block)
+        tree = ast.parse(src)
+        scan_fn = None
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef) and item.name == "scan":
+                        scan_fn = item
+                        break
+            if scan_fn is not None:
+                break
+        self.assertIsNotNone(scan_fn, "OpportunityScanner.scan not found")
+        found_flags = set()
+        for stmt in scan_fn.body:
+            if not isinstance(stmt, ast.If):
+                continue
+            test = stmt.test
+            if not (isinstance(test, ast.Attribute)
+                    and isinstance(test.value, ast.Attribute)
+                    and test.value.attr == "constants"
+                    and isinstance(test.value.value, ast.Name)
+                    and test.value.value.id == "bot"):
+                continue
+            if test.attr in kill_flags:
+                found_flags.add(test.attr)
+        self.assertEqual(
+            set(kill_flags), found_flags,
+            "kill-switch Ifs must be direct children of scan() "
+            "(not nested under a time-throttle If)")
+        self.assertIn("scan-productive EXISTS failed", body)
         state_src = ""
         state_py = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(
@@ -141,6 +183,23 @@ class TestScanSectionTiming(unittest.TestCase):
                 state_src = f.read()
         self.assertIn("idx_eval_opp_pt_time", state_src)
         self.assertIn("idx_rejected_opp_pt_time", state_src)
+        idx_block_start = state_src.find("idx_eval_opp_pt_time")
+        self.assertGreaterEqual(idx_block_start, 0)
+        idx_block = state_src[idx_block_start:idx_block_start + 2500]
+        self.assertIn("except sqlite3.Error", idx_block)
+        self.assertIn("sqlite_master", idx_block)
+        self.assertIn("idx_eval_opp_pt_time / idx_rejected_opp_pt_time missing",
+                      idx_block)
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        baseline_path = os.path.join(
+            repo, "tests", "fixtures", "state_db_schema_baseline.txt")
+        baseline = ""
+        if os.path.exists(baseline_path):
+            with open(baseline_path) as f:
+                baseline = f.read()
+        self.assertIn("idx_eval_opp_pt_time", baseline)
+        self.assertIn("idx_rejected_opp_pt_time", baseline)
 
 
 if __name__ == "__main__":
