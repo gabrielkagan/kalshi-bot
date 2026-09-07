@@ -725,6 +725,7 @@ class LongshotEngine:
         api_orders = resp.get("orders") or []
         api_order_ids = {o.get("order_id") for o in api_orders
                          if o.get("order_id")}
+        all_fetched = True
 
         # Step 1 — adopt-and-kill still-resting orphans.
         for o in api_orders:
@@ -755,7 +756,12 @@ class LongshotEngine:
             except Exception:
                 logging.warning("longshot boot pending-row repair failed "
                                 "for %s", coid, exc_info=True)
-            buy_side = (o.get("outcome_side") or o.get("side") or "").lower()
+            _oc = (o.get("outcome_side") or o.get("side") or "").lower()
+            _act = (o.get("action") or "buy").lower()
+            if _oc in ("yes", "no") and _act == "sell":
+                buy_side = "no" if _oc == "yes" else "yes"
+            else:
+                buy_side = _oc
             if buy_side not in ("yes", "no"):
                 # Wrap strips side/action on direction-malformed GET
                 # bodies; state._reconcile_orders skips ls- by design, so
@@ -770,9 +776,10 @@ class LongshotEngine:
                     buy_side = ((row["side"] if row else "") or "").lower()
                 except Exception:
                     logging.warning(
-                        "LONGSHOT_BOOT_DIRECTION_LEDGER_FAILED oid=%s",
-                        order_id, exc_info=True)
-                    buy_side = ""
+                        "LONGSHOT_BOOT_DIRECTION_LEDGER_FAILED oid=%s — "
+                        "retry next tick", order_id, exc_info=True)
+                    all_fetched = False
+                    continue
             if buy_side not in ("yes", "no"):
                 logging.warning(
                     "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — no local "
@@ -893,7 +900,7 @@ class LongshotEngine:
         # Step 2 — reconcile ls- rows that are no longer resting on Kalshi
         # (fully filled / expired pre-restart): their fills were never
         # recorded and the row would stay 'resting' forever.
-        all_fetched = True
+        # Do not reset all_fetched — a step-1 ledger-lock must retry.
         try:
             # R5-MN3: 'pending' included — a crash between
             # insert_bot_order and confirm_order_submitted strands the
