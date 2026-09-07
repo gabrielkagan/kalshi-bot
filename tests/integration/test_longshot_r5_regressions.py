@@ -682,3 +682,52 @@ class TestMN3PendingRowsReconciledAtBoot:
         assert _pending_status(state, "mk-mn3c") == "pending", (
             "boot step-2 is scoped to ls- rows — main-pipeline pending "
             "rows are owned by the executor/reconciler (R5-MN3)")
+
+    def test_pending_row_filled_matches_fill_by_client_order_id(
+            self, state, client, enabled):
+        """Crash after place+fill, before confirm: order is gone from
+        GET /orders; Kalshi fills carry the SERVER order_id. The pending
+        row's order_id is still the client_oid. _apply_fills must match
+        fill.client_order_id == q.client_order_id or the fill is lost
+        and the row is marked canceled with 0 contracts booked.
+        """
+        now = time.time()
+        state.insert_bot_order("ls-mn3d", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3d-server",
+             "client_order_id": "ls-mn3d",
+             "trade_id": "t-mn3d",
+             "count": 2,
+             "ts": now - 5,
+             "created_time": _rfc3339(now - 5)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "boot step-2 must book the fill keyed on client_order_id "
+            "when q.order_id is still the client_oid (R5-MN3 fill match)")
+        assert pos["side"] == "no"
+        assert _pending_status(state, "ls-mn3d") == "filled"
+
+    def test_fill_with_other_client_oid_is_not_stolen(
+            self, state, client, enabled):
+        """Matching on client_order_id must not book another order's fill."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3e", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-other",
+             "client_order_id": "ls-someone-else",
+             "trade_id": "t-other",
+             "count": 2,
+             "ts": now - 5,
+             "created_time": _rfc3339(now - 5)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert _positions_row(state) is None
+        assert _pending_status(state, "ls-mn3e") == "canceled"

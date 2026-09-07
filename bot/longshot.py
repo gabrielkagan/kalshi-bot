@@ -1621,8 +1621,16 @@ class LongshotEngine:
         still count toward ``q["filled"]`` — the order WAS filled, the
         position just already exists locally.
         """
-        matched = [f for f in fills
-                   if f.get("order_id") == q["order_id"]]
+        q_oid = q.get("order_id")
+        q_coid = q.get("client_order_id") or ""
+        # R5-MN3 fill match: a crash-before-confirm pending row keeps
+        # order_id=client_oid while Kalshi fills carry the server
+        # order_id. Also match fill.client_order_id == q.client_order_id.
+        matched = [
+            f for f in fills
+            if (q_oid and f.get("order_id") == q_oid)
+            or (q_coid and f.get("client_order_id") == q_coid)
+        ]
         if q.get("boot_skip_remaining"):
             # Oldest first so the skip budget consumes the pre-restart
             # fills (the recorded ones) and post-restart fills survive.
