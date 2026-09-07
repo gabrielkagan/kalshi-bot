@@ -4842,7 +4842,19 @@ class OrderExecutor:
         candidate = order["candidate"]
 
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
-        raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
+        try:
+            raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (
+                fill.get("count") or order["count"])
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "ON_FILL_COUNT_PARSE_MALFORMED: %s order=%s count_fp=%r "
+                "count=%r — discarding this fill and unstamping so a "
+                "later poll can retry",
+                ticker, order_id, fill.get("count_fp"), fill.get("count"))
+            fill_id = fill.get("trade_id") or fill.get("id")
+            if fill_id:
+                order.setdefault("_seen_fill_ids", set()).discard(fill_id)
+            return 0
         remaining = order["count"] - order.get("filled_so_far", 0)
         # Post-completion fill leak guard (2026-05-19 HYPE incident,
         # KXHYPE15M-26MAY190645-45 +10-ct phantom): when /portfolio/fills
@@ -4868,12 +4880,18 @@ class OrderExecutor:
             fill_count = raw_fill_count
         # For NO-side orders, Kalshi returns yes_price as 100-no_price (YES-equivalent),
         # which is NOT the cost paid. Read no_price_dollars/no_price for NO fills.
-        if order.get("side") == "no":
-            fill_price_d = fill.get("no_price_dollars")
-            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("no_price") or order["price_cents"])
-        else:
-            fill_price_d = fill.get("yes_price_dollars")
-            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+        try:
+            if order.get("side") == "no":
+                fill_price_d = fill.get("no_price_dollars")
+                fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("no_price") or order["price_cents"])
+            else:
+                fill_price_d = fill.get("yes_price_dollars")
+                fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "ON_FILL_PRICE_PARSE_MALFORMED: %s order=%s — using limit",
+                ticker, order_id)
+            fill_price = order["price_cents"]
 
         # Track cumulative fills for partial fill detection
         order["filled_so_far"] = min(
