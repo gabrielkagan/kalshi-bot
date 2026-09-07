@@ -60,11 +60,17 @@ def load_day(corpus: str, day: str) -> dict:
             f"{done} missing — day {day} not sealed in the NBBO cache "
             f"(run scripts.research.build_nbbo_cache)")
     proc = None
+    _zlib_path = None  # set when the zstandard branch is taken (see below)
     try:
         import zstandard
         fh = open(path, "rb")
         stream = io.BufferedReader(
             zstandard.ZstdDecompressor().stream_reader(fh))
+        # ticket 86bbvrx1t: this branch is PREFERRED over the Popen fallback
+        # and the library raises NOTHING on a truncated frame. Record the path
+        # so the finally block can assert frame completion; the sibling Popen
+        # branch is already covered by assert_zstd_ok.
+        _zlib_path = path
     except ImportError:
         proc = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE,
                                 bufsize=1 << 20)
@@ -81,6 +87,22 @@ def load_day(corpus: str, day: str) -> dict:
         stream.close()
         if fh is not None:
             fh.close()
+        if _zlib_path is not None:
+            # ticket 86bbvrx1t: re-decode to confirm the frame terminated.
+            # decompressobj.eof is the only reliable signal — byte counts do
+            # not work, since a truncated file IS fully consumed.
+            import zstandard as _z
+            _d = _z.ZstdDecompressor().decompressobj()
+            with open(_zlib_path, "rb") as _vfh:
+                while True:
+                    _c = _vfh.read(1 << 20)
+                    if not _c:
+                        break
+                    _d.decompress(_c)
+            if not _d.eof:
+                raise RuntimeError(
+                    f"{_zlib_path}: zstd frame did NOT terminate — the NBBO "
+                    f"cache day is TRUNCATED and its timelines are partial.")
         if proc is not None:
             proc.wait()
             # ticket 86bbvrx1t: the unpickle loop exits only on EOFError, i.e.

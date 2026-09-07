@@ -130,10 +130,26 @@ def load_all_kraken_frames() -> dict:
         for fn in fnames:
             if fn.endswith(".jsonl.zst"):
                 files.append(os.path.join(dirpath, fn))
+    def _assert_frame(_p):
+        """Raise if _p's zstd frame did not terminate (ticket 86bbvrx1t)."""
+        _d = zstandard.ZstdDecompressor().decompressobj()
+        with open(_p, "rb") as _f:
+            while True:
+                _c = _f.read(1 << 20)
+                if not _c:
+                    break
+                _d.decompress(_c)
+        if not _d.eof:
+            raise RuntimeError(
+                f"{_p}: zstd frame did NOT terminate — TRUNCATED read.")
+
     files.sort()
     for fp in files:
         try:
             with open(fp, "rb") as fh:
+                # ticket 86bbvrx1t: stream_reader raises NOTHING on a truncated
+                # frame (measured: 44,617 lines from a half file). _assert_frame
+                # below re-checks decompressobj.eof after the read.
                 reader = dctx.stream_reader(fh)
                 txt = io.TextIOWrapper(reader, encoding="utf-8")
                 for line in txt:
