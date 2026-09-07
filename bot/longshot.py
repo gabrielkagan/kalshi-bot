@@ -775,13 +775,22 @@ class LongshotEngine:
                              else o.get("yes_price")) or 0
                 price = int(price)
             except (TypeError, ValueError, OverflowError):
-                logging.warning(
-                    "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
-                    "falling back to integer cents", _pd)
-                try:
-                    price = int((o.get("no_price") if buy_side == "no"
-                                 else o.get("yes_price")) or 0)
-                except (TypeError, ValueError, OverflowError):
+                if _pd:
+                    logging.warning(
+                        "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
+                        "falling back to integer cents", _pd)
+                    try:
+                        price = int((o.get("no_price") if buy_side == "no"
+                                     else o.get("yes_price")) or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        logging.warning(
+                            "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED legacy "
+                            "cents also unparseable — using 0")
+                        price = 0
+                else:
+                    logging.warning(
+                        "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED legacy "
+                        "cents unparseable — using 0")
                     price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""

@@ -4122,7 +4122,7 @@ class OrderExecutor:
         except Exception:
             logging.debug("IOC_SUBMIT_LADDER_DIAG post failed", exc_info=True)
 
-        if resp is None:
+        if not resp:
             self._state.mark_order_status(client_oid, "api_error")
             self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
             logging.error("Taker order submission failed: %s (api_errors=%d)",
@@ -4132,10 +4132,44 @@ class OrderExecutor:
                 self._session_ioc_unfilled += 1
             return None
 
+        _order = resp.get("order") or {}
+        order_id = _order.get("order_id")
+        if not order_id:
+            # V2 wrapper pass-through of {} / missing oid. Do not fall
+            # back to client_oid — that keys the fill lifecycle on an id
+            # Kalshi never acknowledged (fills never match). Mirror
+            # TWAPLOCK_PLACE_MALFORMED / LONGSHOT_PLACE_MALFORMED.
+            logging.warning(
+                "TAKER_PLACE_MALFORMED: %s resp carried no order_id "
+                "(order=%r) — ledger row marked api_error",
+                ticker, resp.get("order"))
+            self._state.mark_order_status(client_oid, "api_error")
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
+            if (candidate.get("entry_path") != "confirmation_addon"
+                    and not _is_ladder_retry):
+                self._session_ioc_unfilled += 1
+            return None
+
         # Successful submission — reset api error counter
         self._ticker_api_errors.pop(ticker, None)
-        order_id = (resp.get("order") or {}).get("order_id", client_oid)
-        remaining_count = (resp.get("order") or {}).get("remaining_count", count)
+        remaining_count = None
+        try:
+            _rem_fp = _order.get("remaining_count_fp")
+            _rem = _order.get("remaining_count")
+            if _rem_fp is not None:
+                remaining_count = int(fp_str_to_int(_rem_fp))
+            elif _rem is not None:
+                try:
+                    remaining_count = int(_rem)
+                except (TypeError, ValueError, OverflowError):
+                    remaining_count = int(fp_str_to_int(_rem))
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "TAKER_REMAINING_PARSE_MALFORMED: %s remaining_count_fp=%r "
+                "remaining_count=%r — treating as unknown; skip Layer A",
+                ticker, _order.get("remaining_count_fp"),
+                _order.get("remaining_count"))
+            remaining_count = None
         try:
             _order_fill_count = fp_str_to_int(
                 (resp.get("order") or {}).get("fill_count_fp"))

@@ -1872,9 +1872,12 @@ class StateManager:
             except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "RECONCILE_ORDER_REMAINING_PARSE_MALFORMED oid=%s "
-                    "remaining_count_fp=%r",
+                    "remaining_count_fp=%r — falling back to integer remaining",
                     oid, order.get("remaining_count_fp"))
-                remaining = 0
+                try:
+                    remaining = int(order.get("remaining_count") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    remaining = 0
 
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,

@@ -1317,6 +1317,127 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertIsNone(result, "Zero-delta must fall through to IOC unfilled")
         ex._state.record_position_from_fill.assert_not_called()
 
+    def test_taker_place_malformed_no_order_id_marks_api_error(self):
+        """V2 wrapper pass-through of {} / missing oid must not key the
+        fill lifecycle on client_oid (twaplock/longshot already guard this).
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {"order": {}}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.confirm_order_submitted.assert_not_called()
+        ex._state.record_position_from_fill.assert_not_called()
+        api_error_calls = [
+            c for c in ex._state.mark_order_status.call_args_list
+            if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
+        ]
+        self.assertTrue(
+            api_error_calls,
+            "malformed place response must mark the ledger row api_error",
+        )
+
+    def test_taker_place_empty_dict_resp_marks_api_error(self):
+        """Empty {} from wrapper pass-through is not a successful submit."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.confirm_order_submitted.assert_not_called()
+        api_error_calls = [
+            c for c in ex._state.mark_order_status.call_args_list
+            if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
+        ]
+        self.assertTrue(api_error_calls)
+
+    def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
+        """remaining_count_fp='0.00' with remaining_count key absent must
+        still trip Layer A. Defaulting missing remaining to `count` skips
+        the ghost-fill register and leaves a live position untracked.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-fp",
+                "remaining_count_fp": "0.00",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result, "Layer A must fire on remaining_count_fp=0")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_layer_a_string_zero_remaining_is_ghost(self):
+        """Uncoerced remaining_count='0.00' must still trip Layer A."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-str0",
+                "remaining_count": "0.00",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result, "Layer A must coerce remaining_count='0.00' to 0")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_malformed_remaining_skips_layer_a_not_false_ghost(self):
+        """Malformed remaining must not default to 0 (false Layer A) and
+        must not default to count as a stand-in for 'known remaining'.
+        Fall through to Layer B.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-rem-bad",
+                "remaining_count": "N/A",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        for call in ex._state.record_position_from_fill.call_args_list:
+            self.assertNotEqual(call.kwargs.get("fill_source"), "ghost_fill")
+
 
 class TestPostOnlyRejectionTiers(unittest.TestCase):
     """Three-tier post_only rejection escalation."""

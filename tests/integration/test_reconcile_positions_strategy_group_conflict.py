@@ -139,6 +139,39 @@ class TestReconcilePositionsStrategyGroupConflict(unittest.TestCase):
         ).fetchone()
         self.assertEqual(dict(row)["status"], "settled")
 
+    def test_reconcile_order_remaining_falls_back_to_legacy_on_fp_malformed(self):
+        """remaining_count_fp unparseable must not zero remaining — try
+        the integer remaining_count field (102ef9ac except-path restore).
+        """
+        sm = self._fresh()
+        client = MagicMock()
+        client.get_positions.return_value = {"market_positions": []}
+        client.get_orders.return_value = {"orders": [{
+            "order_id": "oid-rem-legacy",
+            "client_order_id": "mk-rem-1",
+            "ticker": "KXBTC15M-26MAR091200-B68500",
+            "side": "yes",
+            "action": "buy",
+            "yes_price": 50,
+            "remaining_count_fp": "N/A",
+            "remaining_count": 3,
+            "status": "resting",
+            "created_time": "2026-09-06T00:00:00Z",
+        }]}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+
+        sm.reconcile_with_api(client)
+
+        row = sm.conn.execute(
+            "SELECT count FROM pending_orders WHERE order_id='oid-rem-legacy'"
+        ).fetchone()
+        self.assertIsNotNone(row, "API-only resting order must be imported")
+        self.assertEqual(
+            row["count"], 3,
+            "malformed remaining_count_fp must fall back to remaining_count=3, "
+            "not unconditional 0",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
