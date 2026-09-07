@@ -138,138 +138,138 @@
     },
     "CROSS_EXCHANGE_ENABLED": {
       "value": true,
-      "line": 1170,
+      "line": 1186,
       "description": "Cross-exchange feed enabled"
     },
     "CROSS_EXCHANGE_BUFFER_SIZE": {
       "value": 15,
-      "line": 1206,
+      "line": 1222,
       "description": "Cross-exchange price buffer size"
     },
     "CROSS_EXCHANGE_LEAD_THRESHOLD": {
       "value": 0.002,
-      "line": 1208,
+      "line": 1224,
       "description": "Single-exchange lead threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_THRESHOLD": {
       "value": 0.003,
-      "line": 1210,
+      "line": 1226,
       "description": "Consensus threshold"
     },
     "CROSS_EXCHANGE_CONSENSUS_MIN": {
       "value": "Name(id='_CROSS_EXCHANGE_FEEDS_ACTIVE', ctx=Load())",
-      "line": 1245,
+      "line": 1261,
       "description": "Minimum exchanges for consensus",
       "_raw": true
     },
     "CROSS_EXCHANGE_STALE_SECONDS": {
       "value": 30.0,
-      "line": 1247,
+      "line": 1263,
       "description": "Cross-exchange stale data timeout"
     },
     "KALSHI_OFT_SHADOW_MODE": {
       "value": true,
-      "line": 1280,
+      "line": 1296,
       "description": "Kalshi OFT shadow mode"
     },
     "CALIBRATION_MIN_SAMPLES_PLATT": {
       "value": 200,
-      "line": 1310,
+      "line": 1326,
       "description": "Min samples for Platt calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BETA": {
       "value": 350,
-      "line": 1312,
+      "line": 1328,
       "description": "Min samples for Beta calibration"
     },
     "CALIBRATION_MIN_SAMPLES_BLR": {
       "value": 50,
-      "line": 1314,
+      "line": 1330,
       "description": "Min samples for BLR calibration"
     },
     "MARKET_BLEND_W": {
       "value": 0.4,
-      "line": 1344,
+      "line": 1360,
       "description": "Market blend weight (0=pure model, 1=pure market)"
     },
     "SHADOW_CAL_PIPELINE": {
       "value": true,
-      "line": 1382,
+      "line": 1398,
       "description": "Cal pipeline shadow mode"
     },
     "Z_SCORE_MAX": {
       "value": 25.0,
-      "line": 1388,
+      "line": 1404,
       "description": "Z-score rejection threshold"
     },
     "MIN_EDGE_PCT": {
       "value": 0.25,
-      "line": 1395,
+      "line": 1411,
       "description": "Flat minimum edge fallback"
     },
     "BALANCE_CACHE_TTL": {
       "value": 10.0,
-      "line": 1813,
+      "line": 1829,
       "description": "Balance cache TTL (seconds)"
     },
     "DIRECT_TAKER_THRESHOLD": {
       "value": 180.0,
-      "line": 1905,
+      "line": 1921,
       "description": "Skip maker and go IOC below this many seconds"
     },
     "MAKER_ONLY_THRESHOLD": {
       "value": 0.0,
-      "line": 1908,
+      "line": 1924,
       "description": "No taker execution below this many seconds"
     },
     "ESCALATION_WAIT_LONG": {
       "value": 15.0,
-      "line": 2145,
+      "line": 2161,
       "description": "Maker wait for long STC"
     },
     "ESCALATION_WAIT_MEDIUM": {
       "value": 7.0,
-      "line": 2150,
+      "line": 2166,
       "description": "Maker wait for medium STC"
     },
     "ESCALATION_WAIT_SHORT": {
       "value": 5.0,
-      "line": 2152,
+      "line": 2168,
       "description": "Maker wait for short STC"
     },
     "EGARCH_SHADOW_MODE": {
       "value": false,
-      "line": 2426,
+      "line": 2442,
       "description": "EGARCH shadow mode"
     },
     "EGARCH_BLEND_SHADOW_MODE": {
       "value": false,
-      "line": 2456,
+      "line": 2472,
       "description": "EGARCH blend shadow mode"
     },
     "MZ_SIGMOID_SHADOW_MODE": {
       "value": true,
-      "line": 2467,
+      "line": 2483,
       "description": "Sigmoid QLIKE shadow mode"
     },
     "DRAWDOWN_HALF_THRESHOLD": {
       "value": 0.85,
-      "line": 2496,
+      "line": 2512,
       "description": "Halve sizing below this ratio"
     },
     "DRAWDOWN_QUARTER_THRESHOLD": {
       "value": 0.75,
-      "line": 2497,
+      "line": 2513,
       "description": "Quarter sizing below this ratio"
     },
     "DRAWDOWN_HALT_THRESHOLD": {
       "value": 0.65,
-      "line": 2498,
+      "line": 2514,
       "description": "Stop trading below this ratio"
     },
     "MAX_RISK_PER_TRADE": {
       "value": 0.25,
-      "line": 2500,
+      "line": 2516,
       "description": "Max bankroll fraction per trade"
     },
     "HOURLY_EXCLUDED_ASSETS": {
@@ -324,7 +324,7 @@
           "bybit": "BNBUSDT"
         }
       },
-      "line": 1172,
+      "line": 1188,
       "description": "Cross-exchange symbol mapping"
     },
     "DYNAMIC_CAP_SCHEDULE": {
@@ -350,7 +350,7 @@
           0.995
         ]
       ],
-      "line": 1324,
+      "line": 1340,
       "description": "Dynamic probability cap schedule (STC, cap)"
     },
     "HOURLY_DYNAMIC_CAP_SCHEDULE": {
@@ -376,7 +376,7 @@
           0.999
         ]
       ],
-      "line": 1336,
+      "line": 1352,
       "description": "Hourly dynamic probability cap schedule"
     },
     "MIN_EDGE_BY_PRICE": {
@@ -406,7 +406,7 @@
           0.0025
         ]
       ],
-      "line": 1773,
+      "line": 1789,
       "description": "Price-dependent edge schedule"
     },
     "SIZING_TIERS": {
@@ -444,13 +444,13 @@
           0.02
         ]
       ],
-      "line": 2486,
+      "line": 2502,
       "description": "Edge-tiered sizing schedule"
     }
   },
-  "_combined_source_lines": 2500,
+  "_combined_source_lines": 2516,
   "_exchange_feeds": [],
-  "_extracted_at": "2026-09-07T13:38:31Z",
+  "_extracted_at": "2026-09-07T16:00:54Z",
   "_sources": [
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/constants.py",
     "/home/runner/work/kalshi-bot/kalshi-bot/bot/config.py"
