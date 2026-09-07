@@ -9,7 +9,7 @@ See kb/failures/scan-body-5-8s-collecting-mode-sep06.md.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Mapping, Optional, Sequence
 
 from bot.constants import SLOW_PRODUCT_TYPES
 
@@ -25,3 +25,30 @@ def include_window_this_tick(
 
 def slow_scan_due(now: float, last_ts: float, interval: float) -> bool:
     return (now - last_ts) >= interval
+
+
+def rotate_slow_product_windows(
+    windows: Sequence[Mapping], offset: int
+) -> List[Mapping]:
+    """Keep 15M in original relative order; rotate slow-product windows.
+
+    MAX_OB_FETCHES_PER_SLOW_TICK=12 always hits the same prefix of
+    eligible_windows if weather/hourly stay at the front of the
+    catalog. Fast (15M) windows stay first so observation REST cannot
+    delay the live path on a slow-due tick.
+    """
+    if not windows:
+        return []
+    fast = []
+    slow = []
+    for w in windows:
+        if w.get("product_type") in SLOW_PRODUCT_TYPES:
+            slow.append(w)
+        else:
+            fast.append(w)
+    if not slow:
+        return list(windows)
+    n = len(slow)
+    k = int(offset) % n
+    rotated = slow if k == 0 else slow[k:] + slow[:k]
+    return fast + rotated

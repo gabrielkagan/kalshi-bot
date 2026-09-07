@@ -671,6 +671,7 @@ KALSHI_FEED_METHODS = (
     "_check_snapshot_timeouts",
     "get_subscribed_tickers", "get_subscribed_count", "get_cached_ob_count",
     "get_orderbook", "get_all_orderbooks", "get_all_orderbooks_snapshot",
+    "get_orderbooks_snapshot_for",
     "pop_fills",
     # D1.1.5 Phase 3b (2026-05-16, ticket 86b9zdhz2): WS asyncio loop +
     # connect/reconnect machinery moved to kalshi_wire.ws_client.WSClient.

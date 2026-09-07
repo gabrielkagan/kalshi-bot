@@ -79,6 +79,10 @@ TICKER = "KXBTC15M-26JUN111200-T110"
 EVENT = "KXBTC15M-26JUN111200"
 TICKER2 = "KXETH15M-26JUN111200-T3500"
 EVENT2 = "KXETH15M-26JUN111200"
+TICKER3 = "KXSOL15M-26JUN111200-T150"
+EVENT3 = "KXSOL15M-26JUN111200"
+TICKER4 = "KXXRP15M-26JUN111200-T2"
+EVENT4 = "KXXRP15M-26JUN111200"
 
 
 # ── fixtures / helpers ───────────────────────────────────────────────────────
@@ -205,6 +209,13 @@ class TestTwaplockConstants:
 
     def test_client_oid_prefix(self):
         assert C.TWAPLOCK_CLIENT_OID_PREFIX == "tw-"
+
+    def test_api_error_circuit_threshold(self):
+        """Cross-ticker consecutive api_errors (VPS: 2582 tw- api_error,
+        2 fills ever). Per-ticker one-shot cannot stop the drip — each
+        15M window is a new ticker. Match executor TICKER_API_ERROR_CAP.
+        """
+        assert C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD == 3
 
     def test_combined_live_small_rails(self):
         assert C.LIVE_SMALL_DAILY_LOSS_CAP_DOLLARS == 20.0
@@ -846,6 +857,81 @@ class TestExecutorChokepoint:
             "SELECT status FROM pending_orders "
             "WHERE client_order_id LIKE 'tw-%'").fetchone()
         assert row["status"] == "api_error"
+
+    def test_consecutive_api_errors_open_circuit_for_utc_day(
+            self, wired, state, enabled):
+        """A2: 3 consecutive tw- api_errors (cross-ticker) latch the
+        engine for the rest of the UTC day. Per-ticker one-shot already
+        consumed each window; without a cross-ticker breaker the engine
+        POSTs every lock that clears p_lock (2582 api_error / 2 fills).
+        """
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        shots = (
+            (TICKER, EVENT, "BTC"),
+            (TICKER2, EVENT2, "ETH"),
+            (TICKER3, EVENT3, "SOL"),
+        )
+        for ticker, event, asset in shots:
+            cands = _eval(engine, ticker=ticker, event=event, asset=asset)
+            assert len(cands) == 1, ticker
+            assert executor.execute(cands[0]) is None
+        assert engine._circuit_blocked() is True
+        # 4th window: no candidate. Execute-time gate is authorize()
+        # (execute() exposure caps need a full candidate before the
+        # twaplock dispatch).
+        cands4 = _eval(engine, ticker=TICKER4, event=EVENT4, asset="XRP")
+        assert cands4 == []
+        assert engine.authorize({
+            "ticker": TICKER4, "position_size": 2,
+        }) == 0
+        n_err = state.conn.execute(
+            "SELECT COUNT(*) AS n FROM pending_orders "
+            "WHERE client_order_id LIKE 'tw-%' AND status='api_error'"
+        ).fetchone()["n"]
+        assert n_err == 3
+
+    def test_http_ok_resets_consecutive_api_error_count(
+            self, wired, enabled):
+        """A 0-fill IOC (HTTP 200) is not an api_error — consecutive
+        count must reset so two rejects + one cancel + two rejects
+        do not trip the day latch.
+        """
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        cands = _eval(engine, ticker=TICKER, event=EVENT, asset="BTC")
+        assert executor.execute(cands[0]) is None
+        cands = _eval(engine, ticker=TICKER2, event=EVENT2, asset="ETH")
+        assert executor.execute(cands[0]) is None
+        client.place_order.return_value = {
+            "order": {"order_id": "oid-tw-ok", "fill_count_fp": "0.00"}}
+        cands = _eval(engine, ticker=TICKER3, event=EVENT3, asset="SOL")
+        assert executor.execute(cands[0]) is None  # 0-fill, shot consumed
+        assert engine._circuit_blocked() is False
+        client.place_order.return_value = None
+        cands = _eval(engine, ticker=TICKER4, event=EVENT4, asset="XRP")
+        assert len(cands) == 1
+        assert executor.execute(cands[0]) is None
+        assert engine._circuit_blocked() is False
+
+    def test_circuit_clears_next_utc_day(self, engine, enabled):
+        engine._consecutive_api_errors = 3
+        engine._circuit_tripped_utc_date = "2026-09-05"
+        assert engine._circuit_blocked(now=1_788_652_800.0) is False  # 2026-09-06 00:00Z
+        assert engine._consecutive_api_errors == 0
+        assert engine._circuit_tripped_utc_date is None
+
+    def test_consecutive_count_resets_across_utc_midnight_without_trip(
+            self, engine, enabled):
+        """Two errors at 23:59 plus one at 00:01 must not trip the new day."""
+        t_d1 = 1_788_652_800.0 - 60.0  # 2026-09-05 23:59Z
+        t_d2 = 1_788_652_800.0 + 60.0  # 2026-09-06 00:01Z
+        engine.record_api_error(now=t_d1)
+        engine.record_api_error(now=t_d1)
+        assert engine._consecutive_api_errors == 2
+        engine.record_api_error(now=t_d2)
+        assert engine._consecutive_api_errors == 1
+        assert engine._circuit_blocked(now=t_d2) is False
 
     def test_kill_switch_midflight_places_nothing(self, wired, enabled,
                                                   monkeypatch):

@@ -2,7 +2,11 @@
 
 Regression for kb/failures/scan-body-5-8s-collecting-mode-sep06.md.
 """
-from bot.helpers.scan_cadence import include_window_this_tick, slow_scan_due
+from bot.helpers.scan_cadence import (
+    include_window_this_tick,
+    rotate_slow_product_windows,
+    slow_scan_due,
+)
 
 
 def test_15m_always_included():
@@ -93,6 +97,33 @@ def test_convergence_velocity_dense_15m_unchanged():
     assert vel == 3.0
 
 
+def test_rotate_slow_keeps_15m_prefix_and_rotates_slow():
+    """12-fetch slow budget must not always hit the same weather/hourly
+    prefix. 15M stays in original relative order at the front so REST
+    for observation products cannot delay the live 15M path.
+    """
+    windows = [
+        {"product_type": "15m", "id": "a"},
+        {"product_type": "weather", "id": "w0"},
+        {"product_type": "15m", "id": "b"},
+        {"product_type": "hourly", "id": "h0"},
+        {"product_type": "weather", "id": "w1"},
+        {"product_type": "spx_hourly", "id": "s0"},
+    ]
+    out0 = rotate_slow_product_windows(windows, 0)
+    assert [w["id"] for w in out0] == ["a", "b", "w0", "h0", "w1", "s0"]
+    out1 = rotate_slow_product_windows(windows, 1)
+    assert [w["id"] for w in out1] == ["a", "b", "h0", "w1", "s0", "w0"]
+    out4 = rotate_slow_product_windows(windows, 4)
+    assert [w["id"] for w in out4] == ["a", "b", "w0", "h0", "w1", "s0"]
+
+
+def test_rotate_slow_empty_and_fast_only():
+    assert rotate_slow_product_windows([], 3) == []
+    fast = [{"product_type": "15m", "id": "a"}]
+    assert rotate_slow_product_windows(fast, 9) == fast
+
+
 def test_scan_wires_include_window_this_tick():
     """OpportunityScanner.scan must call the cadence helper. Helper unit
     tests stay green if the continue is deleted.
@@ -107,3 +138,8 @@ def test_scan_wires_include_window_this_tick():
     assert "slow_ob_fetches_this_tick" in src
     # 15M cap must still be consulted on slow-due ticks (not `if _slow_due`).
     assert "elif ob_fetches_this_tick >= MAX_OB_FETCHES_PER_TICK" in src
+    assert "rotate_slow_product_windows(" in src
+    # Pre-loop OFT copies only 15M tickers under one lock — not the
+    # full weather/SPX cache (Grok R1 MAJOR on 0f17d312).
+    assert "get_orderbooks_snapshot_for(" in src
+    assert "get_subscribed_tickers()" in src
