@@ -51,6 +51,7 @@ lifecycle marks land on the row.
 from __future__ import annotations
 
 import datetime
+import sqlite3
 import time
 from datetime import timezone
 from unittest.mock import MagicMock
@@ -731,3 +732,32 @@ class TestMN3PendingRowsReconciledAtBoot:
         engine.tick()
         assert _positions_row(state) is None
         assert _pending_status(state, "ls-mn3e") == "canceled"
+
+    def test_step2_skips_api_present_pending_if_confirm_fails(
+            self, state, client, enabled):
+        """confirm BUSY must not let step 2 double-book the same fills."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3f", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3f", "client_order_id": "ls-mn3f",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 2, "remaining_count": 2,
+             "status": "resting", "created_time": _rfc3339(now - 120)},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3f", "client_order_id": "ls-mn3f",
+             "trade_id": "t-mn3f", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        state.confirm_order_submitted = boom
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "step 1 adopts once; step 2 must skip API-present coid")

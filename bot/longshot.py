@@ -725,6 +725,8 @@ class LongshotEngine:
         api_orders = resp.get("orders") or []
         api_order_ids = {o.get("order_id") for o in api_orders
                          if o.get("order_id")}
+        api_coids = {o.get("client_order_id") for o in api_orders
+                     if o.get("client_order_id")}
         all_fetched = True
 
         # Step 1 — adopt-and-kill still-resting orphans.
@@ -957,8 +959,13 @@ class LongshotEngine:
                             exc_info=True)
             return  # latch unset — retry next tick
         for r in rows:
-            if r["order_id"] in api_order_ids:
+            if (r["order_id"] in api_order_ids
+                    or (r["client_order_id"]
+                        and r["client_order_id"] in api_coids)):
                 continue  # still resting — step 1 owns it
+            # pending crash-before-confirm rows have order_id=client_oid,
+            # which is never in api_order_ids. Skip by coid so a failed
+            # confirm_order_submitted cannot double-book via step 2.
             _buy_side = r["side"] or "yes"
             # R5-MN3: a 'pending' row carries no server order_id (its
             # order_id column holds the client_order_id from
