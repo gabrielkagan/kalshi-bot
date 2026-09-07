@@ -51,7 +51,37 @@ minutes and blocks the session otherwise.
 
 ## What NOT to delegate
 
-- Anything that writes to `bot/`, pushes, opens a PR, merges, or touches the VPS.
+**AMENDED 2026-09-06 ~23:5xZ.** The original rule read "anything that writes to
+`bot/`, pushes, opens a PR, merges, or touches the VPS." The operator has since
+directed Grok to author code and open PRs directly — PR #182
+(`perf/scan-preloop-and-twap-breaker`, 12 files including `bot/executor.py`,
+`bot/scanner/__init__.py`, `bot/feeds/kalshi.py`, `bot/twaplock.py`) is Grok's
+work. That is the operator's call and this doc follows practice rather than
+the other way round.
+
+What the amendment does NOT change is the **gate**. `CLAUDE.md` requires
+2-consecutive-zero adversarial review for `bot/` changes, and an external CLI
+does not run that gate on itself. So the rule becomes:
+
+- **Grok MAY author `bot/` changes and open PRs.**
+- **A Grok-authored PR still needs a Claude-side adversarial pass before merge**,
+  because the review discipline is a property of the change, not of the author.
+  Merge authority stays with the operator either way.
+- Still never delegate: merging, pushing to main, or anything touching the VPS.
+
+Empirically, PR #182 was good work — its twaplock circuit breaker is a real
+production bug fix (2,582 `tw-` api_errors against 2 fills ever, last fill
+2026-06-17), and the diagnosis is one no static reading would catch: each 15M
+window is a NEW ticker, so the executor's per-ticker `TICKER_API_ERROR_CAP`
+resets every window and can never trip on a cross-ticker drip. A per-ticker cap
+structurally cannot stop a per-ticker-renewing failure.
+
+The one thing to hold Grok to is the same thing every track was held to today:
+**provenance for load-bearing numbers.** "VPS 2026-09-06: 2582 tw- api_error,
+2 fills ever" appears in a code comment with no recorded query. Three tracks had
+to retract figures today for exactly that reason.
+
+- Anything that pushes to main, merges, or touches the VPS.
 - The **gate itself**. Per `CLAUDE.md` extraction-bit discipline the 2-consecutive-zero rounds
   are the track's own review; Grok is a parallel second opinion, cited as such.
 - Judging Grok's own findings. A flag is a **hypothesis**: the owning track verifies it against
@@ -410,3 +440,98 @@ not what a reader would assume:
   never appear in `k`.
 
 Whenever printing `k/m`, print what `m` contains.
+
+## Every correction pointed the same way
+
+2026-09-06, Track D, and it is the single most useful sentence anyone produced that day:
+
+> All four defects pointed the same way — the uncorrected procedure produced MORE and LARGER
+> findings, and every correction removed them. The cells left standing are the ones that never
+> looked interesting.
+
+That is not a coincidence, it is the expected direction. Selection, multiplicity, clustering on
+the wrong unit, mirror-image duplicate cells, and raw-vs-effective counts all inflate the TOP of
+a ranked table, which is the only part anyone reads. So a research pipeline's errors are
+systematically biased toward manufacturing an edge, and a track that has not yet found its
+defects is a track whose headline is probably too good.
+
+Practical consequence: **treat "this correction made my result smaller" as confirmation the
+correction was right, and "my finding survived every fix unchanged" as the thing to distrust.**
+
+### The Kish effective count — raw N is not N
+
+Track D's `sports_futures` cell reported **49 contests and ranked second overall**. Over 90% of
+its contracts came from ONE tournament (a single winner); pooling sibling series added cluster
+KEYS without adding independent settlements. The few-cluster guard read 49 and waved it through.
+
+Fix: Kish's effective sample size, `(Σw)² / Σw²`, which collapses to under 2 there and equals
+the raw count when weights are equal. It now drives both the few-cluster guard and the t degrees
+of freedom. Effect: group verdicts 92 -> 40, series 913 -> 414, and every World Cup / futures
+cell left the top of the table.
+
+**Print the effective count beside the raw count wherever both exist** — `49 (effective 1.8)`
+makes the defect impossible to reintroduce silently.
+
+### Mirror cells are one finding, not two
+
+Complementary sides of a binary market appear as two cells and rank as two independent findings.
+Track D's top two cells (−32¢ and +28¢) were the SAME 21 knockout matches seen from opposite
+sides — one directional statement, "favourites lost in 21 matches", counted twice. Multiplicity
+correction cannot see this: it assumes cells are distinct tests, and these are the same test with
+the sign flipped.
+
+Collapse complementary sides BEFORE ranking, and state how many cells that removed. The
+decomposition is also useful in its own right: for complementary prints the two markouts sum to
+minus the spread rather than to zero, so `(t+m)/2` is the half-spread both sides pay and
+`(t−m)/2` is how far that side sits from the fair midpoint.
+
+## Favourite-longshot bias: real in direction, NOT established as a cross-track replication
+
+**This section was rewritten 2026-09-06 23:3xZ after the monitor over-claimed it.** The first
+version said "three independent sightings, two market families, one phenomenon." Track D
+checked that against its own corpus and disputed it. The corrected version is below; the
+over-claim is left on the record because the mistake is instructive — a shared DIRECTION across
+tracks is a pattern match, and calling it a replication skips the step where magnitudes,
+band edges and horizons have to reconcile.
+
+### What is actually established (Track D, internally, no cross-track appeal needed)
+
+The right test is not a cell, it is the SHAPE of the band curve: for each family x horizon with
+8+ populated bands, Spearman between band rank and taker markout. FLB predicts positive. That is
+**73 quasi-independent curves**.
+
+- **53 of 73 slope the FLB way against 36.5 expected — sign test p = 0.0001.**
+- **NOT ONE curve survives BH correction** for having looked at 73 of them; the smallest p is
+  7.9e-04 against a q/m bar of 6.8e-04.
+
+Both halves are the finding: **the effect is real, it is everywhere, and it is too small to
+establish anywhere in particular.** A sign test over many weak tests is not defeated by the
+multiplicity that defeats each one individually. This is a stronger claim than any single cell.
+
+### What is NOT established — an open discrepancy, not agreement
+
+Track C reports +3.4c at 85-95c on crypto 15-minute. Track D's same-family bands give **+0.83c
+(81-90) and +0.96c (91-95)** at 5m-1h — roughly a QUARTER of that, with both cells marked
+`calibrated` and intervals covering zero. Track D's 91-95 band **FLIPS to −0.80c inside the last
+five minutes.**
+
+A shared direction with a **4x magnitude gap is one hypothesis and one discrepancy, not a
+replication.** The two tracks already found they use different band edges (81-90/91-95 vs 85-95),
+which alone could explain part of it. Band bounds, horizon and weighting must be reconciled
+before any joint claim.
+
+Track H's three cells rest on **4, 5 and 1 losing games**. One losing game is a single cluster —
+that would not clear Track D's few-cluster guard and should not clear anyone's. Do not carry it
+as supporting evidence.
+
+### It is NOT universal
+
+Game lines and totals **REVERSE intraday**: `sports_game` at 5m-1h and 1-6h, and `sports_total`
+at 1-6h, all slope the wrong way at nominal significance. **"Kalshi exhibits favourite-longshot
+bias" is FALSE as stated** — the family and horizon must be attached to the claim.
+
+### What it is worth
+
+At 1-2c it sits under the ~3c round-trip cost. Track D independently found the venue is not
+systematically miscalibrated in any way a maker could harvest at scale. **A skew input for
+quoting you are already doing, never an entry. Nothing here turns the bot on.**
