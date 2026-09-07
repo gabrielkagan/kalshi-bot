@@ -4132,18 +4132,17 @@ class OrderExecutor:
                 self._session_ioc_unfilled += 1
             return None
 
-        # 2xx (including empty {}) is an accept. Reset the error streak.
-        self._ticker_api_errors.pop(ticker, None)
         _order = resp.get("order") or {}
         order_id = _order.get("order_id")
         _no_server_oid = not bool(order_id)
         remaining_count = None
         _order_fill_count = 0
         if _no_server_oid:
-            # Do not key fills on client_oid (Kalshi fills carry the
-            # server id). Do not return None — callers retry the full
-            # IOC. Ledger key stays client_oid; skip confirm + fill poll;
-            # Layer B then a defensive ghost own the outcome.
+            # 2xx with no server oid: do not key fills on client_oid, do
+            # not reset ticker_api_errors (Gate 3 is the backpressure).
+            # Parse fill/remaining from nested or flat body so Layer A
+            # can still fire on affirmative fill_count>0. No evidence →
+            # fall through to unfilled + api_error (not a phantom).
             logging.warning(
                 "TAKER_PLACE_MALFORMED: %s resp carried no order_id "
                 "(resp=%r) — not keying fills on client_oid",
@@ -4151,9 +4150,27 @@ class OrderExecutor:
             order_id = client_oid
             _fill = None
             try:
+                _rem_fp = _order.get("remaining_count_fp")
+                if _rem_fp is None:
+                    _rem_fp = resp.get("remaining_count_fp")
+                _rem = _order.get("remaining_count")
+                if _rem is None:
+                    _rem = resp.get("remaining_count")
+                if _rem_fp is not None:
+                    remaining_count = int(fp_str_to_int(_rem_fp))
+                elif _rem is not None:
+                    try:
+                        remaining_count = int(_rem)
+                    except (TypeError, ValueError, OverflowError):
+                        remaining_count = int(fp_str_to_int(_rem))
+            except (TypeError, ValueError, OverflowError):
+                remaining_count = None
+            try:
                 _fill = (_order.get("fill_count_fp")
                          if _order.get("fill_count_fp") is not None
                          else _order.get("fill_count"))
+                if _fill is None:
+                    _fill = resp.get("fill_count_fp")
                 if _fill is None:
                     _fill = resp.get("fill_count")
                 if _fill is not None:
@@ -4164,6 +4181,7 @@ class OrderExecutor:
                     ticker, _fill)
                 _order_fill_count = 0
         else:
+            self._ticker_api_errors.pop(ticker, None)
             try:
                 _rem_fp = _order.get("remaining_count_fp")
                 _rem = _order.get("remaining_count")
@@ -4477,44 +4495,19 @@ class OrderExecutor:
         except Exception as e:
             logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")
 
+        # IOC auto-cancels unfilled portion — no manual cancel needed.
+        # No-oid 2xx with no fill evidence: api_error + ticker_api_errors
+        # so TICKER_API_ERROR_CAP still trips. Do not book a phantom —
+        # 15M phantoms settle as real PnL before the next boot reconcile.
         if _no_server_oid:
-            # 2xx with no server oid and Layer B miss: still do not return
-            # None (retry). Register a defensive full-size position at the
-            # limit; startup reconcile corrects against the positions API.
-            logging.error(
-                "GHOST_FILL_NO_ORDER_ID: %s 2xx body had no order_id and "
-                "positions API showed no delta — registering %d at %d¢",
-                ticker, count, price)
-            self._state.record_position_from_fill(
-                ticker=ticker,
-                event_ticker=candidate["event_ticker"],
-                asset=candidate["asset"],
-                side=_side,
-                count=count,
-                price_cents=price,
-                strategy=candidate.get("strategy"),
-                seconds_to_close=order_info.get("seconds_to_close_at_submit"),
-                fill_latency=round(time.time() - order_info["submit_time"], 3),
-                vol_regime=candidate.get("vol_regime"),
-                calibrated_prob=candidate.get("calibrated_prob"),
-                edge=candidate.get("edge"),
-                kelly_f=candidate.get("kelly_f"),
-                is_taker=True,
-                fill_source="ghost_fill_no_order_id",
-                execution_method="ioc",
-                escalation_type=candidate.get("escalation_type"),
-                maker_price_cents=candidate.get("maker_price_cents"),
-                maker_wait_seconds=candidate.get("maker_wait_seconds"),
-            )
-            self._state.mark_order_status(client_oid, "filled")
-            if (candidate.get("entry_path") != "confirmation_addon"
-                    and not _is_ladder_retry):
-                self._session_ioc_fills += 1
-            order_info["filled_count"] = count
-            return order_info
-
-        # IOC auto-cancels unfilled portion — no manual cancel needed
-        self._state.mark_order_status(order_id, "canceled")
+            self._state.mark_order_status(client_oid, "api_error")
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
+            logging.warning(
+                "TAKER_PLACE_MALFORMED_UNFILLED: %s no order_id and no "
+                "fill evidence (api_errors=%d)",
+                ticker, self._ticker_api_errors[ticker])
+        else:
+            self._state.mark_order_status(order_id, "canceled")
         if (candidate.get("entry_path") != "confirmation_addon"
                 and not _is_ladder_retry):
             self._session_ioc_unfilled += 1

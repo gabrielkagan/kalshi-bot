@@ -1317,12 +1317,14 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertIsNone(result, "Zero-delta must fall through to IOC unfilled")
         ex._state.record_position_from_fill.assert_not_called()
 
-    def test_taker_place_malformed_no_order_id_does_not_retry(self):
-        """2xx with no order_id: do not key fills on client_oid, do not
-        return None (callers retry the full IOC). Layer B empty →
-        defensive ghost so the caller sees a filled result.
+    def test_taker_place_malformed_no_order_id_does_not_phantom(self):
+        """2xx with no order_id and no fill evidence: do not key fills on
+        client_oid and do not book a full-size phantom (phantoms settle
+        as real PnL). None + api_error + ticker_api_errors increment so
+        TICKER_API_ERROR_CAP still trips.
         """
         ex = _make_executor()
+        ex._ticker_api_errors["KXBTC15M-26MAR091200-B68500"] = 2
         ex._client.place_order.return_value = {"order": {}}
         ex._client.get_fills.return_value = {"fills": []}
         ex._client.get_positions.return_value = {"market_positions": []}
@@ -1334,18 +1336,88 @@ class TestGhostFillProtection(unittest.TestCase):
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
 
-        self.assertIsNotNone(result, "None is the caller's retry signal")
+        self.assertIsNone(result)
         ex._state.confirm_order_submitted.assert_not_called()
-        ex._state.record_position_from_fill.assert_called_once()
+        ex._state.record_position_from_fill.assert_not_called()
         self.assertEqual(
-            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
-            "ghost_fill_no_order_id")
-        self.assertEqual(result["filled_count"], 5)
+            ex._ticker_api_errors["KXBTC15M-26MAR091200-B68500"], 3,
+            "no-oid must increment ticker_api_errors, not pop/reset")
         api_error_calls = [
             c for c in ex._state.mark_order_status.call_args_list
             if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
         ]
-        self.assertFalse(api_error_calls)
+        self.assertTrue(api_error_calls)
+
+    def test_no_oid_flat_unfilled_body_is_not_ghost(self):
+        """Unwrapped V2 body with fill=0 remaining=5 and no oid must not
+        phantom — the body itself says nothing filled.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "fill_count": "0.00", "remaining_count": "5.00",
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_no_oid_layer_b_zero_position_is_not_ghost(self):
+        """positions API listing the ticker at 0 is determinate unfilled."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 0,
+                "position_fp": None,
+                "market_exposure": 0,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_no_oid_layer_b_zero_delta_is_not_ghost(self):
+        """GHOST_FILL_SKIP_NO_DELTA must not then add count on top."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 5
+        ex._state.get_local_position_cost_for_ticker.return_value = 460
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 5,
+                "position_fp": None,
+                "market_exposure": 460,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
 
     def test_taker_empty_dict_resp_uses_layer_b(self):
         """2xx empty {} is an accept with no oid — Layer B still runs."""
