@@ -658,7 +658,9 @@ class LongshotEngine:
                 with self._lock:
                     _popped = self._resting.pop(q["order_id"], None)
                 if _popped is not None:
-                    self._mark_pending(q["order_id"], "canceled")
+                    self._mark_pending(
+                        q.get("client_order_id") or q["order_id"],
+                        "canceled")
                 logging.warning(
                     "LONGSHOT_STALE_DROP: %s %s %.0fs past close with "
                     "cancel still failing — entry dropped after final "
@@ -868,7 +870,7 @@ class LongshotEngine:
                     price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
-            _skip = self._boot_skip_seed(order_id, ticker, buy_side)
+            _skip = self._boot_skip_seed(coid or order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
             try:
