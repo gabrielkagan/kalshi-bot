@@ -115,10 +115,12 @@ def _normalize_order_direction(order: Dict) -> Optional[Dict]:
     """
     if not isinstance(order, dict):
         return None
-    outcome = (order.get("outcome_side") or "").lower()
-    book = (order.get("book_side") or "").lower()
-    legacy_side = (order.get("side") or "").lower()
-    legacy_action = (order.get("action") or "").lower()
+    def _s(v) -> str:
+        return v.lower() if isinstance(v, str) else ""
+    outcome = _s(order.get("outcome_side"))
+    book = _s(order.get("book_side"))
+    legacy_side = _s(order.get("side"))
+    legacy_action = _s(order.get("action"))
     if outcome not in ("yes", "no"):
         if book == "bid":
             outcome = "yes"

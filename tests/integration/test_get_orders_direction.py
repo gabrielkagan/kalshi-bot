@@ -124,6 +124,47 @@ def test_book_side_only_maps_ask_to_no():
     assert o["action"] == "buy"
 
 
+def test_outcome_side_only_yes_defaults_book_bid_buy():
+    client = _client({"orders": [{
+        "order_id": "oid-oy",
+        "ticker": TICKER,
+        "outcome_side": "yes",
+        "status": "resting",
+    }]})
+    o = KalshiClient.get_orders(client)["orders"][0]
+    assert o["side"] == "yes"
+    assert o["book_side"] == "bid"
+    assert o["action"] == "buy"
+
+
+def test_outcome_side_only_no_defaults_book_ask_buy():
+    client = _client({"orders": [{
+        "order_id": "oid-on",
+        "ticker": TICKER,
+        "outcome_side": "no",
+        "status": "resting",
+    }]})
+    o = KalshiClient.get_orders(client)["orders"][0]
+    assert o["side"] == "no"
+    assert o["book_side"] == "ask"
+    assert o["action"] == "buy"
+
+
+def test_non_string_direction_is_stripped_not_raised():
+    """Schema slip (int/list) must not AttributeError out of get_orders."""
+    result = KalshiClient.get_orders(_client({"orders": [{
+        "order_id": "oid-ns",
+        "ticker": TICKER,
+        "outcome_side": 123,
+        "book_side": ["bid"],
+        "status": "resting",
+    }]}))
+    o = result["orders"][0]
+    assert o["order_id"] == "oid-ns"
+    assert o.get("side") not in ("yes", "no")
+    assert o.get("action") not in ("buy", "sell")
+
+
 def test_sell_no_mirror_pair_maps_to_buy_yes_exposure():
     """buy-yes ≡ sell-no ≡ (yes, bid). Mirror legacy pair → buy-yes.
 
@@ -234,6 +275,31 @@ def test_reconcile_cancels_malformed_direction_order(tmp_path):
         s.close()
 
 
+def test_reconcile_skips_insert_of_unknown_malformed_oid(tmp_path, caplog):
+    """INSERT path of _reconcile_orders must skip, not KeyError, no row."""
+    import logging
+    from bot.state import StateManager
+    s = StateManager(str(tmp_path / "get_orders_insert.db"))
+    try:
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-new-bad", "client_order_id": "mk-new-bad",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        with caplog.at_level(logging.WARNING):
+            s._reconcile_orders(client, "2026-09-07T00:00:00.000000Z")
+        assert client.cancel_order.called
+        row = s.conn.execute(
+            "SELECT 1 FROM pending_orders WHERE order_id='oid-new-bad'"
+        ).fetchone()
+        assert row is None, "malformed unknown oid must not be INSERTed"
+        assert "RECONCILE_ORDER_DIRECTION_MALFORMED" in caplog.text
+    finally:
+        s.close()
+
+
 def test_longshot_boot_malformed_recovers_side_from_ledger(tmp_path):
     """ls- orders are skipped by state reconcile. Recover buy_side from
     the local row so adopt+cancel still runs."""
@@ -295,6 +361,28 @@ def test_longshot_boot_malformed_no_local_side_cancels(tmp_path):
         assert engine.resting_count() == 0
         assert not client.get_fills.called, (
             "last-resort cancel must not be confused with adopt+poll")
+    finally:
+        s.close()
+
+
+def test_longshot_boot_failed_cancel_does_not_latch(tmp_path):
+    """cancel_order raise must not set _boot_reconciled or mark canceled."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_cancelfail.db"))
+    try:
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-cf", "client_order_id": "ls-cf",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.side_effect = RuntimeError("breaker open")
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        assert engine._boot_reconciled is False
+        assert engine.resting_count() == 0
     finally:
         s.close()
 
@@ -385,5 +473,40 @@ def test_longshot_boot_honors_wrapped_sell_action(tmp_path):
             "WHERE ticker=? AND status='open'", (TICKER,)).fetchone()
         assert pos is not None and pos["side"] == "no" and pos["count"] == 2
         assert pos["avg_price_cents"] == 90
+    finally:
+        s.close()
+
+
+def test_longshot_boot_outcome_only_yes_uses_yes_price(tmp_path):
+    """outcome_side=yes with no book_side is buy-YES, not inverted NO."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_oy.db"))
+    try:
+        event = "KXBTC15M-26SEP071200"
+        s.insert_bot_order("ls-oy", TICKER, event, "BTC", "yes", 2, 45, False)
+        s.confirm_order_submitted("ls-oy", "oid-ls-oy")
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-oy", "client_order_id": "ls-oy",
+             "ticker": TICKER, "status": "resting",
+             "outcome_side": "yes", "yes_price": 45, "no_price": 55,
+             "remaining_count": 2, "count": 2},
+        ]}))
+        assert wrapped["orders"][0]["action"] == "buy"
+        assert wrapped["orders"][0]["book_side"] == "bid"
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-ls-oy", "client_order_id": "ls-oy",
+             "trade_id": "t-ls-oy", "count": 2, "ts": 1_000_000.0},
+        ]}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        pos = s.conn.execute(
+            "SELECT side, count, avg_price_cents FROM positions "
+            "WHERE ticker=? AND status='open'", (TICKER,)).fetchone()
+        assert pos is not None and pos["side"] == "yes" and pos["count"] == 2
+        assert pos["avg_price_cents"] == 45
     finally:
         s.close()

@@ -756,8 +756,10 @@ class LongshotEngine:
             except Exception:
                 logging.warning("longshot boot pending-row repair failed "
                                 "for %s", coid, exc_info=True)
-            _oc = (o.get("outcome_side") or o.get("side") or "").lower()
-            _act = (o.get("action") or "buy").lower()
+            def _s(v) -> str:
+                return v.lower() if isinstance(v, str) else ""
+            _oc = _s(o.get("outcome_side")) or _s(o.get("side"))
+            _act = _s(o.get("action")) or "buy"
             if _oc in ("yes", "no") and _act == "sell":
                 buy_side = "no" if _oc == "yes" else "yes"
             else:
@@ -784,12 +786,17 @@ class LongshotEngine:
                 logging.warning(
                     "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — no local "
                     "side either; cancelling unadoptable orphan", order_id)
+                _canceled = False
                 try:
                     self._client.cancel_order(order_id, ticker=ticker)
+                    _canceled = True
                 except Exception:
                     logging.warning(
                         "LONGSHOT_BOOT_ORPHAN_CANCEL_FAILED %s",
                         order_id, exc_info=True)
+                if not _canceled:
+                    all_fetched = False
+                    continue
                 self._mark_pending(order_id, "canceled")
                 if coid and coid != order_id:
                     self._mark_pending(coid, "canceled")
