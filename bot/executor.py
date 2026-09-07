@@ -767,7 +767,7 @@ class OrderExecutor:
             filled = fp_str_to_int(order.get("fill_count_fp")) or (
                 order.get("fill_count") or 0)
             filled = min(int(filled), count)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             logging.warning(
                 "TWAPLOCK_FILL_PARSE_MALFORMED: %s order=%s unparseable "
                 "fill count (fill_count_fp=%r fill_count=%r) — treating "
@@ -4136,8 +4136,18 @@ class OrderExecutor:
         self._ticker_api_errors.pop(ticker, None)
         order_id = (resp.get("order") or {}).get("order_id", client_oid)
         remaining_count = (resp.get("order") or {}).get("remaining_count", count)
-        _order_fill_count = fp_str_to_int((resp.get("order") or {}).get("fill_count_fp")) or (
-            (resp.get("order") or {}).get("fill_count") or 0)
+        try:
+            _order_fill_count = fp_str_to_int(
+                (resp.get("order") or {}).get("fill_count_fp")) or (
+                (resp.get("order") or {}).get("fill_count") or 0)
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "TAKER_FILL_PARSE_MALFORMED: %s order=%s fill_count_fp=%r "
+                "fill_count=%r — treating as 0; confirm still runs",
+                ticker, order_id,
+                (resp.get("order") or {}).get("fill_count_fp"),
+                (resp.get("order") or {}).get("fill_count"))
+            _order_fill_count = 0
         self._state.confirm_order_submitted(client_oid, order_id)
 
         order_info = {

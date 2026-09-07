@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 import bot.constants as C
 from bot.kalshi_client import KalshiClient
-from bot.helpers.strings import cents_to_dollars_str, int_to_fp_str
+from bot.helpers.strings import cents_to_dollars_str, fp_str_to_int, int_to_fp_str
 
 REPO = Path(__file__).resolve().parents[2]
 TICKER = "KXBTC15M-26SEP061745-45"
@@ -93,6 +93,8 @@ def test_malformed_fill_count_still_returns_order_id(monkeypatch):
         client, TICKER, "yes", "buy", 2, yes_price=18, client_order_id="tw-x")
     assert result["order"]["order_id"] == "oid-v2-1"
     assert "fill_count" not in result["order"]
+    assert "fill_count_fp" not in result["order"]
+    fp_str_to_int((result.get("order") or {}).get("fill_count_fp"))
 
 
 def test_malformed_cancel_reduced_by_still_returns_order_id():
@@ -102,8 +104,18 @@ def test_malformed_cancel_reduced_by_still_returns_order_id():
     }
     result = KalshiClient.cancel_order(client, "oid-c", ticker=TICKER)
     assert result["order"]["order_id"] == "oid-c"
-    assert "reduced_by" not in result["order"] or not isinstance(
-        result["order"].get("reduced_by"), int)
+    assert "reduced_by" not in result["order"]
+    assert "reduced_by_fp" not in result["order"]
+
+
+def test_nonfinite_fill_count_still_returns_order_id(monkeypatch):
+    _live(monkeypatch)
+    client = _client(_v2_ok(fill_count="Infinity", remaining_count="0.00"))
+    result = KalshiClient.place_order(
+        client, TICKER, "yes", "buy", 2, yes_price=18, client_order_id="tw-x")
+    assert result["order"]["order_id"] == "oid-v2-1"
+    assert "fill_count" not in result["order"]
+    assert "fill_count_fp" not in result["order"]
 
 
 def test_cancel_uses_events_orders_and_market_ticker(monkeypatch):

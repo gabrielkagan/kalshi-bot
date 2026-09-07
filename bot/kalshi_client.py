@@ -118,20 +118,20 @@ def _wrap_v2_create_order_response(raw: Optional[Dict]) -> Optional[Dict]:
     wrapped = {
         "order_id": oid,
         "client_order_id": raw.get("client_order_id"),
-        "fill_count_fp": fill,
-        "remaining_count_fp": remaining,
     }
     try:
         if fill is not None:
             wrapped["fill_count"] = fp_str_to_int(fill)
-    except (TypeError, ValueError):
+            wrapped["fill_count_fp"] = fill
+    except (TypeError, ValueError, OverflowError):
         logging.warning(
             "CREATE_ORDER_V2_FILL_PARSE_MALFORMED fill=%r oid=%s",
             fill, oid)
     try:
         if remaining is not None:
             wrapped["remaining_count"] = fp_str_to_int(remaining)
-    except (TypeError, ValueError):
+            wrapped["remaining_count_fp"] = remaining
+    except (TypeError, ValueError, OverflowError):
         logging.warning(
             "CREATE_ORDER_V2_REMAINING_PARSE_MALFORMED remaining=%r oid=%s",
             remaining, oid)
@@ -159,12 +159,12 @@ def _wrap_v2_cancel_order_response(raw: Optional[Dict]) -> Optional[Dict]:
     wrapped = {
         "order_id": oid,
         "client_order_id": raw.get("client_order_id"),
-        "reduced_by_fp": reduced,
     }
     try:
         if reduced is not None:
             wrapped["reduced_by"] = fp_str_to_int(reduced)
-    except (TypeError, ValueError):
+            wrapped["reduced_by_fp"] = reduced
+    except (TypeError, ValueError, OverflowError):
         logging.warning(
             "CANCEL_ORDER_V2_REDUCED_BY_PARSE_MALFORMED reduced_by=%r oid=%s",
             reduced, oid)

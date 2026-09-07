@@ -773,7 +773,7 @@ class LongshotEngine:
                 else:
                     price = (o.get("no_price") if buy_side == "no"
                              else o.get("yes_price")) or 0
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
                     "falling back to integer cents", _pd)
@@ -787,7 +787,7 @@ class LongshotEngine:
             try:
                 remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
                     o.get("remaining_count") or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 remaining = 0
             if not remaining:
                 # R5-MN2: BOTH remaining fields absent — derive from
@@ -808,7 +808,7 @@ class LongshotEngine:
                 try:
                     _orig = fp_str_to_int(o.get("count_fp")) or int(
                         o.get("count") or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     _orig = 0
                 remaining = max(0, _orig - _skip)
             # R5-M3: seed the REAL remaining window life — the stale-drop
@@ -1399,7 +1399,7 @@ class LongshotEngine:
             try:
                 api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
                     _ord.get("fill_count")
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 api_filled = None
             if isinstance(api_filled, int) and api_filled > 0:
                 q["_cancel_api_filled"] = api_filled
@@ -1415,12 +1415,12 @@ class LongshotEngine:
                         reduced = _ord.get("reduced_by")
                     elif _ord.get("reduced_by") is not None:
                         reduced = fp_str_to_int(_ord.get("reduced_by"))
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     reduced = None
                 if isinstance(reduced, int):
                     try:
                         api_filled = max(0, int(q["count"]) - reduced)
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         api_filled = None
                     if reduced > 0 and isinstance(api_filled, int):
                         q["_cancel_api_filled"] = api_filled
@@ -1556,7 +1556,7 @@ class LongshotEngine:
             try:
                 fill_count = fp_str_to_int(f.get("count_fp")) or int(
                     f.get("count") or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
             if fill_count <= 0:
                 # R2-M2: do NOT stamp seen_trade_ids on a zero-parse fill —
