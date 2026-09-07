@@ -225,10 +225,12 @@ class TwaplockEngine:
         # Reconstruct trailing tw- api_error rows for today's UTC date
         # from pending_orders (no new table — the ledger is the source).
         self._circuit_restored = False
+        self._restore_last_attempt = 0.0
         try:
             self._restore_circuit_from_ledger()
             self._circuit_restored = True
         except Exception:
+            self._restore_last_attempt = time.time()
             logging.warning("twaplock circuit restore failed — will retry",
                             exc_info=True)
         # One-shot boot sweep latch (first tick): stranded tw- ledger rows.
@@ -469,12 +471,10 @@ class TwaplockEngine:
     def tick(self, now: Optional[float] = None) -> None:
         """Per-main-loop-tick housekeeping (NO order-working actions).
 
-        1. One-shot boot sweep: tw- ledger rows stranded in
-           'pending'/'resting' by a crash mid-placement are flipped to
-           'canceled' — an IOC never rests on Kalshi, so the rows are
-           lies; the money side is owned by StateManager's positions-API
-           reconcile (RECONCILE_IMPORT stamps strategy_group='twaplock'
-           from the tw- pending history).
+        1. One-shot boot sweep: tw- ledger rows stranded by a crash
+           mid-placement — pending → api_error (POST outcome unknown),
+           resting → canceled (confirm ran, HTTP 200). Money side is
+           owned by StateManager's positions-API reconcile.
         2. Prune per-ticker bookkeeping past TTL.
         """
         if now is None:
@@ -577,6 +577,14 @@ class TwaplockEngine:
     def _ensure_circuit_restored(self, now: Optional[float] = None) -> None:
         if self._circuit_restored:
             return
+        if now is None:
+            now = time.time()
+        # Transient DB errors must not full-scan pending_orders + WARNING
+        # once per 15M market per tick (SCAN_BODY_SLOW class).
+        if (self._restore_last_attempt
+                and now - self._restore_last_attempt < 60.0):
+            return
+        self._restore_last_attempt = now
         try:
             self._restore_circuit_from_ledger(now)
             self._circuit_restored = True
@@ -630,10 +638,7 @@ class TwaplockEngine:
         self._ensure_circuit_restored(now)
         if not self._circuit_restored:
             # Fail-closed: a restart that cannot read the ledger must
-            # not re-arm POSTs. Restore retries on the next call.
-            logging.warning(
-                "TWAPLOCK_CIRCUIT_UNKNOWN: ledger restore failed — "
-                "blocking POSTs")
+            # not re-arm POSTs. Restore retries (throttled) on later calls.
             return True
         today = datetime.datetime.fromtimestamp(
             now, timezone.utc).date().isoformat()
@@ -831,11 +836,12 @@ class TwaplockEngine:
                 new_status = (
                     "api_error" if r["status"] == "pending" else "canceled")
                 self._state.mark_order_status(key, new_status)
+                why = ("POST outcome unknown" if new_status == "api_error"
+                       else "IOC cannot rest after confirm")
                 logging.warning(
-                    "TWAPLOCK_BOOT_STRANDED: %s %s flipped to %s "
-                    "(IOC rows cannot legitimately rest; positions-API "
-                    "reconcile owns any hidden fill)",
-                    r["ticker"], key, new_status)
+                    "TWAPLOCK_BOOT_STRANDED: %s %s flipped to %s (%s; "
+                    "positions-API reconcile owns any hidden fill)",
+                    r["ticker"], key, new_status, why)
         except Exception:
             logging.warning("twaplock boot sweep failed — retry next tick",
                             exc_info=True)

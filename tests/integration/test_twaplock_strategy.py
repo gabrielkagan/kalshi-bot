@@ -48,8 +48,8 @@ kb/decisions/longshot-twap-live-small-plan.md + the Bit T-1 spec
 - tw- reconciler carve-outs in bot/state.py generalized to a prefix
   tuple (ls-, tw-): _reconcile_orders cancel/flip sweeps,
   cleanup_expired_resting_orders, RECONCILE_IMPORT strategy stamping.
-- Engine boot sweep: stranded tw- pending/resting rows flipped to
-  'canceled' on first tick (positions-API reconcile owns the money side;
+- Engine boot sweep: stranded tw- pending → api_error, resting →
+  canceled on first tick (positions-API reconcile owns the money side;
   IOC orders never rest so there is no orphan-quote lifecycle).
 
 Real sqlite3 file via tmp_path per tests/CLAUDE.md integration-tier
@@ -61,6 +61,7 @@ test_longshot_strategy.py / test_trading_mode_backstop.py).
 from __future__ import annotations
 
 import datetime
+import sqlite3
 from datetime import timezone
 from unittest.mock import MagicMock
 
@@ -1062,6 +1063,37 @@ class TestExecutorChokepoint:
         assert st == "api_error"
         engine2 = TwaplockEngine(client, state)
         assert engine2._circuit_blocked() is True
+
+    def test_restore_failure_blocks_posts_and_throttles(
+            self, state, enabled):
+        """Fail-closed on ledger restore; retry at most once per 60s."""
+        engine = TwaplockEngine(MagicMock(), state)
+        engine._circuit_restored = False
+        n = {"c": 0}
+
+        def boom(now=None):
+            n["c"] += 1
+            raise sqlite3.OperationalError("database is locked")
+
+        engine._restore_circuit_from_ledger = boom
+        engine._restore_last_attempt = 0.0
+        assert engine._circuit_blocked() is True
+        assert engine.authorize({
+            "ticker": TICKER4, "position_size": 2,
+        }) == 0
+        assert n["c"] == 1
+        assert engine._circuit_blocked() is True
+        assert n["c"] == 1
+        engine._restore_last_attempt = 0.0
+
+        def ok(now=None):
+            n["c"] += 1
+
+        engine._restore_circuit_from_ledger = ok
+        assert engine._circuit_blocked() is False
+        assert engine.authorize({
+            "ticker": TICKER4, "position_size": 2,
+        }) == 2
 
     def test_kill_switch_midflight_places_nothing(self, wired, enabled,
                                                   monkeypatch):

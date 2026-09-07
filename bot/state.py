@@ -1946,9 +1946,9 @@ class StateManager:
         # filled / expired pre-restart) is reconciled by
         # LongshotEngine._boot_reconcile_orphans step 2, which NEEDS the
         # row still 'resting' to find it (fills recorded, row then marked
-        # filled/canceled by the engine); a stranded tw- row is flipped to
-        # 'canceled' by TwaplockEngine's first-tick boot sweep, the single
-        # owner of that transition.
+        # filled/canceled by the engine); a stranded tw- row is flipped
+        # pending→api_error / resting→canceled by TwaplockEngine's
+        # first-tick boot sweep, the single owner of those transitions.
         local_rows = self.conn.execute(
             "SELECT order_id, client_order_id FROM pending_orders "
             "WHERE status='resting'"
