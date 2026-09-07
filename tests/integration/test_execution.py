@@ -1280,6 +1280,46 @@ class TestGhostFillProtection(unittest.TestCase):
         # filled_count on order_info should also be the delta for dc_retry accounting.
         self.assertEqual(result["filled_count"], 1)
 
+    def test_layer_b_delta_avg_out_of_range_falls_back_to_submitted_limit(self):
+        """Layer B delta-cost is a residual of two cumulatives; a 1-lot
+        delta can produce a 5000¢ 'price'. Clamp to the submitted IOC
+        limit rather than writing it into avg_price_cents.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 58
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-oor",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 59,
+                "position_fp": None,
+                "market_exposure": 5319,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=5319):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        px = ex._state.record_position_from_fill.call_args.kwargs["price_cents"]
+        self.assertTrue(0 < px < 100, f"delta_avg leaked out-of-range price {px}")
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(px, submitted)
+
     def test_layer_b_skips_when_delta_is_zero(self):
         """B1: when positions API matches local exactly, no new fills happened —
         ghost-fill must NOT call record_position_from_fill and must NOT mark

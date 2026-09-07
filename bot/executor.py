@@ -3686,10 +3686,11 @@ class OrderExecutor:
                 ticker)
             return None
         _api_err_count = getattr(self, "_ticker_api_errors", {}).get(ticker, 0)
-        if _api_err_count >= getattr(self, "TICKER_API_ERROR_CAP", 3):
+        _api_err_cap = getattr(self, "TICKER_API_ERROR_CAP", 3)
+        if _api_err_count >= _api_err_cap:
             logging.warning(
                 "TAKER_SKIP_API_ERROR_CAP: %s errors=%d (capped at %d)",
-                ticker, _api_err_count, self.TICKER_API_ERROR_CAP)
+                ticker, _api_err_count, _api_err_cap)
             return None
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
@@ -4486,6 +4487,20 @@ class OrderExecutor:
                             _delta_avg = (_delta_cost // _delta
                                           if _delta and _delta_cost > 0
                                           else _pos_avg)
+                            # Residual of two cumulatives (Kalshi exposure vs
+                            # local SUM(total_cost_cents)) can be thousands of
+                            # cents on a 1-lot delta. Out of (0, 100) is not a
+                            # fill price — use the submitted IOC limit.
+                            try:
+                                _delta_avg = int(_delta_avg)
+                            except (TypeError, ValueError, OverflowError):
+                                _delta_avg = _ioc_limit_price
+                            if not (0 < _delta_avg < 100):
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_AVG_OOR: %s delta_avg=%s "
+                                    "falling back to submitted limit %d",
+                                    ticker, _delta_avg, _ioc_limit_price)
+                                _delta_avg = _ioc_limit_price
                             logging.error(
                                 f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} side={_ghost_side} "
                                 f"fill polling found nothing, remaining_count={remaining_count}, "

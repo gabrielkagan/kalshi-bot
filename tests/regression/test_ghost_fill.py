@@ -137,6 +137,12 @@ def ghost_fill_check(
                                              else pos_avg)
                             else:
                                 delta_avg = pos_avg
+                            try:
+                                delta_avg = int(delta_avg)
+                            except (TypeError, ValueError, OverflowError):
+                                delta_avg = limit
+                            if not (0 < delta_avg < 100):
+                                delta_avg = limit
                             if state_record_position:
                                 state_record_position(
                                     ticker=ticker,
