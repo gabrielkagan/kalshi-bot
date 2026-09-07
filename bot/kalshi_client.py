@@ -129,7 +129,13 @@ def _wrap_v2_create_order_response(raw: Optional[Dict]) -> Optional[Dict]:
 
 
 def _wrap_v2_cancel_order_response(raw: Optional[Dict]) -> Optional[Dict]:
-    """V2 cancel is flat {order_id, reduced_by}. Do not invent fill_count."""
+    """V2 cancel is flat {order_id, reduced_by}.
+
+    ``reduced_by`` is contracts canceled (resting size at cancel time).
+    Do not map it onto remaining_count (that inverts the meaning) and
+    do not invent fill_count — callers reconstruct filled as
+    original_count - reduced_by.
+    """
     if not raw or not isinstance(raw, dict):
         return raw
     if raw.get("_status_code") == 404:
@@ -144,10 +150,9 @@ def _wrap_v2_cancel_order_response(raw: Optional[Dict]) -> Optional[Dict]:
         "order_id": oid,
         "client_order_id": raw.get("client_order_id"),
         "reduced_by_fp": reduced,
-        "remaining_count_fp": reduced,
     }
     if reduced is not None:
-        wrapped["remaining_count"] = fp_str_to_int(reduced)
+        wrapped["reduced_by"] = fp_str_to_int(reduced)
     return {"order": wrapped}
 
 

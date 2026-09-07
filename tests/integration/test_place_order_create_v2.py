@@ -99,7 +99,9 @@ def test_cancel_uses_events_orders_and_market_ticker(monkeypatch):
     assert params.get("exchange_index") == -1
     assert result["order"]["order_id"] == "oid-c"
     assert "fill_count" not in result["order"]
-    assert result["order"]["remaining_count"] == 2
+    assert "remaining_count" not in result["order"]
+    assert result["order"]["reduced_by"] == 2
+    assert result["order"]["reduced_by_fp"] == "2.00"
 
 
 def test_amend_posts_events_orders_bid(monkeypatch):

@@ -414,7 +414,8 @@ class TestMN2CleanPollBefore404Pop:
         # Cancel response says 2 filled; fills API still shows nothing ->
         # mismatch keeps the entry for a re-poll.
         client.get_fills.return_value = {"fills": []}
-        client.cancel_order.return_value = {"order": {"fill_count": 2}}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 1, "reduced_by_fp": "1.00"}}
         engine._cancel_quote("oid-mn2", "t_minus_3min")
         assert "oid-mn2" in engine._resting
 
@@ -449,7 +450,8 @@ class TestMN2CleanPollBefore404Pop:
                               order_id="oid-mn2b", count=3)
         self._register(engine, order_id="oid-mn2b")
         client.get_fills.return_value = {"fills": []}
-        client.cancel_order.return_value = {"order": {"fill_count": 2}}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 1, "reduced_by_fp": "1.00"}}
         engine._cancel_quote("oid-mn2b", "t_minus_3min")
         assert "oid-mn2b" in engine._resting
 

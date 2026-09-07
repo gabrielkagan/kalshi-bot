@@ -120,8 +120,11 @@ class TestC1FillsNotDroppedAtCancel:
         # instead of being popped (which would orphan the fill forever).
         _register(engine, order_id="oid-c1c", stc=170.0)
         engine._client.get_fills.return_value = {"fills": []}
+        # V2 cancel is {reduced_by} = contracts canceled, not fill_count.
+        # count=3, reduced_by=1 ⇒ 2 filled on the exchange (fills API lag).
         engine._client.cancel_order.return_value = {
-            "order": {"status": "canceled", "fill_count": 2}}
+            "order": {"order_id": "oid-c1c", "reduced_by": 1,
+                      "reduced_by_fp": "1.00"}}
         with caplog.at_level("WARNING"):
             engine.tick()
         assert engine.resting_count() == 1

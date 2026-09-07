@@ -1392,6 +1392,22 @@ class LongshotEngine:
             _ord = resp.get("order") or {}
             api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
                 _ord.get("fill_count")
+            # V2 DELETE returns reduced_by = contracts canceled, not
+            # fill_count. Reconstruct filled as original - canceled so
+            # CANCEL_FILL_MISMATCH still catches fills-API lag.
+            if not isinstance(api_filled, int):
+                reduced = None
+                if _ord.get("reduced_by_fp") is not None:
+                    reduced = fp_str_to_int(_ord.get("reduced_by_fp"))
+                elif isinstance(_ord.get("reduced_by"), int):
+                    reduced = _ord.get("reduced_by")
+                elif _ord.get("reduced_by") is not None:
+                    reduced = fp_str_to_int(_ord.get("reduced_by"))
+                if isinstance(reduced, int):
+                    try:
+                        api_filled = max(0, int(q["count"]) - reduced)
+                    except (TypeError, ValueError):
+                        api_filled = None
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
             # SUBSEQUENT tick before any 404-path terminal pop —
