@@ -58,6 +58,7 @@ def ghost_fill_check(
     state_local_count=None,
     state_local_cost=None,
     ioc_limit_price=None,
+    order_side: str = "yes",
 ):
     """Simulate the ghost fill detection logic after fill polling.
 
@@ -115,6 +116,8 @@ def ghost_fill_check(
                         pos_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
                         if pos_count != 0:
                             ghost_side = "yes" if pos_count > 0 else "no"
+                            if ghost_side != order_side:
+                                continue
                             pos_abs = abs(pos_count)
                             pos_cost_d = pos.get("market_exposure_dollars")
                             pos_cost = dollars_str_to_cents(pos_cost_d) if pos_cost_d else (pos.get("market_exposure") or 0)
@@ -627,6 +630,7 @@ class TestGhostFillLayerB(unittest.TestCase):
             order_info=order_info,
             client_get_positions=mock_get_positions,
             state_record_position=record_fn,
+            order_side="no",
         )
         self.assertTrue(detected)
         self.assertEqual(layer, "B")

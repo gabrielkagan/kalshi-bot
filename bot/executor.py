@@ -4462,6 +4462,12 @@ class OrderExecutor:
                         _pos_count = fp_str_to_int(_pos.get("position_fp")) or (_pos.get("position") or 0)
                         if _pos_count != 0:
                             _ghost_side = "yes" if _pos_count > 0 else "no"
+                            if _ghost_side != _side:
+                                logging.info(
+                                    "GHOST_FILL_SKIP_SIDE: %s order_side=%s "
+                                    "positions net is %s — not this IOC",
+                                    ticker, _side, _ghost_side)
+                                continue
                             _pos_abs = abs(_pos_count)
                             _pos_cost_d = _pos.get("market_exposure_dollars")
                             _pos_cost = dollars_str_to_cents(_pos_cost_d) if _pos_cost_d else (_pos.get("market_exposure") or 0)
