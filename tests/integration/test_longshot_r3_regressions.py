@@ -530,6 +530,54 @@ class TestMN2CleanPollBefore404Pop:
             "404 + failed fills poll must keep the entry (R1-C1)")
         assert "LONGSHOT_CANCEL_POLL_DEFERRED" in caplog.text
 
+    def test_404_after_mismatch_polls_and_pops_once_fills_land(
+            self, engine, state, client, enabled):
+        """404 + needs_clean_poll must still poll. tick() skips the
+        bulk poll while disabled, so this is the only fill net.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-d",
+                              order_id="oid-d", count=3)
+        self._register(engine, order_id="oid-d")
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 1, "reduced_by_fp": "1.00"}}
+        engine._cancel_quote("oid-d", "t_minus_3min")
+        assert "oid-d" in engine._resting
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-d", "trade_id": "t-d", "count": 2},
+        ]}
+        client.cancel_order.return_value = {
+            "_error": True, "_status_code": 404}
+        engine._cancel_quote("oid-d", "t_minus_3min")
+        assert "oid-d" not in engine._resting, (
+            "404 after mismatch must poll and pop once fills catch "
+            "the stored api_filled")
+        row = _positions_row(state)
+        assert row is not None and row["count"] == 2
+
+    def test_fill_count_fp_is_persisted_across_failed_poll(
+            self, engine, state, client, enabled):
+        """fill_count_fp on DELETE must store _cancel_api_filled so a
+        later 404 cannot pop while local filled lags.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-fp",
+                              order_id="oid-fp", count=3)
+        self._register(engine, order_id="oid-fp")
+        client.get_fills.return_value = None
+        client.cancel_order.return_value = {
+            "order": {"fill_count_fp": "2"}}
+        engine._cancel_quote("oid-fp", "t_minus_3min")
+        assert "oid-fp" in engine._resting
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "_error": True, "_status_code": 404}
+        engine._cancel_quote("oid-fp", "t_minus_3min")
+        assert "oid-fp" in engine._resting, (
+            "stored fill_count_fp=2 must hold through a 404 while "
+            "local filled is still 0")
+
     def test_partial_poll_does_not_clear_mismatch_hold(
             self, engine, state, client, enabled):
         engine._boot_reconciled = True

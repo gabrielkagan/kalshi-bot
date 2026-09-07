@@ -1369,13 +1369,13 @@ class LongshotEngine:
             if q.get("needs_clean_poll"):
                 logging.warning(
                     "LONGSHOT_CANCEL_GONE_DEFERRED: %s %s reason=%s — 404 "
-                    "after fill mismatch; waiting for a clean fills poll "
-                    "before the terminal pop (R3-MN2)",
+                    "after fill mismatch; polling then deciding "
+                    "(tick() skips bulk poll while disabled)",
                     q["ticker"], order_id, reason)
-                return
-            logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
-                         "already expired/cancelled on Kalshi (404)",
-                         q["ticker"], order_id, reason)
+            else:
+                logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
+                             "already expired/cancelled on Kalshi (404)",
+                             q["ticker"], order_id, reason)
         # R1-C1: final fill poll BEFORE popping — a fill can land between
         # the last tick poll and the cancel taking effect; popping first
         # would orphan it (position held to settlement with no local row).
@@ -1392,6 +1392,8 @@ class LongshotEngine:
             _ord = resp.get("order") or {}
             api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
                 _ord.get("fill_count")
+            if isinstance(api_filled, int) and api_filled > 0:
+                q["_cancel_api_filled"] = api_filled
             # V2 DELETE returns reduced_by = contracts canceled, not
             # fill_count. Reconstruct filled as original - canceled so
             # CANCEL_FILL_MISMATCH still catches fills-API lag.
