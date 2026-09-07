@@ -1553,7 +1553,8 @@ class LongshotEngine:
         # quote. Skip when the final poll above already fully filled the
         # quote (_apply_fills popped it and marked the row 'filled').
         if _popped is not None:
-            self._mark_pending(order_id, "canceled")
+            self._mark_pending(
+                q.get("client_order_id") or order_id, "canceled")
         logging.info("LONGSHOT_CANCEL: %s %s reason=%s", q["ticker"],
                      order_id, reason)
 
@@ -1615,6 +1616,12 @@ class LongshotEngine:
         if fills is None:
             return False
         self._apply_fills(q, fills)
+        if (fills and q.get("filled", 0) == 0
+                and q.get("order_id") == q.get("client_order_id")):
+            logging.warning(
+                "LONGSHOT_BOOT_FILL_COID_MISS oid=%s n_fills=%d — "
+                "pending row order_id is client_oid; live Fill may omit "
+                "client_order_id", q.get("order_id"), len(fills))
         return complete
 
     def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
@@ -1633,7 +1640,9 @@ class LongshotEngine:
         q_coid = q.get("client_order_id") or ""
         # R5-MN3 fill match: a crash-before-confirm pending row keeps
         # order_id=client_oid while Kalshi fills carry the server
-        # order_id. Also match fill.client_order_id == q.client_order_id.
+        # order_id. Also match fill.client_order_id == q.client_order_id
+        # when that field is present on the live Fill object (uncorroborated
+        # in-repo — go-live: confirm one /portfolio/fills body).
         matched = [
             f for f in fills
             if (q_oid and f.get("order_id") == q_oid)
@@ -1713,8 +1722,9 @@ class LongshotEngine:
                 # reaches here with record_count > 0 contracts of its
                 # own). Seeds this order's boot_skip_remaining at the
                 # next restart.
-                self._increment_recorded_fill_count(q["order_id"],
-                                                    record_count)
+                self._increment_recorded_fill_count(
+                    q.get("client_order_id") or q["order_id"],
+                    record_count)
             q["filled"] += fill_count
             logging.info(
                 "LONGSHOT_FILL: %s %s %dct @ %dc (%d/%d) trade=%s",
@@ -1729,4 +1739,5 @@ class LongshotEngine:
             # R2-C1: fully filled -> ledger row leaves 'resting' (idempotent
             # when the entry was already popped by a sister path).
             if _popped is not None:
-                self._mark_pending(q["order_id"], "filled")
+                self._mark_pending(
+                    q.get("client_order_id") or q["order_id"], "filled")

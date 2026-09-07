@@ -761,6 +761,15 @@ class TestMN3PendingRowsReconciledAtBoot:
         pos = _positions_row(state)
         assert pos is not None and pos["count"] == 2, (
             "step 1 adopts once; step 2 must skip API-present coid")
+        # Next boot: order gone from API, pending row unrepaired.
+        # recorded_fill_count must have been bumped via coid so step 2
+        # skip-seeds and does not double-book.
+        client.get_orders.return_value = {"orders": []}
+        engine2 = LongshotEngine(client, state)
+        engine2.tick()
+        pos2 = _positions_row(state)
+        assert pos2 is not None and pos2["count"] == 2, (
+            "second boot must not re-record fills after confirm-fail")
 
     def test_step2_still_books_when_api_order_lacks_order_id(
             self, state, client, enabled):
