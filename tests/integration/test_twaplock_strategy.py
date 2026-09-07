@@ -1020,6 +1020,49 @@ class TestExecutorChokepoint:
         assert engine._circuit_blocked() is False
         assert engine._consecutive_api_errors == 0
 
+    def test_stranded_pending_counts_as_api_error_on_restore(
+            self, wired, state, enabled):
+        """Crash mid-POST leaves pending, not HTTP 200. Must not reset streak."""
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        cands = _eval(engine, ticker=TICKER, event=EVENT, asset="BTC")
+        assert executor.execute(cands[0]) is None
+        state.insert_bot_order("tw-crash", TICKER2, EVENT2, "ETH",
+                               "yes", 2, 95, True)
+        engine2 = TwaplockEngine(client, state)
+        assert engine2._consecutive_api_errors == 2
+        assert engine2._circuit_blocked() is False
+        from bot.executor import OrderExecutor
+        ml = MagicMock()
+        ml.twaplock_engine = engine2
+        executor2 = OrderExecutor(client, state, MagicMock(),
+                                  main_loop=ml, kalshi_feed=None)
+        cands = _eval(engine2, ticker=TICKER3, event=EVENT3, asset="SOL")
+        assert executor2.execute(cands[0]) is None
+        assert engine2._circuit_blocked() is True
+
+    def test_boot_sweep_pending_stays_error_for_next_restore(
+            self, wired, state, enabled):
+        """Sweep must not launder pending into canceled (restart #2)."""
+        executor, engine, client = wired
+        client.place_order.return_value = None
+        for ticker, event, asset in (
+            (TICKER, EVENT, "BTC"),
+            (TICKER2, EVENT2, "ETH"),
+        ):
+            cands = _eval(engine, ticker=ticker, event=event, asset=asset)
+            assert executor.execute(cands[0]) is None
+        state.insert_bot_order("tw-crash2", TICKER3, EVENT3, "SOL",
+                               "yes", 2, 95, True)
+        engine.tick()
+        st = state.conn.execute(
+            "SELECT status FROM pending_orders "
+            "WHERE client_order_id='tw-crash2'"
+        ).fetchone()["status"]
+        assert st == "api_error"
+        engine2 = TwaplockEngine(client, state)
+        assert engine2._circuit_blocked() is True
+
     def test_kill_switch_midflight_places_nothing(self, wired, enabled,
                                                   monkeypatch):
         executor, engine, client = wired
@@ -1178,7 +1221,7 @@ class TestBootSweep:
         st3 = state.conn.execute(
             "SELECT status FROM pending_orders WHERE order_id='oid-mk-b3'"
         ).fetchone()["status"]
-        assert st1 == "canceled"
+        assert st1 == "api_error"
         assert st2 == "canceled"
         assert st3 == "resting"
 

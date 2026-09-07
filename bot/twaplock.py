@@ -547,7 +547,8 @@ class TwaplockEngine:
         """
         if now is None:
             now = time.time()
-        self._ensure_circuit_restored(now)
+        # Do not restore here: insert_bot_order already wrote a pending
+        # row for this POST; counting it then incrementing is off-by-one.
         today = datetime.datetime.fromtimestamp(
             now, timezone.utc).date().isoformat()
         thresh = int(C.TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD)
@@ -569,7 +570,6 @@ class TwaplockEngine:
 
     def record_api_ok(self) -> None:
         """HTTP 200 from place_order (fill or 0-fill) resets the streak."""
-        self._ensure_circuit_restored()
         with self._lock:
             if self._circuit_tripped_utc_date is None:
                 self._consecutive_api_errors = 0
@@ -588,9 +588,10 @@ class TwaplockEngine:
         """Rebuild the UTC-day latch from trailing tw- api_error rows.
 
         Restart drops the in-memory trip. pending_orders is the source
-        of truth: count consecutive api_error statuses from the newest
-        tw- row today backward. A later HTTP 200 (canceled/filled)
-        breaks the streak. Yesterday's rows are out of scope.
+        of truth: count consecutive api_error OR pending statuses from
+        the newest tw- row today backward. pending is a crash mid-POST
+        (insert before place_order), not HTTP 200. canceled/filled/
+        resting break the streak. Yesterday's rows are out of scope.
         """
         if now is None:
             now = time.time()
@@ -605,7 +606,7 @@ class TwaplockEngine:
         ).fetchall()
         n = 0
         for r in rows:
-            if (r["status"] or "") == "api_error":
+            if (r["status"] or "") in ("api_error", "pending"):
                 n += 1
             else:
                 break
@@ -810,31 +811,31 @@ class TwaplockEngine:
         A crash between insert_bot_order and the synchronous post-IOC
         status mark strands a tw- row in 'pending' (or 'resting' when the
         crash hit between confirm_order_submitted and the mark). IOC
-        orders never rest on Kalshi, so the rows can only be lies — flip
-        them to 'canceled' so they don't poison the executor's
-        pending-order conflict checks or dashboards forever. The MONEY
-        side (a fill the crash hid) is owned by StateManager's
-        positions-API reconcile at startup, which imports unknown
-        positions with strategy_group='twaplock' from the tw- pending
-        history (prefix-map stamp in bot/state.py). The state.py
-        reconciler carve-outs deliberately skip tw- rows so this sweep is
-        the single owner. DB failure leaves the latch unset (retry next
-        tick). No race with live placements: this runs on MainThread —
-        the same thread the executor's synchronous placement uses.
+        orders never rest on Kalshi. Flip pending → api_error (POST
+        outcome unknown — must not launder into canceled or the circuit
+        restore under-counts) and resting → canceled (confirm ran, HTTP
+        200). The MONEY side (a fill the crash hid) is owned by
+        StateManager's positions-API reconcile at startup. The state.py
+        reconciler carve-outs skip tw- rows so this sweep is the single
+        owner. DB failure leaves the latch unset (retry next tick).
         """
         try:
             rows = self._state.conn.execute(
-                "SELECT order_id, client_order_id, ticker FROM "
+                "SELECT order_id, client_order_id, ticker, status FROM "
                 "pending_orders WHERE status IN ('pending','resting') "
                 "AND client_order_id LIKE ?",
                 (C.TWAPLOCK_CLIENT_OID_PREFIX + "%",)).fetchall()
             for r in rows:
                 key = r["order_id"] or r["client_order_id"]
-                self._state.mark_order_status(key, "canceled")
+                # pending = never got HTTP 200; resting = confirm ran.
+                new_status = (
+                    "api_error" if r["status"] == "pending" else "canceled")
+                self._state.mark_order_status(key, new_status)
                 logging.warning(
-                    "TWAPLOCK_BOOT_STRANDED: %s %s flipped to 'canceled' "
+                    "TWAPLOCK_BOOT_STRANDED: %s %s flipped to %s "
                     "(IOC rows cannot legitimately rest; positions-API "
-                    "reconcile owns any hidden fill)", r["ticker"], key)
+                    "reconcile owns any hidden fill)",
+                    r["ticker"], key, new_status)
         except Exception:
             logging.warning("twaplock boot sweep failed — retry next tick",
                             exc_info=True)
