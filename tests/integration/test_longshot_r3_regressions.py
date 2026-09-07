@@ -512,6 +512,24 @@ class TestMN2CleanPollBefore404Pop:
             "hold for the lagged fills, not pop")
         assert "LONGSHOT_CANCEL_FILL_MISMATCH" in caplog.text
 
+    def test_first_cancel_404_with_failed_fills_poll_holds(
+            self, engine, state, client, enabled, caplog):
+        """A first-attempt 404 with a failed fills poll must not pop —
+        no _cancel_api_filled yet, and the poll is the only fill net.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-pf",
+                              order_id="oid-pf", count=3)
+        self._register(engine, order_id="oid-pf")
+        client.get_fills.return_value = None
+        client.cancel_order.return_value = {
+            "_error": True, "_status_code": 404}
+        with caplog.at_level("WARNING"):
+            engine._cancel_quote("oid-pf", "t_minus_3min")
+        assert "oid-pf" in engine._resting, (
+            "404 + failed fills poll must keep the entry (R1-C1)")
+        assert "LONGSHOT_CANCEL_POLL_DEFERRED" in caplog.text
+
     def test_partial_poll_does_not_clear_mismatch_hold(
             self, engine, state, client, enabled):
         engine._boot_reconciled = True

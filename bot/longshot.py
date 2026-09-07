@@ -1379,7 +1379,7 @@ class LongshotEngine:
         # R1-C1: final fill poll BEFORE popping — a fill can land between
         # the last tick poll and the cancel taking effect; popping first
         # would orphan it (position held to settlement with no local row).
-        self._poll_fills(q)
+        poll_ok = self._poll_fills(q)
         # R1-C1: reconcile against the DELETE response when it carries a
         # filled count. If Kalshi says more contracts filled than we have
         # recorded (fills API lag), KEEP the entry registered: the next
@@ -1423,6 +1423,14 @@ class LongshotEngine:
             if (not isinstance(api_filled, int)
                     and isinstance(q.get("_cancel_api_filled"), int)):
                 api_filled = int(q["_cancel_api_filled"])
+        if not poll_ok:
+            logging.warning(
+                "LONGSHOT_CANCEL_POLL_DEFERRED: %s %s reason=%s — "
+                "final fill poll failed/partial — retry next tick",
+                q["ticker"], order_id, reason)
+            if isinstance(api_filled, int) and api_filled > q["filled"]:
+                q["needs_clean_poll"] = True
+            return
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
             # SUBSEQUENT tick before any 404-path terminal pop —
