@@ -63,9 +63,17 @@ That kills the "quote, don't take" cost layer. Its transferable form: on this ve
 the SPREAD of two legs, never the legs — the joint bootstrap is far tighter than either side,
 because quoting both cancels the tape.
 
-Track H independently reached the same shape: every cell with a large settlement markout
-**marks flat-to-negative five minutes later**. The near-certainty edge at 85-100c is a
-settlement-horizon artifact a maker never keeps.
+**RETRACTED 2026-09-07 00:38Z by Track H itself — do not cite this.** The claim as written
+was: "Track H independently reached the same shape: every cell with a large settlement markout
+marks flat-to-negative five minutes later; the near-certainty edge at 85-100c is a
+settlement-horizon artifact a maker never keeps." Track H's own R5 reviewer falsified it on
+their artifact. The counterexample mixed two fill models, and there are cells with settlement
++16.97c whose forward mark is +5.05c with a game-clustered lower bound ABOVE zero. It may also
+be a category error: settlement markout IS the P&L for a hold-to-settlement maker, so a
+five-minute mark-to-market on a subsample cannot show the settlement number is unrealisable.
+**Track E therefore has NO corroboration from Track H**; the -1.37c result stands on its own
+instrument. What survives is a question to Track E, not a finding from Track H: does its
+forward-mark instrument match its holding period?
 
 **Favourite-longshot bias is real in DIRECTION but not established as a replication.**
 Track D: 53 of 73 band curves slope the FLB way against 36.5 expected, sign test p = 0.0001 —
