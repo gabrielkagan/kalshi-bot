@@ -123,8 +123,10 @@ def ghost_fill_check(
                             local_count = (state_local_count()
                                            if state_local_count else 0)
                             delta = pos_abs - local_count
+                            delta_clamped = False
                             if delta > count:
                                 delta = count
+                                delta_clamped = True
                             if delta <= 0:
                                 return False, None, {
                                     "reason": "no_new_fills_delta_le_zero",
@@ -132,7 +134,9 @@ def ghost_fill_check(
                                     "local_count": local_count,
                                 }
                             # R1-M2: cost of the delta, not cumulative avg.
-                            if state_local_cost:
+                            if delta_clamped:
+                                delta_avg = limit
+                            elif state_local_cost:
                                 local_cost = state_local_cost()
                                 delta_cost = pos_cost - local_cost
                                 delta_avg = (delta_cost // delta

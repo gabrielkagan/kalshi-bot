@@ -1359,6 +1359,47 @@ class TestGhostFillProtection(unittest.TestCase):
             ex._state.record_position_from_fill.call_args.kwargs["count"], 1)
         self.assertEqual(result["filled_count"], 1)
 
+    def test_layer_b_clamp_does_not_inflate_price(self):
+        """When delta is clamped, delta_cost no longer describes _delta
+        lots — do not divide the unclamped residual by the clamped count.
+        api=2 / 85¢, count=1 → book 1 at submitted limit, not 85.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-px",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 2,
+                "position_fp": None,
+                "market_exposure": 85,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate(position_size=1)
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=85):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["count"], 1)
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(kwargs["price_cents"], submitted)
+        self.assertNotEqual(kwargs["price_cents"], 85)
+
     def test_layer_b_skips_when_delta_is_zero(self):
         """B1: when positions API matches local exactly, no new fills happened —
         ghost-fill must NOT call record_position_from_fill and must NOT mark

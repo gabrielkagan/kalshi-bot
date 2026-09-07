@@ -4479,12 +4479,15 @@ class OrderExecutor:
                             # Same residual class as delta_avg: do not attribute
                             # missed sibling fills to this IOC. Layer A already
                             # bounds ghost size by the order's count.
+                            _delta_clamped = False
                             if _delta > count:
                                 logging.warning(
                                     "GHOST_FILL_DELTA_CLAMP: %s delta=%d > "
-                                    "order count=%d — recording %d",
+                                    "order count=%d — recording %d at "
+                                    "submitted limit",
                                     ticker, _delta, count, count)
                                 _delta = count
+                                _delta_clamped = True
                             # Attribute cost to the delta contracts, not the
                             # cumulative weighted-average (R1-M2). When market
                             # moves between sibling-strategy fill and ghost-fill
@@ -4493,9 +4496,15 @@ class OrderExecutor:
                             _local_cost = self._state.get_local_position_cost_for_ticker(
                                 ticker, _ghost_side)
                             _delta_cost = _pos_cost - _local_cost
-                            _delta_avg = (_delta_cost // _delta
-                                          if _delta and _delta_cost > 0
-                                          else _pos_avg)
+                            if _delta_clamped:
+                                # Cost residual described the unclamped lot
+                                # count. After clamp it no longer prices
+                                # `_delta` contracts — use the submitted limit.
+                                _delta_avg = _ioc_limit_price
+                            else:
+                                _delta_avg = (_delta_cost // _delta
+                                              if _delta and _delta_cost > 0
+                                              else _pos_avg)
                             # Residual of two cumulatives (Kalshi exposure vs
                             # local SUM(total_cost_cents)) can be thousands of
                             # cents on a 1-lot delta. Out of (0, 100) is not a
