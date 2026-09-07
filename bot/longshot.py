@@ -658,7 +658,9 @@ class LongshotEngine:
                 with self._lock:
                     _popped = self._resting.pop(q["order_id"], None)
                 if _popped is not None:
-                    self._mark_pending(q["order_id"], "canceled")
+                    self._mark_pending(
+                        q.get("client_order_id") or q["order_id"],
+                        "canceled")
                 logging.warning(
                     "LONGSHOT_STALE_DROP: %s %s %.0fs past close with "
                     "cancel still failing — entry dropped after final "
@@ -725,6 +727,9 @@ class LongshotEngine:
         api_orders = resp.get("orders") or []
         api_order_ids = {o.get("order_id") for o in api_orders
                          if o.get("order_id")}
+        api_coids = {o.get("client_order_id") for o in api_orders
+                     if o.get("client_order_id") and o.get("order_id")
+                     and o.get("ticker")}
         all_fetched = True
 
         # Step 1 — adopt-and-kill still-resting orphans.
@@ -865,7 +870,7 @@ class LongshotEngine:
                     price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
-            _skip = self._boot_skip_seed(order_id, ticker, buy_side)
+            _skip = self._boot_skip_seed(coid or order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
             try:
@@ -957,8 +962,13 @@ class LongshotEngine:
                             exc_info=True)
             return  # latch unset — retry next tick
         for r in rows:
-            if r["order_id"] in api_order_ids:
+            if (r["order_id"] in api_order_ids
+                    or (r["client_order_id"]
+                        and r["client_order_id"] in api_coids)):
                 continue  # still resting — step 1 owns it
+            # pending crash-before-confirm rows have order_id=client_oid,
+            # which is never in api_order_ids. Skip by coid so a failed
+            # confirm_order_submitted cannot double-book via step 2.
             _buy_side = r["side"] or "yes"
             # R5-MN3: a 'pending' row carries no server order_id (its
             # order_id column holds the client_order_id from
@@ -1545,7 +1555,8 @@ class LongshotEngine:
         # quote. Skip when the final poll above already fully filled the
         # quote (_apply_fills popped it and marked the row 'filled').
         if _popped is not None:
-            self._mark_pending(order_id, "canceled")
+            self._mark_pending(
+                q.get("client_order_id") or order_id, "canceled")
         logging.info("LONGSHOT_CANCEL: %s %s reason=%s", q["ticker"],
                      order_id, reason)
 
@@ -1607,6 +1618,12 @@ class LongshotEngine:
         if fills is None:
             return False
         self._apply_fills(q, fills)
+        if (fills and q.get("filled", 0) == 0
+                and q.get("order_id") == q.get("client_order_id")):
+            logging.warning(
+                "LONGSHOT_BOOT_FILL_COID_MISS oid=%s n_fills=%d — "
+                "pending row order_id is client_oid; live Fill may omit "
+                "client_order_id", q.get("order_id"), len(fills))
         return complete
 
     def _apply_fills(self, q: Dict, fills: List[Dict]) -> None:
@@ -1621,8 +1638,18 @@ class LongshotEngine:
         still count toward ``q["filled"]`` — the order WAS filled, the
         position just already exists locally.
         """
-        matched = [f for f in fills
-                   if f.get("order_id") == q["order_id"]]
+        q_oid = q.get("order_id")
+        q_coid = q.get("client_order_id") or ""
+        # R5-MN3 fill match: a crash-before-confirm pending row keeps
+        # order_id=client_oid while Kalshi fills carry the server
+        # order_id. Also match fill.client_order_id == q.client_order_id
+        # when that field is present on the live Fill object (uncorroborated
+        # in-repo — go-live: confirm one /portfolio/fills body).
+        matched = [
+            f for f in fills
+            if (q_oid and f.get("order_id") == q_oid)
+            or (q_coid and f.get("client_order_id") == q_coid)
+        ]
         if q.get("boot_skip_remaining"):
             # Oldest first so the skip budget consumes the pre-restart
             # fills (the recorded ones) and post-restart fills survive.
@@ -1697,8 +1724,9 @@ class LongshotEngine:
                 # reaches here with record_count > 0 contracts of its
                 # own). Seeds this order's boot_skip_remaining at the
                 # next restart.
-                self._increment_recorded_fill_count(q["order_id"],
-                                                    record_count)
+                self._increment_recorded_fill_count(
+                    q.get("client_order_id") or q["order_id"],
+                    record_count)
             q["filled"] += fill_count
             logging.info(
                 "LONGSHOT_FILL: %s %s %dct @ %dc (%d/%d) trade=%s",
@@ -1713,4 +1741,5 @@ class LongshotEngine:
             # R2-C1: fully filled -> ledger row leaves 'resting' (idempotent
             # when the entry was already popped by a sister path).
             if _popped is not None:
-                self._mark_pending(q["order_id"], "filled")
+                self._mark_pending(
+                    q.get("client_order_id") or q["order_id"], "filled")
