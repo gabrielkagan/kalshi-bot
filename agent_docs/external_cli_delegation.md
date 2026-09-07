@@ -535,3 +535,34 @@ bias" is FALSE as stated** — the family and horizon must be attached to the cl
 At 1-2c it sits under the ~3c round-trip cost. Track D independently found the venue is not
 systematically miscalibrated in any way a maker could harvest at scale. **A skew input for
 quoting you are already doing, never an entry. Nothing here turns the bot on.**
+
+## The asymmetry test: are you applying a standard, or selecting evidence?
+
+Track E, 2026-09-07, after catching itself doing the thing:
+
+> For any standard you adopt, go find an instance where applying it would have
+> made your result look **BETTER**. If there are none, you are not applying a
+> standard, you are selecting evidence.
+
+The instance that produced it: Track E spent an entire Bit arguing that day-clustering
+is the honest unit, then quoted the WINDOW-cluster interval — the weaker one — to dismiss
+its own best near-miss cell (BTC 40-59 NO touch 300s, +5.01c/contract over 704 windows,
+day-cluster 99% CI [+0.62,+9.30]). It had policed the direction that would PROMOTE a cell
+and not the direction that would KILL one.
+
+Why this is hard to catch from inside: **every individual act of scepticism feels like
+rigour.** Killing your own cell feels more honest than keeping it, so the asymmetric
+application never trips the internal alarm that a too-good result does. Conservatism is
+not a direction-free virtue — applied in one direction only, it is just a different way
+of choosing your answer.
+
+This is the self-directed member of the family this document keeps returning to. A
+comparison that answers a narrower question than the one asked (the `day=` overlap, the
+convenience-sample median, raw-vs-effective N) is that error pointed at the data; the
+asymmetry is the same error pointed at yourself.
+
+Companion, from the same session and the same day: **prefer an instrument that RE-MEASURES
+over a constant that was measured once.** A cited number is a claim about a population you
+did not observe; a measured one travels with the data. Track D's verifier measures
+arrival-minus-event lag in whatever corpus it is handed and prints the distribution beside
+the result, so when the relayed lag figure was retracted, nothing it had built moved.
