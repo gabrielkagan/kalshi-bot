@@ -4138,8 +4138,11 @@ class OrderExecutor:
         remaining_count = (resp.get("order") or {}).get("remaining_count", count)
         try:
             _order_fill_count = fp_str_to_int(
-                (resp.get("order") or {}).get("fill_count_fp")) or (
-                (resp.get("order") or {}).get("fill_count") or 0)
+                (resp.get("order") or {}).get("fill_count_fp"))
+            if not _order_fill_count:
+                _order_fill_count = (
+                    (resp.get("order") or {}).get("fill_count") or 0)
+            _order_fill_count = int(_order_fill_count)
         except (TypeError, ValueError, OverflowError):
             logging.warning(
                 "TAKER_FILL_PARSE_MALFORMED: %s order=%s fill_count_fp=%r "

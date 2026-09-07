@@ -232,15 +232,24 @@ class TestNoSideFillDetection(unittest.TestCase):
         self.assertEqual(call_kwargs["side"], "yes")
 
     def test_on_fill_malformed_count_fp_stays_stamped_returns_zero(self):
-        """Leave a bad fill stamped so the taker loop cannot livelock."""
+        """Stamp-first (_check_for_fill) then skip: second poll must
+        not return the same malformed fill (no livelock).
+        """
         ex = _make_executor()
         candidate = _make_crypto_candidate()
         order = _make_order(candidate)
-        order["_seen_fill_ids"] = {"t-bad"}
-        fill = {"trade_id": "t-bad", "count_fp": "N/A", "yes_price": 92}
-        n = ex._on_fill(fill, order)
+        fill = {
+            "trade_id": "t-bad", "order_id": order["order_id"],
+            "count_fp": "N/A", "yes_price": 92,
+        }
+        ex._client.get_fills.return_value = {"fills": [fill]}
+        got = ex._check_for_fill(order)
+        self.assertIsNotNone(got)
+        n = ex._on_fill(got, order)
         self.assertEqual(n, 0)
         self.assertIn("t-bad", order["_seen_fill_ids"])
+        got2 = ex._check_for_fill(order)
+        self.assertIsNone(got2)
         ex._state.record_position_from_fill.assert_not_called()
 
     def test_on_fill_string_yes_price_does_not_raise(self):

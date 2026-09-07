@@ -773,20 +773,26 @@ class LongshotEngine:
                 else:
                     price = (o.get("no_price") if buy_side == "no"
                              else o.get("yes_price")) or 0
+                price = int(price)
             except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
                     "falling back to integer cents", _pd)
-                price = (o.get("no_price") if buy_side == "no"
-                         else o.get("yes_price")) or 0
+                try:
+                    price = int((o.get("no_price") if buy_side == "no"
+                                 else o.get("yes_price")) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
             try:
-                remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
-                    o.get("remaining_count") or 0)
+                remaining = fp_str_to_int(o.get("remaining_count_fp"))
+                if not remaining:
+                    remaining = o.get("remaining_count") or 0
+                remaining = int(remaining)
             except (TypeError, ValueError, OverflowError):
                 remaining = 0
             if not remaining:

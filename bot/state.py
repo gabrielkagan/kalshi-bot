@@ -1854,23 +1854,27 @@ class StateManager:
                     price = dollars_str_to_cents(npd)
                 else:
                     price = order.get("yes_price", 0) or order.get("no_price", 0)
+                price = int(price)
             except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "RECONCILE_ORDER_PRICE_PARSE_MALFORMED oid=%s — "
                     "falling back to integer cents", oid)
-                price = order.get("yes_price", 0) or order.get("no_price", 0)
+                try:
+                    price = int(order.get("yes_price", 0) or order.get("no_price", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    price = 0
 
             try:
-                remaining = fp_str_to_int(order.get("remaining_count_fp")) or (
-                    order.get("remaining_count") or 0)
+                remaining = fp_str_to_int(order.get("remaining_count_fp"))
+                if not remaining:
+                    remaining = order.get("remaining_count") or 0
+                remaining = int(remaining)
             except (TypeError, ValueError, OverflowError):
                 logging.warning(
                     "RECONCILE_ORDER_REMAINING_PARSE_MALFORMED oid=%s "
                     "remaining_count_fp=%r",
                     oid, order.get("remaining_count_fp"))
-                remaining = order.get("remaining_count") or 0
-                if not isinstance(remaining, int):
-                    remaining = 0
+                remaining = 0
 
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
