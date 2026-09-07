@@ -767,16 +767,22 @@ class LongshotEngine:
             # losses the R1-M1/R2-M1 machinery exists to capture.
             _pd = (o.get("no_price_dollars") if buy_side == "no"
                    else o.get("yes_price_dollars"))
-            price = dollars_str_to_cents(_pd) if _pd else (
-                (o.get("no_price") if buy_side == "no"
-                 else o.get("yes_price")) or 0)
+            try:
+                price = dollars_str_to_cents(_pd) if _pd else (
+                    (o.get("no_price") if buy_side == "no"
+                     else o.get("yes_price")) or 0)
+            except (TypeError, ValueError):
+                price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
-            remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
-                o.get("remaining_count") or 0)
+            try:
+                remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
+                    o.get("remaining_count") or 0)
+            except (TypeError, ValueError):
+                remaining = 0
             if not remaining:
                 # R5-MN2: BOTH remaining fields absent — derive from
                 # cumulative truth: original minus already-recorded
@@ -793,8 +799,11 @@ class LongshotEngine:
                 # remaining_count_* only). This branch fires only when BOTH
                 # remaining fields are absent — verify the live /orders
                 # schema before trusting it (go-live checklist item).
-                _orig = fp_str_to_int(o.get("count_fp")) or int(
-                    o.get("count") or 0)
+                try:
+                    _orig = fp_str_to_int(o.get("count_fp")) or int(
+                        o.get("count") or 0)
+                except (TypeError, ValueError):
+                    _orig = 0
                 remaining = max(0, _orig - _skip)
             # R5-M3: seed the REAL remaining window life — the stale-drop
             # backstop measures `stc_at_register - elapsed < -grace`, so
@@ -1381,8 +1390,11 @@ class LongshotEngine:
             # fill_count_fp pattern) — a DELETE response carrying only
             # fill_count_fp must not read as "no fills".
             _ord = resp.get("order") or {}
-            api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
-                _ord.get("fill_count")
+            try:
+                api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
+                    _ord.get("fill_count")
+            except (TypeError, ValueError):
+                api_filled = None
             if isinstance(api_filled, int) and api_filled > 0:
                 q["_cancel_api_filled"] = api_filled
             # V2 DELETE returns reduced_by = contracts canceled, not
