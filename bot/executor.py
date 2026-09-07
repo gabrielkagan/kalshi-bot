@@ -164,6 +164,12 @@ class OrderExecutor:
         # Per-ticker API error cap: stop hammering after 3 consecutive api_errors
         self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
         self.TICKER_API_ERROR_CAP = 3
+        # Tickers whose last taker 2xx had no server order_id and no fill
+        # evidence. Further _submit_taker calls on the same ticker are
+        # refused (the first IOC may already be live). Not an api-error
+        # CAP jump — that also bans maker/addons, and hourly/weather
+        # tickers live for hours.
+        self._taker_unknown_fill_tickers: set = set()
         # Rolling buffer of recent REST best-ask depth observations
         # per ticker, used to smooth the IOC drift-check clamp. Each
         # entry is (ts, depth); samples older than
@@ -3668,6 +3674,11 @@ class OrderExecutor:
             return None
         # Gate 3 also lives here: process_dc_retries() and in-process
         # IOC retries call _submit_taker without going through execute().
+        if ticker in self._taker_unknown_fill_tickers:
+            logging.warning(
+                "TAKER_SKIP_UNKNOWN_FILL: %s — prior 2xx had no order_id",
+                ticker)
+            return None
         _api_err_count = self._ticker_api_errors.get(ticker, 0)
         if _api_err_count >= self.TICKER_API_ERROR_CAP:
             logging.warning(
@@ -4388,14 +4399,14 @@ class OrderExecutor:
             logging.error(
                 f"GHOST_FILL_DETECTED: {ticker} remaining_count={remaining_count} "
                 f"fill_count={_order_fill_count} but no fill events from API — "
-                f"registering defensive position of {_ghost_n} at {price}¢")
+                f"registering defensive position of {_ghost_n} at {_ioc_limit_price}¢")
             self._state.record_position_from_fill(
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
                 side=_side,
                 count=_ghost_n,
-                price_cents=price,
+                price_cents=_ioc_limit_price,
                 strategy=candidate.get("strategy"),
                 seconds_to_close=order_info.get("seconds_to_close_at_submit"),
                 fill_latency=round(time.time() - order_info["submit_time"], 3),
@@ -4511,13 +4522,12 @@ class OrderExecutor:
         # 15M phantoms settle as real PnL before the next boot reconcile.
         if _no_server_oid:
             self._state.mark_order_status(client_oid, "api_error")
-            # Jump to CAP so in-process IOC retries and DC retries
-            # (which skip execute() Gate 3) cannot place a second IOC
-            # against a 2xx whose order_id we never got.
-            self._ticker_api_errors[ticker] = self.TICKER_API_ERROR_CAP
+            self._taker_unknown_fill_tickers.add(ticker)
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
             logging.warning(
-                "TAKER_PLACE_MALFORMED_UNFILLED: %s no order_id and no "
-                "fill evidence (api_errors=%d)",
+                "TAKER_SKIP_UNKNOWN_FILL: %s no order_id and no fill "
+                "evidence — further taker submits on this ticker halted "
+                "(api_errors=%d)",
                 ticker, self._ticker_api_errors[ticker])
         else:
             self._state.mark_order_status(order_id, "canceled")

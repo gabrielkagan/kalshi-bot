@@ -1342,6 +1342,9 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertEqual(
             ex._ticker_api_errors["KXBTC15M-26MAR091200-B68500"], 3,
             "no-oid must increment ticker_api_errors, not pop/reset")
+        self.assertIn(
+            "KXBTC15M-26MAR091200-B68500",
+            ex._taker_unknown_fill_tickers)
         api_error_calls = [
             c for c in ex._state.mark_order_status.call_args_list
             if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
@@ -1510,7 +1513,11 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertIsNone(result)
         ex._client.place_order.assert_not_called()
 
-    def test_no_oid_unfilled_caps_ticker_so_retry_does_not_place(self):
+    def test_no_oid_unfilled_halts_taker_retry_without_permanent_api_cap(self):
+        """Named unknown-fill halt stops a second IOC; it must not jump
+        ticker_api_errors to CAP (that also bans maker/addons for the
+        ticker's lifetime — hourly/weather tickers live hours).
+        """
         ex = _make_executor()
         candidate = _make_candidate()
         ticker = candidate["ticker"]
@@ -1521,12 +1528,39 @@ class TestGhostFillProtection(unittest.TestCase):
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             ex._submit_taker(candidate)
-            self.assertGreaterEqual(
-                ex._ticker_api_errors.get(ticker, 0), ex.TICKER_API_ERROR_CAP)
+            self.assertIn(ticker, ex._taker_unknown_fill_tickers)
+            self.assertEqual(ex._ticker_api_errors.get(ticker, 0), 1)
+            self.assertLess(ex._ticker_api_errors[ticker], ex.TICKER_API_ERROR_CAP)
             ex._client.place_order.reset_mock()
             result2 = ex._submit_taker(candidate)
         self.assertIsNone(result2)
         ex._client.place_order.assert_not_called()
+
+    def test_layer_a_ghosts_at_submitted_limit_not_scan_ask(self):
+        """Ghost cost basis is the IOC limit actually submitted, not scan ask."""
+        from bot.constants import MAX_ENTRY_PRICE
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-limit-px",
+                "remaining_count": 0,
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate(strategy="above")
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.TM_SWEEP_LIVE_ENABLED", True), \
+             patch("bot.executor.TM_LIVE_STRATEGIES", {"above"}):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+        self.assertIsNotNone(result)
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(submitted, MAX_ENTRY_PRICE)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["price_cents"],
+            MAX_ENTRY_PRICE)
 
     def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
         """remaining_count_fp='0.00' with remaining_count key absent must
