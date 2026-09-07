@@ -783,6 +783,9 @@ class LongshotEngine:
                     logging.warning(
                         "LONGSHOT_BOOT_ORPHAN_CANCEL_FAILED %s",
                         order_id, exc_info=True)
+                self._mark_pending(order_id, "canceled")
+                if coid and coid != order_id:
+                    self._mark_pending(coid, "canceled")
                 continue
             sell_side = "no" if buy_side == "yes" else "yes"
             # R7-M1: dollars-first price extraction — post-FP-transition
