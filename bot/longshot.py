@@ -1419,7 +1419,8 @@ class LongshotEngine:
                     if (isinstance(api_filled, int)
                             and reduced == 0
                             and q.get("_cancel_reduced_positive")
-                            and int(q.get("filled") or 0) > 0):
+                            and int(q.get("filled") or 0) > 0
+                            and not q.get("needs_clean_poll")):
                         api_filled = int(q["filled"])
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
