@@ -251,7 +251,9 @@ TWAPLOCK_CLIENT_OID_PREFIX = "tw-"  # client_order_id prefix on every twaplock t
 # the next UTC date. Per-ticker one-shot cannot stop the drip: each 15M
 # window is a new ticker, so TICKER_API_ERROR_CAP (executor Gate 3) never
 # trips. Threshold matches that cap. VPS 2026-09-06: 2582 tw- api_error,
-# 2 fills ever (last fill 2026-06-17).
+# 2 fills ever (last fill 2026-06-17). Reconstructed on engine init from
+# trailing tw- pending_orders api_error rows for today's UTC date so a
+# deploy/crash does not re-arm POSTs.
 TWAPLOCK_API_ERROR_CIRCUIT_THRESHOLD = 3
 TWAPLOCK_LIVE_OVERRIDE = True      # RE-ARMED 2026-06-15 (operator go-live). Paused 2026-06-12 (same vol-engine deflation; p_lock consumes blended_rv). Fixed by V.1-V.4; post-V.4 soak: 60-90s window locks 0.990 (calibrated to <1pp). The miscalibrated <60s window (0.754 lock — a TWAP variance-collapse/basis-error bug, NOT vol) is cut by the stc>=60 floor (PR #171, _MIN_SUBMIT_STC_SECONDS=60). Full throttle all 7 (BNB thinnest, 60-90s lock 0.895 n=19 — watch). Reopening <60s = ticket 86baefz7m.
 # Twaplock validated live universe (R4-M1): the ONLY assets twaplock may ever

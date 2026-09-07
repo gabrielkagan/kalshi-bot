@@ -51,6 +51,7 @@ lifecycle marks land on the row.
 from __future__ import annotations
 
 import datetime
+import sqlite3
 import time
 from datetime import timezone
 from unittest.mock import MagicMock
@@ -682,3 +683,171 @@ class TestMN3PendingRowsReconciledAtBoot:
         assert _pending_status(state, "mk-mn3c") == "pending", (
             "boot step-2 is scoped to ls- rows — main-pipeline pending "
             "rows are owned by the executor/reconciler (R5-MN3)")
+
+    def test_pending_row_filled_matches_fill_by_client_order_id(
+            self, state, client, enabled):
+        """Crash after place+fill, before confirm: order is gone from
+        GET /orders; Kalshi fills carry the SERVER order_id. The pending
+        row's order_id is still the client_oid. _apply_fills must match
+        fill.client_order_id == q.client_order_id or the fill is lost
+        and the row is marked canceled with 0 contracts booked.
+        """
+        now = time.time()
+        state.insert_bot_order("ls-mn3d", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3d-server",
+             "client_order_id": "ls-mn3d",
+             "trade_id": "t-mn3d",
+             "count": 2,
+             "ts": now - 5,
+             "created_time": _rfc3339(now - 5)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "boot step-2 must book the fill keyed on client_order_id "
+            "when q.order_id is still the client_oid (R5-MN3 fill match)")
+        assert pos["side"] == "no"
+        assert _pending_status(state, "ls-mn3d") == "filled"
+
+    def test_fill_with_other_client_oid_is_not_stolen(
+            self, state, client, enabled):
+        """Matching on client_order_id must not book another order's fill."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3e", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": []}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-other",
+             "client_order_id": "ls-someone-else",
+             "trade_id": "t-other",
+             "count": 2,
+             "ts": now - 5,
+             "created_time": _rfc3339(now - 5)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        assert _positions_row(state) is None
+        assert _pending_status(state, "ls-mn3e") == "canceled"
+
+    def test_step2_skips_api_present_pending_if_confirm_fails(
+            self, state, client, enabled):
+        """confirm BUSY must not let step 2 double-book the same fills."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3f", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3f", "client_order_id": "ls-mn3f",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 2, "remaining_count": 2,
+             "status": "resting", "created_time": _rfc3339(now - 120)},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3f", "client_order_id": "ls-mn3f",
+             "trade_id": "t-mn3f", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        state.confirm_order_submitted = boom
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "step 1 adopts once; step 2 must skip API-present coid")
+        assert _pending_status(state, "ls-mn3f") == "filled"
+        rfc = state.conn.execute(
+            "SELECT recorded_fill_count FROM pending_orders "
+            "WHERE client_order_id='ls-mn3f'").fetchone()["recorded_fill_count"]
+        assert rfc == 2
+        # Next boot: order gone from API, pending row unrepaired.
+        # recorded_fill_count must have been bumped via coid so step 2
+        # skip-seeds and does not double-book.
+        client.get_orders.return_value = {"orders": []}
+        engine2 = LongshotEngine(client, state)
+        engine2.tick()
+        pos2 = _positions_row(state)
+        assert pos2 is not None and pos2["count"] == 2, (
+            "second boot must not re-record fills after confirm-fail")
+
+    def test_step2_still_books_when_api_order_lacks_order_id(
+            self, state, client, enabled):
+        """api_coids must not include bodies step 1 continues past."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3g", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        state.confirm_order_submitted("ls-mn3g", "oid-mn3g")
+        client.get_orders.return_value = {"orders": [
+            {"client_order_id": "ls-mn3g", "ticker": TICKER,
+             "side": "no", "action": "buy", "status": "resting"},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3g", "client_order_id": "ls-mn3g",
+             "trade_id": "t-mn3g", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "step 1 cannot adopt an order_id-less body; step 2 must still book")
+
+    def test_confirm_fail_plus_cancel_fail_does_not_double_book(
+            self, state, client, enabled):
+        """Step-1 adoption that leaves the row 'pending' (confirm BUSY)
+        with cancel still failing: step 2 must skip by client_order_id."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3h", TICKER, EVENT, "BTC", "no", 2, 92,
+                               False)
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3h", "client_order_id": "ls-mn3h",
+             "ticker": TICKER, "side": "no", "action": "buy",
+             "no_price": 92, "count": 2, "remaining_count": 2,
+             "status": "resting", "created_time": _rfc3339(now - 120)},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3h", "client_order_id": "ls-mn3h",
+             "trade_id": "t-mn3h", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        state.confirm_order_submitted = boom
+        client.cancel_order.return_value = {
+            "_error": True, "_status_code": 500}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "step 2 must skip a pending row whose coid is still in the API "
+            "order list — otherwise the fill books twice")
+
+    def test_step2_still_books_when_api_order_lacks_ticker(
+            self, state, client, enabled):
+        """Pending row + API object with order_id but no ticker: step 1
+        continues; api_coids must not include the coid."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3i", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-mn3i", "client_order_id": "ls-mn3i",
+             "side": "no", "action": "buy", "status": "resting"},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3i", "client_order_id": "ls-mn3i",
+             "trade_id": "t-mn3i", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "ticker-less API body is not step-1 owned; step 2 must book")

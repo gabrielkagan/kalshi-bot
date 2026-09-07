@@ -1921,13 +1921,22 @@ class StateManager:
                 except (TypeError, ValueError, OverflowError):
                     remaining = 0
 
+            side = order.get("side")
+            action = order.get("action")
+            if side not in ("yes", "no") or action not in ("buy", "sell"):
+                logging.warning(
+                    "RECONCILE_ORDER_DIRECTION_MALFORMED oid=%s side=%r "
+                    "action=%r outcome_side=%r book_side=%r — skipping",
+                    oid, side, action,
+                    order.get("outcome_side"), order.get("book_side"))
+                continue
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
                     event_ticker, asset, side, action, count, price_cents,
                     status, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,'canceled',?,?)
             """, (oid, order.get("client_order_id", ""), ticker,
-                  event_ticker, asset, order["side"], order["action"],
+                  event_ticker, asset, side, action,
                   remaining, price,
                   order.get("created_time", now), now))
 
@@ -1937,9 +1946,9 @@ class StateManager:
         # filled / expired pre-restart) is reconciled by
         # LongshotEngine._boot_reconcile_orphans step 2, which NEEDS the
         # row still 'resting' to find it (fills recorded, row then marked
-        # filled/canceled by the engine); a stranded tw- row is flipped to
-        # 'canceled' by TwaplockEngine's first-tick boot sweep, the single
-        # owner of that transition.
+        # filled/canceled by the engine); a stranded tw- row is flipped
+        # pending→api_error / resting→canceled by TwaplockEngine's
+        # first-tick boot sweep, the single owner of those transitions.
         local_rows = self.conn.execute(
             "SELECT order_id, client_order_id FROM pending_orders "
             "WHERE status='resting'"
