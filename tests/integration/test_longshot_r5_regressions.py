@@ -761,3 +761,25 @@ class TestMN3PendingRowsReconciledAtBoot:
         pos = _positions_row(state)
         assert pos is not None and pos["count"] == 2, (
             "step 1 adopts once; step 2 must skip API-present coid")
+
+    def test_step2_still_books_when_api_order_lacks_order_id(
+            self, state, client, enabled):
+        """api_coids must not include bodies step 1 continues past."""
+        now = time.time()
+        state.insert_bot_order("ls-mn3g", TICKER, EVENT, "BTC", "no", 2,
+                               92, False)
+        state.confirm_order_submitted("ls-mn3g", "oid-mn3g")
+        client.get_orders.return_value = {"orders": [
+            {"client_order_id": "ls-mn3g", "ticker": TICKER,
+             "side": "no", "action": "buy", "status": "resting"},
+        ]}
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-mn3g", "client_order_id": "ls-mn3g",
+             "trade_id": "t-mn3g", "count": 2,
+             "ts": now - 30, "created_time": _rfc3339(now - 30)},
+        ]}
+        engine = LongshotEngine(client, state)
+        engine.tick()
+        pos = _positions_row(state)
+        assert pos is not None and pos["count"] == 2, (
+            "step 1 cannot adopt an order_id-less body; step 2 must still book")

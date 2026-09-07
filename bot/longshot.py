@@ -726,7 +726,8 @@ class LongshotEngine:
         api_order_ids = {o.get("order_id") for o in api_orders
                          if o.get("order_id")}
         api_coids = {o.get("client_order_id") for o in api_orders
-                     if o.get("client_order_id")}
+                     if o.get("client_order_id") and o.get("order_id")
+                     and o.get("ticker")}
         all_fetched = True
 
         # Step 1 — adopt-and-kill still-resting orphans.
