@@ -1397,17 +1397,29 @@ class LongshotEngine:
             # CANCEL_FILL_MISMATCH still catches fills-API lag.
             if not isinstance(api_filled, int):
                 reduced = None
-                if _ord.get("reduced_by_fp") is not None:
-                    reduced = fp_str_to_int(_ord.get("reduced_by_fp"))
-                elif isinstance(_ord.get("reduced_by"), int):
-                    reduced = _ord.get("reduced_by")
-                elif _ord.get("reduced_by") is not None:
-                    reduced = fp_str_to_int(_ord.get("reduced_by"))
+                try:
+                    if _ord.get("reduced_by_fp") is not None:
+                        reduced = fp_str_to_int(_ord.get("reduced_by_fp"))
+                    elif isinstance(_ord.get("reduced_by"), int):
+                        reduced = _ord.get("reduced_by")
+                    elif _ord.get("reduced_by") is not None:
+                        reduced = fp_str_to_int(_ord.get("reduced_by"))
+                except (TypeError, ValueError):
+                    reduced = None
                 if isinstance(reduced, int):
                     try:
                         api_filled = max(0, int(q["count"]) - reduced)
                     except (TypeError, ValueError):
                         api_filled = None
+                    # reduced_by=0 with some fills already recorded:
+                    # nothing was canceled (order already gone), not
+                    # "the whole order filled". tick() clears
+                    # needs_clean_poll on a complete poll before the
+                    # cancel sweep, so do not key this on that flag.
+                    if (isinstance(api_filled, int)
+                            and reduced == 0
+                            and int(q.get("filled") or 0) > 0):
+                        api_filled = int(q["filled"])
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
             # SUBSEQUENT tick before any 404-path terminal pop —

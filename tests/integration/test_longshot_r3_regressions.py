@@ -443,6 +443,48 @@ class TestMN2CleanPollBefore404Pop:
             "after a clean re-poll on a subsequent tick the 404 path "
             "pops normally")
 
+    def test_retry_cancel_reduced_by_zero_after_partial_fills_pops(
+            self, engine, state, client, enabled):
+        """Retry DELETE of an already-gone order may 200 with
+        reduced_by=0 instead of 404. count-0 would re-arm mismatch
+        and pin occupancy for the rest of the window.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-z",
+                              order_id="oid-z", count=3)
+        self._register(engine, order_id="oid-z")
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 1, "reduced_by_fp": "1.00"}}
+        engine._cancel_quote("oid-z", "t_minus_3min")
+        assert "oid-z" in engine._resting
+        with engine._lock:
+            engine._resting["oid-z"]["filled"] = 2
+            engine._resting["oid-z"]["needs_clean_poll"] = True
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 0, "reduced_by_fp": "0.00"}}
+        engine._cancel_quote("oid-z", "t_minus_3min")
+        assert "oid-z" not in engine._resting, (
+            "reduced_by=0 on a retry after partial fills means the "
+            "order is already gone — pop, do not re-arm mismatch")
+
+    def test_first_cancel_reduced_by_zero_still_holds_for_fill_lag(
+            self, engine, state, client, enabled, caplog):
+        """reduced_by=0 on the FIRST cancel is a full fill with
+        nothing left to cancel — still hold for fills-API lag.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-full",
+                              order_id="oid-full", count=3)
+        self._register(engine, order_id="oid-full")
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 0, "reduced_by_fp": "0.00"}}
+        with caplog.at_level("WARNING"):
+            engine._cancel_quote("oid-full", "t_minus_3min")
+        assert "oid-full" in engine._resting
+        assert "LONGSHOT_CANCEL_FILL_MISMATCH" in caplog.text
+
     def test_partial_poll_does_not_clear_mismatch_hold(
             self, engine, state, client, enabled):
         engine._boot_reconciled = True
