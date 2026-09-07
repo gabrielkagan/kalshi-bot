@@ -1377,9 +1377,18 @@ class OpportunityScanner:
         self._dc_window_risk = {}  # Decided contract per-window risk tracker
         self._dc_window_cap_skips = 0  # Session counter for window cap skips
         self._lp_window_counts = {}  # Low-price shadow: per-window signal count
+        # Kill-switch SUM(pnl) is control plane — not 1 Hz. Same 30s
+        # cadence as slow-product scan. First tick runs (last_ts=0).
+        _kill_due = slow_scan_due(
+            now,
+            getattr(self, "_last_kill_sql_ts", 0.0),
+            SLOW_PRODUCT_SCAN_INTERVAL_S,
+        )
+        if _kill_due:
+            self._last_kill_sql_ts = now
         # Weather NO-side kill switch: auto-disable if cumulative PnL below threshold
         # Check once per tick, uses module-level _weather_no_killed flag
-        if bot.constants.WEATHER_NO_SIDE_LIVE:
+        if _kill_due and bot.constants.WEATHER_NO_SIDE_LIVE:
             try:
                 _wx_no_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
@@ -1398,7 +1407,7 @@ class OpportunityScanner:
             except Exception:
                 pass  # Non-critical
         # Hourly NO kill switch
-        if bot.constants.HOURLY_NO_SIDE_LIVE:
+        if _kill_due and bot.constants.HOURLY_NO_SIDE_LIVE:
             try:
                 _hno_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
@@ -1417,7 +1426,7 @@ class OpportunityScanner:
             except Exception:
                 pass  # Non-critical
         # Bracket NO kill switch (separate from general weather NO)
-        if bot.constants.BRACKET_NO_ENABLED:
+        if _kill_due and bot.constants.BRACKET_NO_ENABLED:
             try:
                 _bn_pnl = self._state.conn.execute(
                     "SELECT COALESCE(SUM(pnl_cents - COALESCE(fee_cents, 0)), 0) FROM settled_trades "
@@ -10153,23 +10162,11 @@ class OpportunityScanner:
         heartbeat_recent = (
             getattr(self, "_scan_15m_iter_heartbeat_ts", 0.0)
             > tick_start_epoch)
-        # Heartbeat is the intended signal (in-memory). COUNT(*) both
+        # Data plane: in-memory heartbeat only. COUNT(*) / EXISTS on
         # eval tables every 1 Hz was SCAN_PRELOOP watchdogs=2.2–2.7s
-        # live (2026-09-07, post-#182). Skip SQL when the previous tick
-        # iterated a 15M window. EXISTS fallback only on miss.
-        rows_written = 0
-        if not heartbeat_recent:
-            try:
-                row = self._state.conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM evaluated_opportunities "
-                    " WHERE product_type='15m' AND evaluation_time > ?) "
-                    "OR EXISTS(SELECT 1 FROM rejected_opportunities "
-                    " WHERE product_type='15m' AND rejection_time > ?)",
-                    (tick_start_ts, tick_start_ts)
-                ).fetchone()
-            except Exception:
-                return
-            rows_written = 1 if row and row[0] else 0
+        # (2026-09-07, post-#182). Dedup-silenced rows are why the
+        # heartbeat exists; SQL is not a second source of truth on
+        # the trading tick.
         # Phase 3 R-review A1: detect WS disconnect→reconnect
         # transition. If WS just came back from a disconnected
         # state, the counter accumulated during the dead window
@@ -10218,7 +10215,7 @@ class OpportunityScanner:
             self._scan_15m_unproductive_entry_alerted = False
             self._scan_15m_unproductive_max_count = 0
 
-        if heartbeat_recent or rows_written > 0:
+        if heartbeat_recent:
             # Productive tick — reset detection counter AND Phase 3
             # auto-recovery state (throttle + one-shot reconnect flag)
             # so the next stuck period gets fresh recovery cadence.

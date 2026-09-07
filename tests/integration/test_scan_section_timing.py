@@ -104,12 +104,12 @@ class TestScanSectionTiming(unittest.TestCase):
                 idx, last, "%s must run after the previous section mark" % mark)
             last = idx
 
-    def test_scan_productive_skips_sql_when_heartbeat_recent(self):
-        """VPS 2026-09-07 after #182: watchdogs=2.2–2.7s every tick.
+    def test_scan_productive_is_heartbeat_only_no_sql(self):
+        """1 Hz data plane: liveness is the in-memory heartbeat.
 
-        `_check_scan_productive_15m` already has an in-memory heartbeat
-        then still COUNT(*) both eval tables every 1 Hz. Skip the SQL
-        when the previous tick iterated a 15M window.
+        Control-plane SQL (COUNT/EXISTS on eval tables) does not belong
+        on the trading tick. Silence MAX(ts) is 30s; kill-switch SUM is
+        30s. Productive watchdog increments/resets from heartbeat only.
         """
         src = ""
         if os.path.exists(BOT_PY):
@@ -118,14 +118,15 @@ class TestScanSectionTiming(unittest.TestCase):
         start = src.find("def _check_scan_productive_15m")
         end = src.find("\n    def _drift_probe_tick")
         body = src[start:end]
-        self.assertIn("if not heartbeat_recent:", body)
-        idx_gate = body.find("if not heartbeat_recent:")
-        idx_sql = body.find("evaluated_opportunities")
-        self.assertGreaterEqual(idx_gate, 0)
-        self.assertGreater(idx_sql, idx_gate)
-        self.assertGreater(
-            body.find("evaluated_opportunities", idx_gate),
-            idx_gate)
+        self.assertIn("heartbeat_recent", body)
+        self.assertNotIn(
+            "evaluated_opportunities", body,
+            "1 Hz productive watchdog must not query evaluated_opportunities")
+        self.assertNotIn(
+            "rejected_opportunities", body,
+            "1 Hz productive watchdog must not query rejected_opportunities")
+        self.assertIn("_last_kill_sql_ts", src)
+        self.assertIn("slow_scan_due(", src)
 
 
 if __name__ == "__main__":
