@@ -1561,6 +1561,22 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertEqual(
             ex._state.record_position_from_fill.call_args.kwargs["price_cents"],
             MAX_ENTRY_PRICE)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_unknown_fill_halt_suppresses_maker_on_same_ticker(self):
+        """A ticker with an unknown-fill IOC must not then rest a maker."""
+        ex = _make_executor()
+        candidate = _make_candidate(seconds_to_close=400)
+        ex._taker_unknown_fill_tickers.add(candidate["ticker"])
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(
+                observation_only=False, min_entry_price=86)
+            result = ex.execute(candidate)
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
 
     def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
         """remaining_count_fp='0.00' with remaining_count key absent must

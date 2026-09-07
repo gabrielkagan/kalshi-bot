@@ -55,6 +55,7 @@ def ghost_fill_check(
     state_mark_order_status=None,
     order_fill_count: int = 0,
     state_local_count=None,
+    ioc_limit_price: int = None,
 ):
     """Simulate the ghost fill detection logic after fill polling.
 
@@ -77,24 +78,28 @@ def ghost_fill_check(
     # Layer A: remaining_count from order response
     # CRITICAL: For IOC orders, remaining_count=0 can mean auto-canceled with
     # zero fills. Must verify fill_count > 0 to distinguish real ghost fills
-    # from unfilled IOC cancellations.
-    if remaining_count == 0 and order_fill_count > 0:
+    # from unfilled IOC cancellations. remaining is None (key dropped) +
+    # fill>0 is also Layer A. Size from fill_count, not count. Price is
+    # the submitted IOC limit, not scan-time ask.
+    limit = ioc_limit_price if ioc_limit_price is not None else price
+    if order_fill_count > 0 and remaining_count in (0, None):
+        ghost_n = min(int(order_fill_count), count)
         if state_record_position:
             state_record_position(
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
                 side="yes",
-                count=count,
-                price_cents=price,
+                count=ghost_n,
+                price_cents=limit,
                 is_taker=True,
                 fill_source="ghost_fill",
             )
         if state_mark_order_status:
             state_mark_order_status("filled")
         return True, "A", {
-            "count": count,
-            "price": price,
+            "count": ghost_n,
+            "price": limit,
             "source": "ghost_fill",
         }
 
@@ -245,7 +250,7 @@ class TestGhostFillLayerA(unittest.TestCase):
         status_fn.assert_not_called()
 
     def test_remaining_zero_uses_limit_price(self):
-        """Ghost fill should register at the limit price (conservative)."""
+        """Ghost fill should register at the submitted IOC limit, not scan ask."""
         candidate = self._make_candidate(best_yes_ask=92, position_size=10)
         order_info = self._make_order_info(candidate)
         record_fn = MagicMock()
@@ -254,11 +259,12 @@ class TestGhostFillLayerA(unittest.TestCase):
             remaining_count=0, total_filled=0, count=10, price=92,
             ticker=candidate["ticker"], candidate=candidate,
             order_info=order_info, state_record_position=record_fn,
-            order_fill_count=10,
+            order_fill_count=10, ioc_limit_price=95,
         )
 
         self.assertTrue(detected)
-        self.assertEqual(details["price"], 92)
+        self.assertEqual(details["price"], 95)
+        self.assertEqual(details["count"], 10)
 
     def test_remaining_nonzero_skips_layer_a(self):
         """remaining_count > 0 → Layer A should NOT trigger."""

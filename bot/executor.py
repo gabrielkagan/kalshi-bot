@@ -165,10 +165,10 @@ class OrderExecutor:
         self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
         self.TICKER_API_ERROR_CAP = 3
         # Tickers whose last taker 2xx had no server order_id and no fill
-        # evidence. Further _submit_taker calls on the same ticker are
+        # evidence. Further taker AND maker on the same ticker are
         # refused (the first IOC may already be live). Not an api-error
-        # CAP jump — that also bans maker/addons, and hourly/weather
-        # tickers live for hours.
+        # CAP jump. Not pruned: 15M tickers die with the window;
+        # hourly/weather halt is the intended don't-add-size posture.
         self._taker_unknown_fill_tickers: set = set()
         # Rolling buffer of recent REST best-ask depth observations
         # per ticker, used to smooth the IOC drift-check clamp. Each
@@ -875,6 +875,12 @@ class OrderExecutor:
             logging.info(
                 "SHADOW_SKIP: %s %s reason=%s — evaluated, no live order placed",
                 ticker, candidate.get("strategy"), tm_mode_reason(_tm_asset))
+            return None
+
+        if ticker in self._taker_unknown_fill_tickers:
+            logging.warning(
+                "ORDER_SUPPRESSED unknown_fill: %s — prior taker 2xx had "
+                "no order_id; not stacking maker or taker", ticker)
             return None
 
         # ── Unified exposure caps (always active) ─────────────────────
