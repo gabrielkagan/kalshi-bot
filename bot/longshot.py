@@ -757,9 +757,32 @@ class LongshotEngine:
                                 "for %s", coid, exc_info=True)
             buy_side = (o.get("outcome_side") or o.get("side") or "").lower()
             if buy_side not in ("yes", "no"):
+                # Wrap strips side/action on direction-malformed GET
+                # bodies; state._reconcile_orders skips ls- by design, so
+                # continue here would leave a live maker un-canceled and
+                # un-adopted. Recover from the local ledger (insert_bot_order
+                # wrote side); last resort is a direct cancel.
+                try:
+                    row = self._state.conn.execute(
+                        "SELECT side FROM pending_orders "
+                        "WHERE order_id=? OR client_order_id=?",
+                        (order_id, coid)).fetchone()
+                    buy_side = ((row["side"] if row else "") or "").lower()
+                except Exception:
+                    logging.warning(
+                        "LONGSHOT_BOOT_DIRECTION_LEDGER_FAILED oid=%s",
+                        order_id, exc_info=True)
+                    buy_side = ""
+            if buy_side not in ("yes", "no"):
                 logging.warning(
-                    "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — skipping",
-                    order_id)
+                    "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — no local "
+                    "side either; cancelling unadoptable orphan", order_id)
+                try:
+                    self._client.cancel_order(order_id, ticker=ticker)
+                except Exception:
+                    logging.warning(
+                        "LONGSHOT_BOOT_ORPHAN_CANCEL_FAILED %s",
+                        order_id, exc_info=True)
                 continue
             sell_side = "no" if buy_side == "yes" else "yes"
             # R7-M1: dollars-first price extraction — post-FP-transition

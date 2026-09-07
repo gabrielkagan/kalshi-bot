@@ -211,3 +211,58 @@ def test_reconcile_cancels_malformed_direction_order(tmp_path):
         assert st == "canceled"
     finally:
         s.close()
+
+
+def test_longshot_boot_malformed_recovers_side_from_ledger(tmp_path):
+    """ls- orders are skipped by state reconcile. Recover buy_side from
+    the local row so adopt+cancel still runs."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_ledger.db"))
+    try:
+        event = "KXBTC15M-26SEP071200"
+        s.insert_bot_order("ls-bad", TICKER, event, "BTC", "no", 2, 45, False)
+        s.confirm_order_submitted("ls-bad", "oid-ls-bad")
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-bad", "client_order_id": "ls-bad",
+             "ticker": TICKER, "status": "resting",
+             "no_price": 45, "remaining_count": 2, "count": 2},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        assert client.cancel_order.called, (
+            "malformed ls- with local side must still be canceled")
+        st = s.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-ls-bad'"
+        ).fetchone()["status"]
+        assert st != "resting"
+        assert engine.resting_count() == 0
+    finally:
+        s.close()
+
+
+def test_longshot_boot_malformed_no_local_side_cancels(tmp_path):
+    """No API direction and no local row: cancel the unadoptable orphan."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_nolocal.db"))
+    try:
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-orphan", "client_order_id": "ls-orphan",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        assert client.cancel_order.called, (
+            "unadoptable ls- orphan must be canceled, not left resting")
+        assert engine.resting_count() == 0
+    finally:
+        s.close()
