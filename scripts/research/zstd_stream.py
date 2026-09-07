@@ -78,7 +78,7 @@ import subprocess
 from typing import Iterator, Optional
 
 __all__ = ["checked_stream_lines", "assert_zstd_ok", "checked_zstandard_lines",
-           "run_zstd_checked", "ZstdTruncatedError"]
+           "run_zstd_checked", "checked_zstd_byte_stream", "ZstdTruncatedError"]
 
 
 class ZstdTruncatedError(RuntimeError):
@@ -262,3 +262,76 @@ def checked_zstandard_lines(path: str, *, decode: bool = True) -> Iterator:
             f"False) — the stream was TRUNCATED. The library yields a silent "
             f"prefix here and raises nothing, so this check is the only signal."
         )
+
+
+class checked_zstd_byte_stream:
+    """Context manager giving a raw checked BYTE stream from a .zst.
+
+    For consumers that do not iterate lines — the motivating case is a pickle
+    reader that calls `pickle.load(stream)` in a loop until EOFError (Track E's
+    `load_pickle_stream`, ticket 86bbvrx1t). Those cannot use
+    `checked_stream_lines`, and writing a second exit-code check is how a
+    fourth variant of this bug gets born.
+
+    Usage::
+
+        with checked_zstd_byte_stream(path) as stream:
+            while True:
+                try:
+                    rec = pickle.load(stream)
+                except EOFError:
+                    break
+                ...
+        # exit-code check fires HERE, on __exit__
+
+    The check runs on `__exit__` with the same exhausted-vs-SIGPIPE logic as the
+    rest of this module: `exhausted` is inferred from whether the caller left the
+    block normally. A caller that raises (or breaks out via an exception) is
+    treated as a non-exhausted read and NOT flagged, because abandoning the
+    stream kills zstd with SIGPIPE legitimately.
+
+    Note the asymmetry with a line reader: a pickle consumer stops on EOFError,
+    which IS a normal exhaustion, so the common case correctly reaches the check.
+
+    TWO FAILURE SHAPES, both loud — verified by sweeping nine truncation points
+    across a 20,000-record pickle, ZERO of which passed silently:
+      * truncation landing ON a record boundary -> EOFError -> normal block exit
+        -> this class raises ZstdTruncatedError (4 of 9);
+      * truncation landing MID-record -> pickle raises UnpicklingError inside the
+        block (5 of 9). __exit__ sees exc_type set, skips its own check, and lets
+        the original propagate rather than masking it.
+    So a caller must NOT catch UnpicklingError broadly and continue: on this path
+    it usually means TRUNCATED INPUT, not corrupt data.
+    """
+
+    def __init__(self, path: str, *, bufsize: int = 1 << 20) -> None:
+        self.path = path
+        self._bufsize = bufsize
+        self._proc: Optional[subprocess.Popen] = None
+
+    def __enter__(self):
+        self._proc = subprocess.Popen(
+            ["zstd", "-dc", self.path], stdout=subprocess.PIPE,
+            bufsize=self._bufsize,
+        )
+        assert self._proc.stdout is not None
+        return self._proc.stdout
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        proc = self._proc
+        if proc is None:
+            return False
+        try:
+            if proc.stdout is not None:
+                proc.stdout.close()
+        except Exception:
+            pass
+        proc.wait()
+        # An exception on the way out means the caller abandoned the stream:
+        # SIGPIPE is expected, so do not convert it into a truncation report
+        # and do not mask the caller's original exception.
+        if exc_type is None:
+            assert_zstd_ok(
+                proc, self.path, exhausted=True, require_nonempty=False
+            )
+        return False

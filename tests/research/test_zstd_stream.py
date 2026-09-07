@@ -174,3 +174,48 @@ def test_checked_zstandard_lines_reads_a_good_file_completely(tmp_path):
     from scripts.research.zstd_stream import checked_zstandard_lines
     f = _write_zst(tmp_path / "z2.jsonl.zst", 100_000)
     assert len(list(checked_zstandard_lines(str(f)))) == 100_000
+
+
+def test_checked_zstd_byte_stream_pickle_truncation_is_never_silent(tmp_path):
+    """Byte-stream API for pickle consumers (ticket 86bbvrx1t).
+
+    Sweeps truncation points because the failure SHAPE varies: on a record
+    boundary the loop exits via EOFError and the exit-code check fires; mid-record
+    pickle raises first. Both are loud. The assertion that matters is that NO
+    truncation point produces a silent short read.
+    """
+    import pickle
+    import subprocess as sp
+    from scripts.research.zstd_stream import checked_zstd_byte_stream
+
+    raw = tmp_path / "d.pkl"
+    with open(raw, "wb") as fh:
+        for i in range(20_000):
+            pickle.dump({"i": i}, fh)
+    good = tmp_path / "g.pkl.zst"
+    sp.run(["zstd", "-q", "-f", str(raw), "-o", str(good)], check=True)
+
+    def load(p):
+        n = 0
+        with checked_zstd_byte_stream(str(p)) as st:
+            while True:
+                try:
+                    pickle.load(st)
+                    n += 1
+                except EOFError:
+                    break
+        return n
+
+    assert load(good) == 20_000
+
+    data = good.read_bytes()
+    silent = []
+    for frac in (0.3, 0.5, 0.7, 0.9, 0.99):
+        bad = tmp_path / f"b{frac}.zst"
+        bad.write_bytes(data[: int(len(data) * frac)])
+        try:
+            load(bad)
+            silent.append(frac)          # returned normally == SILENT SHORT READ
+        except Exception:
+            pass                          # any exception is acceptable: it is loud
+    assert not silent, f"silent short read at truncation fractions {silent}"
