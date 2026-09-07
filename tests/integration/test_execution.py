@@ -1451,6 +1451,83 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertEqual(
             ex._state.record_position_from_fill.call_args.kwargs["count"], 5)
 
+    def test_layer_a_no_oid_partial_fill_ghosts_fill_count_not_count(self):
+        """IOC remaining=0 is normal (remainder auto-canceled). A no-oid
+        body with fill=2 remaining=0 must ghost 2, not the full size.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "fill_count": "2.00", "remaining_count": "0.00",
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["fill_source"], "ghost_fill")
+        self.assertEqual(kwargs["count"], 2, "must not inflate a 2-fill to count=5")
+        self.assertEqual(result["filled_count"], 2)
+
+    def test_layer_a_remaining_zero_partial_fill_ghosts_fill_count(self):
+        """With-oid remaining=0 fill=2 is a 2-contract ghost, not count."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-partial-a",
+                "remaining_count": 0,
+                "fill_count": 2,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 2)
+
+    def test_submit_taker_respects_api_error_cap(self):
+        """Gate 3 must live in _submit_taker so DC retries (which skip
+        execute()) cannot re-buy after a no-oid 2xx.
+        """
+        ex = _make_executor()
+        candidate = _make_candidate()
+        ex._ticker_api_errors[candidate["ticker"]] = ex.TICKER_API_ERROR_CAP
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
+
+    def test_no_oid_unfilled_caps_ticker_so_retry_does_not_place(self):
+        ex = _make_executor()
+        candidate = _make_candidate()
+        ticker = candidate["ticker"]
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            ex._submit_taker(candidate)
+            self.assertGreaterEqual(
+                ex._ticker_api_errors.get(ticker, 0), ex.TICKER_API_ERROR_CAP)
+            ex._client.place_order.reset_mock()
+            result2 = ex._submit_taker(candidate)
+        self.assertIsNone(result2)
+        ex._client.place_order.assert_not_called()
+
     def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
         """remaining_count_fp='0.00' with remaining_count key absent must
         still trip Layer A. Defaulting missing remaining to `count` skips

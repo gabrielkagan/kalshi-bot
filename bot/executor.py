@@ -3666,6 +3666,14 @@ class OrderExecutor:
         if self._should_skip_near_close(candidate):
             self._abort_near_close(candidate, path="taker")
             return None
+        # Gate 3 also lives here: process_dc_retries() and in-process
+        # IOC retries call _submit_taker without going through execute().
+        _api_err_count = self._ticker_api_errors.get(ticker, 0)
+        if _api_err_count >= self.TICKER_API_ERROR_CAP:
+            logging.warning(
+                "TAKER_SKIP_API_ERROR_CAP: %s errors=%d (capped at %d)",
+                ticker, _api_err_count, self.TICKER_API_ERROR_CAP)
+            return None
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
@@ -4373,8 +4381,10 @@ class OrderExecutor:
         # latency Layer A exists to cover, and returning None lets callers
         # re-buy the full size.
         if _order_fill_count > 0 and remaining_count in (0, None):
-            _ghost_n = (count if remaining_count == 0
-                        else min(int(_order_fill_count), count))
+            # IOC remaining=0 is the normal post-resolution value (exchange
+            # auto-cancels the remainder). Size from fill_count, not count —
+            # remaining=0 + fill=2 is a 2-lot fill, not a full-size phantom.
+            _ghost_n = min(int(_order_fill_count), count)
             logging.error(
                 f"GHOST_FILL_DETECTED: {ticker} remaining_count={remaining_count} "
                 f"fill_count={_order_fill_count} but no fill events from API — "
@@ -4501,7 +4511,10 @@ class OrderExecutor:
         # 15M phantoms settle as real PnL before the next boot reconcile.
         if _no_server_oid:
             self._state.mark_order_status(client_oid, "api_error")
-            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
+            # Jump to CAP so in-process IOC retries and DC retries
+            # (which skip execute() Gate 3) cannot place a second IOC
+            # against a 2xx whose order_id we never got.
+            self._ticker_api_errors[ticker] = self.TICKER_API_ERROR_CAP
             logging.warning(
                 "TAKER_PLACE_MALFORMED_UNFILLED: %s no order_id and no "
                 "fill evidence (api_errors=%d)",
