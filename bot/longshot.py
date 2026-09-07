@@ -755,7 +755,12 @@ class LongshotEngine:
             except Exception:
                 logging.warning("longshot boot pending-row repair failed "
                                 "for %s", coid, exc_info=True)
-            buy_side = o.get("side") or "yes"
+            buy_side = (o.get("outcome_side") or o.get("side") or "").lower()
+            if buy_side not in ("yes", "no"):
+                logging.warning(
+                    "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — skipping",
+                    order_id)
+                continue
             sell_side = "no" if buy_side == "yes" else "yes"
             # R7-M1: dollars-first price extraction — post-FP-transition
             # /orders objects carry *_price_dollars and the deprecated

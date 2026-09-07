@@ -49,6 +49,81 @@ def _resp(status: int, headers=None, payload=None):
     return r
 
 
+class TestClockDriftVsElapsed(unittest.TestCase):
+    """clock_drift_detected must not fire when HTTP Date lag equals RTT.
+
+    VPS timedatectl 2026-09-07: NTP synchronized. 5–15s warnings were
+    abs(local_recv − Date) with Date at 1s resolution — request duration,
+    not OS skew. Warn only on residual beyond elapsed + 2s.
+    """
+
+    def test_rtt_explained_date_lag_does_not_warn(self):
+        c = _bare_client()
+        from email.utils import formatdate
+        send = 1_000_000.0
+        elapsed = 8.0
+        date_hdr = formatdate(timeval=send, usegmt=True)
+        c.session.request.return_value = _resp(200, headers={"Date": date_hdr})
+        times = [send, send + elapsed]
+
+        def fake_time():
+            return times.pop(0) if times else send + elapsed
+
+        with patch("bot.kalshi_client.time.time", side_effect=fake_time), \
+             patch("bot.kalshi_client.logging.warning") as warn:
+            c._request("GET", "/trade-api/v2/portfolio/balance")
+        drift_warns = [
+            str(c) for c in warn.call_args_list
+            if "clock_drift_detected" in str(c)
+        ]
+        self.assertFalse(drift_warns, f"RTT-explained lag must not warn: {drift_warns}")
+
+    def test_true_skew_beyond_elapsed_warns(self):
+        c = _bare_client()
+        from email.utils import formatdate
+        send = 1_000_000.0
+        elapsed = 0.2
+        date_hdr = formatdate(timeval=send - 8.0, usegmt=True)
+        c.session.request.return_value = _resp(200, headers={"Date": date_hdr})
+        times = [send, send + elapsed]
+
+        def fake_time():
+            return times.pop(0) if times else send + elapsed
+
+        with patch("bot.kalshi_client.time.time", side_effect=fake_time), \
+             patch("bot.kalshi_client.logging.warning") as warn:
+            c._request("GET", "/trade-api/v2/portfolio/balance")
+        drift_warns = [
+            str(c) for c in warn.call_args_list
+            if "clock_drift_detected" in str(c)
+        ]
+        self.assertTrue(drift_warns, "true 8s skew on a 0.2s GET must warn")
+
+    def test_true_skew_on_slow_request_still_warns(self):
+        """8s OS skew on an 8s GET is not RTT — Date is 8s before send."""
+        c = _bare_client()
+        from email.utils import formatdate
+        send = 1_000_000.0
+        elapsed = 8.0
+        date_hdr = formatdate(timeval=send - 8.0, usegmt=True)
+        c.session.request.return_value = _resp(200, headers={"Date": date_hdr})
+        times = [send, send + elapsed]
+
+        def fake_time():
+            return times.pop(0) if times else send + elapsed
+
+        with patch("bot.kalshi_client.time.time", side_effect=fake_time), \
+             patch("bot.kalshi_client.logging.warning") as warn:
+            c._request("GET", "/trade-api/v2/portfolio/balance")
+        drift_warns = [
+            str(c) for c in warn.call_args_list
+            if "clock_drift_detected" in str(c)
+        ]
+        self.assertTrue(
+            drift_warns,
+            "true 8s skew on an 8s GET must still warn")
+
+
 class TestRequestTimeoutTuple(unittest.TestCase):
     def test_session_request_uses_connect_read_tuple(self):
         c = _bare_client()
