@@ -380,7 +380,8 @@ class TestSpotStaleQuoteDown:
             engine._client.cancel_order.assert_not_called()
             clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
             assert _eval(engine, spot_staleness=31.0) == []
-        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-ss1", ticker=TICKER)
         assert engine.resting_count() == 0
         assert "reason=spot_stale" in caplog.text
         row = state.conn.execute(
@@ -398,7 +399,8 @@ class TestSpotStaleQuoteDown:
         assert _eval(engine, spot_staleness=None) == []
         clock["t"] += C.LONGSHOT_STALE_CANCEL_GRACE_SECONDS + 0.1
         assert _eval(engine, spot_staleness=None) == []
-        engine._client.cancel_order.assert_called_once_with("oid-ss1")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-ss1", ticker=TICKER)
         assert engine.resting_count() == 0
 
     def test_stale_within_grace_quote_stays(self, engine, state, enabled,
@@ -581,7 +583,8 @@ class TestAutoDisable:
         _seed_settled(state, "KXBTC15M-26JUN110900-T99", -2100,
                       _today_utc().isoformat())
         engine.tick()
-        engine._client.cancel_order.assert_called_once_with("oid-d1")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-d1", ticker=TICKER)
         assert engine.resting_count() == 0
 
 
@@ -595,7 +598,8 @@ class TestQuoteLifecycle:
             event_ticker=EVENT, asset="BTC", sell_side="yes", buy_side="no",
             buy_price_cents=92, count=3, seconds_to_close=170.0)
         engine.tick()
-        engine._client.cancel_order.assert_called_once_with("oid-t3")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-t3", ticker=TICKER)
         assert engine.resting_count() == 0
 
     def test_no_cancel_inside_window(self, engine, enabled):
@@ -615,7 +619,8 @@ class TestQuoteLifecycle:
         # ask moved out of band (20c) -> condition no longer holds -> cancel
         cands = _eval(engine, yes_ask_cents=20)
         assert cands == []
-        engine._client.cancel_order.assert_called_once_with("oid-cf")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-cf", ticker=TICKER)
         assert engine.resting_count() == 0
 
     def test_kill_switch_flip_cancels_resting_on_tick(self, engine, enabled,
@@ -626,7 +631,8 @@ class TestQuoteLifecycle:
             buy_price_cents=92, count=3, seconds_to_close=600.0)
         monkeypatch.setattr(C, "LONGSHOT_ENABLED", False, raising=False)
         engine.tick()
-        engine._client.cancel_order.assert_called_once_with("oid-ks")
+        engine._client.cancel_order.assert_called_once_with(
+            "oid-ks", ticker=TICKER)
         assert engine.resting_count() == 0
 
     def test_fill_recorded_as_position(self, engine, state, enabled):

@@ -164,6 +164,12 @@ class OrderExecutor:
         # Per-ticker API error cap: stop hammering after 3 consecutive api_errors
         self._ticker_api_errors: Dict[str, int] = {}  # ticker → consecutive error count
         self.TICKER_API_ERROR_CAP = 3
+        # Tickers whose last taker 2xx had no server order_id and no fill
+        # evidence. Further taker AND maker on the same ticker are
+        # refused (the first IOC may already be live). Not an api-error
+        # CAP jump. Not pruned: 15M tickers die with the window;
+        # hourly/weather halt is the intended don't-add-size posture.
+        self._taker_unknown_fill_tickers: set = set()
         # Rolling buffer of recent REST best-ask depth observations
         # per ticker, used to smooth the IOC drift-check clamp. Each
         # entry is (ts, depth); samples older than
@@ -618,7 +624,7 @@ class OrderExecutor:
                 "client_oid %s", ticker, resp.get("order"), client_oid)
             self._state.mark_order_status(client_oid, "api_error")
             try:
-                self._client.cancel_order(client_oid)
+                self._client.cancel_order(client_oid, ticker=ticker)
             except Exception:
                 logging.warning(
                     "LONGSHOT_PLACE_MALFORMED cancel attempt failed for %s",
@@ -767,7 +773,7 @@ class OrderExecutor:
             filled = fp_str_to_int(order.get("fill_count_fp")) or (
                 order.get("fill_count") or 0)
             filled = min(int(filled), count)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             logging.warning(
                 "TWAPLOCK_FILL_PARSE_MALFORMED: %s order=%s unparseable "
                 "fill count (fill_count_fp=%r fill_count=%r) — treating "
@@ -869,6 +875,12 @@ class OrderExecutor:
             logging.info(
                 "SHADOW_SKIP: %s %s reason=%s — evaluated, no live order placed",
                 ticker, candidate.get("strategy"), tm_mode_reason(_tm_asset))
+            return None
+
+        if ticker in getattr(self, "_taker_unknown_fill_tickers", ()):
+            logging.warning(
+                "ORDER_SUPPRESSED unknown_fill: %s — prior taker 2xx had "
+                "no order_id; not stacking maker or taker", ticker)
             return None
 
         # ── Unified exposure caps (always active) ─────────────────────
@@ -1899,7 +1911,8 @@ class OrderExecutor:
         # Reconcile cancel_pending orders: retry cancel via Kalshi API
         if order.get("cancel_pending"):
             try:
-                cancel_resp = self._client.cancel_order(order["order_id"])
+                cancel_resp = self._client.cancel_order(
+                    order["order_id"], ticker=order.get("ticker"))
                 # 404 sentinel — Kalshi has aged it; route through helper.
                 if isinstance(cancel_resp, dict) and cancel_resp.get("_status_code") == 404:
                     self._handle_cancel_404(
@@ -3665,6 +3678,20 @@ class OrderExecutor:
         if self._should_skip_near_close(candidate):
             self._abort_near_close(candidate, path="taker")
             return None
+        # Gate 3 also lives here: process_dc_retries() and in-process
+        # IOC retries call _submit_taker without going through execute().
+        if ticker in getattr(self, "_taker_unknown_fill_tickers", ()):
+            logging.warning(
+                "TAKER_SKIP_UNKNOWN_FILL: %s — prior 2xx had no order_id",
+                ticker)
+            return None
+        _api_err_count = getattr(self, "_ticker_api_errors", {}).get(ticker, 0)
+        _api_err_cap = getattr(self, "TICKER_API_ERROR_CAP", 3)
+        if _api_err_count >= _api_err_cap:
+            logging.warning(
+                "TAKER_SKIP_API_ERROR_CAP: %s errors=%d (capped at %d)",
+                ticker, _api_err_count, _api_err_cap)
+            return None
         count = candidate["position_size"]
         price = candidate["best_yes_ask"]
         balance = candidate["balance_at_scan"]
@@ -4131,13 +4158,88 @@ class OrderExecutor:
                 self._session_ioc_unfilled += 1
             return None
 
-        # Successful submission — reset api error counter
-        self._ticker_api_errors.pop(ticker, None)
-        order_id = (resp.get("order") or {}).get("order_id", client_oid)
-        remaining_count = (resp.get("order") or {}).get("remaining_count", count)
-        _order_fill_count = fp_str_to_int((resp.get("order") or {}).get("fill_count_fp")) or (
-            (resp.get("order") or {}).get("fill_count") or 0)
-        self._state.confirm_order_submitted(client_oid, order_id)
+        _order = resp.get("order") or {}
+        order_id = _order.get("order_id")
+        _no_server_oid = not bool(order_id)
+        remaining_count = None
+        _order_fill_count = 0
+        if _no_server_oid:
+            # 2xx with no server oid: do not key fills on client_oid, do
+            # not reset ticker_api_errors (Gate 3 is the backpressure).
+            # Parse fill/remaining from nested or flat body so Layer A
+            # can still fire on affirmative fill_count>0. No evidence →
+            # fall through to unfilled + api_error (not a phantom).
+            logging.warning(
+                "TAKER_PLACE_MALFORMED: %s resp carried no order_id "
+                "(resp=%r) — not keying fills on client_oid",
+                ticker, resp)
+            order_id = client_oid
+            _fill = None
+            try:
+                _rem_fp = _order.get("remaining_count_fp")
+                if _rem_fp is None:
+                    _rem_fp = resp.get("remaining_count_fp")
+                _rem = _order.get("remaining_count")
+                if _rem is None:
+                    _rem = resp.get("remaining_count")
+                if _rem_fp is not None:
+                    remaining_count = int(fp_str_to_int(_rem_fp))
+                elif _rem is not None:
+                    try:
+                        remaining_count = int(_rem)
+                    except (TypeError, ValueError, OverflowError):
+                        remaining_count = int(fp_str_to_int(_rem))
+            except (TypeError, ValueError, OverflowError):
+                remaining_count = None
+            try:
+                _fill = (_order.get("fill_count_fp")
+                         if _order.get("fill_count_fp") is not None
+                         else _order.get("fill_count"))
+                if _fill is None:
+                    _fill = resp.get("fill_count_fp")
+                if _fill is None:
+                    _fill = resp.get("fill_count")
+                if _fill is not None:
+                    _order_fill_count = int(fp_str_to_int(_fill))
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "TAKER_FILL_PARSE_MALFORMED: %s fill=%r — treating as 0",
+                    ticker, _fill)
+                _order_fill_count = 0
+        else:
+            self._ticker_api_errors.pop(ticker, None)
+            try:
+                _rem_fp = _order.get("remaining_count_fp")
+                _rem = _order.get("remaining_count")
+                if _rem_fp is not None:
+                    remaining_count = int(fp_str_to_int(_rem_fp))
+                elif _rem is not None:
+                    try:
+                        remaining_count = int(_rem)
+                    except (TypeError, ValueError, OverflowError):
+                        remaining_count = int(fp_str_to_int(_rem))
+            except (TypeError, ValueError, OverflowError):
+                remaining_count = None
+            if remaining_count is None:
+                logging.warning(
+                    "TAKER_REMAINING_PARSE_MALFORMED: %s remaining_count_fp=%r "
+                    "remaining_count=%r — treating as unknown",
+                    ticker, _order.get("remaining_count_fp"),
+                    _order.get("remaining_count"))
+            try:
+                _order_fill_count = fp_str_to_int(_order.get("fill_count_fp"))
+                if not _order_fill_count:
+                    _order_fill_count = _order.get("fill_count") or 0
+                _order_fill_count = int(_order_fill_count)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "TAKER_FILL_PARSE_MALFORMED: %s order=%s fill_count_fp=%r "
+                    "fill_count=%r — treating as 0; confirm still runs",
+                    ticker, order_id,
+                    _order.get("fill_count_fp"),
+                    _order.get("fill_count"))
+                _order_fill_count = 0
+            self._state.confirm_order_submitted(client_oid, order_id)
 
         order_info = {
             "order_id": order_id,
@@ -4196,20 +4298,11 @@ class OrderExecutor:
         # break is the post-completion-fill-leak guard paired with the
         # `remaining <= 0` early-return in `_on_fill` (2026-05-19 HYPE
         # incident, KXHYPE15M-26MAY190645-45).
-        time.sleep(0.3)
+        # Skip when the 2xx body had no server order_id — fills are keyed
+        # on that id, so polling would match nothing and waste 0.3s.
         total_filled = 0
-        while True:
-            fill = self._check_for_fill(order_info)
-            if not fill:
-                break
-            fill_count = self._on_fill(fill, order_info)
-            total_filled += fill_count
-            if order_info.get("filled_so_far", 0) >= order_info["count"]:
-                break
-
-        # Second poll pass: catch late fills that arrived after initial 0.3s
-        if total_filled > 0 and order_info.get("filled_so_far", 0) < order_info["count"]:
-            time.sleep(0.5)
+        if not _no_server_oid:
+            time.sleep(0.3)
             while True:
                 fill = self._check_for_fill(order_info)
                 if not fill:
@@ -4218,6 +4311,18 @@ class OrderExecutor:
                 total_filled += fill_count
                 if order_info.get("filled_so_far", 0) >= order_info["count"]:
                     break
+
+            # Second poll pass: catch late fills that arrived after initial 0.3s
+            if total_filled > 0 and order_info.get("filled_so_far", 0) < order_info["count"]:
+                time.sleep(0.5)
+                while True:
+                    fill = self._check_for_fill(order_info)
+                    if not fill:
+                        break
+                    fill_count = self._on_fill(fill, order_info)
+                    total_filled += fill_count
+                    if order_info.get("filled_so_far", 0) >= order_info["count"]:
+                        break
 
         if total_filled > 0:
             if (candidate.get("entry_path") != "confirmation_addon"
@@ -4288,18 +4393,27 @@ class OrderExecutor:
         # auto-canceled with zero fills. Must verify fill_count > 0 from the order
         # response to distinguish real ghost fills from unfilled IOC cancellations.
         # (Bug: false ghost fill on KXSOL15M-26MAR061400-00 cost -$39.16, Mar 6 2026)
-        if remaining_count == 0 and _order_fill_count > 0:
+        #
+        # fill_count>0 is Kalshi affirming fills, including partials
+        # (remaining>0). Unknown remaining (None) must not skip Layer A —
+        # Layer B's positions API has the same latency Layer A exists to
+        # cover, and returning None lets callers re-buy the full size.
+        # remaining=0 + fill=0 is the Mar 6 unfilled-IOC path, not Layer A.
+        if _order_fill_count > 0:
+            # Size from fill_count, not count — remaining=0 + fill=2 is a
+            # 2-lot fill (IOC auto-canceled the rest), not a full-size phantom.
+            _ghost_n = min(int(_order_fill_count), count)
             logging.error(
-                f"GHOST_FILL_DETECTED: {ticker} remaining_count=0 but no fill "
-                f"events from API — Kalshi matched all {count} contracts. "
-                f"Registering defensive position at limit price {price}¢")
+                f"GHOST_FILL_DETECTED: {ticker} remaining_count={remaining_count} "
+                f"fill_count={_order_fill_count} but no fill events from API — "
+                f"registering defensive position of {_ghost_n} at {_ioc_limit_price}¢")
             self._state.record_position_from_fill(
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
                 side=_side,
-                count=count,
-                price_cents=price,
+                count=_ghost_n,
+                price_cents=_ioc_limit_price,
                 strategy=candidate.get("strategy"),
                 seconds_to_close=order_info.get("seconds_to_close_at_submit"),
                 fill_latency=round(time.time() - order_info["submit_time"], 3),
@@ -4318,7 +4432,7 @@ class OrderExecutor:
             if (candidate.get("entry_path") != "confirmation_addon"
                     and not _is_ladder_retry):
                 self._session_ioc_fills += 1
-            order_info["filled_count"] = count  # Ghost fill = assumed full fill
+            order_info["filled_count"] = _ghost_n
             return order_info
 
         # remaining_count=0 but fill_count=0: IOC was auto-canceled, not a ghost fill
@@ -4348,6 +4462,12 @@ class OrderExecutor:
                         _pos_count = fp_str_to_int(_pos.get("position_fp")) or (_pos.get("position") or 0)
                         if _pos_count != 0:
                             _ghost_side = "yes" if _pos_count > 0 else "no"
+                            if _ghost_side != _side:
+                                logging.info(
+                                    "GHOST_FILL_SKIP_SIDE: %s order_side=%s "
+                                    "positions net is %s — not this IOC",
+                                    ticker, _side, _ghost_side)
+                                continue
                             _pos_abs = abs(_pos_count)
                             _pos_cost_d = _pos.get("market_exposure_dollars")
                             _pos_cost = dollars_str_to_cents(_pos_cost_d) if _pos_cost_d else (_pos.get("market_exposure") or 0)
@@ -4362,6 +4482,18 @@ class OrderExecutor:
                                     f"{_local_count} — no new fills to record")
                                 # Fall through to the IOC-unfilled path below.
                                 break
+                            # Same residual class as delta_avg: do not attribute
+                            # missed sibling fills to this IOC. Layer A already
+                            # bounds ghost size by the order's count.
+                            _delta_clamped = False
+                            if _delta > count:
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_CLAMP: %s delta=%d > "
+                                    "order count=%d — recording %d at "
+                                    "submitted limit",
+                                    ticker, _delta, count, count)
+                                _delta = count
+                                _delta_clamped = True
                             # Attribute cost to the delta contracts, not the
                             # cumulative weighted-average (R1-M2). When market
                             # moves between sibling-strategy fill and ghost-fill
@@ -4370,9 +4502,33 @@ class OrderExecutor:
                             _local_cost = self._state.get_local_position_cost_for_ticker(
                                 ticker, _ghost_side)
                             _delta_cost = _pos_cost - _local_cost
-                            _delta_avg = (_delta_cost // _delta
-                                          if _delta and _delta_cost > 0
-                                          else _pos_avg)
+                            if _delta_clamped:
+                                # Cost residual described the unclamped lot
+                                # count. After clamp it no longer prices
+                                # `_delta` contracts — use the submitted limit.
+                                _delta_avg = _ioc_limit_price
+                            else:
+                                _delta_avg = (_delta_cost // _delta
+                                              if _delta and _delta_cost > 0
+                                              else _pos_avg)
+                            # Residual of two cumulatives (Kalshi exposure vs
+                            # local SUM(total_cost_cents)) can be thousands of
+                            # cents on a 1-lot delta. Out of (0, 100) is not a
+                            # fill price — use the submitted IOC limit.
+                            try:
+                                _delta_avg = int(_delta_avg)
+                            except (TypeError, ValueError, OverflowError):
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_AVG_OOR: %s delta_avg "
+                                    "unparseable, falling back to submitted "
+                                    "limit %d", ticker, _ioc_limit_price)
+                                _delta_avg = _ioc_limit_price
+                            if not (0 < _delta_avg < 100):
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_AVG_OOR: %s delta_avg=%s "
+                                    "falling back to submitted limit %d",
+                                    ticker, _delta_avg, _ioc_limit_price)
+                                _delta_avg = _ioc_limit_price
                             logging.error(
                                 f"GHOST_FILL_DETECTED_VIA_POSITIONS: {ticker} side={_ghost_side} "
                                 f"fill polling found nothing, remaining_count={remaining_count}, "
@@ -4409,8 +4565,21 @@ class OrderExecutor:
         except Exception as e:
             logging.warning(f"Ghost fill positions API check failed for {ticker}: {e}")
 
-        # IOC auto-cancels unfilled portion — no manual cancel needed
-        self._state.mark_order_status(order_id, "canceled")
+        # IOC auto-cancels unfilled portion — no manual cancel needed.
+        # No-oid 2xx with no fill evidence: api_error + ticker_api_errors
+        # so TICKER_API_ERROR_CAP still trips. Do not book a phantom —
+        # 15M phantoms settle as real PnL before the next boot reconcile.
+        if _no_server_oid:
+            self._state.mark_order_status(client_oid, "api_error")
+            self._taker_unknown_fill_tickers.add(ticker)
+            self._ticker_api_errors[ticker] = self._ticker_api_errors.get(ticker, 0) + 1
+            logging.warning(
+                "TAKER_SKIP_UNKNOWN_FILL: %s no order_id and no fill "
+                "evidence — further taker submits on this ticker halted "
+                "(api_errors=%d)",
+                ticker, self._ticker_api_errors[ticker])
+        else:
+            self._state.mark_order_status(order_id, "canceled")
         if (candidate.get("entry_path") != "confirmation_addon"
                 and not _is_ladder_retry):
             self._session_ioc_unfilled += 1
@@ -4764,7 +4933,7 @@ class OrderExecutor:
             if rec is None:
                 continue
             try:
-                self._client.cancel_order(oid)
+                self._client.cancel_order(oid, ticker=rec.get("ticker"))
             except Exception:
                 logging.warning(
                     "MAKER_TAIL_CANCEL_FAILED: order_id=%s ticker=%s "
@@ -4831,7 +5000,18 @@ class OrderExecutor:
         candidate = order["candidate"]
 
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
-        raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (fill.get("count") or order["count"])
+        try:
+            raw_fill_count = fp_str_to_int(fill.get("count_fp"))
+            if not raw_fill_count:
+                raw_fill_count = fill.get("count") or order["count"]
+            raw_fill_count = int(raw_fill_count)
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "ON_FILL_COUNT_PARSE_MALFORMED: %s order=%s count_fp=%r "
+                "count=%r — skip (leave stamped so the taker loop "
+                "cannot livelock on this row)",
+                ticker, order_id, fill.get("count_fp"), fill.get("count"))
+            return 0
         remaining = order["count"] - order.get("filled_so_far", 0)
         # Post-completion fill leak guard (2026-05-19 HYPE incident,
         # KXHYPE15M-26MAY190645-45 +10-ct phantom): when /portfolio/fills
@@ -4857,12 +5037,19 @@ class OrderExecutor:
             fill_count = raw_fill_count
         # For NO-side orders, Kalshi returns yes_price as 100-no_price (YES-equivalent),
         # which is NOT the cost paid. Read no_price_dollars/no_price for NO fills.
-        if order.get("side") == "no":
-            fill_price_d = fill.get("no_price_dollars")
-            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("no_price") or order["price_cents"])
-        else:
-            fill_price_d = fill.get("yes_price_dollars")
-            fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+        try:
+            if order.get("side") == "no":
+                fill_price_d = fill.get("no_price_dollars")
+                fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("no_price") or order["price_cents"])
+            else:
+                fill_price_d = fill.get("yes_price_dollars")
+                fill_price = dollars_str_to_cents(fill_price_d) if fill_price_d else (fill.get("yes_price") or order["price_cents"])
+            fill_price = int(fill_price)
+        except (TypeError, ValueError, OverflowError):
+            logging.warning(
+                "ON_FILL_PRICE_PARSE_MALFORMED: %s order=%s — using limit",
+                ticker, order_id)
+            fill_price = order["price_cents"]
 
         # Track cumulative fills for partial fill detection
         order["filled_so_far"] = min(
@@ -5955,7 +6142,8 @@ class OrderExecutor:
 
         filled = order.get("filled_so_far", 0)
 
-        cancel_resp = self._client.cancel_order(order["order_id"])
+        cancel_resp = self._client.cancel_order(
+            order["order_id"], ticker=order.get("ticker"))
         if cancel_resp is None:
             logging.error(f"Cancel API FAILED for {order['order_id']} — order may still be resting on exchange")
             # Don't mark canceled in DB — order may still be live on Kalshi

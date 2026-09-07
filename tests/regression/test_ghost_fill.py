@@ -1,8 +1,8 @@
 """Tests for ghost fill detection in _submit_taker.
 
 Verifies that the two-layer ghost fill detection correctly handles:
-  Layer A: remaining_count=0 from Kalshi order response (order matched but fills API lagged)
-  Layer B: positions API verification when remaining_count > 0 but position exists
+  Layer A: fill_count>0 (including remaining>0 partials); size min(fill, count); price = submitted IOC limit; side = order_side
+  Layer B: positions API delta vs local (count AND cost); same-side net only
 
 Run: python3 test_ghost_fill.py
 """
@@ -17,10 +17,11 @@ from unittest.mock import MagicMock, patch, call
 # ── Inline helpers (from bot/_impl.py) ───────────────────────────────────────
 
 def fp_str_to_int(s) -> int:
+    """Match bot.helpers.strings.fp_str_to_int: '5.00' → 5, not cents."""
     if s is None:
         return 0
     try:
-        return int(round(float(s) * 100))
+        return int(round(float(s)))
     except (ValueError, TypeError):
         return 0
 
@@ -55,6 +56,9 @@ def ghost_fill_check(
     state_mark_order_status=None,
     order_fill_count: int = 0,
     state_local_count=None,
+    state_local_cost=None,
+    ioc_limit_price=None,
+    order_side: str = "yes",
 ):
     """Simulate the ghost fill detection logic after fill polling.
 
@@ -77,24 +81,28 @@ def ghost_fill_check(
     # Layer A: remaining_count from order response
     # CRITICAL: For IOC orders, remaining_count=0 can mean auto-canceled with
     # zero fills. Must verify fill_count > 0 to distinguish real ghost fills
-    # from unfilled IOC cancellations.
-    if remaining_count == 0 and order_fill_count > 0:
+    # from unfilled IOC cancellations. remaining is None (key dropped) +
+    # fill>0 is also Layer A. Size from fill_count, not count. Price is
+    # the submitted IOC limit, not scan-time ask.
+    limit = ioc_limit_price if ioc_limit_price is not None else price
+    if order_fill_count > 0:
+        ghost_n = min(int(order_fill_count), count)
         if state_record_position:
             state_record_position(
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
-                side="yes",
-                count=count,
-                price_cents=price,
+                side=order_side,
+                count=ghost_n,
+                price_cents=limit,
                 is_taker=True,
                 fill_source="ghost_fill",
             )
         if state_mark_order_status:
             state_mark_order_status("filled")
         return True, "A", {
-            "count": count,
-            "price": price,
+            "count": ghost_n,
+            "price": limit,
             "source": "ghost_fill",
         }
 
@@ -106,28 +114,53 @@ def ghost_fill_check(
                 for pos in pos_resp["market_positions"]:
                     if pos.get("ticker") == ticker:
                         pos_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
-                        if pos_count > 0:
+                        if pos_count != 0:
+                            ghost_side = "yes" if pos_count > 0 else "no"
+                            if ghost_side != order_side:
+                                continue
+                            pos_abs = abs(pos_count)
                             pos_cost_d = pos.get("market_exposure_dollars")
                             pos_cost = dollars_str_to_cents(pos_cost_d) if pos_cost_d else (pos.get("market_exposure") or 0)
-                            pos_avg = pos_cost // pos_count if pos_count else price
-                            # B1 fix: delta = api - local; only record new fills.
+                            pos_avg = pos_cost // pos_abs if pos_abs else price
+                            # B1: delta = api - local; only record new fills.
                             local_count = (state_local_count()
                                            if state_local_count else 0)
-                            delta = pos_count - local_count
+                            delta = pos_abs - local_count
+                            delta_clamped = False
+                            if delta > count:
+                                delta = count
+                                delta_clamped = True
                             if delta <= 0:
                                 return False, None, {
                                     "reason": "no_new_fills_delta_le_zero",
-                                    "api_count": pos_count,
+                                    "api_count": pos_abs,
                                     "local_count": local_count,
                                 }
+                            # R1-M2: cost of the delta, not cumulative avg.
+                            if delta_clamped:
+                                delta_avg = limit
+                            elif state_local_cost:
+                                local_cost = state_local_cost()
+                                delta_cost = pos_cost - local_cost
+                                delta_avg = (delta_cost // delta
+                                             if delta and delta_cost > 0
+                                             else pos_avg)
+                            else:
+                                delta_avg = pos_avg
+                            try:
+                                delta_avg = int(delta_avg)
+                            except (TypeError, ValueError, OverflowError):
+                                delta_avg = limit
+                            if not (0 < delta_avg < 100):
+                                delta_avg = limit
                             if state_record_position:
                                 state_record_position(
                                     ticker=ticker,
                                     event_ticker=candidate["event_ticker"],
                                     asset=candidate["asset"],
-                                    side="yes",
+                                    side=ghost_side,
                                     count=delta,
-                                    price_cents=pos_avg,
+                                    price_cents=delta_avg,
                                     is_taker=True,
                                     fill_source="ghost_fill_positions_api",
                                 )
@@ -135,9 +168,10 @@ def ghost_fill_check(
                                 state_mark_order_status("filled")
                             return True, "B", {
                                 "count": delta,
-                                "price": pos_avg,
+                                "price": delta_avg,
+                                "side": ghost_side,
                                 "source": "ghost_fill_positions_api",
-                                "api_count": pos_count,
+                                "api_count": pos_abs,
                                 "local_count": local_count,
                             }
         except Exception:
@@ -245,7 +279,7 @@ class TestGhostFillLayerA(unittest.TestCase):
         status_fn.assert_not_called()
 
     def test_remaining_zero_uses_limit_price(self):
-        """Ghost fill should register at the limit price (conservative)."""
+        """Ghost fill should register at the submitted IOC limit, not scan ask."""
         candidate = self._make_candidate(best_yes_ask=92, position_size=10)
         order_info = self._make_order_info(candidate)
         record_fn = MagicMock()
@@ -254,26 +288,62 @@ class TestGhostFillLayerA(unittest.TestCase):
             remaining_count=0, total_filled=0, count=10, price=92,
             ticker=candidate["ticker"], candidate=candidate,
             order_info=order_info, state_record_position=record_fn,
-            order_fill_count=10,
+            order_fill_count=10, ioc_limit_price=95,
         )
 
         self.assertTrue(detected)
-        self.assertEqual(details["price"], 92)
+        self.assertEqual(details["price"], 95)
+        self.assertEqual(details["count"], 10)
 
-    def test_remaining_nonzero_skips_layer_a(self):
-        """remaining_count > 0 → Layer A should NOT trigger."""
+    def test_remaining_nonzero_fill_zero_skips_layer_a(self):
+        """remaining>0 and fill_count=0 is unfilled, not Layer A."""
         candidate = self._make_candidate()
         order_info = self._make_order_info(candidate)
 
         detected, layer, _ = ghost_fill_check(
-            remaining_count=34,  # all unfilled
+            remaining_count=34,
             total_filled=0, count=34, price=89,
             ticker=candidate["ticker"], candidate=candidate,
             order_info=order_info,
+            order_fill_count=0,
         )
 
         self.assertFalse(detected)
         self.assertIsNone(layer)
+
+    def test_remaining_positive_fill_positive_is_layer_a(self):
+        """Kalshi-affirmed partial: remaining=1 fill=1 of count=2 is Layer A."""
+        candidate = self._make_candidate(position_size=2)
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=2, price=89,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=1,
+        )
+
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(details["count"], 1)
+        self.assertEqual(record_fn.call_args.kwargs["side"], "yes")
+
+    def test_layer_a_no_side_uses_order_side(self):
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=0, total_filled=0, count=3, price=40,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=3, order_side="no",
+        )
+
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(record_fn.call_args.kwargs["side"], "no")
 
     def test_fills_found_skips_ghost_detection(self):
         """total_filled > 0 → normal path, no ghost detection needed."""
@@ -380,7 +450,7 @@ class TestGhostFillLayerB(unittest.TestCase):
                 "market_positions": [
                     {
                         "ticker": "KXBTC15M-26MAR061015-15",
-                        "position_fp": "0.34",  # 34 cents = 34 contracts
+                        "position_fp": "34.00",
                         "market_exposure_dollars": "29.58",  # $29.58 = 2958 cents
                     }
                 ]
@@ -544,6 +614,90 @@ class TestGhostFillLayerB(unittest.TestCase):
         _, kwargs = record_fn.call_args
         self.assertEqual(kwargs["count"], 1)
 
+    def test_positions_api_delta_cost_not_cumulative_avg(self):
+        """R1-M2: new-fill price is delta_cost/delta, not cumulative avg.
+        local 58 @ 90¢ (cost 5220) + 1 @ 99¢ → API 59 / 5319 → book 1 @ 99.
+        """
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": 59,
+                    "market_exposure": 5319,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=1, price=99,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+            state_local_count=lambda: 58,
+            state_local_cost=lambda: 5220,
+        )
+        self.assertTrue(detected)
+        self.assertEqual(details["count"], 1)
+        self.assertEqual(details["price"], 99)
+
+    def test_positions_api_negative_position_is_no_side(self):
+        """NO-side positions are negative; Layer B must not skip them."""
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": -5,
+                    "market_exposure": 400,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=5, total_filled=0, count=5, price=80,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+            order_side="no",
+        )
+        self.assertTrue(detected)
+        self.assertEqual(layer, "B")
+        self.assertEqual(details["count"], 5)
+        self.assertEqual(details["side"], "no")
+
+    def test_positions_api_opposite_side_net_skipped(self):
+        """YES order must not book a NO net as this IOC's fill."""
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": -2,
+                    "market_exposure": 160,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=1, price=92,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+            order_side="yes",
+        )
+        self.assertFalse(detected)
+        record_fn.assert_not_called()
+
     def test_positions_api_zero_delta_skips_recording(self):
         """When positions API matches local exactly, no new fills happened —
         the record_position_from_fill call must NOT fire.
@@ -664,24 +818,25 @@ class TestGhostFillEdgeCases(unittest.TestCase):
     """Edge cases for ghost fill detection."""
 
     def test_partial_remaining_count(self):
-        """remaining_count between 0 and count (partial fill without fill events)."""
+        """remaining=10 fill=24 of count=34 — Layer A ghosts the affirmed 24."""
         candidate = {
             "ticker": "KXBTC15M-TEST-3",
             "event_ticker": "KXBTC15M-TEST",
             "asset": "BTC",
         }
         order_info = {"submit_time": time.time()}
+        record_fn = MagicMock()
 
-        # remaining_count=10 out of 34 — partial match per order response,
-        # but no fill events seen. Layer A only fires when remaining=0.
-        detected, layer, _ = ghost_fill_check(
+        detected, layer, details = ghost_fill_check(
             remaining_count=10, total_filled=0, count=34, price=89,
             ticker=candidate["ticker"], candidate=candidate,
-            order_info=order_info,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=24,
         )
 
-        # Layer A should NOT fire (remaining > 0)
-        self.assertFalse(detected)
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(details["count"], 24)
 
     def test_single_contract_ghost_fill(self):
         """Ghost fill with count=1 should still be detected."""

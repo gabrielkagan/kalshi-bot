@@ -1280,6 +1280,162 @@ class TestGhostFillProtection(unittest.TestCase):
         # filled_count on order_info should also be the delta for dc_retry accounting.
         self.assertEqual(result["filled_count"], 1)
 
+    def test_layer_b_delta_avg_out_of_range_falls_back_to_submitted_limit(self):
+        """Layer B delta-cost is a residual of two cumulatives; a 1-lot
+        delta can produce a 5000¢ 'price'. Clamp to the submitted IOC
+        limit rather than writing it into avg_price_cents.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 58
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-oor",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 59,
+                "position_fp": None,
+                "market_exposure": 5319,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=5319):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        px = ex._state.record_position_from_fill.call_args.kwargs["price_cents"]
+        self.assertTrue(0 < px < 100, f"delta_avg leaked out-of-range price {px}")
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(px, submitted)
+
+    def test_layer_b_delta_clamped_to_order_count(self):
+        """Layer B count residual must not book more than this IOC's size.
+        Missed sibling fills (local 0, api 20) plus a 1-lot IOC must
+        record 1, not 20 attributed to this strategy.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-clamp",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 20,
+                "position_fp": None,
+                "market_exposure": 1800,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate(position_size=1)
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=1800):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 1)
+        self.assertEqual(result["filled_count"], 1)
+
+    def test_layer_b_clamp_does_not_inflate_price(self):
+        """When delta is clamped, delta_cost no longer describes _delta
+        lots — do not divide the unclamped residual by the clamped count.
+        api=2 / 85¢, count=1 → book 1 at submitted limit, not 85.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-px",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 2,
+                "position_fp": None,
+                "market_exposure": 85,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate(position_size=1)
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=85):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["count"], 1)
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(kwargs["price_cents"], submitted)
+        self.assertNotEqual(kwargs["price_cents"], 85)
+
+    def test_layer_b_skips_opposite_side_net(self):
+        """A YES IOC cannot create NO contracts. Layer B must not book
+        the API's net-NO as this order's fill, priced at the YES limit.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-side",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": -2,
+                "position_fp": None,
+                "market_exposure": 160,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate(side="yes", position_size=1)
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=160):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
     def test_layer_b_skips_when_delta_is_zero(self):
         """B1: when positions API matches local exactly, no new fills happened —
         ghost-fill must NOT call record_position_from_fill and must NOT mark
@@ -1316,6 +1472,376 @@ class TestGhostFillProtection(unittest.TestCase):
         # No new fills → IOC-unfilled return path → None.
         self.assertIsNone(result, "Zero-delta must fall through to IOC unfilled")
         ex._state.record_position_from_fill.assert_not_called()
+
+    def test_taker_place_malformed_no_order_id_does_not_phantom(self):
+        """2xx with no order_id and no fill evidence: do not key fills on
+        client_oid and do not book a full-size phantom (phantoms settle
+        as real PnL). None + api_error + ticker_api_errors increment so
+        TICKER_API_ERROR_CAP still trips.
+        """
+        ex = _make_executor()
+        ex._ticker_api_errors["KXBTC15M-26MAR091200-B68500"] = 2
+        ex._client.place_order.return_value = {"order": {}}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.confirm_order_submitted.assert_not_called()
+        ex._state.record_position_from_fill.assert_not_called()
+        self.assertEqual(
+            ex._ticker_api_errors["KXBTC15M-26MAR091200-B68500"], 3,
+            "no-oid must increment ticker_api_errors, not pop/reset")
+        self.assertIn(
+            "KXBTC15M-26MAR091200-B68500",
+            ex._taker_unknown_fill_tickers)
+        api_error_calls = [
+            c for c in ex._state.mark_order_status.call_args_list
+            if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
+        ]
+        self.assertTrue(api_error_calls)
+
+    def test_no_oid_flat_unfilled_body_is_not_ghost(self):
+        """Unwrapped V2 body with fill=0 remaining=5 and no oid must not
+        phantom — the body itself says nothing filled.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "fill_count": "0.00", "remaining_count": "5.00",
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_no_oid_layer_b_zero_position_is_not_ghost(self):
+        """positions API listing the ticker at 0 is determinate unfilled."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 0,
+                "position_fp": None,
+                "market_exposure": 0,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_no_oid_layer_b_zero_delta_is_not_ghost(self):
+        """GHOST_FILL_SKIP_NO_DELTA must not then add count on top."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 5
+        ex._state.get_local_position_cost_for_ticker.return_value = 460
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 5,
+                "position_fp": None,
+                "market_exposure": 460,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNone(result)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_taker_empty_dict_resp_uses_layer_b(self):
+        """2xx empty {} is an accept with no oid — Layer B still runs."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 5,
+                "position_fp": None,
+                "market_exposure": 460,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        ex._state.confirm_order_submitted.assert_not_called()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill_positions_api")
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 5)
+
+    def test_layer_a_no_oid_partial_fill_ghosts_fill_count_not_count(self):
+        """IOC remaining=0 is normal (remainder auto-canceled). A no-oid
+        body with fill=2 remaining=0 must ghost 2, not the full size.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "fill_count": "2.00", "remaining_count": "0.00",
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["fill_source"], "ghost_fill")
+        self.assertEqual(kwargs["count"], 2, "must not inflate a 2-fill to count=5")
+        self.assertEqual(result["filled_count"], 2)
+
+    def test_layer_a_remaining_zero_partial_fill_ghosts_fill_count(self):
+        """With-oid remaining=0 fill=2 is a 2-contract ghost, not count."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-partial-a",
+                "remaining_count": 0,
+                "fill_count": 2,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 2)
+
+    def test_submit_taker_respects_api_error_cap(self):
+        """Gate 3 must live in _submit_taker so DC retries (which skip
+        execute()) cannot re-buy after a no-oid 2xx.
+        """
+        ex = _make_executor()
+        candidate = _make_candidate()
+        ex._ticker_api_errors[candidate["ticker"]] = ex.TICKER_API_ERROR_CAP
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
+
+    def test_no_oid_unfilled_halts_taker_retry_without_permanent_api_cap(self):
+        """Named unknown-fill halt stops a second IOC; it must not jump
+        ticker_api_errors to CAP (that also bans maker/addons for the
+        ticker's lifetime — hourly/weather tickers live hours).
+        """
+        ex = _make_executor()
+        candidate = _make_candidate()
+        ticker = candidate["ticker"]
+        ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            ex._submit_taker(candidate)
+            self.assertIn(ticker, ex._taker_unknown_fill_tickers)
+            self.assertEqual(ex._ticker_api_errors.get(ticker, 0), 1)
+            self.assertLess(ex._ticker_api_errors[ticker], ex.TICKER_API_ERROR_CAP)
+            ex._client.place_order.reset_mock()
+            result2 = ex._submit_taker(candidate)
+        self.assertIsNone(result2)
+        ex._client.place_order.assert_not_called()
+
+    def test_layer_a_ghosts_at_submitted_limit_not_scan_ask(self):
+        """Ghost cost basis is the IOC limit actually submitted, not scan ask."""
+        from bot.constants import MAX_ENTRY_PRICE
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-limit-px",
+                "remaining_count": 0,
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate(strategy="above")
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.TM_SWEEP_LIVE_ENABLED", True), \
+             patch("bot.executor.TM_LIVE_STRATEGIES", {"above"}):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+        self.assertIsNotNone(result)
+        submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
+        self.assertEqual(submitted, MAX_ENTRY_PRICE)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["price_cents"],
+            MAX_ENTRY_PRICE)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_unknown_fill_halt_suppresses_maker_on_same_ticker(self):
+        """A ticker with an unknown-fill IOC must not then rest a maker."""
+        ex = _make_executor()
+        candidate = _make_candidate(seconds_to_close=400)
+        ex._taker_unknown_fill_tickers.add(candidate["ticker"])
+        with patch("bot.executor.OBSERVATION_MODE", False), \
+             patch("bot.executor.get_market_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(
+                observation_only=False, min_entry_price=86)
+            result = ex.execute(candidate)
+        self.assertIsNone(result)
+        ex._client.place_order.assert_not_called()
+
+    def test_layer_a_partial_fill_remaining_positive_is_ghost(self):
+        """Kalshi-affirmed partial fill (fill=1 remaining=1 of count=2)
+        with lagging fills API must Layer-A ghost 1, not return None
+        (callers re-buy the full size).
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-partial-rem",
+                "remaining_count": 1,
+                "fill_count": 1,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate(position_size=2)
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["fill_source"], "ghost_fill")
+        self.assertEqual(kwargs["count"], 1)
+        self.assertEqual(result["filled_count"], 1)
+
+    def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
+        """remaining_count_fp='0.00' with remaining_count key absent must
+        still trip Layer A. Defaulting missing remaining to `count` skips
+        the ghost-fill register and leaves a live position untracked.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-fp",
+                "remaining_count_fp": "0.00",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result, "Layer A must fire on remaining_count_fp=0")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_layer_a_string_zero_remaining_is_ghost(self):
+        """Uncoerced remaining_count='0.00' must still trip Layer A."""
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-str0",
+                "remaining_count": "0.00",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result, "Layer A must coerce remaining_count='0.00' to 0")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+
+    def test_malformed_remaining_with_fill_count_is_layer_a(self):
+        """fill_count>0 is Kalshi affirming fills. Missing/malformed
+        remaining must not skip Layer A in favour of a lagging positions
+        API — that returns None and callers re-buy the full size.
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-rem-bad",
+                "remaining_count": "N/A",
+                "fill_count": 5,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate()
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result, "fill_count>0 + unknown remaining is Layer A")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 5)
 
 
 class TestPostOnlyRejectionTiers(unittest.TestCase):

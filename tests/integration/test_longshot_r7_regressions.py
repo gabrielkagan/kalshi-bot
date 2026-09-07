@@ -128,3 +128,22 @@ class TestR7M1FpPriceFieldsAtBootAdoption:
         assert reg_spy[0]["count"] >= 3, (
             f"count={reg_spy[0]['count']} — bare o.get('count') zeroed "
             "the R5-MN2 derive")
+
+    def test_legacy_cents_unparseable_uses_zero_without_dollars_fallback_log(
+            self, engine, state, enabled, reg_spy, caplog):
+        """When *_price_dollars is absent and the integer cents field is
+        itself unparseable, do not re-run the same int() and do not log
+        'falling back to integer cents' with dollars=None.
+        """
+        import logging
+        caplog.set_level(logging.WARNING)
+        engine._client.get_orders.return_value = {"orders": [
+            {"order_id": "oid-badcents", "client_order_id": "ls-badc-1",
+             "ticker": TICKER, "side": "no", "no_price": "garbage",
+             "remaining_count": 1, "status": "resting"},
+        ]}
+        engine.tick()
+        assert reg_spy, "orphan must still be adopted"
+        assert reg_spy[0]["buy_price_cents"] == 0
+        assert "falling back to integer cents" not in caplog.text
+        assert "legacy" in caplog.text.lower() or "unparseable" in caplog.text.lower()

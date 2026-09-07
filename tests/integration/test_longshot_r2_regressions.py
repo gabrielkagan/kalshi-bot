@@ -444,9 +444,10 @@ class TestM2FpFieldsAndDedupStamp:
                                                   enabled, caplog):
         _register(engine, order_id="oid-m2c", stc=170.0)
         client.get_fills.return_value = {"fills": []}
-        # DELETE response carries ONLY the FP field — legacy fill_count absent
+        # V2 DELETE is reduced_by_fp only — fill_count_fp is not on this
+        # endpoint. count=3, reduced_by_fp=1.00 ⇒ 2 filled (fills API lag).
         client.cancel_order.return_value = {
-            "order": {"status": "canceled", "fill_count_fp": "2"}}
+            "order": {"order_id": "oid-m2c", "reduced_by_fp": "1.00"}}
         with caplog.at_level("WARNING"):
             engine.tick()
         assert engine.resting_count() == 1, (

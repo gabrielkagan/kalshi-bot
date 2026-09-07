@@ -587,10 +587,12 @@ class LongshotEngine:
 
         if not C.LONGSHOT_ENABLED:
             self._cancel_all("longshot_disabled")
+            self._stale_drop_backstop(now)
             return
         self._refresh_disabled()
         if self._disabled_reason:
             self._cancel_all(self._disabled_reason)
+            self._stale_drop_backstop(now)
             return
 
         # R1-M6: ONE unfiltered paginated fills fetch per tick, dispatched
@@ -631,28 +633,22 @@ class LongshotEngine:
             if remaining < C.LONGSHOT_MIN_STC_SECONDS:
                 self._cancel_quote(q["order_id"], "t_minus_3min")
 
-        # R1-M2: stale-drop backstop. If the cancel keeps failing (API
-        # None / network) past 120s AFTER window close, the order no
-        # longer exists on Kalshi (auto-cancelled at close) — one final
-        # fill poll, then drop the entry so it can't pollute caps and
-        # REST budget forever.
+        self._stale_drop_backstop(now)
+
+    # ── internals ─────────────────────────────────────────────────────────
+
+    def _stale_drop_backstop(self, now: float) -> None:
+        """If cancel keeps failing past 120s after window close, drop
+        the entry after one complete fill poll. Must also run while
+        longshot is disabled — tick() otherwise returns after
+        _cancel_all and a cancel-hold would pin occupancy all day.
+        """
         with self._lock:
             quotes = list(self._resting.values())
         for q in quotes:
             elapsed = max(0.0, now - q["registered_ts"])
             remaining = q["stc_at_register"] - elapsed
             if remaining < -_STALE_DROP_GRACE_SECONDS:
-                # R5-MN1: the drop is TERMINAL (the entry's dedup state
-                # dies with it), so the final poll must be COMPLETE —
-                # a failed/partial snapshot could hide a last-moment
-                # fill forever. On a failed/partial poll, leave the
-                # entry: the stale condition re-fires next tick (one
-                # retry per tick). Bounded worst case: the entry
-                # persists one tick per failed poll while it
-                # over-reserves caps — safe direction — and the window
-                # is already closed, so no NEW fills accrue;
-                # seen_trade_ids dedup keeps the re-polls (and the
-                # partial pages' recorded fills) idempotent.
                 if not self._poll_fills(q):
                     logging.warning(
                         "LONGSHOT_STALE_DROP_DEFERRED: %s %s final fill "
@@ -661,9 +657,6 @@ class LongshotEngine:
                     continue
                 with self._lock:
                     _popped = self._resting.pop(q["order_id"], None)
-                # R2-C1: stale drop is a pop site too — clear the ledger row
-                # (Kalshi auto-cancelled the order at window close). Skip
-                # when the final poll fully filled it (already marked).
                 if _popped is not None:
                     self._mark_pending(q["order_id"], "canceled")
                 logging.warning(
@@ -671,8 +664,6 @@ class LongshotEngine:
                     "cancel still failing — entry dropped after final "
                     "fill poll (filled %d/%d)", q["ticker"], q["order_id"],
                     -remaining, q["filled"], q["count"])
-
-    # ── internals ─────────────────────────────────────────────────────────
 
     def _boot_reconcile_orphans(self) -> None:
         """R1-M1 + R2-M1: reconcile longshot orders that survived a restart.
@@ -776,16 +767,43 @@ class LongshotEngine:
             # losses the R1-M1/R2-M1 machinery exists to capture.
             _pd = (o.get("no_price_dollars") if buy_side == "no"
                    else o.get("yes_price_dollars"))
-            price = dollars_str_to_cents(_pd) if _pd else (
-                (o.get("no_price") if buy_side == "no"
-                 else o.get("yes_price")) or 0)
+            try:
+                if _pd:
+                    price = dollars_str_to_cents(_pd)
+                else:
+                    price = (o.get("no_price") if buy_side == "no"
+                             else o.get("yes_price")) or 0
+                price = int(price)
+            except (TypeError, ValueError, OverflowError):
+                if _pd:
+                    logging.warning(
+                        "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
+                        "falling back to integer cents", _pd)
+                    try:
+                        price = int((o.get("no_price") if buy_side == "no"
+                                     else o.get("yes_price")) or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        logging.warning(
+                            "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED legacy "
+                            "cents also unparseable — using 0")
+                        price = 0
+                else:
+                    logging.warning(
+                        "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED legacy "
+                        "cents unparseable — using 0")
+                    price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)
             # R2-M2: FP-primary remaining-count extraction
             # (state.py:1622 pattern) — `count` is the ORIGINAL size.
-            remaining = fp_str_to_int(o.get("remaining_count_fp")) or (
-                o.get("remaining_count") or 0)
+            try:
+                remaining = fp_str_to_int(o.get("remaining_count_fp"))
+                if not remaining:
+                    remaining = o.get("remaining_count") or 0
+                remaining = int(remaining)
+            except (TypeError, ValueError, OverflowError):
+                remaining = 0
             if not remaining:
                 # R5-MN2: BOTH remaining fields absent — derive from
                 # cumulative truth: original minus already-recorded
@@ -802,8 +820,11 @@ class LongshotEngine:
                 # remaining_count_* only). This branch fires only when BOTH
                 # remaining fields are absent — verify the live /orders
                 # schema before trusting it (go-live checklist item).
-                _orig = fp_str_to_int(o.get("count_fp")) or int(
-                    o.get("count") or 0)
+                try:
+                    _orig = fp_str_to_int(o.get("count_fp")) or int(
+                        o.get("count") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    _orig = 0
                 remaining = max(0, _orig - _skip)
             # R5-M3: seed the REAL remaining window life — the stale-drop
             # backstop measures `stc_at_register - elapsed < -grace`, so
@@ -1338,7 +1359,7 @@ class LongshotEngine:
         if q is None:
             return
         try:
-            resp = self._client.cancel_order(order_id)
+            resp = self._client.cancel_order(order_id, ticker=q["ticker"])
         except Exception:
             logging.warning("LONGSHOT_CANCEL_FAILED: %s %s reason=%s — "
                             "retry next tick", q["ticker"], order_id, reason,
@@ -1369,17 +1390,17 @@ class LongshotEngine:
             if q.get("needs_clean_poll"):
                 logging.warning(
                     "LONGSHOT_CANCEL_GONE_DEFERRED: %s %s reason=%s — 404 "
-                    "after fill mismatch; waiting for a clean fills poll "
-                    "before the terminal pop (R3-MN2)",
+                    "after fill mismatch; polling then deciding "
+                    "(tick() skips bulk poll while disabled)",
                     q["ticker"], order_id, reason)
-                return
-            logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
-                         "already expired/cancelled on Kalshi (404)",
-                         q["ticker"], order_id, reason)
+            else:
+                logging.info("LONGSHOT_CANCEL_GONE: %s %s reason=%s — order "
+                             "already expired/cancelled on Kalshi (404)",
+                             q["ticker"], order_id, reason)
         # R1-C1: final fill poll BEFORE popping — a fill can land between
         # the last tick poll and the cancel taking effect; popping first
         # would orphan it (position held to settlement with no local row).
-        self._poll_fills(q)
+        poll_ok = self._poll_fills(q)
         # R1-C1: reconcile against the DELETE response when it carries a
         # filled count. If Kalshi says more contracts filled than we have
         # recorded (fills API lag), KEEP the entry registered: the next
@@ -1390,8 +1411,52 @@ class LongshotEngine:
             # fill_count_fp pattern) — a DELETE response carrying only
             # fill_count_fp must not read as "no fills".
             _ord = resp.get("order") or {}
-            api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
-                _ord.get("fill_count")
+            try:
+                api_filled = fp_str_to_int(_ord.get("fill_count_fp")) or \
+                    _ord.get("fill_count")
+            except (TypeError, ValueError, OverflowError):
+                api_filled = None
+            if isinstance(api_filled, int) and api_filled > 0:
+                q["_cancel_api_filled"] = api_filled
+            # V2 DELETE returns reduced_by = contracts canceled, not
+            # fill_count. Reconstruct filled as original - canceled so
+            # CANCEL_FILL_MISMATCH still catches fills-API lag.
+            if not isinstance(api_filled, int):
+                reduced = None
+                try:
+                    if _ord.get("reduced_by_fp") is not None:
+                        reduced = fp_str_to_int(_ord.get("reduced_by_fp"))
+                    elif isinstance(_ord.get("reduced_by"), int):
+                        reduced = _ord.get("reduced_by")
+                    elif _ord.get("reduced_by") is not None:
+                        reduced = fp_str_to_int(_ord.get("reduced_by"))
+                except (TypeError, ValueError, OverflowError):
+                    reduced = None
+                if isinstance(reduced, int):
+                    try:
+                        api_filled = max(0, int(q["count"]) - reduced)
+                    except (TypeError, ValueError, OverflowError):
+                        api_filled = None
+                    if reduced > 0 and isinstance(api_filled, int):
+                        q["_cancel_api_filled"] = api_filled
+                    elif (reduced == 0
+                            and isinstance(q.get("_cancel_api_filled"), int)):
+                        # Retry of an already-gone order: keep Kalshi's
+                        # first-cancel fill count, not the local filled
+                        # (which can lag on a same-tick poll or a locked
+                        # record_position_from_fill).
+                        api_filled = int(q["_cancel_api_filled"])
+            if (not isinstance(api_filled, int)
+                    and isinstance(q.get("_cancel_api_filled"), int)):
+                api_filled = int(q["_cancel_api_filled"])
+        if not poll_ok:
+            logging.warning(
+                "LONGSHOT_CANCEL_POLL_DEFERRED: %s %s reason=%s — "
+                "final fill poll failed/partial — retry next tick",
+                q["ticker"], order_id, reason)
+            if isinstance(api_filled, int) and api_filled > q["filled"]:
+                q["needs_clean_poll"] = True
+            return
         if isinstance(api_filled, int) and api_filled > q["filled"]:
             # R3-MN2: require one clean (complete) fills poll on a
             # SUBSEQUENT tick before any 404-path terminal pop —
@@ -1503,8 +1568,11 @@ class LongshotEngine:
             # R2-M2: FP-primary count extraction (executor.py _on_fill /
             # settlement.py loss-cross-check pattern) — fills shaped with
             # only count_fp must not parse to 0.
-            fill_count = fp_str_to_int(f.get("count_fp")) or int(
-                f.get("count") or 0)
+            try:
+                fill_count = fp_str_to_int(f.get("count_fp")) or int(
+                    f.get("count") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
             if fill_count <= 0:
                 # R2-M2: do NOT stamp seen_trade_ids on a zero-parse fill —
                 # stamping before validation permanently blacklisted the

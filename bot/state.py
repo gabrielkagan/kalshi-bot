@@ -1472,7 +1472,17 @@ class StateManager:
         for pos in api_resp["market_positions"]:
             ticker = pos["ticker"]
             api_tickers.add(ticker)
-            position_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
+            try:
+                position_count = fp_str_to_int(pos.get("position_fp"))
+                if not position_count:
+                    position_count = pos.get("position") or 0
+                position_count = int(position_count)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "RECONCILE_POSITION_PARSE_MALFORMED ticker=%s "
+                    "position_fp=%r position=%r — skipping this row",
+                    ticker, pos.get("position_fp"), pos.get("position"))
+                continue
 
             if position_count == 0:
                 _unsettled = self.conn.execute(
@@ -1488,7 +1498,15 @@ class StateManager:
             side = "yes" if position_count > 0 else "no"
             count = abs(position_count)
             cost_d = pos.get("market_exposure_dollars")
-            cost = dollars_str_to_cents(cost_d) if cost_d else (pos.get("market_exposure") or 0)
+            try:
+                cost = dollars_str_to_cents(cost_d) if cost_d else (
+                    pos.get("market_exposure") or 0)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "RECONCILE_POSITION_COST_PARSE_MALFORMED ticker=%s "
+                    "market_exposure_dollars=%r — skipping this row",
+                    ticker, cost_d)
+                continue
             avg_price = cost // count if count else 0
 
             local_rows = self.conn.execute(
@@ -1829,7 +1847,7 @@ class StateManager:
                 continue
             ticker = order["ticker"]
             try:
-                client.cancel_order(oid)
+                client.cancel_order(oid, ticker=ticker)
                 _stale_canceled += 1
                 logging.warning("STALE_ORDER_CLEANUP: canceled %s ticker=%s price=%s count=%s (resting since %s)",
                                 oid, ticker,
@@ -1870,14 +1888,38 @@ class StateManager:
             # Prefer *_dollars fields (new FP API), fall back to legacy
             ypd = order.get("yes_price_dollars")
             npd = order.get("no_price_dollars")
-            if ypd:
-                price = dollars_str_to_cents(ypd)
-            elif npd:
-                price = dollars_str_to_cents(npd)
-            else:
-                price = order.get("yes_price", 0) or order.get("no_price", 0)
+            try:
+                if ypd:
+                    price = dollars_str_to_cents(ypd)
+                elif npd:
+                    price = dollars_str_to_cents(npd)
+                else:
+                    price = order.get("yes_price", 0) or order.get("no_price", 0)
+                price = int(price)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "RECONCILE_ORDER_PRICE_PARSE_MALFORMED oid=%s — "
+                    "falling back to integer cents", oid)
+                try:
+                    price = int(order.get("yes_price", 0) or order.get("no_price", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    price = 0
 
-            remaining = fp_str_to_int(order.get("remaining_count_fp")) or (order.get("remaining_count") or 0)
+            try:
+                remaining = fp_str_to_int(order.get("remaining_count_fp"))
+                if not remaining:
+                    remaining = order.get("remaining_count") or 0
+                remaining = int(remaining)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "RECONCILE_ORDER_REMAINING_PARSE_MALFORMED oid=%s "
+                    "remaining_count_fp=%r — falling back to integer remaining",
+                    oid, order.get("remaining_count_fp"))
+                try:
+                    remaining = int(fp_str_to_int(
+                        order.get("remaining_count") or 0))
+                except (TypeError, ValueError, OverflowError):
+                    remaining = 0
 
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,

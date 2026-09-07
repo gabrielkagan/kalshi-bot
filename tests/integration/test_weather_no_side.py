@@ -231,6 +231,37 @@ class TestNoSideFillDetection(unittest.TestCase):
         call_kwargs = ex._state.record_position_from_fill.call_args.kwargs
         self.assertEqual(call_kwargs["side"], "yes")
 
+    def test_on_fill_malformed_count_fp_stays_stamped_returns_zero(self):
+        """Stamp-first (_check_for_fill) then skip: second poll must
+        not return the same malformed fill (no livelock).
+        """
+        ex = _make_executor()
+        candidate = _make_crypto_candidate()
+        order = _make_order(candidate)
+        fill = {
+            "trade_id": "t-bad", "order_id": order["order_id"],
+            "count_fp": "N/A", "yes_price": 92,
+        }
+        ex._client.get_fills.return_value = {"fills": [fill]}
+        got = ex._check_for_fill(order)
+        self.assertIsNotNone(got)
+        n = ex._on_fill(got, order)
+        self.assertEqual(n, 0)
+        self.assertIn("t-bad", order["_seen_fill_ids"])
+        got2 = ex._check_for_fill(order)
+        self.assertIsNone(got2)
+        ex._state.record_position_from_fill.assert_not_called()
+
+    def test_on_fill_string_yes_price_does_not_raise(self):
+        ex = _make_executor()
+        candidate = _make_crypto_candidate()
+        order = _make_order(candidate)
+        fill = {"trade_id": "t-str", "count": 1, "yes_price": "45"}
+        n = ex._on_fill(fill, order)
+        self.assertEqual(n, 1)
+        call_kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(call_kwargs["price_cents"], 45)
+
 
 class TestNoSideRepriceMaker(unittest.TestCase):
     """Verify _reprice_maker() uses order's side for amend calls."""

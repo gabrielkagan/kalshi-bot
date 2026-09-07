@@ -38,6 +38,11 @@ from bot.constants import (
     READ_RATE_LIMIT,
     WRITE_RATE_LIMIT,
 )
+from bot.helpers.strings import (
+    cents_to_dollars_str,
+    fp_str_to_int,
+    int_to_fp_str,
+)
 from bot.helpers.breakers import (
     _breaker_config,
     _kalshi_breaker,
@@ -61,6 +66,109 @@ REST_429_MAX_SLEEP_S = 5.0
 REST_429_MAX_RETRIES = 3
 REST_429_WALL_CLOCK_CAP_S = 8.0
 from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live as _tm_is_live, strategy_is_live as _tm_strategy_is_live, strategy_from_client_order_id as _tm_strategy_from_coid  # modular live/shadow backstop
+
+# Create-order V2 (2026-09-06): POST /portfolio/orders returns 410
+# deprecated_v1_order_endpoint even under /trade-api/v2. New path is
+# /portfolio/events/orders; side is bid/ask on the YES book; price and
+# count are fixed-point strings. Executor callers keep yes/no + cents.
+_CREATE_ORDER_V2_PATH = f"{API_PATH_PREFIX}/portfolio/events/orders"
+_V2_STP_DEFAULT = "taker_at_cross"
+
+
+def _v2_book_side_and_price(
+    side: str,
+    action: str,
+    yes_price: Optional[int],
+    no_price: Optional[int],
+) -> Optional[tuple]:
+    """Map (yes/no, buy, cents) to (bid/ask, dollar-str). None = unmapped."""
+    if (action or "").lower() != "buy":
+        return None
+    s = (side or "").lower()
+    if s == "yes":
+        if yes_price is None:
+            return None
+        px = int(yes_price)
+        if not (0 < px < 100):
+            return None
+        return ("bid", cents_to_dollars_str(px))
+    if s == "no":
+        if no_price is None:
+            return None
+        yes_equiv = 100 - int(no_price)
+        if not (0 < yes_equiv < 100):
+            return None
+        return ("ask", cents_to_dollars_str(yes_equiv))
+    return None
+
+
+def _wrap_v2_create_order_response(raw: Optional[Dict]) -> Optional[Dict]:
+    """Keep executor's {order: {order_id, fill_count_fp, remaining_count}} shape."""
+    if not raw or not isinstance(raw, dict):
+        return raw
+    if raw.get("_status_code") == 404:
+        return raw
+    if "order" in raw:
+        return raw
+    oid = raw.get("order_id")
+    if not oid:
+        return raw
+    fill = raw.get("fill_count")
+    remaining = raw.get("remaining_count")
+    wrapped = {
+        "order_id": oid,
+        "client_order_id": raw.get("client_order_id"),
+    }
+    try:
+        if fill is not None:
+            wrapped["fill_count"] = fp_str_to_int(fill)
+            wrapped["fill_count_fp"] = fill
+    except (TypeError, ValueError, OverflowError):
+        logging.warning(
+            "CREATE_ORDER_V2_FILL_PARSE_MALFORMED fill=%r oid=%s",
+            fill, oid)
+    try:
+        if remaining is not None:
+            wrapped["remaining_count"] = fp_str_to_int(remaining)
+            wrapped["remaining_count_fp"] = remaining
+    except (TypeError, ValueError, OverflowError):
+        logging.warning(
+            "CREATE_ORDER_V2_REMAINING_PARSE_MALFORMED remaining=%r oid=%s",
+            remaining, oid)
+    return {"order": wrapped}
+
+
+def _wrap_v2_cancel_order_response(raw: Optional[Dict]) -> Optional[Dict]:
+    """V2 cancel is flat {order_id, reduced_by}.
+
+    ``reduced_by`` is contracts canceled (resting size at cancel time).
+    Do not map it onto remaining_count (that inverts the meaning) and
+    do not invent fill_count — callers reconstruct filled as
+    original_count - reduced_by.
+    """
+    if not raw or not isinstance(raw, dict):
+        return raw
+    if raw.get("_status_code") == 404:
+        return raw
+    if "order" in raw:
+        return raw
+    oid = raw.get("order_id")
+    if not oid:
+        return raw
+    reduced = raw.get("reduced_by")
+    wrapped = {
+        "order_id": oid,
+        "client_order_id": raw.get("client_order_id"),
+    }
+    try:
+        if reduced is not None:
+            wrapped["reduced_by"] = fp_str_to_int(reduced)
+            wrapped["reduced_by_fp"] = reduced
+    except (TypeError, ValueError, OverflowError):
+        logging.warning(
+            "CANCEL_ORDER_V2_REDUCED_BY_PARSE_MALFORMED reduced_by=%r oid=%s",
+            reduced, oid)
+    return {"order": wrapped}
 
 
 class KalshiClient:
@@ -327,29 +435,39 @@ class KalshiClient:
                 "SHADOW_BLOCK: %s %s %s count=%s — trading-mode shadow, no order placed",
                 ticker, side, action, count)
             return None
+        mapped = _v2_book_side_and_price(side, action, yes_price, no_price)
+        if mapped is None:
+            logging.error(
+                "PLACE_ORDER_V2_UNMAPPED: %s side=%s action=%s "
+                "yes_price=%s no_price=%s — not posting deprecated "
+                "/portfolio/orders", ticker, side, action, yes_price, no_price)
+            return None
+        book_side, price_str = mapped
         body: Dict = {
             "ticker": ticker,
-            "side": side,
-            "action": action,
-            "count": count,
-            "type": "limit",
+            "side": book_side,
+            "count": int_to_fp_str(int(count)),
+            "price": price_str,
+            "time_in_force": time_in_force or "good_till_canceled",
+            "self_trade_prevention_type": _V2_STP_DEFAULT,
         }
-        if yes_price is not None:
-            body["yes_price"] = yes_price
-        if no_price is not None:
-            body["no_price"] = no_price
         if client_order_id:
             body["client_order_id"] = client_order_id
         if post_only is not None:
             body["post_only"] = post_only
-        if time_in_force is not None:
-            body["time_in_force"] = time_in_force
-        return self._request("POST", f"{API_PATH_PREFIX}/portfolio/orders",
-                             json_body=body)
+        raw = self._request("POST", _CREATE_ORDER_V2_PATH, json_body=body)
+        return _wrap_v2_create_order_response(raw)
 
-    def cancel_order(self, order_id: str) -> Optional[Dict]:
-        return self._request("DELETE",
-                             f"{API_PATH_PREFIX}/portfolio/orders/{order_id}")
+    def cancel_order(self, order_id: str, ticker: Optional[str] = None) -> Optional[Dict]:
+        params: Optional[Dict] = None
+        if ticker:
+            params = {"market_ticker": ticker, "exchange_index": -1}
+        raw = self._request(
+            "DELETE",
+            f"{API_PATH_PREFIX}/portfolio/events/orders/{order_id}",
+            params=params,
+        )
+        return _wrap_v2_cancel_order_response(raw)
 
     def amend_order(self, order_id: str, ticker: str, side: str, action: str,
                     count: Optional[int] = None,
@@ -367,16 +485,27 @@ class KalshiClient:
                 "SHADOW_BLOCK: amend %s %s %s — trading-mode shadow, not amended",
                 ticker, side, action)
             return None
-        body: Dict = {"ticker": ticker, "side": side, "action": action}
-        if count is not None:
-            body["count"] = count
-        if yes_price is not None:
-            body["yes_price"] = yes_price
-        if no_price is not None:
-            body["no_price"] = no_price
-        return self._request("POST",
-                             f"{API_PATH_PREFIX}/portfolio/orders/{order_id}/amend",
-                             json_body=body)
+        mapped = _v2_book_side_and_price(side, action, yes_price, no_price)
+        if mapped is None or count is None:
+            logging.error(
+                "AMEND_ORDER_V2_UNMAPPED: %s side=%s action=%s "
+                "yes_price=%s no_price=%s count=%s — not posting "
+                "deprecated /portfolio/orders amend",
+                ticker, side, action, yes_price, no_price, count)
+            return None
+        book_side, price_str = mapped
+        body: Dict = {
+            "ticker": ticker,
+            "side": book_side,
+            "price": price_str,
+            "count": int_to_fp_str(int(count)),
+        }
+        raw = self._request(
+            "POST",
+            f"{API_PATH_PREFIX}/portfolio/events/orders/{order_id}/amend",
+            json_body=body,
+        )
+        return _wrap_v2_create_order_response(raw)
 
     def get_queue_position(self, order_id: str) -> Optional[int]:
         """Get queue position for a resting order. Returns position or None.
