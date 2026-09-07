@@ -1411,13 +1411,14 @@ class LongshotEngine:
                         api_filled = max(0, int(q["count"]) - reduced)
                     except (TypeError, ValueError):
                         api_filled = None
-                    # reduced_by=0 with some fills already recorded:
-                    # nothing was canceled (order already gone), not
-                    # "the whole order filled". tick() clears
-                    # needs_clean_poll on a complete poll before the
-                    # cancel sweep, so do not key this on that flag.
+                    if reduced > 0:
+                        q["_cancel_reduced_positive"] = True
+                    # reduced_by=0 is "already gone" only after a prior
+                    # DELETE actually canceled a remainder. On the first
+                    # cancel it is a full fill + fills-API lag — hold.
                     if (isinstance(api_filled, int)
                             and reduced == 0
+                            and q.get("_cancel_reduced_positive")
                             and int(q.get("filled") or 0) > 0):
                         api_filled = int(q["filled"])
         if isinstance(api_filled, int) and api_filled > q["filled"]:

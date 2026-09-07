@@ -485,6 +485,27 @@ class TestMN2CleanPollBefore404Pop:
         assert "oid-full" in engine._resting
         assert "LONGSHOT_CANCEL_FILL_MISMATCH" in caplog.text
 
+    def test_first_cancel_reduced_by_zero_with_partial_fills_still_holds(
+            self, engine, state, client, enabled, caplog):
+        """First DELETE reduced_by=0 with filled>0 is full-fill +
+        fills-API lag, not 'already gone'. Must keep the entry.
+        """
+        engine._boot_reconciled = True
+        _seed_pending_resting(state, client_oid="ls-oid-p",
+                              order_id="oid-p", count=3)
+        self._register(engine, order_id="oid-p")
+        with engine._lock:
+            engine._resting["oid-p"]["filled"] = 1
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "order": {"reduced_by": 0, "reduced_by_fp": "0.00"}}
+        with caplog.at_level("WARNING"):
+            engine._cancel_quote("oid-p", "t_minus_3min")
+        assert "oid-p" in engine._resting, (
+            "first cancel reduced_by=0 with a partial local fill must "
+            "hold for the lagged fills, not pop")
+        assert "LONGSHOT_CANCEL_FILL_MISMATCH" in caplog.text
+
     def test_partial_poll_does_not_clear_mismatch_hold(
             self, engine, state, client, enabled):
         engine._boot_reconciled = True
