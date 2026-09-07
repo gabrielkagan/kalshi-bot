@@ -768,11 +768,17 @@ class LongshotEngine:
             _pd = (o.get("no_price_dollars") if buy_side == "no"
                    else o.get("yes_price_dollars"))
             try:
-                price = dollars_str_to_cents(_pd) if _pd else (
-                    (o.get("no_price") if buy_side == "no"
-                     else o.get("yes_price")) or 0)
+                if _pd:
+                    price = dollars_str_to_cents(_pd)
+                else:
+                    price = (o.get("no_price") if buy_side == "no"
+                             else o.get("yes_price")) or 0
             except (TypeError, ValueError):
-                price = 0
+                logging.warning(
+                    "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED dollars=%r — "
+                    "falling back to integer cents", _pd)
+                price = (o.get("no_price") if buy_side == "no"
+                         else o.get("yes_price")) or 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
             _skip = self._boot_skip_seed(order_id, ticker, buy_side)

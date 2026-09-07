@@ -85,6 +85,27 @@ def test_full_fill_remaining_count_is_zero(monkeypatch):
     assert result["order"]["fill_count"] == 5
 
 
+def test_malformed_fill_count_still_returns_order_id(monkeypatch):
+    """POST already accepted — wrapper must not raise past place_order."""
+    _live(monkeypatch)
+    client = _client(_v2_ok(fill_count="N/A", remaining_count="2.00"))
+    result = KalshiClient.place_order(
+        client, TICKER, "yes", "buy", 2, yes_price=18, client_order_id="tw-x")
+    assert result["order"]["order_id"] == "oid-v2-1"
+    assert "fill_count" not in result["order"]
+
+
+def test_malformed_cancel_reduced_by_still_returns_order_id():
+    client = MagicMock()
+    client._request.return_value = {
+        "order_id": "oid-c", "reduced_by": "bad", "ts_ms": 1,
+    }
+    result = KalshiClient.cancel_order(client, "oid-c", ticker=TICKER)
+    assert result["order"]["order_id"] == "oid-c"
+    assert "reduced_by" not in result["order"] or not isinstance(
+        result["order"].get("reduced_by"), int)
+
+
 def test_cancel_uses_events_orders_and_market_ticker(monkeypatch):
     client = MagicMock()
     client._request.return_value = {
