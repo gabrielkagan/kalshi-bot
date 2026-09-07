@@ -4843,17 +4843,16 @@ class OrderExecutor:
 
         # Extract fill details — prefer FP/dollar fields, fall back to legacy
         try:
-            raw_fill_count = fp_str_to_int(fill.get("count_fp")) or (
-                fill.get("count") or order["count"])
+            raw_fill_count = fp_str_to_int(fill.get("count_fp"))
+            if not raw_fill_count:
+                raw_fill_count = fill.get("count") or order["count"]
+            raw_fill_count = int(raw_fill_count)
         except (TypeError, ValueError, OverflowError):
             logging.warning(
                 "ON_FILL_COUNT_PARSE_MALFORMED: %s order=%s count_fp=%r "
-                "count=%r — discarding this fill and unstamping so a "
-                "later poll can retry",
+                "count=%r — skip (leave stamped so the taker loop "
+                "cannot livelock on this row)",
                 ticker, order_id, fill.get("count_fp"), fill.get("count"))
-            fill_id = fill.get("trade_id") or fill.get("id")
-            if fill_id:
-                order.setdefault("_seen_fill_ids", set()).discard(fill_id)
             return 0
         remaining = order["count"] - order.get("filled_so_far", 0)
         # Post-completion fill leak guard (2026-05-19 HYPE incident,

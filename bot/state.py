@@ -1455,7 +1455,15 @@ class StateManager:
             side = "yes" if position_count > 0 else "no"
             count = abs(position_count)
             cost_d = pos.get("market_exposure_dollars")
-            cost = dollars_str_to_cents(cost_d) if cost_d else (pos.get("market_exposure") or 0)
+            try:
+                cost = dollars_str_to_cents(cost_d) if cost_d else (
+                    pos.get("market_exposure") or 0)
+            except (TypeError, ValueError, OverflowError):
+                logging.warning(
+                    "RECONCILE_POSITION_COST_PARSE_MALFORMED ticker=%s "
+                    "market_exposure_dollars=%r — skipping this row",
+                    ticker, cost_d)
+                continue
             avg_price = cost // count if count else 0
 
             local_rows = self.conn.execute(
