@@ -4394,14 +4394,14 @@ class OrderExecutor:
         # response to distinguish real ghost fills from unfilled IOC cancellations.
         # (Bug: false ghost fill on KXSOL15M-26MAR061400-00 cost -$39.16, Mar 6 2026)
         #
-        # fill_count>0 is Kalshi affirming fills. Unknown remaining (None)
-        # must not skip Layer A — Layer B's positions API has the same
-        # latency Layer A exists to cover, and returning None lets callers
-        # re-buy the full size.
-        if _order_fill_count > 0 and remaining_count in (0, None):
-            # IOC remaining=0 is the normal post-resolution value (exchange
-            # auto-cancels the remainder). Size from fill_count, not count —
-            # remaining=0 + fill=2 is a 2-lot fill, not a full-size phantom.
+        # fill_count>0 is Kalshi affirming fills, including partials
+        # (remaining>0). Unknown remaining (None) must not skip Layer A —
+        # Layer B's positions API has the same latency Layer A exists to
+        # cover, and returning None lets callers re-buy the full size.
+        # remaining=0 + fill=0 is the Mar 6 unfilled-IOC path, not Layer A.
+        if _order_fill_count > 0:
+            # Size from fill_count, not count — remaining=0 + fill=2 is a
+            # 2-lot fill (IOC auto-canceled the rest), not a full-size phantom.
             _ghost_n = min(int(_order_fill_count), count)
             logging.error(
                 f"GHOST_FILL_DETECTED: {ticker} remaining_count={remaining_count} "

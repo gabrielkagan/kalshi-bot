@@ -85,14 +85,14 @@ def ghost_fill_check(
     # fill>0 is also Layer A. Size from fill_count, not count. Price is
     # the submitted IOC limit, not scan-time ask.
     limit = ioc_limit_price if ioc_limit_price is not None else price
-    if order_fill_count > 0 and remaining_count in (0, None):
+    if order_fill_count > 0:
         ghost_n = min(int(order_fill_count), count)
         if state_record_position:
             state_record_position(
                 ticker=ticker,
                 event_ticker=candidate["event_ticker"],
                 asset=candidate["asset"],
-                side="yes",
+                side=order_side,
                 count=ghost_n,
                 price_cents=limit,
                 is_taker=True,

@@ -1734,6 +1734,34 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertIsNone(result)
         ex._client.place_order.assert_not_called()
 
+    def test_layer_a_partial_fill_remaining_positive_is_ghost(self):
+        """Kalshi-affirmed partial fill (fill=1 remaining=1 of count=2)
+        with lagging fills API must Layer-A ghost 1, not return None
+        (callers re-buy the full size).
+        """
+        ex = _make_executor()
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-partial-rem",
+                "remaining_count": 1,
+                "fill_count": 1,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        candidate = _make_candidate(position_size=2)
+
+        with patch("bot.executor.time") as mock_time:
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        kwargs = ex._state.record_position_from_fill.call_args.kwargs
+        self.assertEqual(kwargs["fill_source"], "ghost_fill")
+        self.assertEqual(kwargs["count"], 1)
+        self.assertEqual(result["filled_count"], 1)
+
     def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
         """remaining_count_fp='0.00' with remaining_count key absent must
         still trip Layer A. Defaulting missing remaining to `count` skips
