@@ -1921,13 +1921,22 @@ class StateManager:
                 except (TypeError, ValueError, OverflowError):
                     remaining = 0
 
+            side = order.get("side")
+            action = order.get("action")
+            if side not in ("yes", "no") or action not in ("buy", "sell"):
+                logging.warning(
+                    "RECONCILE_ORDER_DIRECTION_MALFORMED oid=%s side=%r "
+                    "action=%r outcome_side=%r book_side=%r — skipping",
+                    oid, side, action,
+                    order.get("outcome_side"), order.get("book_side"))
+                continue
             self.conn.execute("""
                 INSERT INTO pending_orders (order_id, client_order_id, ticker,
                     event_ticker, asset, side, action, count, price_cents,
                     status, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,'canceled',?,?)
             """, (oid, order.get("client_order_id", ""), ticker,
-                  event_ticker, asset, order["side"], order["action"],
+                  event_ticker, asset, side, action,
                   remaining, price,
                   order.get("created_time", now), now))
 

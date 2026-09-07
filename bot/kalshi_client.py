@@ -73,6 +73,10 @@ from bot.trading_mode import asset_from_ticker as _tm_asset_from_ticker, is_live
 # count are fixed-point strings. Executor callers keep yes/no + cents.
 _CREATE_ORDER_V2_PATH = f"{API_PATH_PREFIX}/portfolio/events/orders"
 _V2_STP_DEFAULT = "taker_at_cross"
+# GET /portfolio/orders is still the list endpoint (not events/orders).
+# Order.side / Order.action are deprecated past 2026-05-28; canonical
+# fields are outcome_side (yes|no) and book_side (bid|ask).
+_CLOCK_DRIFT_RESIDUAL_S = 2.0
 
 
 def _v2_book_side_and_price(
@@ -100,6 +104,82 @@ def _v2_book_side_and_price(
             return None
         return ("ask", cents_to_dollars_str(yes_equiv))
     return None
+
+
+def _normalize_order_direction(order: Dict) -> Optional[Dict]:
+    """Fill side/action from outcome_side/book_side. None = strip direction.
+
+    bid≡yes, ask≡no. buy-yes and sell-no share (yes, bid); buy-no and
+    sell-yes share (no, ask). We emit action=buy for those pairs (the
+    only action this bot places) and action=sell otherwise.
+    """
+    if not isinstance(order, dict):
+        return None
+    def _s(v) -> str:
+        return v.lower() if isinstance(v, str) else ""
+    outcome = _s(order.get("outcome_side"))
+    book = _s(order.get("book_side"))
+    legacy_side = _s(order.get("side"))
+    legacy_action = _s(order.get("action"))
+    if outcome not in ("yes", "no"):
+        if book == "bid":
+            outcome = "yes"
+        elif book == "ask":
+            outcome = "no"
+        elif legacy_side in ("yes", "no"):
+            outcome = legacy_side
+        else:
+            logging.warning(
+                "GET_ORDERS_DIRECTION_MALFORMED oid=%s — no outcome_side/"
+                "book_side/side; keeping id, stripping side/action",
+                order.get("order_id"))
+            return None
+    if book not in ("bid", "ask"):
+        book = "bid" if outcome == "yes" else "ask"
+    if (outcome == "yes" and book == "bid") or (
+            outcome == "no" and book == "ask"):
+        action = "buy"
+    else:
+        action = "sell"
+    # (yes, bid) is buy-yes OR sell-no; (no, ask) is buy-no OR sell-yes.
+    # Honor legacy action only when the legacy pair is self-consistent
+    # with the canonical outcome. Mixing canonical outcome with a
+    # mirror-pair action inverts exposure (sell-NO recorded as sell-YES).
+    if legacy_action in ("buy", "sell"):
+        if legacy_side == outcome:
+            action = legacy_action
+        elif legacy_side in ("yes", "no"):
+            action = "buy" if legacy_action == "sell" else "sell"
+    out = dict(order)
+    out["side"] = outcome
+    out["action"] = action
+    out["outcome_side"] = outcome
+    out["book_side"] = book
+    return out
+
+
+def _wrap_get_orders_response(raw: Optional[Dict]) -> Optional[Dict]:
+    if not raw or not isinstance(raw, dict):
+        return raw
+    orders = raw.get("orders")
+    if not isinstance(orders, list):
+        return raw
+    kept = []
+    for o in orders:
+        n = _normalize_order_direction(o)
+        if n is None:
+            # Keep the id for cancel-sweep / api_order_ids. Dropping the
+            # order is a reconcile fail-open: never canceled on Kalshi,
+            # local row flipped to canceled because the oid vanished.
+            if not isinstance(o, dict):
+                continue
+            n = dict(o)
+            n.pop("side", None)
+            n.pop("action", None)
+        kept.append(n)
+    out = dict(raw)
+    out["orders"] = kept
+    return out
 
 
 def _wrap_v2_create_order_response(raw: Optional[Dict]) -> Optional[Dict]:
@@ -249,7 +329,8 @@ class KalshiClient:
         is_write = method in ("POST", "PUT", "DELETE")
         self._rate_limit_wait(is_write)
 
-        timestamp_ms = str(int(time.time() * 1000))
+        t_send = time.time()
+        timestamp_ms = str(int(t_send * 1000))
         url = f"{BASE_URL}{path}"
         signature = self._create_signature(timestamp_ms, method, path)
 
@@ -269,15 +350,25 @@ class KalshiClient:
                 json=json_body,
                 timeout=(REST_CONNECT_TIMEOUT_S, read_s),
             )
-            # Clock drift detection from server Date header
+            t_recv = time.time()
+            elapsed = max(0.0, t_recv - t_send)
+            # Clock skew vs HTTP Date. Date is 1s resolution and may be
+            # stamped at send or recv, so abs(recv − Date) includes RTT.
+            # VPS 2026-09-07 timedatectl: NTP synchronized; 5–15s warnings
+            # were request duration, not OS skew. Residual = closer of
+            # local send/recv to Date (explains RTT either side).
             server_date = resp.headers.get("Date")
             if server_date:
                 try:
                     from email.utils import parsedate_to_datetime
-                    server_time = parsedate_to_datetime(server_date)
-                    drift = abs((datetime.datetime.now(timezone.utc) - server_time).total_seconds())
-                    if drift > 2.0:
-                        logging.warning(f"clock_drift_detected: {drift:.1f}s vs server")
+                    server_ts = parsedate_to_datetime(server_date).timestamp()
+                    residual = min(abs(t_send - server_ts),
+                                   abs(t_recv - server_ts))
+                    if residual > _CLOCK_DRIFT_RESIDUAL_S:
+                        logging.warning(
+                            "clock_drift_detected: %.1fs vs server "
+                            "(elapsed=%.1fs recv_minus_date=%.1fs)",
+                            residual, elapsed, t_recv - server_ts)
                 except Exception:
                     pass
 
@@ -552,8 +643,9 @@ class KalshiClient:
             params["ticker"] = ticker
         if status:
             params["status"] = status
-        return self._request("GET", f"{API_PATH_PREFIX}/portfolio/orders",
-                             params=params)
+        raw = self._request("GET", f"{API_PATH_PREFIX}/portfolio/orders",
+                            params=params)
+        return _wrap_get_orders_response(raw)
 
     @_kalshi_breaker
     @_breaker_config(key_fn=lambda self, **_: "kalshi_fills",
