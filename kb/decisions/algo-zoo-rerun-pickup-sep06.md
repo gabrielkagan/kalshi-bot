@@ -130,8 +130,9 @@ State, in the findings doc, before the first result is read:
   tracks are running. Check before launching, and stagger.
 - **Reader**: use `scripts/research/zstd_stream.py` — `checked_stream_lines`,
   `run_zstd_checked`, `checked_zstandard_lines`, `assert_zstd_ok`. Do NOT write a new one.
-- 4 reader sites remain unguarded (`behavioral_premia_probe.py`, `maker_markout_scale.py`,
-  `nbbo_cache.py`, 3 algo_zoo `zstandard` readers). Guard any you depend on before trusting it.
+- **All in-repo readers are now guarded** as of `f750c743`. One remains: `maker_markout_scale.py`,
+  which is the Track E session's and already carries its own checked reader. If you write a NEW
+  reader, route it through `zstd_stream.py` — do not add a fourth variant.
 - **The bot is OFF and stays off.** Nothing here turns it on.
 - **Do not run the multi-agent workflows** (`scripts/research/workflows/*.js`) without Gabe
   explicitly asking — they spawn dozens of agents and cost a lot.
