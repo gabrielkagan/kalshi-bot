@@ -587,10 +587,12 @@ class LongshotEngine:
 
         if not C.LONGSHOT_ENABLED:
             self._cancel_all("longshot_disabled")
+            self._stale_drop_backstop(now)
             return
         self._refresh_disabled()
         if self._disabled_reason:
             self._cancel_all(self._disabled_reason)
+            self._stale_drop_backstop(now)
             return
 
         # R1-M6: ONE unfiltered paginated fills fetch per tick, dispatched
@@ -631,28 +633,22 @@ class LongshotEngine:
             if remaining < C.LONGSHOT_MIN_STC_SECONDS:
                 self._cancel_quote(q["order_id"], "t_minus_3min")
 
-        # R1-M2: stale-drop backstop. If the cancel keeps failing (API
-        # None / network) past 120s AFTER window close, the order no
-        # longer exists on Kalshi (auto-cancelled at close) — one final
-        # fill poll, then drop the entry so it can't pollute caps and
-        # REST budget forever.
+        self._stale_drop_backstop(now)
+
+    # ── internals ─────────────────────────────────────────────────────────
+
+    def _stale_drop_backstop(self, now: float) -> None:
+        """If cancel keeps failing past 120s after window close, drop
+        the entry after one complete fill poll. Must also run while
+        longshot is disabled — tick() otherwise returns after
+        _cancel_all and a cancel-hold would pin occupancy all day.
+        """
         with self._lock:
             quotes = list(self._resting.values())
         for q in quotes:
             elapsed = max(0.0, now - q["registered_ts"])
             remaining = q["stc_at_register"] - elapsed
             if remaining < -_STALE_DROP_GRACE_SECONDS:
-                # R5-MN1: the drop is TERMINAL (the entry's dedup state
-                # dies with it), so the final poll must be COMPLETE —
-                # a failed/partial snapshot could hide a last-moment
-                # fill forever. On a failed/partial poll, leave the
-                # entry: the stale condition re-fires next tick (one
-                # retry per tick). Bounded worst case: the entry
-                # persists one tick per failed poll while it
-                # over-reserves caps — safe direction — and the window
-                # is already closed, so no NEW fills accrue;
-                # seen_trade_ids dedup keeps the re-polls (and the
-                # partial pages' recorded fills) idempotent.
                 if not self._poll_fills(q):
                     logging.warning(
                         "LONGSHOT_STALE_DROP_DEFERRED: %s %s final fill "
@@ -661,9 +657,6 @@ class LongshotEngine:
                     continue
                 with self._lock:
                     _popped = self._resting.pop(q["order_id"], None)
-                # R2-C1: stale drop is a pop site too — clear the ledger row
-                # (Kalshi auto-cancelled the order at window close). Skip
-                # when the final poll fully filled it (already marked).
                 if _popped is not None:
                     self._mark_pending(q["order_id"], "canceled")
                 logging.warning(
@@ -671,8 +664,6 @@ class LongshotEngine:
                     "cancel still failing — entry dropped after final "
                     "fill poll (filled %d/%d)", q["ticker"], q["order_id"],
                     -remaining, q["filled"], q["count"])
-
-    # ── internals ─────────────────────────────────────────────────────────
 
     def _boot_reconcile_orphans(self) -> None:
         """R1-M1 + R2-M1: reconcile longshot orders that survived a restart.
@@ -1544,8 +1535,11 @@ class LongshotEngine:
             # R2-M2: FP-primary count extraction (executor.py _on_fill /
             # settlement.py loss-cross-check pattern) — fills shaped with
             # only count_fp must not parse to 0.
-            fill_count = fp_str_to_int(f.get("count_fp")) or int(
-                f.get("count") or 0)
+            try:
+                fill_count = fp_str_to_int(f.get("count_fp")) or int(
+                    f.get("count") or 0)
+            except (TypeError, ValueError):
+                continue
             if fill_count <= 0:
                 # R2-M2: do NOT stamp seen_trade_ids on a zero-parse fill —
                 # stamping before validation permanently blacklisted the
