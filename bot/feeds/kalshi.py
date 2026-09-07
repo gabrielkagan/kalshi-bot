@@ -144,6 +144,13 @@ class KalshiFeed:
         # ticker -> monotonic timestamp of last force_resubscribe call
         # (rate-limit per WS_FORCE_RESUB_COOLDOWN_S; prevents loops).
         self._force_resub_cooldown: Dict[str, float] = {}
+        # Separate 30s latch for crossed-book get_snapshot from
+        # get_orderbook. Sharing _force_resub_cooldown starved
+        # flag_ticker_drifted → force_resubscribe (Claude-R2 MN1).
+        self._crossed_resnap_cooldown: Dict[str, float] = {}
+        # Cooldown stamp: session-start + seq-gap + no-sid heal +
+        # B2 stuck-subscribe. 0.0 only before the first connect.
+        self._last_ws_reconnect_request_mono: float = 0.0
         # Apr 26 2026 incident: window-rotation race produced
         # subscribe→delete→subscribe→delete loop on settled tickers.
         # `unsubscribe_ticker` records ticker->unblock_monotonic_ts here;
@@ -256,6 +263,11 @@ class KalshiFeed:
         # kb/failures/kalshi-ws-schema-drift.md § "test-as-spec addendum".
         self._delta_probe_count = 0
         self._delta_probe_max = 5
+        # Tickers whose book is not a valid delta base: subscribe not
+        # yet snapshotted, seq-gap, or qty underflow. Deltas are
+        # dropped until _handle_ob_snapshot rebuilds. Same pattern as
+        # SyntheticRTIFeed.awaiting_snapshot (ticket 86bbvztem).
+        self._awaiting_snapshot: Set[str] = set()
         # D1.1.5 Phase 3b: WS-session connect timestamp — only used by
         # ``_should_log_raw_in`` to gate the post-connect raw-log time
         # window (raw-log helpers are bot-specific per pickup prompt
@@ -312,6 +324,9 @@ class KalshiFeed:
             if ticker not in self._subscribed_tickers:
                 self._pending_subscribes.append(ticker)
                 self._subscribed_tickers.add(ticker)
+                # No book until the subscribe snapshot arrives. Deltas
+                # applied against empty are the 86bbvztem class.
+                self._awaiting_set().add(ticker)
 
     def _sweep_unsubscribe_blacklist(self, now_mono: float) -> None:
         """Prune expired entries from `_unsubscribe_blacklist`. Called
@@ -445,6 +460,7 @@ class KalshiFeed:
             if self._get_snapshot_disabled:
                 if purge_cache:
                     self._orderbooks.pop(ticker, None)
+                    self._awaiting_set().add(ticker)
                 if ticker not in self._pending_unsubscribes:
                     self._pending_unsubscribes.append(ticker)
                 if ticker not in self._pending_subscribes:
@@ -462,6 +478,7 @@ class KalshiFeed:
                 # Phase 1's rejection wiring makes the brief gap
                 # observable (no_orderbook).
                 self._orderbooks.pop(ticker, None)
+                self._awaiting_set().add(ticker)
             # Primary path: queue update_subscription/get_snapshot.
             # If a snapshot arrives, _handle_ob_snapshot clears the
             # pending entry. If timeout fires, we fall back to
@@ -506,22 +523,28 @@ class KalshiFeed:
                 if now - req_ts > WS_SNAPSHOT_REQUEST_TIMEOUT_S:
                     timed_out.append(t)
                     del self._snapshot_request_pending[t]
+            live_timeouts: List[str] = []
             for t in timed_out:
-                if t in self._subscribed_tickers:
-                    if t not in self._pending_unsubscribes:
-                        self._pending_unsubscribes.append(t)
-                    if t not in self._pending_subscribes:
-                        self._pending_subscribes.append(t)
-                    # Phase 2.6 R6 / A1: do NOT pre-pop _ticker_to_sid.
-                    # The drain's `_send_ob_unsubscribe` needs the
-                    # sid to actually send the unsubscribe to Kalshi;
-                    # it pops on successful send. Pre-pop = drain
-                    # SKIP = Kalshi-side subscription leak. Same bug
-                    # as R5 (removed from unsubscribe_ticker), this
-                    # is the symmetric path. The original Phase 2.5
-                    # monotonic-guard concern is no longer relevant
-                    # in 2.6 since envelope sids aren't learned at
-                    # all (sids come from type=subscribed only).
+                if t not in self._subscribed_tickers:
+                    # Lifecycle churn (unsubscribe already ran).
+                    # Counting these as Kalshi-contract failures
+                    # trips _get_snapshot_disabled (Claude-R3 M1).
+                    continue
+                live_timeouts.append(t)
+                if t not in self._pending_unsubscribes:
+                    self._pending_unsubscribes.append(t)
+                if t not in self._pending_subscribes:
+                    self._pending_subscribes.append(t)
+                # Phase 2.6 R6 / A1: do NOT pre-pop _ticker_to_sid.
+                # The drain's `_send_ob_unsubscribe` needs the
+                # sid to actually send the unsubscribe to Kalshi;
+                # it pops on successful send. Pre-pop = drain
+                # SKIP = Kalshi-side subscription leak. Same bug
+                # as R5 (removed from unsubscribe_ticker), this
+                # is the symmetric path. The original Phase 2.5
+                # monotonic-guard concern is no longer relevant
+                # in 2.6 since envelope sids aren't learned at
+                # all (sids come from type=subscribed only).
 
             # R1 / A1 + R2 / P0-2: count consecutive FAILED SWEEPS,
             # not per-ticker timeouts. A sweep with ≥1 timeout =
@@ -531,7 +554,7 @@ class KalshiFeed:
             # disable the primary path; it takes
             # WS_GET_SNAPSHOT_DISABLE_AFTER consecutive sweeps
             # producing ZERO snapshot fulfillments to disable.
-            if timed_out and not self._get_snapshot_disabled:
+            if live_timeouts and not self._get_snapshot_disabled:
                 self._get_snapshot_consecutive_failed_sweeps += 1
                 if (self._get_snapshot_consecutive_failed_sweeps
                         >= WS_GET_SNAPSHOT_DISABLE_AFTER):
@@ -574,6 +597,8 @@ class KalshiFeed:
                         # acquisition (WSClient takes its own lock).
                         if stuck_ticker in self._subscribed_tickers:
                             _need_reconnect = True
+                            self._last_ws_reconnect_request_mono = (
+                                time.monotonic())
 
             # R1 / A5 + R4 / F2: walk recovery deadlines, surface
             # stuck tickers. The signal "snapshot didn't arrive"
@@ -632,7 +657,7 @@ class KalshiFeed:
         # but the order discipline keeps that future-safe).
         if _need_reconnect:
             self._wire.request_reconnect()
-        return timed_out
+        return live_timeouts
 
     def unsubscribe_ticker(self, ticker: str):
         # KNOWN LIMITATION (R2 [A1]): the blacklist applies regardless
@@ -672,6 +697,7 @@ class KalshiFeed:
                 self._pending_unsubscribes.append(ticker)
                 self._subscribed_tickers.discard(ticker)
                 self._orderbooks.pop(ticker, None)
+                self._awaiting_set().discard(ticker)
             # R2 / P0-1: clean up ALL Phase 2 state for the ticker.
             # Without this, settled-window churn:
             #   (a) emits false WS_RESUB_STUCK warnings 30s later
@@ -685,6 +711,7 @@ class KalshiFeed:
             #       (unbounded dict growth across days of trading).
             self._snapshot_request_pending.pop(ticker, None)
             self._force_resub_cooldown.pop(ticker, None)
+            getattr(self, "_crossed_resnap_cooldown", {}).pop(ticker, None)
             self._force_resub_recovery_deadline.pop(ticker, None)
             self._force_resub_recovery_warned.pop(ticker, None)
             # Phase 2.6 R5 / P1: do NOT pre-pop _ticker_to_sid here.
@@ -715,8 +742,45 @@ class KalshiFeed:
                 self._pending_late_unsubscribes.add(ticker)
 
     def get_orderbook(self, ticker: str) -> Optional[Dict]:
+        """Trading-path book. Returns None while the ticker is awaiting
+        a snapshot rebuild, and None if the cached book is strictly
+        crossed (yes_bid > implied yes ask). A real Kalshi book cannot
+        cross; a crossed cache is stale levels, and OrderExecutor
+        must not hit it. Locked (bid == ask) is served. The snapshotter
+        reads the raw cache via get_all_orderbooks_snapshot.
+        """
         with self._lock:
-            return self._orderbooks.get(ticker)
+            if ticker in self._awaiting_set():
+                return None
+            ob = self._orderbooks.get(ticker)
+            if ob is None:
+                return None
+            if self._book_is_strictly_crossed(ob):
+                # Hide from the live path but keep applying deltas and
+                # keep the raw cache for the snapshotter. Queue a
+                # snapshot so a stuck ghost heals before the 5-min
+                # periodic sweep. Do NOT mark awaiting — incoming
+                # deletes may uncross without a rebuild.
+                now_m = time.monotonic()
+                cd = getattr(self, "_crossed_resnap_cooldown", None)
+                if not isinstance(cd, dict):
+                    cd = {}
+                    self._crossed_resnap_cooldown = cd
+                last = cd.get(ticker)
+                if last is None or (now_m - last) >= WS_FORCE_RESUB_COOLDOWN_S:
+                    cd[ticker] = now_m
+                    if self._get_snapshot_disabled:
+                        self._queue_unsub_resub_locked(ticker)
+                    else:
+                        if ticker not in self._pending_snapshot_requests:
+                            self._pending_snapshot_requests.append(ticker)
+                        self._snapshot_request_pending[ticker] = now_m
+                return None
+            # Copy so scanner `_ob_cache` cannot alias the WS-thread
+            # dict (Claude-C1). Two-level list copy: books are
+            # {yes, no, ts} of ints; deepcopy under this lock blocked
+            # the WS thread on the 1 Hz path (Claude-R2 MN2).
+            return self._copy_book(ob)
 
     def pop_fills(self) -> List[Dict]:
         with self._lock:
@@ -778,8 +842,15 @@ class KalshiFeed:
             #     WS_RESUB_STUCK warnings 30s into new session.
             self._snapshot_request_pending.clear()
             self._pending_snapshot_requests.clear()
+            self._pending_unsubscribes.clear()
+            self._pending_subscribes.clear()
             self._force_resub_recovery_deadline.clear()
             self._force_resub_recovery_warned.clear()
+            # Stamp the cooldown on EVERY session start, not just
+            # seq-gap-driven reconnects. A Kalshi-side drop leaves
+            # last=0 (or hours-stale); a burst-window gap would
+            # promptly bounce the new session (Claude-R4 M1).
+            self._last_ws_reconnect_request_mono = time.monotonic()
             resub_tickers = list(self._subscribed_tickers)
         # Prime raw-log connect-ts so the post-connect time window
         # starts now (independent of WSClient's own internal timestamp).
@@ -840,6 +911,7 @@ class KalshiFeed:
             # naturally cleaned up — Kalshi drops the old session's
             # subs on disconnect).
             self._pending_late_unsubscribes.clear()
+            self._awaiting_set().clear()
             # Phase 2.9 R-review A3: reset raw-log counter so
             # the new session gets fresh diagnostic budget.
             self._raw_log_count = 0
@@ -868,7 +940,36 @@ class KalshiFeed:
         now live in WSClient (their results land on the Frame dataclass
         but we keep the existing dispatch by raw payload to minimize
         behavior delta during this extraction Bit).
+
+        A seq gap on a sid we hold books for means we missed a diff
+        (Kalshi docs: seq is "used for snapshot/delta consistency").
+        type=ok shares that seq stream — ignoring an ack-gap lets a
+        later delta apply on a dirty book (R1-M2). A gapped SNAPSHOT
+        is the rebuild (apply after the drop). A gapped DELTA is a
+        diff against a book we no longer have (ignore). Fill / other
+        channels do not share the orderbook seq — a gap there must
+        not pop books or reconnect (Claude-R2 M2).
         """
+        if getattr(frame, "seq_gap", False):
+            msg_type = getattr(frame, "msg_type", None)
+            if msg_type in (
+                "orderbook_delta", "orderbook_snapshot", "ok",
+            ):
+                ticker = None
+                # Ticker fallback is only for leaked sid_v1 on
+                # orderbook frames. type=ok rebuilds the mapped sid
+                # only (R1-M2); do not pass market_ticker for acks.
+                if msg_type in ("orderbook_delta", "orderbook_snapshot"):
+                    parsed = getattr(frame, "parsed", None)
+                    if isinstance(parsed, dict):
+                        msg = parsed.get("msg")
+                        if isinstance(msg, dict):
+                            t = msg.get("market_ticker")
+                            if isinstance(t, str):
+                                ticker = t
+                rebuilt = self._on_seq_gap(frame.sid, ticker=ticker)
+                if rebuilt and msg_type == "orderbook_delta":
+                    return
         self._handle_message(frame.raw)
 
     @property
@@ -907,36 +1008,40 @@ class KalshiFeed:
         the lock once, copies entire (yes, no, ts) trios atomically, and
         returns objects no other thread can mutate.
 
-        Holding `_lock` across deepcopy is the right trade-off: the deep
-        copy of ~30 active 15M tickers × ~5 levels per side is ~300 ints,
-        which is sub-millisecond. The WS thread waits at most that long
+        Holding `_lock` across the copy is the right trade-off: ~30
+        active 15M tickers × ~5 levels per side is ~300 ints, which
+        is sub-millisecond. The WS thread waits at most that long
         on the next delta — much shorter than the 10s polling cadence of
         the dashboard snapshotter. Scan pre-loop OFT uses
         ``get_orderbooks_snapshot_for`` so weather/SPX discovery books
         are not copied every 1 Hz tick.
         """
-        import copy as _copy
         with self._lock:
-            return _copy.deepcopy(self._orderbooks)
+            return {t: self._copy_book(ob) for t, ob in self._orderbooks.items()}
 
     def get_orderbooks_snapshot_for(self, tickers) -> Dict[str, Dict]:
-        """Deep-copy a subset of cached orderbooks under one lock.
+        """Copy a subset of cached orderbooks under one lock.
 
         1 Hz scan OFT must not copy weather/SPX books that
         ``_subscribe_discovery_orderbooks`` keeps subscribed for the
-        dashboard. Missing tickers are omitted (same as get_orderbook
-        returning None).
+        dashboard. Missing tickers are omitted.
+
+        OFT is a flow-diagnostic consumer, not a trading-price
+        consumer. Crossed and awaiting books stay in the copy so
+        ``record_snapshot`` does not interleave full-depth WS with
+        REST depth=5 and fire false ``depth_drain`` (Claude-R2 M4).
+        Trading-path hide remains in ``get_orderbook``.
         """
-        import copy as _copy
         want = {t for t in tickers if t}
         if not want:
             return {}
         with self._lock:
-            return {
-                t: _copy.deepcopy(ob)
-                for t, ob in self._orderbooks.items()
-                if t in want
-            }
+            out: Dict[str, Dict] = {}
+            for t, ob in self._orderbooks.items():
+                if t not in want:
+                    continue
+                out[t] = self._copy_book(ob)
+            return out
 
     # ── Auth (shim) ───────────────────────────────────────────────────────
 
@@ -982,6 +1087,7 @@ class KalshiFeed:
             self._outstanding_subscribes[cmd_id] = ticker
             self._outstanding_subscribe_ts[cmd_id] = (
                 time.monotonic())
+            self._awaiting_set().add(ticker)
         _payload = {
             "id": cmd_id,
             "cmd": "subscribe",
@@ -1116,13 +1222,60 @@ class KalshiFeed:
             sid = self._ticker_to_sid.get(ticker)
         if sid is None:
             # Race: ticker was unsubscribed (or sid never learned)
-            # between queue and drain. Clear pending tracker so the
-            # timeout doesn't fire spuriously.
+            # between queue and drain. If we are AWAITING a rebuild,
+            # popping the timeout tracker would leave the ticker
+            # stuck no_orderbook: periodic force_resubscribe also
+            # no-ops without a sid (R1-M4). Reconnect is the only
+            # heal that does not duplicate-subscribe.
+            reconnect = False
             with self._lock:
-                self._snapshot_request_pending.pop(ticker, None)
-            logging.warning(
-                "kalshi_ws_get_snapshot: ticker=%s has no sid in "
-                "_ticker_to_sid at send time — skipping", ticker)
+                if ticker not in self._subscribed_tickers:
+                    self._snapshot_request_pending.pop(ticker, None)
+                    return
+                awaiting = ticker in self._awaiting_set()
+                in_flight = ticker in self._outstanding_subscribes.values()
+                connect_ts = getattr(self, "_ws_connect_ts", 0.0)
+                boot = (
+                    connect_ts <= 0.0
+                    or (time.time() - connect_ts) < WS_FORCE_RESUB_COOLDOWN_S
+                )
+                last = getattr(self, "_last_ws_reconnect_request_mono", 0.0)
+                cooldown_ok = (
+                    last <= 0.0
+                    or (time.monotonic() - last) >= WS_FORCE_RESUB_COOLDOWN_S
+                )
+                # Sid-not-yet-learned (boot / subscribe in flight) is
+                # not "sid lost". Reconnecting there loops the session
+                # (Claude-M4). Only bounce when awaiting AND the sid
+                # was expected to exist.
+                reconnect = (
+                    awaiting and not in_flight and not boot and cooldown_ok
+                )
+                if reconnect:
+                    self._last_ws_reconnect_request_mono = time.monotonic()
+                    self._snapshot_request_pending.pop(ticker, None)
+                else:
+                    # Skip-and-retry (Grok-R5 M4): drain already
+                    # cleared _pending_snapshot_requests. Re-queue
+                    # the work; do not arm the 5s unsub+resub timer
+                    # — we never sent get_snapshot.
+                    if ticker not in self._pending_snapshot_requests:
+                        self._pending_snapshot_requests.append(ticker)
+                    self._snapshot_request_pending.pop(ticker, None)
+            if reconnect:
+                logging.warning(
+                    "kalshi_ws_get_snapshot: ticker=%s has no sid in "
+                    "_ticker_to_sid at send time — awaiting rebuild, "
+                    "requesting reconnect",
+                    ticker,
+                )
+                self._wire.request_reconnect()
+            else:
+                logging.debug(
+                    "kalshi_ws_get_snapshot: ticker=%s has no sid in "
+                    "_ticker_to_sid at send time — re-queueing",
+                    ticker,
+                )
             return
         # Phase 2.7 R-review A1: use unique cmd_id per call.
         # Pre-fix all get_snapshot used static id=4, which collapsed
@@ -1130,6 +1283,18 @@ class KalshiFeed:
         # the error-frame dedup at _ws_error_frame_seen — losing
         # per-call visibility.
         with self._lock:
+            # Drain copied the queue then dropped the lock.
+            # unsubscribe_ticker may have run in between
+            # (Claude-R3 M1). Do not send or arm if gone.
+            if ticker not in self._subscribed_tickers:
+                self._snapshot_request_pending.pop(ticker, None)
+                return
+            sid = self._ticker_to_sid.get(ticker)
+            if sid is None:
+                if ticker not in self._pending_snapshot_requests:
+                    self._pending_snapshot_requests.append(ticker)
+                self._snapshot_request_pending.pop(ticker, None)
+                return
             cmd_id = self._next_msg_id
             self._next_msg_id += 1
         _payload = {
@@ -1145,6 +1310,16 @@ class KalshiFeed:
         self._log_raw_out(_payload)
         # D1.1.5 Phase 3b: was `await ws.send(json.dumps(_payload))`.
         self._wire.send_frame(_payload)
+        # Arm the 5s timeout only after a real send, and only if
+        # the ticker is still subscribed. Queue-time stamps fired
+        # unsub+resub for snapshots we never sent (Grok-R5 M4).
+        # Post-send re-arm after unsubscribe reopened R2/P0-1
+        # (Claude-R3 M1).
+        with self._lock:
+            if ticker in self._subscribed_tickers:
+                self._snapshot_request_pending[ticker] = time.monotonic()
+            else:
+                self._snapshot_request_pending.pop(ticker, None)
         logging.info(
             "kalshi_ws_get_snapshot: ticker=%s sid=%d id=%d "
             "(Phase 2.7 cache reset)",
@@ -1500,13 +1675,19 @@ class KalshiFeed:
         Input:  [["0.9600", "54.00"], ["0.9500", "100"]]  (from *_dollars_fp)
         Output: [[96, 54], [95, 100]]                     (internal cents format)
 
+        Same integer-cent buckets are SUMMED. Kalshi prices are 4-decimal
+        dollar strings; without the merge, ``_apply_fp_delta`` only
+        updated the first matching cent and left sibling buckets as
+        immortal far-from-touch levels (2026-09-07 crossed-book RCA).
+
         Tolerates None/[] and skips malformed entries without raising — parsing
         errors at level granularity shouldn't blow away an otherwise-valid
-        snapshot.
+        snapshot. First-seen cent order is preserved.
         """
         if not fp_arr:
             return []
-        out: List[List[int]] = []
+        merged: Dict[int, int] = {}
+        order: List[int] = []
         for entry in fp_arr:
             if not (isinstance(entry, (list, tuple)) and len(entry) >= 2):
                 continue
@@ -1515,8 +1696,10 @@ class KalshiFeed:
                 qty = int(round(float(entry[1])))
             except (ValueError, TypeError):
                 continue
-            out.append([price_cents, qty])
-        return out
+            if price_cents not in merged:
+                order.append(price_cents)
+            merged[price_cents] = merged.get(price_cents, 0) + qty
+        return [[p, merged[p]] for p in order if merged[p] > 0]
 
     def _handle_ob_snapshot(self, data: Dict):
         """Replace cached orderbook with full snapshot.
@@ -1580,6 +1763,7 @@ class KalshiFeed:
                 # forever (no path will pop it).
                 if ticker not in self._subscribed_tickers:
                     return
+                self._awaiting_set().discard(ticker)
                 # Phase 2.6 R2 / B1: detect orphan-sid leak. If
                 # we have a known sid for this ticker AND the
                 # envelope sid differs, it means we previously
@@ -1698,53 +1882,58 @@ class KalshiFeed:
             # tickers we've already unsubscribed from. Without
             # this, an in-flight delta from the prior subscription
             # would create a NEW _orderbooks entry for an
-            # unsubscribed ticker (line below: "Delta arrived
-            # before snapshot — initialize empty, apply"), leaking
-            # zombie state forever. P1-3 closed this for
-            # snapshots; deltas have an even larger race window
-            # because they arrive constantly.
+            # unsubscribed ticker, leaking zombie state forever.
             if ticker not in self._subscribed_tickers:
+                return
+            # 86bbvztem class: a delta is a diff against a snapshot.
+            # No book (or explicitly awaiting a rebuild) → drop, do
+            # NOT initialize empty. Empty-init was the live path that
+            # produced existing=75 delta=-9632 on a just-subscribed
+            # ticker and left the book crossed until the next snapshot.
+            if ticker in self._awaiting_set():
                 return
             ob = self._orderbooks.get(ticker)
             if ob is None:
-                # Delta arrived before snapshot — initialize empty, apply.
-                ob = {"yes": [], "no": [], "ts": time.time()}
-                self._orderbooks[ticker] = ob
+                return
 
-            levels = list(ob.get(side) or [])
-            existing_idx = -1
-            existing_qty = 0
-            for i, lvl in enumerate(levels):
-                if self._level_price(lvl) == price_cents:
-                    existing_idx = i
-                    existing_qty = self._level_qty(lvl)
-                    break
-
+            levels_by_px: Dict[int, int] = {}
+            for lvl in ob.get(side) or []:
+                p = self._level_price(lvl)
+                levels_by_px[p] = levels_by_px.get(p, 0) + self._level_qty(lvl)
+            existing_qty = levels_by_px.get(price_cents, 0)
             new_qty = existing_qty + delta
+            n_levels_side = len(levels_by_px)
             if self._delta_probe_count < self._delta_probe_max:
                 logging.info(
                     "WS_DELTA_PROBE #%d %s side=%s price=%d¢ delta_fp=%+d "
                     "existing_qty=%d new_qty=%d n_levels_side=%d",
                     self._delta_probe_count + 1, ticker, side, price_cents,
-                    delta, existing_qty, new_qty, len(levels))
+                    delta, existing_qty, new_qty, n_levels_side)
                 self._delta_probe_count += 1
-            if new_qty < 0:
+            underflow = new_qty < 0
+            if underflow:
                 logging.warning(
                     "WS delta underflow %s %s @%d¢: existing=%d delta=%d "
-                    "(clamping to 0)",
-                    ticker, side, price_cents, existing_qty, delta)
+                    "(clamping to 0%s)",
+                    ticker, side, price_cents, existing_qty, delta,
+                    "; marking awaiting_snapshot" if existing_qty > 0
+                    else "; unknown price, not desyncing",
+                )
                 new_qty = 0
 
             if new_qty == 0:
-                if existing_idx >= 0:
-                    levels.pop(existing_idx)
-            elif existing_idx >= 0:
-                levels[existing_idx] = [price_cents, new_qty]
+                levels_by_px.pop(price_cents, None)
             else:
-                levels.append([price_cents, new_qty])
+                levels_by_px[price_cents] = new_qty
 
-            ob[side] = levels
+            ob[side] = [[p, q] for p, q in levels_by_px.items()]
             ob["ts"] = time.time()
+            # existing_qty==0 is a delete of a price we never held
+            # (truncated-snapshot / already-gone). Pre-fix this was a
+            # benign clamp; desyncing it pops the book on every deep
+            # cancel at window open (Claude-M6).
+            if underflow and existing_qty > 0:
+                self._mark_book_desynced_locked(ticker)
 
     def _apply_legacy_delta(self, ticker: str, msg: Dict):
         """Apply pre-2026 side-grouped delta schema. Fallback only."""
@@ -1752,13 +1941,10 @@ class KalshiFeed:
             # R3 / P1-E: zombie-cache guard, same as _apply_fp_delta.
             if ticker not in self._subscribed_tickers:
                 return
+            if ticker in self._awaiting_set():
+                return
             ob = self._orderbooks.get(ticker)
             if ob is None:
-                self._orderbooks[ticker] = {
-                    "yes": list(msg.get("yes") or []),
-                    "no": list(msg.get("no") or []),
-                    "ts": time.time(),
-                }
                 return
             for side in ("yes", "no"):
                 delta_levels = msg.get(side) or []
@@ -1774,6 +1960,152 @@ class KalshiFeed:
                         existing[price] = level
                 ob[side] = list(existing.values())
             ob["ts"] = time.time()
+
+    def _awaiting_set(self) -> Set[str]:
+        """Tickers that must not receive deltas. Lazy so ``__new__``
+        test stubs that skip ``__init__`` don't AttributeError."""
+        s = getattr(self, "_awaiting_snapshot", None)
+        if not isinstance(s, set):
+            s = set()
+            self._awaiting_snapshot = s
+        return s
+
+    def _queue_unsub_resub_locked(self, ticker: str) -> None:
+        """Caller MUST hold ``self._lock``. No-op without a sid —
+        unsub would SKIP and resub would leak sid_v1 (Claude-R4 MN2).
+        """
+        if ticker not in self._ticker_to_sid:
+            return
+        if ticker not in self._pending_unsubscribes:
+            self._pending_unsubscribes.append(ticker)
+        if ticker not in self._pending_subscribes:
+            self._pending_subscribes.append(ticker)
+
+    def _mark_book_desynced_locked(self, ticker: str) -> None:
+        """Drop ticker's book and refuse deltas until a snapshot.
+
+        Caller MUST hold ``self._lock``. Queues get_snapshot via the
+        existing pending-snapshot drain. If sid is unknown at send
+        time, ``_send_ob_get_snapshot`` requests a WS reconnect
+        (the only heal that does not duplicate-subscribe).
+        """
+        self._awaiting_set().add(ticker)
+        self._orderbooks.pop(ticker, None)
+        if self._get_snapshot_disabled:
+            self._queue_unsub_resub_locked(ticker)
+            return
+        if ticker not in self._pending_snapshot_requests:
+            self._pending_snapshot_requests.append(ticker)
+        self._snapshot_request_pending[ticker] = time.monotonic()
+
+    def _on_seq_gap(
+        self, sid: Optional[int], ticker: Optional[str] = None,
+    ) -> bool:
+        """Seq gap: every ticker mapped to ``sid`` is an invalid delta
+        base until snapshotted. Channel-shared sids (Phase 2.10)
+        multiplex many tickers onto one seq.
+
+        If the sid maps to nothing, mark only ``ticker`` when that
+        ticker is currently subscribed. Unmapped sid + unknown or
+        unsubscribed market_ticker is a no-op — otherwise a leaked
+        sid_v1 frame would queue get_snapshot, miss the sid, and
+        ``request_reconnect`` the whole WS (R2-M5).
+
+        Returns True if at least one book was marked.
+        """
+        with self._lock:
+            tickers: List[str] = []
+            if sid is not None:
+                tickers = [
+                    t for t, s in self._ticker_to_sid.items()
+                    if s == sid and t in self._subscribed_tickers
+                ]
+            if (
+                ticker
+                and ticker in self._subscribed_tickers
+                and ticker not in tickers
+            ):
+                # Union, not elif. A gapped delta for C while the
+                # sid already maps to A/B used to skip C, then
+                # _on_frame dropped C's delta because rebuilt=True
+                # (Claude-R5 M1).
+                tickers.append(ticker)
+            reconnect = False
+            now_m = time.monotonic()
+            last = getattr(self, "_last_ws_reconnect_request_mono", 0.0)
+            for t in tickers:
+                self._awaiting_set().add(t)
+                self._orderbooks.pop(t, None)
+            # Sid-wide get_snapshot burst (N commands on one drain)
+            # is how a single gap blacked out every market on the
+            # connection (Claude-M1). One reconnect heals the
+            # multiplexed seq; cooldown stops a gap storm.
+            # Claude-R2 M1: when cooldown suppresses reconnect the
+            # books are still invalid — queue per-ticker heal so
+            # we are not dark until the 5-min periodic.
+            if tickers:
+                if (
+                    last <= 0.0
+                    or (now_m - last) >= WS_FORCE_RESUB_COOLDOWN_S
+                ):
+                    self._last_ws_reconnect_request_mono = now_m
+                    reconnect = True
+                else:
+                    for t in tickers:
+                        if self._get_snapshot_disabled:
+                            self._queue_unsub_resub_locked(t)
+                        else:
+                            if t not in self._pending_snapshot_requests:
+                                self._pending_snapshot_requests.append(t)
+                            self._snapshot_request_pending[t] = now_m
+        if reconnect:
+            try:
+                self._wire.request_reconnect()
+            except Exception:
+                logging.debug(
+                    "seq-gap reconnect request failed", exc_info=True)
+        return bool(tickers)
+
+    @staticmethod
+    def _copy_book(ob: Dict) -> Dict:
+        """Two-level copy of a cents book ({yes, no, ts}).
+
+        Avoids ``copy.deepcopy`` under the WS lock on the 1 Hz path
+        (Claude-R2 MN2). Level inner lists are copied so callers
+        cannot alias the WS-thread structure (Claude-C1).
+        """
+        return {
+            "yes": [list(level) for level in (ob.get("yes") or [])],
+            "no": [list(level) for level in (ob.get("no") or [])],
+            "ts": ob.get("ts", 0),
+        }
+
+    @staticmethod
+    def _book_is_strictly_crossed(ob: Dict) -> bool:
+        """True iff best YES bid > implied YES ask (100 - best NO bid).
+
+        ``>`` not ``>=``: a locked book is not proof of corruption.
+        One-sided books are not crossed.
+        """
+        yes_best = None
+        no_best = None
+        for entry in ob.get("yes") or []:
+            qty = KalshiFeed._level_qty(entry)
+            if qty <= 0:
+                continue
+            price = KalshiFeed._level_price(entry)
+            if yes_best is None or price > yes_best:
+                yes_best = price
+        for entry in ob.get("no") or []:
+            qty = KalshiFeed._level_qty(entry)
+            if qty <= 0:
+                continue
+            price = KalshiFeed._level_price(entry)
+            if no_best is None or price > no_best:
+                no_best = price
+        if yes_best is None or no_best is None:
+            return False
+        return yes_best + no_best > 100
 
     @staticmethod
     def _level_price(level) -> int:

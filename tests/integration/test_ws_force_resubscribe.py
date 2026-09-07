@@ -1201,9 +1201,17 @@ class TestR3P1EDeltaZombieGuard(unittest.TestCase):
             "an _orderbooks entry.")
 
     def test_apply_fp_delta_subscribed_ticker_works(self):
-        """Sanity: guard doesn't break the normal path."""
+        """Sanity: guard doesn't break the snapshot-then-delta path.
+
+        A delta with no snapshot is dropped (empty-init was the
+        2026-09-07 crossed-book defect). Seed a snapshot-shaped book
+        so this stays a positive pin of apply-after-subscribe.
+        """
         f = _make_feed()
         f._subscribed_tickers.add("KXBTC15M-LIVE")
+        f._orderbooks["KXBTC15M-LIVE"] = {
+            "yes": [[94, 5]], "no": [], "ts": 0,
+        }
         f._apply_fp_delta("KXBTC15M-LIVE", {
             "side": "yes",
             "price_dollars": "0.95",
@@ -1211,7 +1219,8 @@ class TestR3P1EDeltaZombieGuard(unittest.TestCase):
         })
         self.assertIn("KXBTC15M-LIVE", f._orderbooks)
         ob = f._orderbooks["KXBTC15M-LIVE"]
-        self.assertEqual(ob["yes"], [[95, 10]])
+        yes = sorted(ob["yes"])
+        self.assertEqual(yes, [[94, 5], [95, 10]])
 
 
 if __name__ == "__main__":

@@ -62,11 +62,14 @@ def convert_orderbook_fp(ob_fp: Dict) -> Dict:
     result = {}
     for side in ("yes", "no"):
         entries = ob_fp.get(f"{side}_dollars") or []
-        converted = []
+        merged = {}
+        order = []
         for entry in entries:
             if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                price_cents = round(float(entry[0]) * 100)
+                price_cents = int(round(float(entry[0]) * 100))
                 count = int(round(float(entry[1])))
-                converted.append([price_cents, count])
-        result[side] = converted
+                if price_cents not in merged:
+                    order.append(price_cents)
+                merged[price_cents] = merged.get(price_cents, 0) + count
+        result[side] = [[p, merged[p]] for p in order if merged[p] > 0]
     return result

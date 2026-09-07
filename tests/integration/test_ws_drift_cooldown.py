@@ -190,6 +190,54 @@ class TestGetOrderbookCachedWithFlag(unittest.TestCase):
         self.assertEqual(result, ws_ob)
         self.assertFalse(was_fresh)
 
+    def test_ws_none_evicts_ob_cache_and_does_not_serve_alias(self):
+        """Claude-C1: get_orderbook None (crossed/awaiting) used to fall
+        through to `_ob_cache`, which held the live WS dict — now crossed.
+        Must evict and take REST, not return the alias."""
+        s = _make_scanner()
+        ticker = "KXBTC15M-26APR241845-45"
+        live = _ws_ob(yes_levels=[[99, 1]], no_levels=[[13, 1]])
+        s._ob_cache[ticker] = (live, time.time())
+        s._kalshi_feed.get_orderbook.return_value = None
+        rest_ob = {"yes": [[50, 10]], "no": [[49, 10]]}
+        s._client.get_orderbook.return_value = {"orderbook": rest_ob}
+        result, was_fresh = s._get_orderbook_cached(ticker)
+        self.assertEqual(result, rest_ob)
+        self.assertTrue(was_fresh)
+        s._client.get_orderbook.assert_called_once()
+        # REST re-fills the cache with the REST book, not the WS alias.
+        self.assertEqual(s._ob_cache[ticker][0], rest_ob)
+
+    def test_ws_none_does_not_evict_rest_ttl_entry(self):
+        """Claude-R2 M3 / Grok-R5 C1: unconditional pop defeated REST
+        TTL. A WS hide (None) must not discard a REST-sourced entry."""
+        s = _make_scanner()
+        ticker = "KXBTC15M-26APR241845-45"
+        rest_ob = {"yes": [[50, 10]], "no": [[49, 10]]}
+        s._ob_cache[ticker] = (rest_ob, time.time(), "rest")
+        s._kalshi_feed.get_orderbook.return_value = None
+        result, was_fresh = s._get_orderbook_cached(ticker)
+        self.assertEqual(result, rest_ob)
+        self.assertFalse(was_fresh)
+        s._client.get_orderbook.assert_not_called()
+        self.assertEqual(s._ob_cache[ticker][0], rest_ob)
+
+    def test_stale_ws_ts_does_not_evict_rest_ttl_entry(self):
+        """Grok-R5 C1: pop also fired on stale-ts WS, blowing REST TTL
+        and forcing a REST round-trip every 1 Hz scan."""
+        s = _make_scanner()
+        ticker = "KXBTC15M-26APR241845-45"
+        rest_ob = {"yes": [[50, 10]], "no": [[49, 10]]}
+        s._ob_cache[ticker] = (rest_ob, time.time(), "rest")
+        s._kalshi_feed.get_orderbook.return_value = _ws_ob(
+            yes_levels=[[48, 1]], no_levels=[[51, 1]],
+            ts=time.time() - 100,
+        )
+        result, was_fresh = s._get_orderbook_cached(ticker)
+        self.assertEqual(result, rest_ob)
+        self.assertFalse(was_fresh)
+        s._client.get_orderbook.assert_not_called()
+
 
 class TestScanSilentBailFlagsDriftedTicker(unittest.TestCase):
     """Regression: the scan silent-bail paths (bot/_impl.py ~8438 `no_orderbook`

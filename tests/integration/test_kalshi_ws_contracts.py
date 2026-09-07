@@ -42,6 +42,7 @@ Out of scope (TODO — expand in follow-up):
 import json
 import os
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -352,19 +353,20 @@ class TestDeltaContract2026(unittest.TestCase):
             "delta_fp": "-54.00", "side": "yes"}})
         self.assertEqual(feed._orderbooks["T"]["yes"], [])
 
-    def test_delta_underflow_clamps_to_zero(self):
-        """-50 on a level of 10: clamp to 0 (remove), log warning.
+    def test_delta_underflow_hides_book_until_snapshot(self):
+        """-50 on a level of 10: hide the book until a snapshot rebuilds.
 
-        Alternative would be raise/reject (ammario does), but live trading
-        benefits from continuing rather than killing the WS loop on one
-        spurious message. The warning signals the anomaly.
+        Underflow means the cache already disagreed with the venue.
+        Clamping the one level and serving the rest preserves the
+        corruption (2026-09-07 crossed-book RCA).
         """
         feed = _make_feed()
-        feed._orderbooks["T"] = {"yes": [[96, 10]], "no": [], "ts": 0}
+        feed._orderbooks["T"] = {"yes": [[96, 10]], "no": [[4, 5]], "ts": 0}
         feed._handle_ob_delta({"msg": {
             "market_ticker": "T", "price_dollars": "0.9600",
             "delta_fp": "-50.00", "side": "yes"}})
-        self.assertEqual(feed._orderbooks["T"]["yes"], [])
+        self.assertNotIn("T", feed._orderbooks)
+        self.assertIsNone(feed.get_orderbook("T"))
 
     def test_delta_from_docs_sample(self):
         """Verbatim from docs.kalshi.com example: -54 @ 0.960 on yes side."""
@@ -374,19 +376,6 @@ class TestDeltaContract2026(unittest.TestCase):
         feed._handle_ob_delta(DELTA_2026)
         self.assertEqual(
             feed._orderbooks["KXBTC15M-26APR231930-30"]["yes"], [[96, 46]])
-
-    def test_delta_before_snapshot_initializes_cache(self):
-        """Delta arriving pre-snapshot: initialize empty ob and apply.
-
-        Kalshi sends snapshot before deltas on subscribe, but race windows
-        during reconnect make this safer than dropping the delta.
-        """
-        feed = _make_feed()
-        feed._handle_ob_delta({"msg": {
-            "market_ticker": "T", "price_dollars": "0.9500",
-            "delta_fp": "10.00", "side": "yes"}})
-        self.assertIn("T", feed._orderbooks)
-        self.assertEqual(feed._orderbooks["T"]["yes"], [[95, 10]])
 
     def test_delta_no_side(self):
         """Deltas apply independently to NO side."""
@@ -733,6 +722,704 @@ class TestRestOrderbookFpContract(unittest.TestCase):
         self.assertEqual(rest_out["yes"], ws_yes)
         self.assertEqual(rest_out["no"], ws_no)
 
+    def test_rest_and_ws_merge_same_integer_cent(self):
+        fp = {
+            "yes_dollars": [["0.1300", "10.00"], ["0.1310", "20.00"]],
+            "no_dollars": [["0.0200", "5.00"], ["0.0210", "7.00"]],
+        }
+        rest_out = OpportunityScanner._convert_orderbook_fp(fp)
+        self.assertEqual(rest_out["yes"], [[13, 30]])
+        self.assertEqual(rest_out["no"], [[2, 12]])
+        self.assertEqual(
+            KalshiFeed._normalize_fp_levels(fp["yes_dollars"]), [[13, 30]])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WS book desync (2026-09-07) — empty-init + integer-cent first-match
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestWsBookDesyncSep07(unittest.TestCase):
+    """Regression for the live Kalshi book staying crossed ~50% of the time.
+
+    Two cooperating defects, measured 2026-09-07 (Track M + live
+    WS_DRIFT_PROBE / underflow logs):
+
+    1. ``_apply_fp_delta`` initialized an empty book when a delta arrived
+       before the subscribe snapshot and applied the delta as if the
+       venue qty at that price was 0. Live fingerprint: underflow on a
+       brand-new 15M ticker within 1s of subscribe
+       (``existing=75 delta=-9632``). Same class as ticket 86bbvztem
+       (Gemini L2 never cleared on reconnect): diffs merged into a book
+       we no longer have the base state for. Fix pattern: awaiting
+       snapshot exclusion until a full-book frame rebuilds it.
+    2. ``_normalize_fp_levels`` stored one list entry per sub-cent
+       wire price, all rounded to integer cents, and ``_apply_fp_delta``
+       updated only the FIRST matching cent. A delete larger than that
+       first bucket underflow-clamped and left sibling cent-buckets in
+       place — immortal far-from-touch levels. That is the 12¢ stale
+       NO bid (implied YES ask 87¢ against a 99¢ YES bid) healed only
+       by the 5-min get_snapshot.
+
+    Trading ``get_orderbook`` must fail closed on a strictly crossed
+    book and on a ticker still awaiting its snapshot, so
+    ``OrderExecutor._best_yes_bid`` / ``_best_yes_ask_cents`` cannot
+    hit a ghost level. The snapshotter keeps the raw cache via
+    ``get_all_orderbooks_snapshot`` so the defect stays measurable.
+    """
+
+    def test_relatch_snapshot_replaces_delta_built_book(self):
+        """Track B2 handoff (kb/findings/HANDOFF-ws-book-desync-acceptance-test.md):
+        the only reconstruction rule that scores is relatch — reset
+        the book on every snapshot. Accumulate-from-birth was 0/60
+        tickers clean; relatch 55/60. A later snapshot must drop
+        levels that only existed as post-snapshot deltas."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5000", "10.00"]],
+            "no_dollars_fp": [["0.4900", "10.00"]],
+        }})
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.6000",
+            "delta_fp": "5.00",
+            "side": "yes",
+        }})
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[50, 10], [60, 5]])
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5500", "3.00"]],
+            "no_dollars_fp": [["0.4400", "2.00"]],
+        }})
+        ob = feed.get_orderbook("T")
+        self.assertEqual(ob["yes"], [[55, 3]])
+        self.assertEqual(ob["no"], [[44, 2]])
+
+    def test_subcent_snapshot_levels_merge_same_integer_cent(self):
+        """Kalshi prices are 4-decimal dollar strings. Rounding each
+        independently to cents without summing qty leaves duplicate
+        cent buckets that delta-apply cannot drain."""
+        merged = KalshiFeed._normalize_fp_levels([
+            ["0.1300", "10.00"],
+            ["0.1310", "20.00"],
+            ["0.1340", "5.00"],
+        ])
+        self.assertEqual(merged, [[13, 35]])
+
+    def test_large_delete_drains_merged_cent_not_first_duplicate(self):
+        """Live underflow: existing=75 delta=-9632 at 2¢. Pre-fix the
+        first 2¢ duplicate (qty 75) was popped and the sibling 2¢
+        bucket survived. Merged, the same delete lands on total qty
+        and the cent is removed when it hits 0."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [
+                ["0.0200", "75.00"],
+                ["0.0210", "9632.00"],
+            ],
+            "no_dollars_fp": [["0.5000", "10.00"]],
+        }})
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[2, 9707]])
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.0210",
+            "delta_fp": "-9632.00",
+            "side": "yes",
+        }})
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[2, 75]])
+        self.assertIsNotNone(feed.get_orderbook("T"))
+
+    def test_delta_before_snapshot_is_dropped(self):
+        """Do NOT initialize an empty book from a delta. The delta is
+        a diff against a snapshot we do not have; applying it is how
+        the book goes permanently stale (86bbvztem class)."""
+        feed = _make_feed()
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.9500",
+            "delta_fp": "10.00",
+            "side": "yes",
+        }})
+        self.assertNotIn("T", feed._orderbooks)
+        self.assertIsNone(feed.get_orderbook("T"))
+
+    def test_snapshot_then_delta_still_applies(self):
+        """Happy path: snapshot arms the book; subsequent deltas apply."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.9500", "10.00"]],
+            "no_dollars_fp": [["0.0400", "5.00"]],
+        }})
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.9500",
+            "delta_fp": "5.00",
+            "side": "yes",
+        }})
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[95, 15]])
+
+    def test_get_orderbook_returns_a_copy(self):
+        """Claude-C1: scanner `_ob_cache` stored the live dict, so a
+        later crossed hide still served the mutated object via TTL."""
+        feed = _make_feed()
+        feed._orderbooks["T"] = {
+            "yes": [[49, 10]], "no": [[50, 10]], "ts": 0,
+        }
+        ob = feed.get_orderbook("T")
+        self.assertIsNotNone(ob)
+        ob["yes"].append([99, 1])
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[49, 10]])
+
+    def test_underflow_on_unknown_price_does_not_desync(self):
+        """Claude-M6: a delete at a price we never held (truncated
+        snapshot / already gone) used to be a benign clamp. Desyncing
+        it pops the book on every deep cancel at window open."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.9500", "10.00"]],
+            "no_dollars_fp": [["0.0400", "5.00"]],
+        }})
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.0200",
+            "delta_fp": "-9632.00",
+            "side": "yes",
+        }})
+        self.assertIsNotNone(feed.get_orderbook("T"))
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[95, 10]])
+
+    def test_get_orderbook_hides_strictly_crossed_book(self):
+        """Live path (OrderExecutor / scanner) must not read a book
+        whose yes_bid > implied yes ask. `>` not `>=`: a locked book
+        is not proof of corruption (same as SyntheticRTIFeed)."""
+        feed = _make_feed()
+        feed._orderbooks["T"] = {
+            "yes": [[99, 100]],
+            "no": [[13, 1]],  # implied YES ask = 87 → crossed by 12¢
+            "ts": 0,
+        }
+        self.assertIsNone(feed.get_orderbook("T"))
+        # Raw cache kept for the snapshotter / forensics.
+        self.assertEqual(feed._orderbooks["T"]["no"], [[13, 1]])
+        self.assertIn("T", feed._pending_snapshot_requests)
+
+    def test_get_orderbook_serves_locked_and_uncrossed(self):
+        feed = _make_feed()
+        feed._orderbooks["LOCKED"] = {
+            "yes": [[50, 10]], "no": [[50, 10]], "ts": 0,
+        }
+        feed._orderbooks["OPEN"] = {
+            "yes": [[49, 10]], "no": [[50, 10]], "ts": 0,
+        }
+        self.assertIsNotNone(feed.get_orderbook("LOCKED"))
+        self.assertIsNotNone(feed.get_orderbook("OPEN"))
+
+    def test_underflow_after_merge_hides_book_until_snapshot(self):
+        """True underflow (venue remove > our merged qty) means the
+        book already disagrees with the venue. Clamp is not a heal —
+        hide the ticker until a snapshot rebuilds it."""
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.9600", "10.00"]],
+            "no_dollars_fp": [["0.0300", "5.00"]],
+        }})
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.9600",
+            "delta_fp": "-50.00",
+            "side": "yes",
+        }})
+        self.assertIsNone(feed.get_orderbook("T"))
+        # A further delta must not resurrect a partial book.
+        feed._handle_ob_delta({"msg": {
+            "market_ticker": "T",
+            "price_dollars": "0.5000",
+            "delta_fp": "100.00",
+            "side": "no",
+        }})
+        self.assertIsNone(feed.get_orderbook("T"))
+        self.assertNotIn("T", feed._orderbooks)
+
+    def test_seq_gap_on_orderbook_delta_drops_book_until_snapshot(self):
+        """Kalshi docs: seq is for snapshot/delta consistency. A gap
+        means we missed a diff; the current book is not a valid base.
+        Port of SyntheticRTIFeed.reset_venue + awaiting_snapshot."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.9500", "10.00"]],
+            "no_dollars_fp": [["0.0400", "5.00"]],
+        }})
+        feed._ticker_to_sid["T"] = 2
+        raw = json.dumps({
+            "type": "orderbook_delta",
+            "sid": 2,
+            "seq": 99,
+            "msg": {
+                "market_ticker": "T",
+                "price_dollars": "0.9900",
+                "delta_fp": "50.00",
+                "side": "yes",
+            },
+        })
+        frame = Frame(
+            wire_recv_ts=0.0,
+            raw=raw,
+            parsed=json.loads(raw),
+            msg_type="orderbook_delta",
+            sid=2,
+            seq=99,
+            seq_gap=True,
+        )
+        feed._on_frame(frame)
+        self.assertIsNone(feed.get_orderbook("T"))
+        self.assertNotIn("T", feed._orderbooks)
+
+    def test_seq_gap_on_orderbook_snapshot_is_the_rebuild(self):
+        """The first frame after a hole is often the get_snapshot
+        response. Dropping it (same as a gapped delta) would leave
+        the ticker awaiting forever. Apply the snapshot after the
+        sid-wide drop."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.4000", "10.00"]],
+            "no_dollars_fp": [["0.5000", "10.00"]],
+        }})
+        feed._ticker_to_sid["T"] = 2
+        raw = json.dumps({
+            "type": "orderbook_snapshot",
+            "sid": 2,
+            "seq": 99,
+            "msg": {
+                "market_ticker": "T",
+                "yes_dollars_fp": [["0.5500", "20.00"]],
+                "no_dollars_fp": [["0.4400", "5.00"]],
+            },
+        })
+        frame = Frame(
+            wire_recv_ts=0.0,
+            raw=raw,
+            parsed=json.loads(raw),
+            msg_type="orderbook_snapshot",
+            sid=2,
+            seq=99,
+            seq_gap=True,
+        )
+        feed._on_frame(frame)
+        ob = feed.get_orderbook("T")
+        self.assertIsNotNone(ob)
+        self.assertEqual(ob["yes"], [[55, 20]])
+        self.assertEqual(ob["no"], [[44, 5]])
+
+    def test_seq_gap_unmapped_sid_does_not_wipe_all_books(self):
+        """R1-M1: an orphan/unmapped sid is not 'every cached book'."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5000", "10.00"]],
+            "no_dollars_fp": [["0.4900", "10.00"]],
+        }})
+        raw = json.dumps({
+            "type": "orderbook_delta",
+            "sid": 99,
+            "seq": 5,
+            "msg": {
+                "market_ticker": "ORPHAN",
+                "price_dollars": "0.10",
+                "delta_fp": "1",
+                "side": "yes",
+            },
+        })
+        feed._wire.request_reconnect = MagicMock()
+        feed._on_frame(Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="orderbook_delta", sid=99, seq=5, seq_gap=True,
+        ))
+        self.assertIn("T", feed._orderbooks)
+        self.assertNotIn("ORPHAN", feed._awaiting_set())
+        self.assertNotIn("ORPHAN", feed._pending_snapshot_requests)
+        feed._wire.request_reconnect.assert_not_called()
+
+    def test_seq_gap_on_ok_rebuilds_mapped_sid(self):
+        """R1-M2: type=ok shares the orderbook seq stream. A gap on
+        an ack is a missed delta; the next delta must not apply on
+        the dirty book."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5000", "10.00"]],
+            "no_dollars_fp": [["0.4900", "10.00"]],
+        }})
+        feed._ticker_to_sid["T"] = 2
+        raw = json.dumps({
+            "type": "ok", "sid": 2, "seq": 99, "id": 3,
+            "msg": {"market_tickers": ["T"]},
+        })
+        feed._on_frame(Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="ok", sid=2, seq=99, seq_gap=True,
+        ))
+        self.assertNotIn("T", feed._orderbooks)
+        self.assertIsNone(feed.get_orderbook("T"))
+
+    def test_oft_snapshot_for_keeps_crossed_and_awaiting(self):
+        """Claude-R2 M4: OFT is flow-diagnostic, not trading-price.
+        Filtering here interleaves full-depth WS with REST depth=5
+        and fires false depth_drain. Trading-path hide stays on
+        get_orderbook."""
+        feed = _make_feed()
+        feed._orderbooks["CROSSED"] = {
+            "yes": [[99, 1]], "no": [[13, 1]], "ts": 0,
+        }
+        feed._orderbooks["OK"] = {
+            "yes": [[49, 1]], "no": [[50, 1]], "ts": 0,
+        }
+        feed._orderbooks["WAIT"] = {
+            "yes": [[40, 1]], "no": [[50, 1]], "ts": 0,
+        }
+        feed._awaiting_set().add("WAIT")
+        out = feed.get_orderbooks_snapshot_for(["CROSSED", "OK", "WAIT"])
+        self.assertEqual(set(out), {"CROSSED", "OK", "WAIT"})
+        self.assertIsNone(feed.get_orderbook("CROSSED"))
+        self.assertIsNone(feed.get_orderbook("WAIT"))
+        self.assertIsNotNone(feed.get_orderbook("OK"))
+
+    def test_get_snapshot_without_sid_while_awaiting_reconnects(self):
+        """R1-M4: awaiting + no sid cannot skip-and-forget — reconnect."""
+        feed = _make_feed()
+        feed._ws_connect_ts = time.time() - 120  # past boot window
+        feed._last_ws_reconnect_request_mono = 0.0
+        with feed._lock:
+            feed._mark_book_desynced_locked("T")
+        feed._wire.request_reconnect = MagicMock()
+        feed._send_ob_get_snapshot("T")
+        feed._wire.request_reconnect.assert_called_once()
+        self.assertIn("T", feed._awaiting_set())
+
+    def test_second_seq_gap_inside_reconnect_cooldown_queues_snapshots(self):
+        """Claude-R2 M1: a second gap inside the 30s reconnect
+        cooldown used to pop every book on the sid and queue no
+        heal. Recovery must still be dispatched (per-ticker
+        get_snapshot) even when reconnect is suppressed."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        for t in ("A", "B"):
+            feed._subscribed_tickers.add(t)
+            feed._handle_ob_snapshot({"msg": {
+                "market_ticker": t,
+                "yes_dollars_fp": [["0.5000", "10.00"]],
+                "no_dollars_fp": [["0.4900", "10.00"]],
+            }})
+            feed._ticker_to_sid[t] = 2
+        feed._wire.request_reconnect = MagicMock()
+        raw = json.dumps({
+            "type": "orderbook_delta",
+            "sid": 2,
+            "seq": 99,
+            "msg": {
+                "market_ticker": "A",
+                "price_dollars": "0.5000",
+                "delta_fp": "1.00",
+                "side": "yes",
+            },
+        })
+        frame = Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="orderbook_delta", sid=2, seq=99, seq_gap=True,
+        )
+        feed._on_frame(frame)
+        feed._wire.request_reconnect.assert_called_once()
+        # Same session, cooldown still live (do not reset stamp).
+        for t in ("A", "B"):
+            feed._awaiting_set().discard(t)
+            feed._handle_ob_snapshot({"msg": {
+                "market_ticker": t,
+                "yes_dollars_fp": [["0.5000", "10.00"]],
+                "no_dollars_fp": [["0.4900", "10.00"]],
+            }})
+        feed._last_ws_reconnect_request_mono = time.monotonic()
+        feed._pending_snapshot_requests.clear()
+        feed._on_frame(frame)
+        feed._wire.request_reconnect.assert_called_once()
+        self.assertNotIn("A", feed._orderbooks)
+        self.assertNotIn("B", feed._orderbooks)
+        self.assertIn("A", feed._pending_snapshot_requests)
+        self.assertIn("B", feed._pending_snapshot_requests)
+
+    def test_seq_gap_on_fill_does_not_drop_book_or_reconnect(self):
+        """Claude-R2 M2: fill-channel sid is never in _ticker_to_sid.
+        A gapped fill must not take the market_ticker fallback, pop
+        that book's cache, or bounce the session."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5000", "10.00"]],
+            "no_dollars_fp": [["0.4900", "10.00"]],
+        }})
+        feed._ticker_to_sid["T"] = 2
+        raw = json.dumps({
+            "type": "fill",
+            "sid": 99,
+            "seq": 5,
+            "msg": {
+                "market_ticker": "T",
+                "ticker": "T",
+                "order_id": "oid",
+                "side": "yes",
+                "count": 1,
+            },
+        })
+        feed._wire.request_reconnect = MagicMock()
+        feed._on_frame(Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="fill", sid=99, seq=5, seq_gap=True,
+        ))
+        self.assertIn("T", feed._orderbooks)
+        self.assertNotIn("T", feed._awaiting_set())
+        feed._wire.request_reconnect.assert_not_called()
+
+    def test_get_snapshot_no_sid_during_boot_retries_without_timeout(self):
+        """Grok-R5 M4: skip-and-forget on boot/in-flight popped
+        _snapshot_request_pending and left no work on the drain
+        queue. Skip must re-queue get_snapshot and must not arm
+        the 5s unsub+resub timer (we never sent)."""
+        feed = _make_feed()
+        feed._ws_connect_ts = time.time()  # still in boot window
+        with feed._lock:
+            feed._mark_book_desynced_locked("T")
+        # Drain copies then CLEARS the queue before send (the
+        # forget-on-skip hole).
+        snap_reqs = list(feed._pending_snapshot_requests)
+        feed._pending_snapshot_requests.clear()
+        feed._wire.request_reconnect = MagicMock()
+        for t in snap_reqs:
+            feed._send_ob_get_snapshot(t)
+        feed._wire.request_reconnect.assert_not_called()
+        self.assertIn("T", feed._pending_snapshot_requests)
+        self.assertNotIn("T", feed._snapshot_request_pending)
+        timed_out = feed._check_snapshot_timeouts()
+        self.assertNotIn("T", timed_out)
+        self.assertNotIn("T", feed._pending_unsubscribes)
+
+    def test_get_snapshot_no_sid_in_flight_retries_without_reconnect(self):
+        """Grok-R5 M4: subscribe-in-flight is not 'sid lost'."""
+        feed = _make_feed()
+        feed._ws_connect_ts = time.time() - 120
+        feed._outstanding_subscribes[101] = "T"
+        with feed._lock:
+            feed._mark_book_desynced_locked("T")
+        snap_reqs = list(feed._pending_snapshot_requests)
+        feed._pending_snapshot_requests.clear()
+        feed._wire.request_reconnect = MagicMock()
+        for t in snap_reqs:
+            feed._send_ob_get_snapshot(t)
+        feed._wire.request_reconnect.assert_not_called()
+        self.assertIn("T", feed._pending_snapshot_requests)
+        self.assertNotIn("T", feed._snapshot_request_pending)
+
+    def test_crossed_hide_does_not_starve_force_resubscribe(self):
+        """Claude-R2 MN1: get_orderbook on a crossed book used
+        _force_resub_cooldown, so flag_ticker_drifted →
+        force_resubscribe always lost the race."""
+        feed = _make_feed()
+        feed._ticker_to_sid["T"] = 2
+        feed._orderbooks["T"] = {
+            "yes": [[99, 100]],
+            "no": [[13, 1]],
+            "ts": 0,
+        }
+        self.assertIsNone(feed.get_orderbook("T"))
+        feed._pending_snapshot_requests.clear()
+        feed.force_resubscribe("T", purge_cache=False)
+        self.assertIn("T", feed._pending_snapshot_requests)
+
+    def test_get_orderbook_copy_is_two_level_not_alias(self):
+        """Claude-R2 MN2: trading-path copy must not alias level lists."""
+        feed = _make_feed()
+        feed._orderbooks["T"] = {
+            "yes": [[49, 10]], "no": [[50, 10]], "ts": 1.5,
+        }
+        ob = feed.get_orderbook("T")
+        ob["yes"][0][1] = 999
+        self.assertEqual(feed._orderbooks["T"]["yes"], [[49, 10]])
+
+    def test_unsubscribe_between_drain_and_send_does_not_rearm_pending(self):
+        """Claude-R3 M1: post-send arming re-inserted the tracker
+        unsubscribe_ticker just popped. Snapshot never arrives
+        (unsubscribed) → guaranteed timeout → disable latch."""
+        feed = _make_feed()
+        feed._ws_connect_ts = time.time() - 120
+        feed._ticker_to_sid["T"] = 2
+        with feed._lock:
+            feed._mark_book_desynced_locked("T")
+        snap_reqs = list(feed._pending_snapshot_requests)
+        feed._pending_snapshot_requests.clear()
+        feed.unsubscribe_ticker("T")
+        feed._wire.send_frame = MagicMock()
+        sweeps_before = feed._get_snapshot_consecutive_failed_sweeps
+        for t in snap_reqs:
+            feed._send_ob_get_snapshot(t)
+        self.assertNotIn("T", feed._snapshot_request_pending)
+        feed._wire.send_frame.assert_not_called()
+        timed_out = feed._check_snapshot_timeouts()
+        self.assertNotIn("T", timed_out)
+        self.assertEqual(
+            feed._get_snapshot_consecutive_failed_sweeps, sweeps_before)
+
+    def test_unsubscribed_stale_pending_does_not_increment_failed_sweeps(self):
+        """Claude-R3 M1 defense: a leftover tracker for a ticker
+        that has already left _subscribed_tickers is lifecycle
+        churn, not a Kalshi-contract failure."""
+        import bot.constants as C
+        feed = _make_feed()
+        feed._subscribed_tickers.discard("T")
+        feed._snapshot_request_pending["T"] = (
+            time.monotonic() - C.WS_SNAPSHOT_REQUEST_TIMEOUT_S - 1.0
+        )
+        sweeps_before = feed._get_snapshot_consecutive_failed_sweeps
+        timed_out = feed._check_snapshot_timeouts()
+        self.assertEqual(timed_out, [])
+        self.assertEqual(
+            feed._get_snapshot_consecutive_failed_sweeps, sweeps_before)
+        self.assertFalse(feed._get_snapshot_disabled)
+
+    def test_seq_gap_unions_frame_ticker_not_yet_in_sid_map(self):
+        """Claude-R5 M1: sid already mapped to A/B, gapped delta for
+        C (snapshot landed, ack not yet → no _ticker_to_sid). The
+        fallback was `if not tickers` so C was skipped; rebuilt=True
+        still dropped C's delta and left C's book live unflagged."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        for t in ("A", "B", "C"):
+            feed._subscribed_tickers.add(t)
+            feed._handle_ob_snapshot({"msg": {
+                "market_ticker": t,
+                "yes_dollars_fp": [["0.5000", "10.00"]],
+                "no_dollars_fp": [["0.4900", "10.00"]],
+            }})
+        feed._ticker_to_sid["A"] = 1
+        feed._ticker_to_sid["B"] = 1
+        # C snapshot landed, subscribe ack not yet — no sid.
+        self.assertNotIn("C", feed._ticker_to_sid)
+        feed._wire.request_reconnect = MagicMock()
+        raw = json.dumps({
+            "type": "orderbook_delta",
+            "sid": 1,
+            "seq": 99,
+            "msg": {
+                "market_ticker": "C",
+                "price_dollars": "0.5000",
+                "delta_fp": "-4.00",
+                "side": "yes",
+            },
+        })
+        feed._on_frame(Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="orderbook_delta", sid=1, seq=99, seq_gap=True,
+        ))
+        self.assertNotIn("C", feed._orderbooks)
+        self.assertIn("C", feed._awaiting_set())
+        self.assertEqual(feed._orderbooks.get("C"), None)
+
+    def test_disabled_unsub_resub_skips_ticker_without_sid(self):
+        """Claude-R5 MN1: _queue_unsub_resub_locked must not queue
+        a resub that would leak sid_v1."""
+        feed = _make_feed()
+        feed._get_snapshot_disabled = True
+        feed._ticker_to_sid.pop("T", None)
+        with feed._lock:
+            feed._mark_book_desynced_locked("T")
+        self.assertNotIn("T", feed._pending_subscribes)
+        self.assertNotIn("T", feed._pending_unsubscribes)
+
+    def test_session_start_then_seq_gap_does_not_bounce(self):
+        """Claude-R4 M1: after a Kalshi-side disconnect the stamp
+        was 0.0, so a gap in the resubscribe-burst window promptly
+        closed the brand-new session. Session start must arm the
+        cooldown so the gap queues snapshots instead."""
+        from kalshi_wire.ws_client import Frame
+
+        feed = _make_feed()
+        feed._wire.send_frame = MagicMock()
+        feed._wire.request_reconnect = MagicMock()
+        feed._handle_ob_snapshot({"msg": {
+            "market_ticker": "T",
+            "yes_dollars_fp": [["0.5000", "10.00"]],
+            "no_dollars_fp": [["0.4900", "10.00"]],
+        }})
+        feed._ticker_to_sid["T"] = 2
+        feed._last_ws_reconnect_request_mono = 0.0
+        feed._on_session_start()
+        raw = json.dumps({
+            "type": "orderbook_delta",
+            "sid": 2,
+            "seq": 99,
+            "msg": {
+                "market_ticker": "T",
+                "price_dollars": "0.5000",
+                "delta_fp": "1.00",
+                "side": "yes",
+            },
+        })
+        feed._on_frame(Frame(
+            wire_recv_ts=0.0, raw=raw, parsed=json.loads(raw),
+            msg_type="orderbook_delta", sid=2, seq=99, seq_gap=True,
+        ))
+        feed._wire.request_reconnect.assert_not_called()
+        self.assertIn("T", feed._pending_snapshot_requests)
+
+    def test_unsubscribed_no_sid_does_not_requeue_snapshot(self):
+        """Claude-R4 MN1 / Grok-R7 MN1: first sid-is-None block
+        re-queued a settled ticker forever."""
+        feed = _make_feed()
+        feed._ws_connect_ts = time.time() - 120
+        feed._ticker_to_sid.pop("T", None)
+        feed._subscribed_tickers.discard("T")
+        feed._pending_snapshot_requests.append("T")
+        snap_reqs = list(feed._pending_snapshot_requests)
+        feed._pending_snapshot_requests.clear()
+        feed._wire.request_reconnect = MagicMock()
+        for t in snap_reqs:
+            feed._send_ob_get_snapshot(t)
+        feed._wire.request_reconnect.assert_not_called()
+        self.assertNotIn("T", feed._pending_snapshot_requests)
+
+    def test_request_reconnect_schedules_ws_close(self):
+        """Grok-R6 M1: request_reconnect only set a flag the
+        silence watchdog observes AFTER a 30s sleep, so seq-gap
+        fail-close stayed dark for a full watchdog interval."""
+        from kalshi_wire.ws_client import WSClient
+
+        wire = WSClient(
+            api_key="t", private_key=MagicMock(), on_frame=MagicMock(),
+        )
+        loop = MagicMock()
+        ws = MagicMock()
+        wire._loop = loop
+        wire._ws = ws
+        wire.request_reconnect()
+        self.assertTrue(wire._force_reconnect_requested)
+        loop.call_soon_threadsafe.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
