@@ -1,8 +1,8 @@
 """Tests for ghost fill detection in _submit_taker.
 
 Verifies that the two-layer ghost fill detection correctly handles:
-  Layer A: remaining_count=0 from Kalshi order response (order matched but fills API lagged)
-  Layer B: positions API verification when remaining_count > 0 but position exists
+  Layer A: remaining in (0, None) and fill_count>0; size min(fill, count); price = submitted IOC limit
+  Layer B: positions API delta vs local (count AND cost); NO-side negative position
 
 Run: python3 test_ghost_fill.py
 """
@@ -55,7 +55,8 @@ def ghost_fill_check(
     state_mark_order_status=None,
     order_fill_count: int = 0,
     state_local_count=None,
-    ioc_limit_price: int = None,
+    state_local_cost=None,
+    ioc_limit_price=None,
 ):
     """Simulate the ghost fill detection logic after fill polling.
 
@@ -111,28 +112,39 @@ def ghost_fill_check(
                 for pos in pos_resp["market_positions"]:
                     if pos.get("ticker") == ticker:
                         pos_count = fp_str_to_int(pos.get("position_fp")) or (pos.get("position") or 0)
-                        if pos_count > 0:
+                        if pos_count != 0:
+                            ghost_side = "yes" if pos_count > 0 else "no"
+                            pos_abs = abs(pos_count)
                             pos_cost_d = pos.get("market_exposure_dollars")
                             pos_cost = dollars_str_to_cents(pos_cost_d) if pos_cost_d else (pos.get("market_exposure") or 0)
-                            pos_avg = pos_cost // pos_count if pos_count else price
-                            # B1 fix: delta = api - local; only record new fills.
+                            pos_avg = pos_cost // pos_abs if pos_abs else price
+                            # B1: delta = api - local; only record new fills.
                             local_count = (state_local_count()
                                            if state_local_count else 0)
-                            delta = pos_count - local_count
+                            delta = pos_abs - local_count
                             if delta <= 0:
                                 return False, None, {
                                     "reason": "no_new_fills_delta_le_zero",
-                                    "api_count": pos_count,
+                                    "api_count": pos_abs,
                                     "local_count": local_count,
                                 }
+                            # R1-M2: cost of the delta, not cumulative avg.
+                            if state_local_cost:
+                                local_cost = state_local_cost()
+                                delta_cost = pos_cost - local_cost
+                                delta_avg = (delta_cost // delta
+                                             if delta and delta_cost > 0
+                                             else pos_avg)
+                            else:
+                                delta_avg = pos_avg
                             if state_record_position:
                                 state_record_position(
                                     ticker=ticker,
                                     event_ticker=candidate["event_ticker"],
                                     asset=candidate["asset"],
-                                    side="yes",
+                                    side=ghost_side,
                                     count=delta,
-                                    price_cents=pos_avg,
+                                    price_cents=delta_avg,
                                     is_taker=True,
                                     fill_source="ghost_fill_positions_api",
                                 )
@@ -140,9 +152,10 @@ def ghost_fill_check(
                                 state_mark_order_status("filled")
                             return True, "B", {
                                 "count": delta,
-                                "price": pos_avg,
+                                "price": delta_avg,
+                                "side": ghost_side,
                                 "source": "ghost_fill_positions_api",
-                                "api_count": pos_count,
+                                "api_count": pos_abs,
                                 "local_count": local_count,
                             }
         except Exception:
@@ -549,6 +562,63 @@ class TestGhostFillLayerB(unittest.TestCase):
         # Verify the kwarg passed to record_position_from_fill is the delta.
         _, kwargs = record_fn.call_args
         self.assertEqual(kwargs["count"], 1)
+
+    def test_positions_api_delta_cost_not_cumulative_avg(self):
+        """R1-M2: new-fill price is delta_cost/delta, not cumulative avg.
+        local 58 @ 90¢ (cost 5220) + 1 @ 99¢ → API 59 / 5319 → book 1 @ 99.
+        """
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": 59,
+                    "market_exposure": 5319,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=1, price=99,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+            state_local_count=lambda: 58,
+            state_local_cost=lambda: 5220,
+        )
+        self.assertTrue(detected)
+        self.assertEqual(details["count"], 1)
+        self.assertEqual(details["price"], 99)
+
+    def test_positions_api_negative_position_is_no_side(self):
+        """NO-side positions are negative; Layer B must not skip them."""
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": -5,
+                    "market_exposure": 400,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=5, total_filled=0, count=5, price=80,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+        )
+        self.assertTrue(detected)
+        self.assertEqual(layer, "B")
+        self.assertEqual(details["count"], 5)
+        self.assertEqual(details["side"], "no")
 
     def test_positions_api_zero_delta_skips_recording(self):
         """When positions API matches local exactly, no new fills happened —

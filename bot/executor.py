@@ -877,7 +877,7 @@ class OrderExecutor:
                 ticker, candidate.get("strategy"), tm_mode_reason(_tm_asset))
             return None
 
-        if ticker in self._taker_unknown_fill_tickers:
+        if ticker in getattr(self, "_taker_unknown_fill_tickers", ()):
             logging.warning(
                 "ORDER_SUPPRESSED unknown_fill: %s — prior taker 2xx had "
                 "no order_id; not stacking maker or taker", ticker)
@@ -3680,13 +3680,13 @@ class OrderExecutor:
             return None
         # Gate 3 also lives here: process_dc_retries() and in-process
         # IOC retries call _submit_taker without going through execute().
-        if ticker in self._taker_unknown_fill_tickers:
+        if ticker in getattr(self, "_taker_unknown_fill_tickers", ()):
             logging.warning(
                 "TAKER_SKIP_UNKNOWN_FILL: %s — prior 2xx had no order_id",
                 ticker)
             return None
-        _api_err_count = self._ticker_api_errors.get(ticker, 0)
-        if _api_err_count >= self.TICKER_API_ERROR_CAP:
+        _api_err_count = getattr(self, "_ticker_api_errors", {}).get(ticker, 0)
+        if _api_err_count >= getattr(self, "TICKER_API_ERROR_CAP", 3):
             logging.warning(
                 "TAKER_SKIP_API_ERROR_CAP: %s errors=%d (capped at %d)",
                 ticker, _api_err_count, self.TICKER_API_ERROR_CAP)
