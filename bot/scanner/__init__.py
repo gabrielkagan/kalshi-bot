@@ -388,8 +388,10 @@ class OpportunityScanner:
         self._kalshi_oft = kalshi_oft
         self._kalshi_feed = kalshi_feed
         self._ml = main_loop
-        # Orderbook cache: ticker -> (data, fetch_time)
-        self._ob_cache: Dict[str, Tuple[Optional[Dict], float]] = {}
+        # Orderbook cache: ticker -> (data, fetch_time, source)
+        # source is "ws" | "rest". Untagged 2-tuples are treated as
+        # "ws" (fail-closed: evict on get_orderbook None).
+        self._ob_cache: Dict[str, tuple] = {}
         # WS-bypass cooldown: ticker -> expiry_unix_ts. During cooldown,
         # _get_orderbook_cached skips WS and goes straight to REST. Set by
         # flag_ticker_drifted when scan silent-bails. Fix #1a from
@@ -9115,7 +9117,10 @@ class OpportunityScanner:
 
         Respects `_ws_drift_cooldown`: flagged tickers skip WS and use
         REST directly. If REST also fails while flagged, falls back to
-        whatever WS data exists — stale WS beats no data at all.
+        a trading-path WS book (``get_orderbook`` already hides
+        crossed/awaiting). A ghost book is worse than the exception;
+        an uncrossed stale book is better than no data
+        (Claude-R2 MN3).
         """
         now = time.time()
 
@@ -9141,15 +9146,23 @@ class OpportunityScanner:
             if ws_ob and now - ws_ob.get("ts", 0) < ORDERBOOK_CACHE_TTL * 2:
                 # Subscribe if not already (ensures future deltas flow)
                 self._kalshi_feed.subscribe_ticker(ticker)
-                self._ob_cache[ticker] = (ws_ob, now)
+                self._ob_cache[ticker] = (ws_ob, now, "ws")
                 return (ws_ob, False)
+            # Crossed/awaiting hide returns None, or the WS ts is
+            # stale. Evict only a WS-sourced ghost so REST TTL
+            # survives (Claude-R2 M3 / Grok-R5 C1). get_orderbook
+            # already returns a copy — this is not the alias bug.
+            cached = self._ob_cache.get(ticker)
+            src = cached[2] if cached and len(cached) >= 3 else "ws"
+            if cached is not None and src == "ws":
+                self._ob_cache.pop(ticker, None)
             # No WS data yet — subscribe so it arrives for next scan
             self._kalshi_feed.subscribe_ticker(ticker)
 
         if not skip_ws:
             cached = self._ob_cache.get(ticker)
             if cached:
-                data, fetch_time = cached
+                data, fetch_time = cached[0], cached[1]
                 if now - fetch_time < ORDERBOOK_CACHE_TTL:
                     return (data, False)
 
@@ -9158,8 +9171,9 @@ class OpportunityScanner:
             ob_data = self._client.get_orderbook(ticker, depth=5)
         except Exception as e:
             # M1: if REST fails while WS is flagged, prefer stale WS over
-            # returning None. Losing WS-bypass is less harmful than losing
-            # orderbook data entirely.
+            # returning None — but only a trading-path book. get_orderbook
+            # hides crossed/awaiting, so this no longer serves a ghost
+            # (Claude-R2 MN3). A ghost is worse than the exception.
             if skip_ws and self._kalshi_feed and not is_hourly:
                 ws_fallback = self._kalshi_feed.get_orderbook(ticker)
                 if ws_fallback:
@@ -9174,7 +9188,7 @@ class OpportunityScanner:
             orderbook = self._convert_orderbook_fp(orderbook_fp)
         else:
             orderbook = ob_data.get("orderbook", ob_data) if ob_data else None
-        self._ob_cache[ticker] = (orderbook, now)
+        self._ob_cache[ticker] = (orderbook, now, "rest")
         return (orderbook, True)
 
     def _scanner_convergence_velocity(
@@ -10459,12 +10473,16 @@ class OpportunityScanner:
         severe_rest_qty = 0
 
         for side in ("yes", "no"):
-            ws_levels = {int(lvl[0]): int(lvl[1])
-                         for lvl in (ws_ob.get(side) or [])
-                         if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
-            rest_levels = {int(lvl[0]): int(lvl[1])
-                           for lvl in (rest_ob.get(side) or [])
-                           if isinstance(lvl, (list, tuple)) and len(lvl) >= 2}
+            ws_levels = {}
+            for lvl in (ws_ob.get(side) or []):
+                if isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+                    p, q = int(lvl[0]), int(lvl[1])
+                    ws_levels[p] = ws_levels.get(p, 0) + q
+            rest_levels = {}
+            for lvl in (rest_ob.get(side) or []):
+                if isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+                    p, q = int(lvl[0]), int(lvl[1])
+                    rest_levels[p] = rest_levels.get(p, 0) + q
 
             all_prices = set(ws_levels) | set(rest_levels)
             only_ws = sum(1 for p in all_prices

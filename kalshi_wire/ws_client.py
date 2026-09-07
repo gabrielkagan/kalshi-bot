@@ -113,6 +113,12 @@ class Frame:
             emits the same log when a gap is detected). ALWAYS ``None``
             under ``parse_on_demand=True``, and the gap-detection log
             becomes a no-op for that consumer.
+        seq_gap: True when this frame's ``seq`` is not ``prev+1`` for
+            its ``sid``. KalshiFeed drops orderbook books on the sid
+            and ignores the frame until a snapshot rebuilds them.
+            Default False so parse_on_demand / malformed frames stay
+            quiet. Extra field — the contract pin only asserts the
+            original 6 names are present.
     """
 
     wire_recv_ts: float
@@ -121,6 +127,7 @@ class Frame:
     msg_type: Optional[str]
     sid: Optional[int]
     seq: Optional[int]
+    seq_gap: bool = False
 
 
 def build_envelope(
@@ -446,10 +453,26 @@ class WSClient:
         Used by KalshiFeed's B2 watchdog (Phase 2.6 R4 / A1+A2+A3) when a
         ticker's subscribe gets stuck and only a fresh WS session can
         recover it. The silence-watchdog task observes the flag and
-        force-closes the WS.
+        force-closes the WS — but it sleeps ``watchdog_check_interval``
+        *first*, so a flag-only request stayed dark for up to that
+        interval (Grok-R6 M1). Also schedule ``ws.close()`` the same
+        way ``stop()`` does so ``async for raw in ws`` exits promptly.
         """
         with self._state_lock:
             self._force_reconnect_requested = True
+        ws = self._ws
+        loop = self._loop
+        if ws is None or loop is None:
+            return
+        def _schedule_close():
+            try:
+                loop.create_task(ws.close())
+            except Exception:
+                pass
+        try:
+            loop.call_soon_threadsafe(_schedule_close)
+        except RuntimeError:
+            pass
 
     # ── Internal — asyncio thread ─────────────────────────────────────────
 
@@ -752,13 +775,15 @@ class WSClient:
                     sid = None
                     seq = None
 
-        # Seq-gap detector — wire-level diagnostic, identical to the
-        # bot's pre-extraction logic. Bot dispatches still get the frame
-        # via on_frame regardless of gap state. In parse_on_demand mode
-        # this is a no-op (sid is None).
+        # Seq-gap detector. A gap on an orderbook frame means the
+        # consumer's book is no longer a valid delta base; Frame.seq_gap
+        # lets KalshiFeed drop those books (2026-09-07 crossed-book RCA).
+        # In parse_on_demand mode this is a no-op (sid is None).
+        seq_gap = False
         if sid is not None and seq is not None:
             prev = self._ws_last_seq.get(sid)
             if prev is not None and seq != prev + 1:
+                seq_gap = True
                 if self._ws_seq_gap_logs < self._seq_gap_max_logs:
                     ticker = "?"
                     if isinstance(parsed, dict):
@@ -780,6 +805,7 @@ class WSClient:
             msg_type=msg_type,
             sid=sid,
             seq=seq,
+            seq_gap=seq_gap,
         )
         try:
             self._on_frame(frame)
