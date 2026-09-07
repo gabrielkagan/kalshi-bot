@@ -1112,6 +1112,25 @@ class StateManager:
         except sqlite3.OperationalError:
             pass
 
+        # Scan-productive watchdog (2026-09-07): EXISTS on
+        # product_type + evaluation_time / rejection_time was a full
+        # table scan (622k eval + 2.4M reject). IF NOT EXISTS — first
+        # boot after deploy may take tens of seconds; later boots no-op.
+        try:
+            logging.info(
+                "ensuring idx_eval_opp_pt_time / idx_rejected_opp_pt_time")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_eval_opp_pt_time "
+                "ON evaluated_opportunities(product_type, evaluation_time)")
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_rejected_opp_pt_time "
+                "ON rejected_opportunities(product_type, rejection_time)")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            logging.warning(
+                "idx_eval_opp_pt_time / idx_rejected_opp_pt_time failed",
+                exc_info=True)
+
         # Migration: add enrichment columns to settled_trades
         for col_def in [
             ("strategy", "TEXT"),

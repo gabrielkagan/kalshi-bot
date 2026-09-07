@@ -10170,8 +10170,9 @@ class OpportunityScanner:
                     (tick_start_ts, tick_start_ts)
                 ).fetchone()
             except Exception:
-                return
-            rows_written = 1 if row and row[0] else 0
+                rows_written = 0
+            else:
+                rows_written = 1 if row and row[0] else 0
         # Phase 3 R-review A1: detect WS disconnect→reconnect
         # transition. If WS just came back from a disconnected
         # state, the counter accumulated during the dead window

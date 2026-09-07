@@ -123,7 +123,24 @@ class TestScanSectionTiming(unittest.TestCase):
         idx_sql = body.find("evaluated_opportunities")
         self.assertGreaterEqual(idx_gate, 0)
         self.assertGreater(idx_sql, idx_gate)
-        self.assertNotIn("_last_kill_sql_ts", src)
+        prod = src.find('_pre_mark("productive")')
+        kill_mark = src.find('_pre_mark("kill_sql")')
+        self.assertGreater(kill_mark, prod)
+        kill_block = src[prod:kill_mark]
+        self.assertIn("if bot.constants.WEATHER_NO_SIDE_LIVE:", kill_block)
+        self.assertIn("if bot.constants.HOURLY_NO_SIDE_LIVE:", kill_block)
+        self.assertIn("if bot.constants.BRACKET_NO_ENABLED:", kill_block)
+        self.assertNotIn("slow_scan_due", kill_block)
+        self.assertNotIn("_last_kill_sql_ts", kill_block)
+        state_src = ""
+        state_py = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), "bot", "state.py")
+        if os.path.exists(state_py):
+            with open(state_py) as f:
+                state_src = f.read()
+        self.assertIn("idx_eval_opp_pt_time", state_src)
+        self.assertIn("idx_rejected_opp_pt_time", state_src)
 
 
 if __name__ == "__main__":
