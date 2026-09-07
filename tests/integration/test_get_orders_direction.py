@@ -387,6 +387,48 @@ def test_longshot_boot_failed_cancel_does_not_latch(tmp_path):
         s.close()
 
 
+def test_longshot_boot_cancel_none_does_not_latch(tmp_path):
+    """cancel_order returning None (timeout/5xx) must not latch boot."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_cancelnone.db"))
+    try:
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-cn", "client_order_id": "ls-cn",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = None
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        assert engine._boot_reconciled is False
+    finally:
+        s.close()
+
+
+def test_longshot_boot_cancel_500_does_not_latch(tmp_path):
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_cancel500.db"))
+    try:
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-c5", "client_order_id": "ls-c5",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": []}
+        client.cancel_order.return_value = {
+            "_error": True, "_status_code": 500}
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        assert engine._boot_reconciled is False
+    finally:
+        s.close()
+
+
 def test_longshot_boot_ledger_lock_retries_does_not_cancel(tmp_path):
     """database is locked on the side SELECT must not last-resort cancel."""
     from bot.state import StateManager
@@ -472,6 +514,40 @@ def test_longshot_boot_honors_wrapped_sell_action(tmp_path):
             "SELECT side, count, avg_price_cents FROM positions "
             "WHERE ticker=? AND status='open'", (TICKER,)).fetchone()
         assert pos is not None and pos["side"] == "no" and pos["count"] == 2
+        assert pos["avg_price_cents"] == 90
+    finally:
+        s.close()
+
+
+def test_longshot_boot_sell_yes_yes_book_only_price(tmp_path):
+    """v2 YES-book body has only yes_price_dollars; buy-NO is 100-yes."""
+    from bot.state import StateManager
+    from bot.longshot import LongshotEngine
+    s = StateManager(str(tmp_path / "ls_dir_ybook.db"))
+    try:
+        event = "KXBTC15M-26SEP071200"
+        s.insert_bot_order("ls-yb", TICKER, event, "BTC", "no", 2, 90, False)
+        s.confirm_order_submitted("ls-yb", "oid-ls-yb")
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-ls-yb", "client_order_id": "ls-yb",
+             "ticker": TICKER, "status": "resting",
+             "outcome_side": "yes", "book_side": "ask",
+             "yes_price_dollars": "0.1000",
+             "remaining_count": 2, "count": 2},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.get_fills.return_value = {"fills": [
+            {"order_id": "oid-ls-yb", "client_order_id": "ls-yb",
+             "trade_id": "t-ls-yb", "count": 2, "ts": 1_000_000.0},
+        ]}
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        engine = LongshotEngine(client, s)
+        engine.tick()
+        pos = s.conn.execute(
+            "SELECT side, avg_price_cents FROM positions "
+            "WHERE ticker=? AND status='open'", (TICKER,)).fetchone()
+        assert pos is not None and pos["side"] == "no"
         assert pos["avg_price_cents"] == 90
     finally:
         s.close()

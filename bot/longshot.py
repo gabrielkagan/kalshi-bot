@@ -786,15 +786,20 @@ class LongshotEngine:
                 logging.warning(
                     "LONGSHOT_BOOT_DIRECTION_MALFORMED oid=%s — no local "
                     "side either; cancelling unadoptable orphan", order_id)
-                _canceled = False
+                _resp = None
                 try:
-                    self._client.cancel_order(order_id, ticker=ticker)
-                    _canceled = True
+                    _resp = self._client.cancel_order(
+                        order_id, ticker=ticker)
                 except Exception:
                     logging.warning(
                         "LONGSHOT_BOOT_ORPHAN_CANCEL_FAILED %s",
                         order_id, exc_info=True)
-                if not _canceled:
+                # Mirror _cancel_quote: None / non-404 _error is failure.
+                # 404 = already gone, terminal. Exceptions also fail.
+                _ok = _resp is not None and not (
+                    isinstance(_resp, dict) and _resp.get("_error")
+                    and _resp.get("_status_code") != 404)
+                if not _ok:
                     all_fetched = False
                     continue
                 self._mark_pending(order_id, "canceled")
@@ -836,6 +841,27 @@ class LongshotEngine:
                     logging.warning(
                         "LONGSHOT_BOOT_PRICE_PARSE_MALFORMED legacy "
                         "cents unparseable — using 0")
+                    price = 0
+            if not (0 < price < 100):
+                # v2 YES-book body may carry only yes_price_dollars.
+                # sell-YES ≡ buy-NO @ 100 − yes.
+                _mirror_pd = (o.get("yes_price_dollars") if buy_side == "no"
+                              else o.get("no_price_dollars"))
+                _mirror_cents = (o.get("yes_price") if buy_side == "no"
+                                 else o.get("no_price"))
+                try:
+                    if _mirror_pd:
+                        price = 100 - dollars_str_to_cents(_mirror_pd)
+                    elif _mirror_cents:
+                        price = 100 - int(_mirror_cents)
+                    else:
+                        price = 0
+                except (TypeError, ValueError, OverflowError):
+                    price = 0
+                if not (0 < price < 100):
+                    logging.warning(
+                        "LONGSHOT_BOOT_PRICE_MISSING oid=%s buy_side=%s "
+                        "— adopting at 0 basis", order_id, buy_side)
                     price = 0
             event_ticker = ticker.rsplit("-", 1)[0]
             asset = trading_mode.asset_from_ticker(ticker) or ""
