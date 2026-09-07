@@ -82,8 +82,8 @@ def test_legacy_side_action_still_round_trips():
     assert o["action"] == "buy"
 
 
-def test_missing_direction_is_dropped_not_defaulted_yes():
-    """Fail-closed: no outcome_side, book_side, or legacy side → drop."""
+def test_missing_direction_kept_without_side_action():
+    """Fail-closed on direction, not existence: keep oid for cancel-sweep."""
     client = _client({"orders": [
         {"order_id": "oid-bad", "ticker": TICKER, "status": "resting"},
         {"order_id": "oid-ok", "ticker": TICKER,
@@ -91,7 +91,10 @@ def test_missing_direction_is_dropped_not_defaulted_yes():
     ]})
     result = KalshiClient.get_orders(client)
     ids = [o["order_id"] for o in result["orders"]]
-    assert ids == ["oid-ok"]
+    assert ids == ["oid-bad", "oid-ok"]
+    bad = result["orders"][0]
+    assert bad.get("side") not in ("yes", "no")
+    assert bad.get("action") not in ("buy", "sell")
 
 
 def test_book_side_only_maps_bid_to_yes():
@@ -120,10 +123,31 @@ def test_book_side_only_maps_ask_to_no():
     assert o["action"] == "buy"
 
 
-def test_sell_no_legacy_action_kept_with_canonical_fields():
-    """buy-yes ≡ sell-no ≡ (yes, bid). Legacy action disambiguates."""
+def test_sell_no_mirror_pair_maps_to_buy_yes_exposure():
+    """buy-yes ≡ sell-no ≡ (yes, bid). Mirror legacy pair → buy-yes.
+
+    Mixing canonical outcome=yes with legacy action=sell (and omitting
+    legacy side) used to emit sell-YES — inverted exposure. The mirror
+    pair is side=no action=sell.
+    """
     client = _client({"orders": [{
         "order_id": "oid-sn",
+        "ticker": TICKER,
+        "outcome_side": "yes",
+        "book_side": "bid",
+        "side": "no",
+        "action": "sell",
+        "status": "resting",
+    }]})
+    o = KalshiClient.get_orders(client)["orders"][0]
+    assert o["side"] == "yes"
+    assert o["action"] == "buy"
+
+
+def test_legacy_action_alone_does_not_override_canonical_buy():
+    """action=sell without legacy side is ambiguous — keep (yes,bid)=buy."""
+    client = _client({"orders": [{
+        "order_id": "oid-amb",
         "ticker": TICKER,
         "outcome_side": "yes",
         "book_side": "bid",
@@ -132,7 +156,7 @@ def test_sell_no_legacy_action_kept_with_canonical_fields():
     }]})
     o = KalshiClient.get_orders(client)["orders"][0]
     assert o["side"] == "yes"
-    assert o["action"] == "sell"
+    assert o["action"] == "buy"
 
 
 def test_none_response_passthrough():
@@ -158,3 +182,32 @@ def test_longshot_boot_does_not_default_yes():
     body = src[start:end]
     assert 'o.get("side") or "yes"' not in body
     assert "LONGSHOT_BOOT_DIRECTION_MALFORMED" in body
+
+
+def test_reconcile_cancels_malformed_direction_order(tmp_path):
+    """Dropped oids skip the cancel sweep then get flipped local-canceled.
+
+    Keep the id so cancel_order still fires. Direction guards skip INSERT.
+    """
+    from bot.state import StateManager
+    s = StateManager(str(tmp_path / "get_orders_dir.db"))
+    try:
+        event = "KXBTC15M-26SEP071200"
+        s.insert_bot_order("mk-bad", TICKER, event, "BTC", "yes", 2, 45, False)
+        s.confirm_order_submitted("mk-bad", "oid-bad")
+        wrapped = KalshiClient.get_orders(_client({"orders": [
+            {"order_id": "oid-bad", "client_order_id": "mk-bad",
+             "ticker": TICKER, "status": "resting"},
+        ]}))
+        client = MagicMock()
+        client.get_orders.return_value = wrapped
+        client.cancel_order.return_value = {"order": {"status": "canceled"}}
+        s._reconcile_orders(client, "2026-09-07T00:00:00.000000Z")
+        assert client.cancel_order.called, (
+            "malformed-direction oid must stay in the cancel sweep")
+        st = s.conn.execute(
+            "SELECT status FROM pending_orders WHERE order_id='oid-bad'"
+        ).fetchone()["status"]
+        assert st == "canceled"
+    finally:
+        s.close()

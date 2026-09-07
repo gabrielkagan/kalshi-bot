@@ -107,7 +107,7 @@ def _v2_book_side_and_price(
 
 
 def _normalize_order_direction(order: Dict) -> Optional[Dict]:
-    """Fill side/action from outcome_side/book_side. None = drop (fail-closed).
+    """Fill side/action from outcome_side/book_side. None = strip direction.
 
     bid≡yes, ask≡no. buy-yes and sell-no share (yes, bid); buy-no and
     sell-yes share (no, ask). We emit action=buy for those pairs (the
@@ -129,7 +129,8 @@ def _normalize_order_direction(order: Dict) -> Optional[Dict]:
         else:
             logging.warning(
                 "GET_ORDERS_DIRECTION_MALFORMED oid=%s — no outcome_side/"
-                "book_side/side; dropping", order.get("order_id"))
+                "book_side/side; keeping id, stripping side/action",
+                order.get("order_id"))
             return None
     if book not in ("bid", "ask"):
         book = "bid" if outcome == "yes" else "ask"
@@ -139,9 +140,14 @@ def _normalize_order_direction(order: Dict) -> Optional[Dict]:
     else:
         action = "sell"
     # (yes, bid) is buy-yes OR sell-no; (no, ask) is buy-no OR sell-yes.
-    # Legacy action disambiguates when Kalshi still sends it.
+    # Honor legacy action only when the legacy pair is self-consistent
+    # with the canonical outcome. Mixing canonical outcome with a
+    # mirror-pair action inverts exposure (sell-NO recorded as sell-YES).
     if legacy_action in ("buy", "sell"):
-        action = legacy_action
+        if legacy_side == outcome:
+            action = legacy_action
+        elif legacy_side in ("yes", "no"):
+            action = "buy" if legacy_action == "sell" else "sell"
     out = dict(order)
     out["side"] = outcome
     out["action"] = action
@@ -159,8 +165,16 @@ def _wrap_get_orders_response(raw: Optional[Dict]) -> Optional[Dict]:
     kept = []
     for o in orders:
         n = _normalize_order_direction(o)
-        if n is not None:
-            kept.append(n)
+        if n is None:
+            # Keep the id for cancel-sweep / api_order_ids. Dropping the
+            # order is a reconcile fail-open: never canceled on Kalshi,
+            # local row flipped to canceled because the oid vanished.
+            if not isinstance(o, dict):
+                continue
+            n = dict(o)
+            n.pop("side", None)
+            n.pop("action", None)
+        kept.append(n)
     out = dict(raw)
     out["orders"] = kept
     return out
