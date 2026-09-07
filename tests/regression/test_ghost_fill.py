@@ -1,8 +1,8 @@
 """Tests for ghost fill detection in _submit_taker.
 
 Verifies that the two-layer ghost fill detection correctly handles:
-  Layer A: remaining in (0, None) and fill_count>0; size min(fill, count); price = submitted IOC limit
-  Layer B: positions API delta vs local (count AND cost); NO-side negative position
+  Layer A: fill_count>0 (including remaining>0 partials); size min(fill, count); price = submitted IOC limit; side = order_side
+  Layer B: positions API delta vs local (count AND cost); same-side net only
 
 Run: python3 test_ghost_fill.py
 """
@@ -295,20 +295,55 @@ class TestGhostFillLayerA(unittest.TestCase):
         self.assertEqual(details["price"], 95)
         self.assertEqual(details["count"], 10)
 
-    def test_remaining_nonzero_skips_layer_a(self):
-        """remaining_count > 0 → Layer A should NOT trigger."""
+    def test_remaining_nonzero_fill_zero_skips_layer_a(self):
+        """remaining>0 and fill_count=0 is unfilled, not Layer A."""
         candidate = self._make_candidate()
         order_info = self._make_order_info(candidate)
 
         detected, layer, _ = ghost_fill_check(
-            remaining_count=34,  # all unfilled
+            remaining_count=34,
             total_filled=0, count=34, price=89,
             ticker=candidate["ticker"], candidate=candidate,
             order_info=order_info,
+            order_fill_count=0,
         )
 
         self.assertFalse(detected)
         self.assertIsNone(layer)
+
+    def test_remaining_positive_fill_positive_is_layer_a(self):
+        """Kalshi-affirmed partial: remaining=1 fill=1 of count=2 is Layer A."""
+        candidate = self._make_candidate(position_size=2)
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=2, price=89,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=1,
+        )
+
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(details["count"], 1)
+        self.assertEqual(record_fn.call_args.kwargs["side"], "yes")
+
+    def test_layer_a_no_side_uses_order_side(self):
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=0, total_filled=0, count=3, price=40,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=3, order_side="no",
+        )
+
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(record_fn.call_args.kwargs["side"], "no")
 
     def test_fills_found_skips_ghost_detection(self):
         """total_filled > 0 → normal path, no ghost detection needed."""
@@ -637,6 +672,32 @@ class TestGhostFillLayerB(unittest.TestCase):
         self.assertEqual(details["count"], 5)
         self.assertEqual(details["side"], "no")
 
+    def test_positions_api_opposite_side_net_skipped(self):
+        """YES order must not book a NO net as this IOC's fill."""
+        candidate = self._make_candidate()
+        order_info = self._make_order_info(candidate)
+        record_fn = MagicMock()
+
+        def mock_get_positions():
+            return {
+                "market_positions": [{
+                    "ticker": candidate["ticker"],
+                    "position": -2,
+                    "market_exposure": 160,
+                }]
+            }
+
+        detected, layer, details = ghost_fill_check(
+            remaining_count=1, total_filled=0, count=1, price=92,
+            ticker=candidate["ticker"], candidate=candidate,
+            order_info=order_info,
+            client_get_positions=mock_get_positions,
+            state_record_position=record_fn,
+            order_side="yes",
+        )
+        self.assertFalse(detected)
+        record_fn.assert_not_called()
+
     def test_positions_api_zero_delta_skips_recording(self):
         """When positions API matches local exactly, no new fills happened —
         the record_position_from_fill call must NOT fire.
@@ -757,24 +818,25 @@ class TestGhostFillEdgeCases(unittest.TestCase):
     """Edge cases for ghost fill detection."""
 
     def test_partial_remaining_count(self):
-        """remaining_count between 0 and count (partial fill without fill events)."""
+        """remaining=10 fill=24 of count=34 — Layer A ghosts the affirmed 24."""
         candidate = {
             "ticker": "KXBTC15M-TEST-3",
             "event_ticker": "KXBTC15M-TEST",
             "asset": "BTC",
         }
         order_info = {"submit_time": time.time()}
+        record_fn = MagicMock()
 
-        # remaining_count=10 out of 34 — partial match per order response,
-        # but no fill events seen. Layer A only fires when remaining=0.
-        detected, layer, _ = ghost_fill_check(
+        detected, layer, details = ghost_fill_check(
             remaining_count=10, total_filled=0, count=34, price=89,
             ticker=candidate["ticker"], candidate=candidate,
-            order_info=order_info,
+            order_info=order_info, state_record_position=record_fn,
+            order_fill_count=24,
         )
 
-        # Layer A should NOT fire (remaining > 0)
-        self.assertFalse(detected)
+        self.assertTrue(detected)
+        self.assertEqual(layer, "A")
+        self.assertEqual(details["count"], 24)
 
     def test_single_contract_ghost_fill(self):
         """Ghost fill with count=1 should still be detected."""
