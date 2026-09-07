@@ -1308,11 +1308,13 @@ class OpportunityScanner:
             if _preloop_dt > 1.5:
                 logging.warning(
                     "SCAN_PRELOOP_SLOW: scan setup took %.2fs "
-                    "watchdogs=%.2fs kill_sql=%.2fs cooldown=%.2fs "
-                    "cleanup=%.2fs subscribe=%.2fs filter=%.2fs "
-                    "occupied=%.2fs",
+                    "drift_probe=%.2fs silence=%.2fs productive=%.2fs "
+                    "kill_sql=%.2fs cooldown=%.2fs cleanup=%.2fs "
+                    "subscribe=%.2fs filter=%.2fs occupied=%.2fs",
                     _preloop_dt,
-                    _pre_sections.get("watchdogs", 0.0),
+                    _pre_sections.get("drift_probe", 0.0),
+                    _pre_sections.get("silence", 0.0),
+                    _pre_sections.get("productive", 0.0),
                     _pre_sections.get("kill_sql", 0.0),
                     _pre_sections.get("cooldown", 0.0),
                     _pre_sections.get("cleanup", 0.0),
@@ -1327,6 +1329,7 @@ class OpportunityScanner:
             self._drift_probe_tick()
         except Exception:
             logging.debug("drift probe failed", exc_info=True)
+        _pre_mark("drift_probe")
 
         # 15M silence watchdog (2026-04-24 17:30 UTC outage defense).
         # If no 15M evaluation has been inserted in 10+ min, alert on
@@ -1336,6 +1339,7 @@ class OpportunityScanner:
             self._check_15m_silence_alert(active_windows)
         except Exception:
             logging.debug("15M silence alert check failed", exc_info=True)
+        _pre_mark("silence")
 
         # Slow-tick instrumentation — log when gap between consecutive
         # scan() entries exceeds 2s. Diagnoses event-loop / main-thread
@@ -1364,7 +1368,7 @@ class OpportunityScanner:
             except Exception:
                 logging.debug(
                     "scan-productive watchdog check failed", exc_info=True)
-        _pre_mark("watchdogs")
+        _pre_mark("productive")
 
         # Reset hourly per-window tracking each tick, seeded from existing positions
         self._hourly_window_counts = {}
@@ -1375,6 +1379,8 @@ class OpportunityScanner:
         self._lp_window_counts = {}  # Low-price shadow: per-window signal count
         # Weather NO-side kill switch: auto-disable if cumulative PnL below threshold
         # Check once per tick, uses module-level _weather_no_killed flag
+        # Live kill_sql=0.01s (2026-09-07) — keep 1 Hz. A 30s delay on a
+        # money kill is not paid for by that measurement.
         if bot.constants.WEATHER_NO_SIDE_LIVE:
             try:
                 _wx_no_pnl = self._state.conn.execute(
@@ -9674,6 +9680,14 @@ class OpportunityScanner:
             self._kalshi_feed.is_connected
             if self._kalshi_feed else False)
 
+        # Silence SQL is MAX(ts) LIKE over the full eval/reject tables.
+        # 10-min alert does not need 1 Hz. 30s is enough.
+        now_q = time.time()
+        last_q = getattr(self, "_silence_query_last_ts", 0.0)
+        if now_q - last_q < 30.0:
+            return
+        self._silence_query_last_ts = now_q
+
         # Step 1: primary "scan alive" check. Tuple (ok, ts).
         primary_ok, last_ts_str = self._query_last_15m_alive_ts()
         if not primary_ok:
@@ -10139,20 +10153,27 @@ class OpportunityScanner:
         except Exception:
             tick_start_epoch = 0.0
         heartbeat_recent = (
-            self._scan_15m_iter_heartbeat_ts > tick_start_epoch)
-        # Fallback: also check DB rows for backward-compat with the
-        # original intent. Either signal indicates productive scan.
-        try:
-            row = self._state.conn.execute(
-                "SELECT "
-                "(SELECT COUNT(*) FROM evaluated_opportunities "
-                " WHERE product_type='15m' AND evaluation_time > ?) + "
-                "(SELECT COUNT(*) FROM rejected_opportunities "
-                " WHERE product_type='15m' AND rejection_time > ?)",
-                (tick_start_ts, tick_start_ts)
-            ).fetchone()
-        except Exception:
-            return
+            getattr(self, "_scan_15m_iter_heartbeat_ts", 0.0)
+            > tick_start_epoch)
+        # Heartbeat is the 1 Hz signal. COUNT(*) both eval tables every
+        # tick was watchdogs=2.2–2.7s live (2026-09-07). EXISTS only when
+        # heartbeat missed (rotation / no 15M body) — not a second source
+        # of truth on the healthy path.
+        rows_written = 0
+        if not heartbeat_recent:
+            try:
+                row = self._state.conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM evaluated_opportunities "
+                    " WHERE product_type='15m' AND evaluation_time > ?) "
+                    "OR EXISTS(SELECT 1 FROM rejected_opportunities "
+                    " WHERE product_type='15m' AND rejection_time > ?)",
+                    (tick_start_ts, tick_start_ts)
+                ).fetchone()
+            except Exception:
+                logging.debug(
+                    "scan-productive EXISTS failed", exc_info=True)
+            else:
+                rows_written = 1 if row and row[0] else 0
         # Phase 3 R-review A1: detect WS disconnect→reconnect
         # transition. If WS just came back from a disconnected
         # state, the counter accumulated during the dead window
@@ -10201,7 +10222,6 @@ class OpportunityScanner:
             self._scan_15m_unproductive_entry_alerted = False
             self._scan_15m_unproductive_max_count = 0
 
-        rows_written = row[0] if row else 0
         if heartbeat_recent or rows_written > 0:
             # Productive tick — reset detection counter AND Phase 3
             # auto-recovery state (throttle + one-shot reconnect flag)

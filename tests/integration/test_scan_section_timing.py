@@ -74,17 +74,20 @@ class TestScanSectionTiming(unittest.TestCase):
                 src = f.read()
         self.assertIn("SCAN_PRELOOP_SLOW", src)
         for key in (
-                "watchdogs=", "kill_sql=", "cooldown=", "cleanup=",
+                "drift_probe=", "silence=", "productive=",
+                "kill_sql=", "cooldown=", "cleanup=",
                 "subscribe=", "filter=", "occupied="):
             self.assertIn(
                 key, src,
                 "SCAN_PRELOOP_SLOW must include section timing %s "
-                "(2026-09-06 live: preloop 2.1–6.6s, loop rarely fires)"
+                "(2026-09-07 live: watchdogs=2.2–2.7s of 2.5s preloop)"
                 % key)
         # Format-string keys stay green if _pre_mark is deleted and
         # .get(..., 0.0) logs zeros. Pin the mark calls in order.
         marks = [
-            '_pre_mark("watchdogs")',
+            '_pre_mark("drift_probe")',
+            '_pre_mark("silence")',
+            '_pre_mark("productive")',
             '_pre_mark("kill_sql")',
             '_pre_mark("cooldown")',
             '_pre_mark("cleanup")',
@@ -100,6 +103,103 @@ class TestScanSectionTiming(unittest.TestCase):
             self.assertGreater(
                 idx, last, "%s must run after the previous section mark" % mark)
             last = idx
+
+    def test_scan_productive_skips_sql_when_heartbeat_recent(self):
+        """VPS 2026-09-07: watchdogs=2.2–2.7s was COUNT(*) every 1 Hz.
+
+        Skip SQL on the healthy heartbeat path. EXISTS only when the
+        previous tick did not iterate a 15M window. Kill switches stay
+        1 Hz (measured kill_sql=0.01s — do not delay a money kill).
+        """
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
+        start = src.find("def _check_scan_productive_15m")
+        end = src.find("\n    def _drift_probe_tick")
+        body = src[start:end]
+        self.assertIn("if not heartbeat_recent:", body)
+        idx_gate = body.find("if not heartbeat_recent:")
+        idx_sql = body.find("evaluated_opportunities")
+        self.assertGreaterEqual(idx_gate, 0)
+        self.assertGreater(idx_sql, idx_gate)
+        prod = src.find('_pre_mark("productive")')
+        kill_mark = src.find('_pre_mark("kill_sql")')
+        self.assertGreater(kill_mark, prod)
+        kill_block = src[prod:kill_mark]
+        # Indent-blind substring checks pass a 30s wrap (Claude R1
+        # 0894409b MAJOR 1). Pin method-body indent (8 spaces) AND
+        # AST: the three Ifs are direct children of scan(), so a
+        # nested `if _kill_gate_due:` fails.
+        kill_flags = (
+            "WEATHER_NO_SIDE_LIVE",
+            "HOURLY_NO_SIDE_LIVE",
+            "BRACKET_NO_ENABLED",
+        )
+        for flag in kill_flags:
+            self.assertIn(
+                "\n        if bot.constants.%s:" % flag,
+                kill_block,
+                "kill switch %s must be a 1 Hz scan() body If "
+                "(8-space indent); nesting under a throttle is a "
+                "money-kill delay" % flag)
+        self.assertNotIn("slow_scan_due", kill_block)
+        self.assertNotIn("_last_kill_sql_ts", kill_block)
+        tree = ast.parse(src)
+        scan_fn = None
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, ast.FunctionDef) and item.name == "scan":
+                        scan_fn = item
+                        break
+            if scan_fn is not None:
+                break
+        self.assertIsNotNone(scan_fn, "OpportunityScanner.scan not found")
+        found_flags = set()
+        for stmt in scan_fn.body:
+            if not isinstance(stmt, ast.If):
+                continue
+            test = stmt.test
+            if not (isinstance(test, ast.Attribute)
+                    and isinstance(test.value, ast.Attribute)
+                    and test.value.attr == "constants"
+                    and isinstance(test.value.value, ast.Name)
+                    and test.value.value.id == "bot"):
+                continue
+            if test.attr in kill_flags:
+                found_flags.add(test.attr)
+        self.assertEqual(
+            set(kill_flags), found_flags,
+            "kill-switch Ifs must be direct children of scan() "
+            "(not nested under a time-throttle If)")
+        self.assertIn("scan-productive EXISTS failed", body)
+        state_src = ""
+        state_py = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), "bot", "state.py")
+        if os.path.exists(state_py):
+            with open(state_py) as f:
+                state_src = f.read()
+        self.assertIn("idx_eval_opp_pt_time", state_src)
+        self.assertIn("idx_rejected_opp_pt_time", state_src)
+        idx_block_start = state_src.find("idx_eval_opp_pt_time")
+        self.assertGreaterEqual(idx_block_start, 0)
+        idx_block = state_src[idx_block_start:idx_block_start + 2500]
+        self.assertIn("except sqlite3.Error", idx_block)
+        self.assertIn("sqlite_master", idx_block)
+        self.assertIn("idx_eval_opp_pt_time / idx_rejected_opp_pt_time missing",
+                      idx_block)
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        baseline_path = os.path.join(
+            repo, "tests", "fixtures", "state_db_schema_baseline.txt")
+        baseline = ""
+        if os.path.exists(baseline_path):
+            with open(baseline_path) as f:
+                baseline = f.read()
+        self.assertIn("idx_eval_opp_pt_time", baseline)
+        self.assertIn("idx_rejected_opp_pt_time", baseline)
 
 
 if __name__ == "__main__":
