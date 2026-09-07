@@ -618,7 +618,7 @@ class OrderExecutor:
                 "client_oid %s", ticker, resp.get("order"), client_oid)
             self._state.mark_order_status(client_oid, "api_error")
             try:
-                self._client.cancel_order(client_oid)
+                self._client.cancel_order(client_oid, ticker=ticker)
             except Exception:
                 logging.warning(
                     "LONGSHOT_PLACE_MALFORMED cancel attempt failed for %s",
@@ -1899,7 +1899,8 @@ class OrderExecutor:
         # Reconcile cancel_pending orders: retry cancel via Kalshi API
         if order.get("cancel_pending"):
             try:
-                cancel_resp = self._client.cancel_order(order["order_id"])
+                cancel_resp = self._client.cancel_order(
+                    order["order_id"], ticker=order.get("ticker"))
                 # 404 sentinel — Kalshi has aged it; route through helper.
                 if isinstance(cancel_resp, dict) and cancel_resp.get("_status_code") == 404:
                     self._handle_cancel_404(
@@ -4764,7 +4765,7 @@ class OrderExecutor:
             if rec is None:
                 continue
             try:
-                self._client.cancel_order(oid)
+                self._client.cancel_order(oid, ticker=rec.get("ticker"))
             except Exception:
                 logging.warning(
                     "MAKER_TAIL_CANCEL_FAILED: order_id=%s ticker=%s "
@@ -5955,7 +5956,8 @@ class OrderExecutor:
 
         filled = order.get("filled_so_far", 0)
 
-        cancel_resp = self._client.cancel_order(order["order_id"])
+        cancel_resp = self._client.cancel_order(
+            order["order_id"], ticker=order.get("ticker"))
         if cancel_resp is None:
             logging.error(f"Cancel API FAILED for {order['order_id']} — order may still be resting on exchange")
             # Don't mark canceled in DB — order may still be live on Kalshi

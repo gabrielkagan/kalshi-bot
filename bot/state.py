@@ -1788,7 +1788,7 @@ class StateManager:
                 continue
             ticker = order["ticker"]
             try:
-                client.cancel_order(oid)
+                client.cancel_order(oid, ticker=ticker)
                 _stale_canceled += 1
                 logging.warning("STALE_ORDER_CLEANUP: canceled %s ticker=%s price=%s count=%s (resting since %s)",
                                 oid, ticker,

@@ -76,6 +76,7 @@ def test_amend_order_ignores_non_crypto_ticker(monkeypatch):
     client = MagicMock()
     client._request.return_value = {"order": {"order_id": "wx"}}
     result = KalshiClient.amend_order(
-        client, "ord9", "KXHIGHNYC-26MAY29-T75", "no", "buy", no_price=40)
+        client, "ord9", "KXHIGHNYC-26MAY29-T75", "no", "buy",
+        count=1, no_price=40)
     client._request.assert_called_once()  # non-crypto amend untouched
     assert result == {"order": {"order_id": "wx"}}

@@ -1338,7 +1338,7 @@ class LongshotEngine:
         if q is None:
             return
         try:
-            resp = self._client.cancel_order(order_id)
+            resp = self._client.cancel_order(order_id, ticker=q["ticker"])
         except Exception:
             logging.warning("LONGSHOT_CANCEL_FAILED: %s %s reason=%s — "
                             "retry next tick", q["ticker"], order_id, reason,

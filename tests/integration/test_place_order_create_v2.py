@@ -71,6 +71,56 @@ def test_buy_yes_posts_events_orders_bid(monkeypatch):
     assert "type" not in body
     assert result["order"]["order_id"] == "oid-v2-1"
     assert result["order"]["fill_count_fp"] == "0.00"
+    assert result["order"]["remaining_count"] == 2
+
+
+def test_full_fill_remaining_count_is_zero(monkeypatch):
+    """Ghost-fill Layer A keys remaining_count==0, not remaining_count_fp."""
+    _live(monkeypatch)
+    client = _client(_v2_ok(fill_count="5.00", remaining_count="0.00"))
+    result = KalshiClient.place_order(
+        client, TICKER, "yes", "buy", 5, yes_price=18, client_order_id="tw-x",
+        time_in_force="immediate_or_cancel")
+    assert result["order"]["remaining_count"] == 0
+    assert result["order"]["fill_count"] == 5
+
+
+def test_cancel_uses_events_orders_and_market_ticker(monkeypatch):
+    client = MagicMock()
+    client._request.return_value = {
+        "order_id": "oid-c", "reduced_by": "2.00", "ts_ms": 1,
+    }
+    result = KalshiClient.cancel_order(client, "oid-c", ticker=TICKER)
+    args, kwargs = client._request.call_args
+    assert args[0] == "DELETE"
+    assert args[1] == f"{C.API_PATH_PREFIX}/portfolio/events/orders/oid-c"
+    params = kwargs.get("params") or {}
+    assert params.get("market_ticker") == TICKER
+    assert params.get("exchange_index") == -1
+    assert result["order"]["order_id"] == "oid-c"
+    assert "fill_count" not in result["order"]
+    assert result["order"]["remaining_count"] == 2
+
+
+def test_amend_posts_events_orders_bid(monkeypatch):
+    _live(monkeypatch)
+    client = MagicMock()
+    client._request.return_value = {
+        "order_id": "oid-a", "fill_count": "0.00",
+        "remaining_count": "1.00", "ts_ms": 1,
+    }
+    result = KalshiClient.amend_order(
+        client, "oid-a", TICKER, "yes", "buy", count=1, yes_price=55)
+    args, kwargs = client._request.call_args
+    assert args[0] == "POST"
+    assert args[1] == (
+        f"{C.API_PATH_PREFIX}/portfolio/events/orders/oid-a/amend")
+    body = kwargs["json_body"]
+    assert body["side"] == "bid"
+    assert body["price"] == cents_to_dollars_str(55)
+    assert body["count"] == int_to_fp_str(1)
+    assert "yes_price" not in body
+    assert result["order"]["order_id"] == "oid-a"
 
 
 def test_buy_no_is_ask_at_one_minus_price(monkeypatch):
@@ -93,6 +143,9 @@ def test_place_order_never_posts_deprecated_v1_path():
     body = src[start:end]
     assert "_CREATE_ORDER_V2_PATH" in body
     assert 'f"{API_PATH_PREFIX}/portfolio/orders"' not in body
+    cancel_src = src[src.find("def cancel_order("):src.find("\n    def amend_order(")]
+    assert "/portfolio/events/orders/" in cancel_src
+    assert 'f"{API_PATH_PREFIX}/portfolio/orders/' not in cancel_src
 
 
 def test_unmapped_action_does_not_post(monkeypatch):
