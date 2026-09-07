@@ -1317,12 +1317,16 @@ class TestGhostFillProtection(unittest.TestCase):
         self.assertIsNone(result, "Zero-delta must fall through to IOC unfilled")
         ex._state.record_position_from_fill.assert_not_called()
 
-    def test_taker_place_malformed_no_order_id_marks_api_error(self):
-        """V2 wrapper pass-through of {} / missing oid must not key the
-        fill lifecycle on client_oid (twaplock/longshot already guard this).
+    def test_taker_place_malformed_no_order_id_does_not_retry(self):
+        """2xx with no order_id: do not key fills on client_oid, do not
+        return None (callers retry the full IOC). Layer B empty →
+        defensive ghost so the caller sees a filled result.
         """
         ex = _make_executor()
         ex._client.place_order.return_value = {"order": {}}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {"market_positions": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
         candidate = _make_candidate()
 
         with patch("bot.executor.time") as mock_time:
@@ -1330,36 +1334,50 @@ class TestGhostFillProtection(unittest.TestCase):
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result, "None is the caller's retry signal")
         ex._state.confirm_order_submitted.assert_not_called()
-        ex._state.record_position_from_fill.assert_not_called()
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill_no_order_id")
+        self.assertEqual(result["filled_count"], 5)
         api_error_calls = [
             c for c in ex._state.mark_order_status.call_args_list
             if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
         ]
-        self.assertTrue(
-            api_error_calls,
-            "malformed place response must mark the ledger row api_error",
-        )
+        self.assertFalse(api_error_calls)
 
-    def test_taker_place_empty_dict_resp_marks_api_error(self):
-        """Empty {} from wrapper pass-through is not a successful submit."""
+    def test_taker_empty_dict_resp_uses_layer_b(self):
+        """2xx empty {} is an accept with no oid — Layer B still runs."""
         ex = _make_executor()
         ex._client.place_order.return_value = {}
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 5,
+                "position_fp": None,
+                "market_exposure": 460,
+                "market_exposure_dollars": None,
+            }]
+        }
         candidate = _make_candidate()
 
-        with patch("bot.executor.time") as mock_time:
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.dollars_str_to_cents", return_value=460):
             mock_time.time.return_value = 1000.0
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
         ex._state.confirm_order_submitted.assert_not_called()
-        api_error_calls = [
-            c for c in ex._state.mark_order_status.call_args_list
-            if c.args and len(c.args) >= 2 and c.args[1] == "api_error"
-        ]
-        self.assertTrue(api_error_calls)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill_positions_api")
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 5)
 
     def test_layer_a_remaining_fp_zero_without_integer_remaining(self):
         """remaining_count_fp='0.00' with remaining_count key absent must
@@ -1412,10 +1430,10 @@ class TestGhostFillProtection(unittest.TestCase):
             ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
             "ghost_fill")
 
-    def test_malformed_remaining_skips_layer_a_not_false_ghost(self):
-        """Malformed remaining must not default to 0 (false Layer A) and
-        must not default to count as a stand-in for 'known remaining'.
-        Fall through to Layer B.
+    def test_malformed_remaining_with_fill_count_is_layer_a(self):
+        """fill_count>0 is Kalshi affirming fills. Missing/malformed
+        remaining must not skip Layer A in favour of a lagging positions
+        API — that returns None and callers re-buy the full size.
         """
         ex = _make_executor()
         ex._client.place_order.return_value = {
@@ -1434,9 +1452,13 @@ class TestGhostFillProtection(unittest.TestCase):
             mock_time.sleep = MagicMock()
             result = ex._submit_taker(candidate)
 
-        self.assertIsNone(result)
-        for call in ex._state.record_position_from_fill.call_args_list:
-            self.assertNotEqual(call.kwargs.get("fill_source"), "ghost_fill")
+        self.assertIsNotNone(result, "fill_count>0 + unknown remaining is Layer A")
+        ex._state.record_position_from_fill.assert_called_once()
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["fill_source"],
+            "ghost_fill")
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 5)
 
 
 class TestPostOnlyRejectionTiers(unittest.TestCase):

@@ -154,7 +154,7 @@ class TestReconcilePositionsStrategyGroupConflict(unittest.TestCase):
             "action": "buy",
             "yes_price": 50,
             "remaining_count_fp": "N/A",
-            "remaining_count": 3,
+            "remaining_count": "3.00",
             "status": "resting",
             "created_time": "2026-09-06T00:00:00Z",
         }]}

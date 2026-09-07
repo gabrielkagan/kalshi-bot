@@ -1875,7 +1875,8 @@ class StateManager:
                     "remaining_count_fp=%r — falling back to integer remaining",
                     oid, order.get("remaining_count_fp"))
                 try:
-                    remaining = int(order.get("remaining_count") or 0)
+                    remaining = int(fp_str_to_int(
+                        order.get("remaining_count") or 0))
                 except (TypeError, ValueError, OverflowError):
                     remaining = 0
 
