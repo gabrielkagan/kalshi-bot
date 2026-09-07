@@ -74,17 +74,20 @@ class TestScanSectionTiming(unittest.TestCase):
                 src = f.read()
         self.assertIn("SCAN_PRELOOP_SLOW", src)
         for key in (
-                "watchdogs=", "kill_sql=", "cooldown=", "cleanup=",
+                "drift_probe=", "silence=", "productive=",
+                "kill_sql=", "cooldown=", "cleanup=",
                 "subscribe=", "filter=", "occupied="):
             self.assertIn(
                 key, src,
                 "SCAN_PRELOOP_SLOW must include section timing %s "
-                "(2026-09-06 live: preloop 2.1–6.6s, loop rarely fires)"
+                "(2026-09-07 live: watchdogs=2.2–2.7s of 2.5s preloop)"
                 % key)
         # Format-string keys stay green if _pre_mark is deleted and
         # .get(..., 0.0) logs zeros. Pin the mark calls in order.
         marks = [
-            '_pre_mark("watchdogs")',
+            '_pre_mark("drift_probe")',
+            '_pre_mark("silence")',
+            '_pre_mark("productive")',
             '_pre_mark("kill_sql")',
             '_pre_mark("cooldown")',
             '_pre_mark("cleanup")',
@@ -100,6 +103,29 @@ class TestScanSectionTiming(unittest.TestCase):
             self.assertGreater(
                 idx, last, "%s must run after the previous section mark" % mark)
             last = idx
+
+    def test_scan_productive_skips_sql_when_heartbeat_recent(self):
+        """VPS 2026-09-07 after #182: watchdogs=2.2–2.7s every tick.
+
+        `_check_scan_productive_15m` already has an in-memory heartbeat
+        then still COUNT(*) both eval tables every 1 Hz. Skip the SQL
+        when the previous tick iterated a 15M window.
+        """
+        src = ""
+        if os.path.exists(BOT_PY):
+            with open(BOT_PY) as f:
+                src = f.read()
+        start = src.find("def _check_scan_productive_15m")
+        end = src.find("\n    def _drift_probe_tick")
+        body = src[start:end]
+        self.assertIn("if not heartbeat_recent:", body)
+        idx_gate = body.find("if not heartbeat_recent:")
+        idx_sql = body.find("evaluated_opportunities")
+        self.assertGreaterEqual(idx_gate, 0)
+        self.assertGreater(idx_sql, idx_gate)
+        self.assertGreater(
+            body.find("evaluated_opportunities", idx_gate),
+            idx_gate)
 
 
 if __name__ == "__main__":
