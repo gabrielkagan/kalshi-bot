@@ -17,10 +17,11 @@ from unittest.mock import MagicMock, patch, call
 # ── Inline helpers (from bot/_impl.py) ───────────────────────────────────────
 
 def fp_str_to_int(s) -> int:
+    """Match bot.helpers.strings.fp_str_to_int: '5.00' → 5, not cents."""
     if s is None:
         return 0
     try:
-        return int(round(float(s) * 100))
+        return int(round(float(s)))
     except (ValueError, TypeError):
         return 0
 
@@ -122,6 +123,8 @@ def ghost_fill_check(
                             local_count = (state_local_count()
                                            if state_local_count else 0)
                             delta = pos_abs - local_count
+                            if delta > count:
+                                delta = count
                             if delta <= 0:
                                 return False, None, {
                                     "reason": "no_new_fills_delta_le_zero",
@@ -405,7 +408,7 @@ class TestGhostFillLayerB(unittest.TestCase):
                 "market_positions": [
                     {
                         "ticker": "KXBTC15M-26MAR061015-15",
-                        "position_fp": "0.34",  # 34 cents = 34 contracts
+                        "position_fp": "34.00",
                         "market_exposure_dollars": "29.58",  # $29.58 = 2958 cents
                     }
                 ]

@@ -4476,6 +4476,15 @@ class OrderExecutor:
                                     f"{_local_count} — no new fills to record")
                                 # Fall through to the IOC-unfilled path below.
                                 break
+                            # Same residual class as delta_avg: do not attribute
+                            # missed sibling fills to this IOC. Layer A already
+                            # bounds ghost size by the order's count.
+                            if _delta > count:
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_CLAMP: %s delta=%d > "
+                                    "order count=%d — recording %d",
+                                    ticker, _delta, count, count)
+                                _delta = count
                             # Attribute cost to the delta contracts, not the
                             # cumulative weighted-average (R1-M2). When market
                             # moves between sibling-strategy fill and ghost-fill
@@ -4494,6 +4503,10 @@ class OrderExecutor:
                             try:
                                 _delta_avg = int(_delta_avg)
                             except (TypeError, ValueError, OverflowError):
+                                logging.warning(
+                                    "GHOST_FILL_DELTA_AVG_OOR: %s delta_avg "
+                                    "unparseable, falling back to submitted "
+                                    "limit %d", ticker, _ioc_limit_price)
                                 _delta_avg = _ioc_limit_price
                             if not (0 < _delta_avg < 100):
                                 logging.warning(

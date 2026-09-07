@@ -1320,6 +1320,45 @@ class TestGhostFillProtection(unittest.TestCase):
         submitted = ex._client.place_order.call_args.kwargs.get("yes_price")
         self.assertEqual(px, submitted)
 
+    def test_layer_b_delta_clamped_to_order_count(self):
+        """Layer B count residual must not book more than this IOC's size.
+        Missed sibling fills (local 0, api 20) plus a 1-lot IOC must
+        record 1, not 20 attributed to this strategy.
+        """
+        ex = _make_executor()
+        ex._state.get_local_position_count_for_ticker.return_value = 0
+        ex._state.get_local_position_cost_for_ticker.return_value = 0
+        ex._client.place_order.return_value = {
+            "order": {
+                "order_id": "ord-ghost-b-clamp",
+                "remaining_count": 1,
+                "fill_count": 0,
+            }
+        }
+        ex._client.get_fills.return_value = {"fills": []}
+        ex._client.get_positions.return_value = {
+            "market_positions": [{
+                "ticker": "KXBTC15M-26MAR091200-B68500",
+                "position": 20,
+                "position_fp": None,
+                "market_exposure": 1800,
+                "market_exposure_dollars": None,
+            }]
+        }
+        candidate = _make_candidate(position_size=1)
+
+        with patch("bot.executor.time") as mock_time, \
+             patch("bot.executor.fp_str_to_int", return_value=0), \
+             patch("bot.executor.dollars_str_to_cents", return_value=1800):
+            mock_time.time.return_value = 1000.0
+            mock_time.sleep = MagicMock()
+            result = ex._submit_taker(candidate)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            ex._state.record_position_from_fill.call_args.kwargs["count"], 1)
+        self.assertEqual(result["filled_count"], 1)
+
     def test_layer_b_skips_when_delta_is_zero(self):
         """B1: when positions API matches local exactly, no new fills happened —
         ghost-fill must NOT call record_position_from_fill and must NOT mark
