@@ -727,15 +727,17 @@ def test_memory_store_hit_is_not_evidence_a_kb_original_was_lost(tmp_path):
 def test_mandated_skill_outside_the_routing_table_is_still_checked(tmp_path):
     """/ticket lives in Critical rules, not the routing table. Scanning the
     whole file for `/name` would also match `/scoreboard`; the allowlist is
-    the bounded fix."""
+    the bounded fix. /pickup is not mentioned in CLAUDE.md at all and must
+    still be checked."""
     root = corpus(tmp_path, {})
     (root / "CLAUDE.md").write_text(
         "## Skill routing\n\n| x | `/status` |\n\n"
         "## Other\nfiles a ticket via `/ticket`.\n")
     found = codes(root)
     assert "SKILL-MISSING" in found
-    assert any("ticket" in f["message"] for f in found["SKILL-MISSING"])
-    assert not any("scoreboard" in f["message"] for f in found.get("SKILL-MISSING", []))
+    msgs = " ".join(f["message"] for f in found["SKILL-MISSING"])
+    assert "ticket" in msgs and "pickup" in msgs
+    assert "scoreboard" not in msgs
 
 
 def test_broken_link_separator_hint_is_not_deletable(tmp_path):
@@ -1040,7 +1042,8 @@ def test_header_counts_cannot_be_zeroed(tmp_path):
     (d / "SKILL.md").write_text("---\nname: ok\ndescription: x\n---\n")
     stats = json.loads(run(root, "--json").stdout)["stats"]
     assert stats["curated_articles"] >= 60
-    assert stats["routed_skills"] == 1
+    # /ok plus the three mandated skills (ticket/pickup/test-writer)
+    assert stats["routed_skills"] == 4
 
 
 def test_summary_prints_the_real_numbers(tmp_path):

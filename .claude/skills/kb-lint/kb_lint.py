@@ -614,10 +614,11 @@ class Lint:
                     self.add("WARN", "SKILL-ROUTING-MISSING",
                              "CLAUDE.md has no '## Skill routing' section — no skill is checked",
                              "CLAUDE.md", "restore the heading or update this check")
-                # Critical-rules skills are not in the table. Whole-file
-                # `/name` matching would also hit `/scoreboard` `/odds`.
-                routed |= {m.group(1) for m in ROUTE_RE.finditer(text)
-                           if m.group(1) in MANDATED_SKILLS}
+                # Critical-rules skills are not in the table. Always check
+                # the allowlist — requiring a CLAUDE.md mention left /pickup
+                # invisible because it is not backtick-routed there.
+                # Whole-file `/name` matching would also hit `/scoreboard`.
+                routed |= set(MANDATED_SKILLS)
         dead = []
         for name in sorted(routed):
             d = sk / name
