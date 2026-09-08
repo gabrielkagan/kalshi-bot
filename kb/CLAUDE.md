@@ -26,10 +26,8 @@ of bypassing the rule (see kb-in-git TODO below).
 
 - kb-in-git (track `kb/` in git instead of local-only): paused
   2026-05-08.
-- `/kb-lint`, `/kb-ingest`, `/kb-evolve` skills: referenced in root
-  `CLAUDE.md` skill-routing table; `.claude/skills/kb-lint/`,
-  `.claude/skills/kb-ingest/`, `.claude/skills/kb-evolve/` directories
-  (and their `SKILL.md` files) not yet created.
+- `/kb-lint` `/kb-evolve` `/kb-ingest` skills: SHIPPED (PRs #189/#190).
+  Health-check protocol in `_meta/MAINTENANCE.md` remains the spec.
 - Autoresearch (replay-engine track) future hook-up:
   `kb/{findings,decisions,failures,concepts,strategies}/` are candidate
   inputs.
