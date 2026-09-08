@@ -62,14 +62,17 @@ restate them here. Failures need `severity:`; decisions need `date:`.
 3. Re-read the file you just wrote. Concurrent sessions write `kb/` too.
    Self-check frontmatter and `## Related` against `kb/_meta/MAINTENANCE.md`
    — the lint will not do this for a session note.
-4. Lint:
+4. Lint from the **primary checkout**, not a worktree (memory-store links
+   resolve against `~/.claude/projects/<repo-path>/memory/`):
    ```bash
    python3 .claude/skills/kb-lint/kb_lint.py --quiet
    ```
-   On a session note the lint catches `LINK-BROKEN` (including hyphenated
-   memory slugs) and index integrity. It does **not** catch missing
-   frontmatter or `## Related`. If it reports a new ERROR, fix the article,
-   do not suppress the lint.
+   If `MEM-STORE-MISSING` appears, re-run with `--repo` pointing at the
+   primary checkout. Until then, memory-slug `LINK-BROKEN` results are not
+   trustworthy — do not delete those links. On a session note the lint
+   catches real `LINK-BROKEN` and index integrity. It does **not** catch
+   missing frontmatter or `## Related`. If it reports a new ERROR, fix the
+   article, do not suppress the lint.
 5. Tell the user the path. If a followup is still unticketed, stop and run
    `/ticket` — a KB bullet is not a tracker.
 
