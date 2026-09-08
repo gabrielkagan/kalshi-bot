@@ -51,6 +51,11 @@ NON_ARTICLE = {"_index.md", "CLAUDE.md", "MAINTENANCE.md", "dashboard.md", "log.
 CURATED_DIRS = ("concepts", "strategies")
 REQUIRED_FM = ("status", "updated", "tags")
 MIN_FILES = 50
+# Skills mandated in CLAUDE.md Critical / Interaction rules but absent from
+# the routing table. Scanning the whole file for `/name` would also match
+# `/scoreboard` `/odds` `/markets` in architecture prose, so this is an
+# allowlist. kb-evolve cites /ticket and /pickup as the SKILL-ROT incident.
+MANDATED_SKILLS = frozenset({"ticket", "pickup", "test-writer"})
 # Sync clients corrupt in BULK. Many conflict-shaped files across several
 # directories is itself evidence a sync event occurred — evidence that is
 # corpus-internal and always available, unlike inbound links (only ~19% of
@@ -278,6 +283,9 @@ class Lint:
                     if not conflict_base(f.stem) and not self.in_conflict_dir(f)}
 
         for canon, copies in sorted(by_canon.items()):
+            copies = [c for c in copies if not self.in_conflict_dir(c)]
+            if not copies:
+                continue          # DUPE-DIR merge subsumes shadow-dir files
             if len(copies) > 1:
                 counts["chain"] += len(copies)
                 self.doomed.update(copies)
@@ -292,10 +300,6 @@ class Lint:
             p = copies[0]
             r = self.rel(p)
             if p not in self.text:        # unreadable; already reported in build()
-                continue
-            if self.in_conflict_dir(p):
-                # the DUPE-DIR merge subsumes this file; a second "never
-                # bulk-rename" verdict on it would just contradict that
                 continue
             try:
                 empty = p.stat().st_size == 0
@@ -358,6 +362,15 @@ class Lint:
                 self.add("WARN", "DUPE-CROSS-STORE",
                          f"canonical exists at {self.rel(twins[0])}", r,
                          "compare against that file; do not rename into place")
+            elif lost and canon.stem in self.mem_stems:
+                # The linkers resolve to the memory store (suppression #1).
+                # That is not evidence a kb/ original was lost.
+                counts["ambiguous"] += 1
+                self.add("WARN", "DUPE-AMBIGUOUS",
+                         f"no kb/ canonical; {len(lost)} doc(s) link [[{canon.stem}]] "
+                         f"which resolves to the memory store — not evidence of a lost "
+                         f"kb/ original", r,
+                         "CONFIRM BY HAND; never bulk-rename this class")
             elif lost:
                 counts["orphan"] += 1
                 self.doomed.add(p)
@@ -601,6 +614,10 @@ class Lint:
                     self.add("WARN", "SKILL-ROUTING-MISSING",
                              "CLAUDE.md has no '## Skill routing' section — no skill is checked",
                              "CLAUDE.md", "restore the heading or update this check")
+                # Critical-rules skills are not in the table. Whole-file
+                # `/name` matching would also hit `/scoreboard` `/odds`.
+                routed |= {m.group(1) for m in ROUTE_RE.finditer(text)
+                           if m.group(1) in MANDATED_SKILLS}
         dead = []
         for name in sorted(routed):
             d = sk / name

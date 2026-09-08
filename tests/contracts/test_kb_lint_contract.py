@@ -703,6 +703,56 @@ def test_memory_store_slugs_resolve(tmp_path, monkeypatch):
     assert "LINK-BROKEN" not in found and "MEM-STORE-MISSING" not in found
 
 
+def test_memory_store_hit_is_not_evidence_a_kb_original_was_lost(tmp_path):
+    """A [[roadmap]] link that resolves in the memory store must not print
+    'the original was lost' / 'likely mv' for kb/decisions/roadmap 2.md."""
+    home = tmp_path / "home"
+    root = corpus(tmp_path, {"kb/decisions/roadmap 2.md": FM,
+                             "kb/findings/ref.md": FM + "[[roadmap]]\n"})
+    mem = home / ".claude" / "projects" / str(root).replace("/", "-") / "memory"
+    mem.mkdir(parents=True)
+    (mem / "roadmap.md").write_text("x\n")
+    env = dict(os.environ, HOME=str(home))
+    r = subprocess.run([sys.executable, str(LINT), "--repo", str(root), "--json"],
+                       capture_output=True, text=True, env=env)
+    payload = json.loads(r.stdout)
+    codes_found = {f["code"] for f in payload["findings"]}
+    assert "DUPE-ORPHAN" not in codes_found
+    assert "DUPE-AMBIGUOUS" in codes_found
+    msgs = " ".join(f["message"] for f in payload["findings"] if f["code"] == "DUPE-AMBIGUOUS")
+    assert "memory store" in msgs
+    assert "likely mv" not in msgs
+
+
+def test_mandated_skill_outside_the_routing_table_is_still_checked(tmp_path):
+    """/ticket lives in Critical rules, not the routing table. Scanning the
+    whole file for `/name` would also match `/scoreboard`; the allowlist is
+    the bounded fix."""
+    root = corpus(tmp_path, {})
+    (root / "CLAUDE.md").write_text(
+        "## Skill routing\n\n| x | `/status` |\n\n"
+        "## Other\nfiles a ticket via `/ticket`.\n")
+    found = codes(root)
+    assert "SKILL-MISSING" in found
+    assert any("ticket" in f["message"] for f in found["SKILL-MISSING"])
+    assert not any("scoreboard" in f["message"] for f in found.get("SKILL-MISSING", []))
+
+
+def test_broken_link_separator_hint_is_not_deletable(tmp_path):
+    root = corpus(tmp_path, {"kb/findings/a.md": FM + "[[my-doc]]\n",
+                             "kb/findings/my_doc.md": FM})
+    msgs = " ".join(f["message"] for f in codes(root).get("LINK-BROKEN", []))
+    assert "did you mean [[my_doc]]" in msgs
+
+
+def test_chain_inside_a_shadow_dir_is_not_a_second_verdict(tmp_path):
+    root = corpus(tmp_path, {"kb/notes 2/p 2.md": FM + "a\n",
+                             "kb/notes 2/p 3.md": FM + "b\n"})
+    found = codes(root)
+    assert "DUPE-DIR" in found
+    assert "DUPE-CHAIN" not in found
+
+
 def test_skill_with_unparseable_frontmatter_is_dead(tmp_path):
     root = corpus(tmp_path, {})
     (root / "CLAUDE.md").write_text("## Skill routing\n\n| x | `/broken` |\n")

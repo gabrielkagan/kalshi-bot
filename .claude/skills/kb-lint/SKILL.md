@@ -85,10 +85,12 @@ proposes a canonical name; the class comes from evidence, in this order:
    duplicates whole trees, and that is how it manufactures a second
    independent-looking witness. Rot must not vouch for rot. Within this step, canonical-name
    evidence is tested first: docs linking the *canonical* name mean the original
-   was lost (`DUPE-ORPHAN`); docs linking the *full* name mean the title is real
-   (`DUPE-NAMED`, never rename). Beside a surviving canonical the bar is **two**
-   distinct linkers, because there the competing reading is a divergence that may
-   hold the only copy of something — one stray link must not silence that.
+   was lost (`DUPE-ORPHAN`) **unless that stem also exists in the memory store**
+   (then the linkers already resolve — `DUPE-AMBIGUOUS`, never `likely mv`);
+   docs linking the *full* name mean the title is real (`DUPE-NAMED`, never
+   rename). Beside a surviving canonical the bar is **two** distinct linkers,
+   because there the competing reading is a divergence that may hold the only
+   copy of something — one stray link must not silence that.
 5. **batch evidence** — ≥10 conflict-shaped files across ≥3 directories is a
    sync event, not a naming choice, and members inherit that (`DUPE-ORPHAN`).
    Two counts, two jobs: `shaped_all` (every conflict-shaped stem, including

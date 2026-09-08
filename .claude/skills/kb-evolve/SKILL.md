@@ -143,8 +143,10 @@ These aren't KB content problems; they're reasons to distrust the rest of the ru
 
 - `SKILL-ROT` — a `/skill` directory with no loadable `SKILL.md`: either shadowed
   by a conflict copy (`mv '<skill>/SKILL 2.md' '<skill>/SKILL.md'`) or missing
-  entirely. The skill is silently dead until fixed — this is how `/ticket` and
-  `/pickup` were lost.
+  entirely. The skill is silently dead until fixed. `/ticket` `/pickup`
+  `/test-writer` are checked even though they are not in the routing table
+  (they live in Critical / Interaction rules; this is how `/ticket` and
+  `/pickup` were lost).
 - `SKILL-MISSING` — routed in CLAUDE.md with no directory. Create it, or drop the
   routing row so the table stops lying.
 - `SKILL-FRONTMATTER` — `SKILL.md` present but `name:` unparseable, so it won't load.
